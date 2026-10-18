@@ -101,7 +101,7 @@ class EventTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(json.loads(self.feed.read_text())["evidence"]["sha256"]), 64)
 
-    def test_tail_maps_old_kinds_including_rung_to_schema_2_names(self):
+    def test_tail_maps_writer_schema_1_kinds_and_leaves_rung_unmapped(self):
         self.lines(
             {**BASE, "schema": 1, "kind": "RUNG"},
             {**BASE, "schema": 1, "kind": "PORT-FAIL"},
@@ -111,18 +111,21 @@ class EventTests(unittest.TestCase):
         _, envelope = run([*self.seat, "event", "tail"])
         self.assertEqual(
             [row["canonical_kind"] for row in envelope["result"]["events"]],
-            ["DECISION", "RUN-FAIL", "LAND", "DECISION"],
+            ["RUNG", "RUN-FAIL", "LAND", "DECISION"],
         )
-        code, envelope = run([*self.seat, "event", "tail", "--kinds", "DECISION", "--lines", "1"])
+        code, envelope = run([*self.seat, "event", "tail", "--kinds", "DECISION"])
         self.assertEqual((code, len(envelope["result"]["events"])), (0, 1))
+        code, envelope = run([*self.seat, "event", "tail", "--kinds", "RUNG"])
+        self.assertEqual((code, envelope["findings"][0]["key"]), (1, "events.kind"))
 
-    def test_validate_reports_bad_lines_and_accepts_schema_1_rung(self):
-        self.lines({**BASE, "schema": 1, "kind": "RUNG"})
-        self.assertEqual(run([*self.seat, "event", "validate"])[0], 0)
+    def test_validate_refuses_rung_in_any_schema_and_reports_bad_lines(self):
+        self.lines({**BASE, "schema": 1, "kind": "PORT-FAIL"}, {**BASE, "schema": 1, "kind": "RUNG"})
         with self.feed.open("a") as stream:
             stream.write("{bad\n")
         code, envelope = run([*self.seat, "event", "validate"])
-        self.assertEqual((code, envelope["findings"][0]["line"]), (1, 2))
+        self.assertEqual(code, 1)
+        self.assertEqual([row["line"] for row in envelope["findings"]], [2, 3])
+        self.assertIn("unknown event kind 'RUNG'", envelope["findings"][0]["message"])
 
     def test_validate_path_option_needs_no_profile(self):
         self.lines({**BASE, "schema": 2})

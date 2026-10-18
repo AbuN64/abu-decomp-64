@@ -15,9 +15,6 @@ from abu_decomp import DecompError
 from abu_decomp.config import Profile
 
 LIFECYCLE_KINDS = ("RUN-FAIL", "LANE", "LAND", "MATCH", "DECISION")
-# Schema 1 names decomp retires on top of the writer's own map (owner decision 10-18): readers show them as the
-# replacement, writers refuse them.
-RETIRED_KINDS = {"RUNG": "DECISION"}
 
 
 def writer() -> ModuleType:
@@ -52,20 +49,10 @@ class _WriterProfile:
         return Path(value)
 
 
-def canonical_kind(value: dict[str, Any]) -> str | None:
-    """The schema 2 kind of any readable line: the writer's map plus the retired names above."""
-    kind = writer().canonical_kind(value)
-    if kind in RETIRED_KINDS and value.get("schema") == 1:
-        return RETIRED_KINDS[kind]
-    return kind
-
-
 def append(path: Path, record: dict[str, Any]) -> dict[str, Any]:
     """Append one event through the Cake Taste writer. `record` holds actor, status, message and the optional parts."""
     module = writer()
     kind = record.get("kind")
-    if kind in RETIRED_KINDS:
-        raise DecompError("events.kind", f"{kind} is retired; write {RETIRED_KINDS[kind]}")
     try:
         return module.append_event(
             _WriterProfile(path),
@@ -97,14 +84,35 @@ def tail(path: Path, count: int, kinds: set[str] | None = None) -> list[dict[str
                 continue
             if not isinstance(value, dict):
                 continue
-            kind = canonical_kind(value)
+            kind = module.canonical_kind(value)
             if kinds and kind not in kinds:
                 continue
             rows.append({**value, "canonical_kind": kind})
     return list(rows)
 
 
+def _kind_findings(lines: list[bytes]) -> list[dict[str, Any]]:
+    """Lines whose kind is not a schema 2 kind after the writer's own schema 1 map; RUNG is one."""
+    module = writer()
+    findings = []
+    for number, raw in enumerate(lines, 1):
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(value, dict) and isinstance(value.get("kind"), str):
+            kind = module.canonical_kind(value)
+            if kind not in module.KINDS:
+                findings.append({"line": number, "message": f"unknown event kind {kind!r}"})
+    return findings
+
+
+def _report(lines: list[bytes]) -> dict[str, Any]:
+    report = writer().validate_lines(lines)
+    report["findings"] = sorted(report["findings"] + _kind_findings(lines), key=lambda row: row["line"])
+    return report
+
+
 def validate(path: Path) -> dict[str, Any]:
-    """Validate a feed with the writer's own validator. The path is only read."""
-    with path.open("rb") as stream:
-        return writer().validate_lines(stream)
+    """Validate a feed with the writer's own validator plus the kind rule above. The path is only read."""
+    return _report(path.read_bytes().splitlines(keepends=True))
