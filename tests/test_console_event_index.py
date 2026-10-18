@@ -23,7 +23,7 @@ class EventIndexTests(unittest.TestCase):
         self.assertEqual([e["message"] for e in events.by_owner["0x80265964"]], ["0x80265964", "80265964 again"])
 
     def test_sources_read_scans_addresses_only_for_new_events_and_keeps_order(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2] / "tmp") as name:
+        with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             profile = FeedProfile(root)
             append_event(profile, "git", "info", "first 0x80265964")
