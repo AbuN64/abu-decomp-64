@@ -17,6 +17,9 @@ Gates, in order; the first failure stops the run and the rest are reported as sk
   untracked_s  no untracked assembly file (every one a patch or sync produced is tracked or staged)
   readme       no code percentage in the README lower than at the base
 
+`--patch LANE=PATH[:MESSAGE]`; the result's `commits` is the ready commit plan (never run here; the orchestrator
+runs each of `commit_commands`; the `-- files` pathspec keeps the other lanes' staged files out of each commit).
+
 Section `land` of the seat profile:
 
     "land": {
@@ -37,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -62,17 +66,50 @@ class LandError(DecompError):
     pass
 
 
+def _split_row(row: str) -> tuple[str, str, str | None]:
+    """`LANE=PATH[:MESSAGE]` -> lane, path, message (the path ends at the first colon)."""
+    lane, sep, rest = row.partition("=")
+    path, colon, message = rest.partition(":")
+    if not sep or not lane.strip() or not path.strip() or (colon and not message.strip()):
+        raise LandError("land.arguments", f"--patch expects LANE=PATH[:MESSAGE], got {row!r}")
+    return lane, path, message.strip() if colon else None
+
+
 def parse_patches(rows: Sequence[str]) -> list[tuple[str, Path]]:
-    """`LANE=PATH` rows, in order; lane names are unique."""
+    """`LANE=PATH[:MESSAGE]` rows, in order; lane names are unique."""
     patches: list[tuple[str, Path]] = []
     for row in rows:
-        lane, sep, path = row.partition("=")
-        if not sep or not lane.strip() or not path.strip():
-            raise LandError("land.arguments", f"--patch expects LANE=PATH, got {row!r}")
+        lane, path, _ = _split_row(row)
         if any(lane == seen for seen, _ in patches):
             raise LandError("land.arguments", f"lane {lane} is given twice")
         patches.append((lane, Path(path).expanduser().resolve()))
     return patches
+
+
+def parse_messages(rows: Sequence[str]) -> dict[str, str]:
+    """Lane -> the explicit commit message given as `LANE=PATH:MESSAGE`."""
+    found = {}
+    for row in rows:
+        lane, _, message = _split_row(row)
+        if message:
+            found[lane] = message
+    return found
+
+
+def sentence_list(names: Sequence[str]) -> str:
+    return ", ".join(names[:-1]) + " and " + names[-1] if len(names) > 1 else "".join(names)
+
+
+def top_dirs(files: Sequence[str]) -> list[str]:
+    """The first directory below src/ (the first directory when a file is not under src/) of each file, in order."""
+    found: list[str] = []
+    for name in files:
+        parts = name.split("/")
+        if parts[0] == "src":
+            parts = parts[1:]
+        if len(parts) > 1 and parts[0] not in found:
+            found.append(parts[0])
+    return found
 
 
 def settings(profile: Profile) -> dict[str, Any]:
@@ -192,6 +229,7 @@ class Landing:
         build: Run = build_process,
         append: Callable[[Path, dict[str, Any]], dict[str, Any]] = events.append,
         pin: Callable[[], str] | None = None,
+        messages: dict[str, str] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = settings(profile)
@@ -201,6 +239,7 @@ class Landing:
         self.profile = profile
         self.base, self.patches = base, list(patches)
         self.invoke, self.run, self.build, self.append, self.clock = invoke, run, build, append, clock
+        self.messages = dict(messages or {})
         self.pin = pin or (lambda: tools.pins()["unbake"].commit)
         self.gates: list[dict[str, Any]] = []
         self.findings: list[dict[str, Any]] = []
@@ -421,6 +460,36 @@ class Landing:
             "shared_files": shared,
         }
 
+    def commits(self, groups: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        """One commit per applied lane, in order: its file group, the function names it converted and the message.
+
+        A lane that converted functions gets the project convention, "Fix N <marker> stand-ins in <dirs> by matching
+        <names> as C", unless its patch was given an explicit message; a lane with no function needs that message."""
+        by_lane = {row["lane"]: row for row in self.lanes}
+        plan: list[dict[str, Any]] = []
+        for group in groups:
+            row = by_lane[group["lane"]]
+            names = row["functions"]["names"]
+            message = self.messages.get(row["lane"])
+            if message is None and names:
+                where = sentence_list(top_dirs(row["files"]) or top_dirs(group["files"]))
+                count = len(names)
+                message = (
+                    f"Fix {count} {self.config['markers'][0]} stand-in{'s' if count > 1 else ''}"
+                    f"{f' in {where}' if where else ''} by matching {sentence_list(names)} as C"
+                )
+            elif message is None:
+                self.findings.append(
+                    {
+                        "key": "land.commit_message",
+                        "message": f"lane {row['lane']} converted no function; give --patch LANE=PATH:MESSAGE",
+                        "blocking": False,
+                        "lane": row["lane"],
+                    }
+                )
+            plan.append({"lane": row["lane"], "files": group["files"], "functions": names, "message": message})
+        return plan
+
     # run --------------------------------------------------------------------------------------------------------
     def stages(self) -> list[Callable[[], bool]]:
         unbake = self.unbake
@@ -457,6 +526,13 @@ class Landing:
             "untracked_other": self.extra.get("untracked_other", []),
             **self.groups(),
         }
+        result["commits"] = self.commits(result["groups"])
+        result["commit_commands"] = [
+            f"git add -- {(files := ' '.join(shlex.quote(f) for f in c['files']))} "
+            f"&& git commit -m {shlex.quote(c['message'])} -- {files}"
+            for c in result["commits"]
+            if c["files"] and c["message"]
+        ]
         result["functions"] = {
             "converted": sum(r["functions"]["converted"] for r in self.lanes if r["status"] == "applied"),
             "added": sum(r["functions"]["added"] for r in self.lanes if r["status"] == "applied"),

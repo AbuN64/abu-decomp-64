@@ -101,6 +101,32 @@ class ToolTests(unittest.TestCase):
             tools.invoke("taste", self.profile, ["profile"])
             self.assertEqual(call.call_args.args[0][4:], ["--profile", str(self.root / "taste.json"), "profile"])
 
+    def test_version_and_help_pass_through_as_text(self):
+        done = subprocess.CompletedProcess([], 0, b"unbake 0.5.8\n", b"")
+        with installed(), mock.patch("abu_decomp.tools.subprocess.run", return_value=done) as call:
+            for args, tail in (
+                (["--version"], ["--version"]),
+                (["score", "--help"], ["score", "--help"]),
+                (["-h"], ["-h"]),
+            ):
+                result = tools.invoke("unbake", self.profile, args)
+                self.assertEqual(call.call_args.args[0][4:], ["--project", str(self.root / "project"), *tail])
+                self.assertEqual((result.ok, result.text), (True, b"unbake 0.5.8\n"))
+            tools.invoke("recipe", self.profile, ["status", "--help"])
+            self.assertNotIn("--json", call.call_args.args[0])
+            failed = subprocess.CompletedProcess([], 2, b"usage: x\n", b"")
+            call.return_value = failed
+            self.assertFalse(tools.invoke("unbake", self.profile, ["bogus", "--help"]).ok)
+            with self.assertRaises(tools.DependencyError):
+                tools.invoke("unbake", self.profile, ["--version", "--project", "x"])
+            self.assertFalse(tools.is_text_call(["score", "--version", "us"]))
+
+    def test_version_text_lists_decomp_and_pins(self):
+        with installed():
+            lines = tools.version_text().splitlines()
+        self.assertEqual(lines[0], "decomp 1")
+        self.assertEqual([line.split()[0] for line in lines[1:]], ["unbake", "recipe", "taste"])
+
     def test_profile_owned_arguments_and_bad_output_are_refused(self):
         with installed(), mock.patch("abu_decomp.tools.subprocess.run") as call:
             for tool, args in (("unbake", ["report", "--host=x"]), ("taste", ["--profile", "x"]), ("recipe", [])):

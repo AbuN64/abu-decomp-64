@@ -85,6 +85,21 @@ def pins() -> dict[str, Pin]:
     return result
 
 
+def version_text() -> str:
+    """decomp's own version and the pinned tools' installed versions, one per line."""
+
+    def installed(name: str) -> str:
+        try:
+            return metadata.version(name)
+        except metadata.PackageNotFoundError:
+            return "not installed"
+
+    lines = [f"decomp {installed(DISTRIBUTION)}"]
+    for command, pin in pins().items():
+        lines.append(f"{command} {installed(pin.distribution)} ({pin.distribution} {pin.commit[:12]})")
+    return "\n".join(lines) + "\n"
+
+
 def verify_dependencies() -> dict[str, dict[str, str]]:
     """Require every installed tool at its pinned commit, one unbake for all, and a standalone Cake Taste."""
     declared = pins()
@@ -169,10 +184,11 @@ class ToolResult:
     document: dict[str, Any]
     provenance: dict[str, dict[str, str]]
     context: dict[str, str]
+    text: bytes | None = None  # the tool's own stdout when it printed text (--version, --help), not a JSON document
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 and self.document["ok"] is True
+        return self.returncode == 0 and (self.text is not None or self.document["ok"] is True)
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -185,6 +201,16 @@ class ToolResult:
         }
 
 
+TEXT_FLAGS = frozenset({"--help", "-h"})
+
+
+def is_text_call(given: Sequence[str]) -> bool:
+    """A call the tool answers with text, not a JSON envelope: it starts with an option or asks for help.
+
+    A --version after a command is that command's own option (`score --version us`), not a text call."""
+    return bool(given) and (given[0].startswith("-") or any(arg in TEXT_FLAGS for arg in given))
+
+
 def _command(tool: str, chosen: Settings, given: tuple[str, ...]) -> list[str]:
     owned = ("--profile",) if tool == "taste" else ("--host", "--project")
     if any(arg in owned or arg.startswith(tuple(f"{flag}=" for flag in owned)) for arg in given):
@@ -193,6 +219,8 @@ def _command(tool: str, chosen: Settings, given: tuple[str, ...]) -> list[str]:
         if chosen.taste_profile is None:
             raise DependencyError("dependency.configuration", "tools.taste_profile is not set in the seat profile")
         return ["--profile", str(chosen.taste_profile), *given]
+    if is_text_call(given):
+        return ["--project", str(chosen.project), *given]  # the tool's own text, arguments untouched
     command = ["--project", str(chosen.project), given[0]]
     if tool == "recipe":
         command.append("--json")
@@ -219,7 +247,7 @@ def invoke(
     given = tuple(args)
     if given and given[0] == "--":
         given = given[1:]
-    if not given or given[0].startswith("-") or any("\0" in arg for arg in given):
+    if not given or any("\0" in arg for arg in given):
         raise DependencyError("dependency.arguments", "provide a public command followed by its arguments")
     chosen = settings(profile, project, host)
     if project and (refused := pin_findings(profile, chosen.project)):
@@ -245,6 +273,16 @@ def invoke(
         raise DependencyError("dependency.timeout", f"{tool} exceeded {chosen.timeout_seconds:g}s") from exc
     except OSError as exc:
         raise DependencyError("dependency.process", f"cannot execute {tool}: {exc}") from exc
+    if is_text_call(given):
+        return ToolResult(
+            tool,
+            (tool, *command),
+            completed.returncode,
+            {},
+            provenance,
+            {"project": str(chosen.project), "host": str(chosen.host), "profile_sha256": profile.digest},
+            completed.stdout,
+        )
     try:
         document = json.loads(completed.stdout.decode("utf-8"))
     except (ValueError, UnicodeError) as exc:

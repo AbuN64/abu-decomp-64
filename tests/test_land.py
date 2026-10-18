@@ -18,8 +18,11 @@ from abu_decomp.land import (
     code_percentages,
     diff_lines,
     function_name,
+    parse_messages,
     parse_patches,
     run_process,
+    sentence_list,
+    top_dirs,
 )
 
 README = "| code [###] {a}% (~80%) 10 of 20 |\n| code [###] {b}% (~80%) 10 of 20 |\n"
@@ -133,6 +136,55 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.unbake, [("setup",), ("sync",), ("sync",), ("sync", "--check")])
         self.assertEqual([e["kind"] for e in self.events], ["LAND"])
         self.assertEqual(self.events[0]["status"], "passed")
+
+    def test_commit_plan_one_entry_per_lane_with_the_project_message(self):
+        one = self.patch(
+            "L1", {"a.c": A_C.replace('INCLUDE_ASM(const s32, "a", func_1);\n', "int func_1(void) { return 1; }\n")}
+        )
+        two = self.patch("L2", {"b.c": "int func_3(void) { return 3; }\n"})
+        three = self.patch("L3", {"c.c": "int untouched(void) { return 1; }\n"})
+        result, code, findings = self.land([one, two, three])
+        self.assertEqual(code, 0)
+        self.assertEqual([c["lane"] for c in result["commits"]], ["L1", "L2", "L3"])
+        self.assertEqual(result["commits"][0]["message"], "Fix 1 INCLUDE_ASM stand-in by matching func_1 as C")
+        self.assertEqual(result["commits"][0]["functions"], ["func_1"])
+        self.assertEqual(result["commits"][1]["files"], ["b.c"])
+        self.assertIsNone(result["commits"][2]["message"])  # no function and no explicit message: never guessed
+        self.assertEqual([f["key"] for f in findings], ["land.commit_message"])
+        self.assertEqual(
+            result["commit_commands"][0],
+            "git add -- a.c && git commit -m 'Fix 1 INCLUDE_ASM stand-in by matching func_1 as C' -- a.c",
+        )
+        self.assertEqual(len(result["commit_commands"]), 2)
+
+    def test_explicit_patch_message_names_a_repin_only_commit(self):
+        three = self.patch("L3", {"c.c": "int untouched(void) { return 1; }\n"})
+        landing = Landing(
+            self.profile,
+            self.tree,
+            self.base,
+            [three],
+            invoke=self.invoke,
+            run=self.runner,
+            build=self.runner,
+            append=lambda path, record: {"ok": True},
+            pin=lambda: "u1",
+            messages={"L3": "Fix the pin: repin"},
+        )
+        result, code, findings = landing.execute()
+        self.assertEqual((code, findings), (0, []))
+        self.assertEqual(result["commits"][0]["message"], "Fix the pin: repin")
+
+    def test_patch_message_parsing_and_commit_helpers(self):
+        rows = ["A=/x/a.patch", "B=/x/b.patch:Fix a: with colons"]
+        self.assertEqual([lane for lane, _ in parse_patches(rows)], ["A", "B"])
+        self.assertEqual(str(parse_patches(rows)[1][1]), "/x/b.patch")
+        self.assertEqual(parse_messages(rows), {"B": "Fix a: with colons"})
+        with self.assertRaises(LandError):
+            parse_patches(["A=/x/a.patch:"])
+        self.assertEqual(top_dirs(["src/AI/NAV/x.c", "src/AI/y.c", "src/MENU/EVENT/z.c", "README.md"]), ["AI", "MENU"])
+        self.assertEqual(sentence_list(["a", "b", "c"]), "a, b and c")
+        self.assertEqual(sentence_list(["a"]), "a")
 
     def test_setup_is_skipped_when_the_tree_was_set_up_with_the_same_pin(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})

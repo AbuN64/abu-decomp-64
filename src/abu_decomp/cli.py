@@ -62,11 +62,23 @@ def _run_dependencies(args: argparse.Namespace) -> tuple[dict[str, Any], int, li
     return verify_dependencies(), 0, []
 
 
+class _Text(Exception):
+    """The tool answered with its own text (--version, --help); main passes the exit code through."""
+
+    def __init__(self, code: int) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 def _run_tool(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp.tools import invoke
 
     stdin = sys.stdin.buffer.read() if "-" in args.args else b""
     called = invoke(args.command, _profile(args.profile), args.args, stdin=stdin, project=args.project, host=args.host)
+    if called.text is not None:
+        sys.stdout.buffer.write(called.text)
+        sys.stdout.buffer.flush()
+        raise _Text(called.returncode)
     if called.ok:
         return called.describe(), 0, []
     findings = called.document.get("findings") or [
@@ -324,14 +336,20 @@ def _land_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tree", type=Path, required=True, help="proof tree: a clean checkout at --base")
     parser.add_argument("--base", required=True, help="git ref the tree must be at")
     parser.add_argument(
-        "--patch", action="append", required=True, metavar="LANE=PATH", help="a lane's patch, in order (repeatable)"
+        "--patch",
+        action="append",
+        required=True,
+        metavar="LANE=PATH[:MESSAGE]",
+        help="a lane's patch, in order (repeatable); MESSAGE is that lane's commit message when it matches no function",
     )
 
 
 def _run_land(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    from abu_decomp.land import land, parse_patches
+    from abu_decomp.land import land, parse_messages, parse_patches
 
-    return land(_profile(args.profile), args.tree, args.base, parse_patches(args.patch))
+    return land(
+        _profile(args.profile), args.tree, args.base, parse_patches(args.patch), messages=parse_messages(args.patch)
+    )
 
 
 def _served_elsewhere(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -404,8 +422,45 @@ def describe() -> dict[str, Any]:
     return {"program": "decomp", "commands": commands}
 
 
+def _tool_call(args: list[str]) -> argparse.Namespace | None:
+    """`[--profile P] unbake|recipe|taste [--project D] [--host F] ARGS...`, with ARGS untouched (argparse would eat
+    --help and --version); None when the line is anything else."""
+    from abu_decomp.tools import TOOLS
+
+    rest, profile = list(args), None
+    if rest[:1] == ["--profile"] and len(rest) > 1:
+        profile, rest = Path(rest[1]), rest[2:]
+    elif rest[:1] and rest[0].startswith("--profile="):
+        profile, rest = Path(rest[0].partition("=")[2]), rest[1:]
+    if not rest or rest[0] not in TOOLS:
+        return None
+    found: dict[str, Path | None] = {"project": None, "host": None}
+    command, rest = rest[0], rest[1:]
+    while rest:
+        flag, eq, value = rest[0].partition("=")
+        if flag not in ("--project", "--host"):
+            break
+        if eq:
+            rest = rest[1:]
+        elif len(rest) > 1:
+            value, rest = rest[1], rest[2:]
+        else:
+            raise DecompError("cli.arguments", f"{flag} expects a value")
+        found[flag[2:]] = Path(value)
+    return argparse.Namespace(profile=profile, command=command, project=found["project"], host=found["host"], args=rest)
+
+
+def _own_version(args: list[str]) -> bool:
+    return args[-1:] == ["--version"] and (len(args) == 1 or (len(args) == 3 and args[0] == "--profile"))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if _own_version(args):
+        from abu_decomp.tools import version_text
+
+        sys.stdout.write(version_text())
+        return 0
     started = time.monotonic()
     invocation = uuid.uuid4().hex
     result: dict[str, Any] | None = None
@@ -413,7 +468,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     code = 0
     command = "parse"
     try:
-        parsed = parser().parse_args(args)
+        parsed = _tool_call(args) or parser().parse_args(args)
         command = parsed.command
         if command == "mcp":
             from abu_decomp.mcp import serve
@@ -421,6 +476,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             prefix = ["--profile", str(parsed.profile)] if parsed.profile else []
             return serve(sys.stdin.buffer, sys.stdout.buffer, prefix=prefix)
         result, code, findings = COMMANDS[command].run(parsed)
+    except _Text as exc:
+        return exc.code
     except DecompError as exc:
         code, findings = 1, [exc.finding()]
     except (ValueError, OSError) as exc:
