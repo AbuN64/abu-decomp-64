@@ -14,7 +14,7 @@ from typing import Any
 from abu_decomp import DecompError
 
 # One section per component boundary (see CONTRACTS.md). Project facts live only in these values.
-SECTIONS = frozenset({"tools", "events", "stream", "console", "lanes", "supervisor"})
+SECTIONS = frozenset({"tools", "events", "tiles", "stream", "console", "lanes", "supervisor"})
 _REQUIRED = frozenset({"schema_version", "name"})
 _ALLOWED = _REQUIRED | SECTIONS
 
@@ -38,6 +38,10 @@ class Profile:
         if name not in self._sections:
             raise ConfigError(self.source_file, name, "required section is absent")
         return copy.deepcopy(dict(self._sections[name]))
+
+    def resolve_path(self, value: str) -> Path:
+        """Resolve a path value as the moved stream and console code spells it."""
+        return resolve(self.source_file, "path", value)
 
     def path(self, key: str, value: Any) -> Path:
         """Resolve a profile path; relative paths are relative to the profile file."""

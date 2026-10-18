@@ -1,7 +1,8 @@
 """Stream boundary: the compositor, the tile grid, the transport and capture.
 
-Moves here 1:1 from cake_taste.stream (and panes/layout.py) at the rig cutover. A tile is either a video role
-(a process window) or a console; the grid, roles and ports come only from the seat profile `stream` section.
+Moved 1:1 from cake_taste.stream and cake_taste.panes.layout (now sway.py); only imports and the profile source changed.
+A tile is either a video role (a process window) or a console; the grid and roles come from the seat profile
+`tiles` table, the compositor, ports and services from its `stream` section.
 """
 
 from __future__ import annotations

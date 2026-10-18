@@ -197,6 +197,12 @@ def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     return control.end(profile, args.name, args.reason, args.stop), 0, []
 
 
+def _run_stream(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp.stream.cli import run
+
+    return run(_profile(args.profile), tuple(args.args)), 0, []
+
+
 def _served_elsewhere(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     raise DecompError("internal.dispatch", f"{args.command} is served by main, not by a command handler")
 
@@ -213,6 +219,7 @@ COMMANDS: dict[str, Command] = {
     "taste": Command("run Cake Taste with the profile's Taste profile", _passthrough, _run_tool),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
     "lane": Command("launch, steer, peek and end AI lanes", _lane_arguments, _run_lane),
+    "stream": Command("serve, supervise, control and capture the headless tile stream", _passthrough, _run_stream),
     "port": Command("generate a native port repository skeleton", _port_arguments, _run_port),
     "describe": Command("list every command and its arguments as JSON", _none, _run_describe),
     "mcp": Command("serve the commands as MCP tools over stdio", _none, _served_elsewhere),

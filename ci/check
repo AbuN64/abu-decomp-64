@@ -5,3 +5,14 @@ cd "$(dirname "$0")/.."
 ruff check src tests
 ruff format --check src tests
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" python3 -m unittest discover -s tests
+# The Wayland input bridge is C: build it warning-clean from its protocol XML (generated into a scratch dir).
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+stream=src/abu_decomp/stream
+for name in virtual-keyboard virtual-pointer; do
+  wayland-scanner client-header "$stream/protocols/$name.xml" "$scratch/$name.h"
+  wayland-scanner private-code "$stream/protocols/$name.xml" "$scratch/$name.c"
+done
+# shellcheck disable=SC2046
+cc -Wall -Wextra -Werror -O2 -I"$scratch" "$stream/input_bridge.c" "$scratch/virtual-keyboard.c" \
+  "$scratch/virtual-pointer.c" $(pkg-config --cflags --libs wayland-client xkbcommon) -o "$scratch/input-bridge"
