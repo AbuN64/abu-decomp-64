@@ -7,6 +7,7 @@ then one continuation that points at the old HANDOFF.md and STATUS.md, then the 
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
@@ -94,9 +95,26 @@ def unit_spec(text: str) -> dict[str, Any]:
     return spec
 
 
-def old_unit(old_dir: Path) -> tuple[str, dict[str, Any]] | None:
-    """The systemd unit of a lane launched before the registry, found by its --dir."""
-    names = [f"lane-{old_dir.name}", f"lane-{old_dir.name.lower()}"]
+def launch_record(old_dir: Path) -> dict[str, Any] | None:
+    """OLD/LAUNCH.json as spec keys: the runner's parsed arguments, written when the lane started."""
+    path = old_dir / "LAUNCH.json"
+    if not path.is_file():
+        return None
+    try:
+        record = json.loads(path.read_text())
+    except ValueError as exc:
+        raise DecompError("lanes.launch_record", f"{path}: {exc}") from exc
+    if not isinstance(record, dict) or record.get("schema") != 1:
+        raise DecompError("lanes.launch_record", f"{path}: expected a schema 1 object")
+    for key in INTEGERS:
+        if record.get(key) is not None:
+            record[key] = int(record[key])
+    return record
+
+
+def old_unit(old_dir: Path, first: list[str] = ()) -> tuple[str, dict[str, Any]] | None:
+    """The systemd unit of a lane, found by its --dir: the named units first, then every lane unit."""
+    names = [*first, f"lane-{old_dir.name}", f"lane-{old_dir.name.lower()}"]
     for unit in [*names, *(unit for unit in known_units() if unit not in names)]:
         text = unit_text(unit)
         if text is None:

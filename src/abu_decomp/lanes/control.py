@@ -156,6 +156,9 @@ def launch(profile: Profile, spec: dict[str, Any], replaces: dict[str, Any] | No
         ]  # fmt: skip
         if spec.get("owner_override"):
             command += ["--owner-override", spec["owner_override"]]
+        for path in lane.owns:
+            command += ["--owns", path]
+        command += ["--track", spec["track"]]
         start_unit(command, directory)
         rows.append(row)
     if seat.active_file:
@@ -255,30 +258,48 @@ def end(profile: Profile, name: str, reason: str, stop: bool) -> dict[str, Any]:
 def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, Any]) -> dict[str, Any]:
     """Launch NAME as the continuation of the closed lane in OLD_DIR, in the sibling directory NAME.
 
-    The spec comes from OLD's latest registry row, or from its unit's ExecStart for a lane launched before the
-    registry; `given` (owns, track, kind) fills what an old unit never recorded and otherwise overrides.
+    Each spec key comes from the first source that records it: OLD's latest registry row, then OLD/LAUNCH.json
+    (written by the runner at start), then OLD's unit ExecStart (gone once a `--collect` unit ends). `given`
+    (the command's flags) fills what no source recorded and otherwise overrides; nothing is guessed.
     """
     seat = settings(profile)
     old_dir = old_dir.expanduser().resolve()
     if not (old_dir / "brief.md").is_file():
         raise DecompError("lanes.arguments", f"{old_dir / 'brief.md'} is missing")
+    keys = (*INHERITED, "cwd", "owner_override")
+    spec: dict[str, Any] = {}
+    units: list[str] = []
+    names: list[str] = []
+    sources: list[str] = []
+
+    def fill(source: str, recorded: dict[str, Any], unit: str | None, old_name: str | None) -> None:
+        taken = [key for key in keys if spec.get(key) in (None, "", []) and recorded.get(key) not in (None, "", [])]
+        spec.update({key: recorded[key] for key in taken})
+        units.extend([unit] if unit else [])
+        names.extend([old_name] if old_name else [])
+        sources.append(source)
+
     rows = [row for row in registry.load(seat.registry) if row.get("dir") == str(old_dir)]
     if rows:
-        old = rows[-1]
-        unit, spec = old["unit"], {key: old.get(key) for key in (*INHERITED, "cwd", "owner_override")}
-        old_name = old["name"]
-    else:
-        found = continuation.old_unit(old_dir)
-        if found is None:
-            raise DecompError("lanes.unknown", f"no registry row and no lane unit has --dir {old_dir}")
-        unit, spec = found
-        old_name = spec.get("name") or old_dir.name
-    if rows and any(spec.get(key) in (None, "", []) for key in INHERITED):
-        text = continuation.unit_text(unit)  # a row written before rows kept the full spec
-        recorded = continuation.unit_spec(text) if text else {}
-        spec.update({key: value for key, value in recorded.items() if spec.get(key) in (None, "", [])})
-    if unit in registry.active_units():
-        raise DecompError("lanes.live", f"{unit} is still active; continue a lane only after it has closed")
+        fill("registry", rows[-1], rows[-1].get("unit"), rows[-1].get("name"))
+    record = continuation.launch_record(old_dir)
+    if record is not None:
+        fill("LAUNCH.json", record, f"lane-{record['name']}" if record.get("name") else None, record.get("name"))
+    if any(spec.get(key) in (None, "", []) for key in INHERITED):
+        found = continuation.old_unit(old_dir, units)
+        if found is not None:
+            fill("ExecStart", found[1], found[0], found[1].get("name"))
+    if not sources and not any(value not in (None, [], ()) for value in given.values()):
+        raise DecompError(
+            "lanes.unknown",
+            f"no registry row, LAUNCH.json or lane unit records {old_dir}; pass every setting as a flag",
+        )
+    old_name = names[0] if names else old_dir.name
+    candidates = list(dict.fromkeys([*units, f"lane-{old_dir.name}", f"lane-{old_dir.name.lower()}"]))
+    unit = candidates[0]
+    active = [candidate for candidate in candidates if candidate in registry.active_units()]
+    if active:
+        raise DecompError("lanes.live", f"{active[0]} is still active; continue a lane only after it has closed")
     spec.update({key: value for key, value in given.items() if value not in (None, [], ())})
     continuation.require(spec, INHERITED)
     new_dir = old_dir.parent / name
@@ -298,4 +319,4 @@ def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, A
         owner_override=spec.get("owner_override") or None,
     )
     result = launch(profile, spec, replaces={"name": old_name, "dir": str(old_dir)})
-    return {**result, "continued_from": {"name": old_name, "dir": str(old_dir), "unit": unit}}
+    return {**result, "continued_from": {"name": old_name, "dir": str(old_dir), "unit": unit, "sources": sources}}

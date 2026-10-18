@@ -800,6 +800,9 @@ ap.add_argument("--resume-thread", help="Explicit existing thread id to resume i
 ap.add_argument("--kind", required=True, choices=("tooling", "impl"))
 ap.add_argument("--owner-override")
 ap.add_argument("--ladder", required=True, help="the owner model ladder file (models.toml)")
+# --owns PATH (repeatable) and --track are recorded in LAUNCH.json for `decomp lane continue`.
+ap.add_argument("--owns", action="append")
+ap.add_argument("--track", choices=("official", "experiment"))
 a = ap.parse_args()
 from abu_decomp import DecompError
 from abu_decomp.lanes import Ladder
@@ -869,6 +872,10 @@ for k in ("codex", "brief"):
 if not os.path.isdir(a.cwd):
     sys.exit("CwdMissing: " + a.cwd)
 os.makedirs(a.dir, exist_ok=True)
+# LAUNCH.json: every parsed launch setting, so a successor lane can be launched as this one was after its unit is gone.
+with open(os.path.join(a.dir, "LAUNCH.json.new"), "w") as launch_file:
+    json.dump({"schema": 1, "argv": sys.argv[1:], **vars(a)}, launch_file, indent=1, sort_keys=True)
+os.replace(os.path.join(a.dir, "LAUNCH.json.new"), os.path.join(a.dir, "LAUNCH.json"))
 if os.path.exists(a.socket):
     sys.exit("SocketInUse: " + a.socket)
 terminal_path = os.path.join(a.dir, "LIFECYCLE-STATE.json")

@@ -178,6 +178,14 @@ def _lane_arguments(parser: argparse.ArgumentParser) -> None:
     cont.add_argument("--owns", action="append", help="owned path, when the old lane recorded none (repeatable)")
     cont.add_argument("--track", choices=("official", "experiment"), help="when the old lane recorded none")
     cont.add_argument("--kind", choices=("tooling", "impl"), help="when the old lane recorded none")
+    # A lane with no registry row, LAUNCH.json or unit (launched before LAUNCH.json): every setting comes from these.
+    cont.add_argument("--model", help="when the old lane recorded none")
+    cont.add_argument("--effort", help="when the old lane recorded none")
+    cont.add_argument("--wall", type=int, help="wall seconds, when the old lane recorded none")
+    cont.add_argument("--continues", type=int, help="when the old lane recorded none")
+    cont.add_argument("--done-when", choices=("identical", "result"), help="when the old lane recorded none")
+    cont.add_argument("--fanout", choices=("enabled", "disabled"), help="when the old lane recorded none")
+    cont.add_argument("--max-agents", type=int, help="when the old lane recorded none")
     peek = actions.add_parser("peek", help="recent actions and waste counters of live lanes")
     peek.add_argument("--minutes", type=float, default=5.0)
     peek.add_argument("--name", action="append", default=[], help="a live lane (default: all)")
@@ -197,7 +205,8 @@ def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
         spec["owns"] = [str(path) for path in args.owns]
         return control.launch(profile, spec), 0, []
     if args.action == "continue":
-        given = {"owns": [str(path) for path in args.owns or []], "track": args.track, "kind": args.kind}
+        flags = ("track", "kind", "model", "effort", "wall", "continues", "done_when", "fanout", "max_agents")
+        given = {"owns": [str(path) for path in args.owns or []], **{key: getattr(args, key) for key in flags}}
         return control.continue_lane(profile, args.old_dir, args.name, given), 0, []
     if args.action == "steer":
         return control.steer_lane(profile, args.name, args.dir, args.socket, args.file), 0, []

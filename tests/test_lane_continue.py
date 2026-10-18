@@ -1,6 +1,8 @@
 import contextlib
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -157,7 +159,7 @@ class ContinueTests(unittest.TestCase):
         for key in ("effort", "wall", "continues"):
             del document["lanes"][0][key]
         (self.root / "lanes.json").write_text(json.dumps(document))
-        self.unit_files["lane-A-1"] = '"--effort" "low" "--wall" "99" "--continues" "1"'
+        self.unit_files["lane-A-1"] = f'"--effort" "low" "--wall" "99" "--continues" "1" "--dir" "{old}"'
         self.unit_files["lane-A-1"] = "ExecStart=" + self.unit_files["lane-A-1"]
         code, envelope = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "A-2"])
         self.assertEqual(code, 0, envelope)
@@ -171,6 +173,87 @@ class ContinueTests(unittest.TestCase):
         self.lane("A-2")
         code, envelope = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "A-2"])
         self.assertEqual((code, envelope["findings"][0]["key"]), (1, "lanes.arguments"))
+
+    def launch_json(self, directory, **values):
+        record = {"schema": 1, "argv": ["--model", "sonnet"], "model": "sonnet", "effort": "medium", "kind": "tooling",
+                  "wall": "1800", "continues": 3, "done_when": "result", "fanout": "disabled", "max_agents": 0,
+                  "cwd": str(directory), "dir": str(directory), "socket": "/s.sock", "name": directory.name.lower(),
+                  "owns": ["/work/l"], "track": "official", "owner_override": None, "resume_thread": None}  # fmt: skip
+        record.update(values)
+        (directory / "LAUNCH.json").write_text(json.dumps(record))
+
+    def test_launch_json_alone_carries_every_setting_after_a_collected_unit(self):
+        old = self.lane("L-1")
+        self.launch_json(old)
+        code, envelope = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "L-2"])
+        self.assertEqual(code, 0, envelope)
+        command = self.started[-1]
+        for flag, value in (("--model", "sonnet"), ("--effort", "medium"), ("--wall", "1800"), ("--continues", "3"),
+                            ("--owns", "/work/l"), ("--track", "official"), ("--kind", "tooling")):  # fmt: skip
+            self.assertEqual(self.flag(command, flag), value, flag)
+        self.assertEqual(envelope["result"]["continued_from"]["sources"], ["LAUNCH.json"])
+        self.assertEqual(envelope["result"]["continued_from"]["unit"], "lane-l-1")
+
+    def test_launch_json_unit_still_active_is_refused(self):
+        old = self.lane("L-1")
+        self.launch_json(old)
+        self.units.add("lane-l-1")
+        code, envelope = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "L-2"])
+        self.assertEqual((code, envelope["findings"][0]["key"]), (1, "lanes.live"))
+
+    def test_sources_are_read_registry_then_launch_json_then_exec_start(self):
+        old = self.launch_a()
+        self.units.clear()
+        document = json.loads((self.root / "lanes.json").read_text())
+        del document["lanes"][0]["wall"], document["lanes"][0]["continues"]
+        (self.root / "lanes.json").write_text(json.dumps(document))
+        self.launch_json(old, effort="low", wall="1200", continues=None)
+        self.unit_files["lane-A-1"] = f'ExecStart="--continues" "7" "--wall" "99" "--dir" "{old}"'
+        code, envelope = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "A-2"])
+        self.assertEqual(code, 0, envelope)
+        command = self.started[-1]
+        # effort from the row, wall from LAUNCH.json, continues only from the unit
+        self.assertEqual([self.flag(command, f) for f in ("--effort", "--wall", "--continues")], ["high", "1200", "7"])
+        self.assertEqual(envelope["result"]["continued_from"]["sources"], ["registry", "LAUNCH.json", "ExecStart"])
+
+    def test_a_legacy_lane_with_no_record_needs_every_setting_as_a_flag(self):
+        old = self.lane("OLD-9")
+        code, envelope = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "OLD-10"])
+        self.assertEqual((code, envelope["findings"][0]["key"]), (1, "lanes.unknown"))
+        partial = ["--model", "sonnet", "--owns", "/work/o", "--track", "official"]
+        code, envelope = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "OLD-10", *partial])
+        self.assertEqual(envelope["findings"][0]["key"], "lanes.inherit")
+        for flag in ("--kind", "--effort", "--wall", "--continues", "--done-when", "--fanout", "--max-agents"):
+            self.assertIn(flag, envelope["findings"][0]["message"])
+        full = [*partial, "--kind", "tooling", "--effort", "high", "--wall", "600", "--continues", "2",
+                "--done-when", "result", "--fanout", "disabled", "--max-agents", "0"]  # fmt: skip
+        code, envelope = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "OLD-10", *full])
+        self.assertEqual(code, 0, envelope)
+        self.assertEqual(envelope["result"]["continued_from"]["sources"], [])
+
+
+class RunnerLaunchRecordTests(unittest.TestCase):
+    def test_runner_writes_launch_json_with_every_argument_before_it_starts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "models.toml").write_text(LADDER)
+            for name in ("codex", "brief.md", "socket"):
+                (root / name).write_text("")  # an existing socket path stops the runner right after the record
+            lane = root / "lane"
+            argv = ["--codex", str(root / "codex"), "--model", "sonnet", "--effort", "high", "--cwd", str(root),
+                    "--brief", str(root / "brief.md"), "--dir", str(lane), "--socket", str(root / "socket"),
+                    "--name", "r-1", "--wall", "900", "--fanout", "disabled", "--max-agents", "0", "--continues", "2",
+                    "--done-when", "result", "--kind", "tooling", "--ladder", str(root / "models.toml"),
+                    "--owns", "/work/a", "--owns", "/work/b", "--track", "experiment"]  # fmt: skip
+            runner = Path(continuation.__file__).with_name("runner.py")
+            called = subprocess.run([sys.executable, str(runner), *argv], capture_output=True, text=True, timeout=60)
+            self.assertIn("SocketInUse", called.stderr)
+            record = json.loads((lane / "LAUNCH.json").read_text())
+            self.assertEqual(record["argv"], argv)
+            self.assertEqual((record["owns"], record["track"], record["wall"], record["max_agents"]),
+                             (["/work/a", "/work/b"], "experiment", "900", 0))  # fmt: skip
+            spec = continuation.launch_record(lane)
+            self.assertEqual((spec["wall"], spec["continues"], spec["done_when"]), (900, 2, "result"))
 
 
 if __name__ == "__main__":
