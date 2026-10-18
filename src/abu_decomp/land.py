@@ -101,15 +101,14 @@ def sentence_list(names: Sequence[str]) -> str:
 
 
 def top_dirs(files: Sequence[str]) -> list[str]:
-    """The first directory below src/ (the first directory when a file is not under src/) of each file, in order."""
-    found: list[str] = []
+    """The source directories a commit touches: the first directory below src/ of each source file, sorted, case-folded
+    once (headers, versions/ and generated files are not where a function was matched)."""
+    found: dict[str, str] = {}
     for name in files:
         parts = name.split("/")
-        if parts[0] == "src":
-            parts = parts[1:]
-        if len(parts) > 1 and parts[0] not in found:
-            found.append(parts[0])
-    return found
+        if parts[0] == "src" and len(parts) > 2:
+            found.setdefault(parts[1].casefold(), parts[1])
+    return [found[key] for key in sorted(found)]
 
 
 def settings(profile: Profile) -> dict[str, Any]:
