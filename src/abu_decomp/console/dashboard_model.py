@@ -35,6 +35,36 @@ def addresses(text: str) -> list[str]:
     return ["0x" + match.upper() for match in _ADDRESS.findall(text)]
 
 
+def event_addresses(event: dict) -> frozenset[str]:
+    """Addresses an event mentions; computed once per event and remembered on it when the event allows."""
+    found = getattr(event, "addresses", None)
+    if found is None:
+        found = frozenset(addresses(str(event.get("message", "")) + " " + str(event.get("payload", {}))))
+    return found
+
+
+class Event(dict):
+    """An event record that parses its addresses once, when it is read."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.addresses = event_addresses(dict(self))
+
+
+class EventLog(list):
+    """Ordered events with an owner address -> events map, built once per log instead of scanned per lookup."""
+
+    @property
+    def by_owner(self) -> dict[str, list[dict]]:
+        if "_by_owner" not in self.__dict__:
+            index: dict[str, list[dict]] = {}
+            for event in self:
+                for owner in event_addresses(event):
+                    index.setdefault(owner, []).append(event)
+            self._by_owner = index
+        return self._by_owner
+
+
 def stop_label(reason: str) -> str:
     match = re.search(r"(?:original\s+)?([^:]*?)\s+owner\s+(0x[0-9a-fA-F]+)", reason)
     if match:
@@ -42,13 +72,10 @@ def stop_label(reason: str) -> str:
     return reason.rsplit(": ", 1)[-1].split(". First")[0] or "not recorded"
 
 
-def _evidence(events: list[dict], owner: str | None, revision: str, actual: str) -> str:
+def _evidence(events: list[dict] | EventLog, owner: str | None, revision: str, actual: str) -> str:
     lines = ["Build commit: " + revision, "Observed: " + (actual or "not observed in this attempt")]
-    related = [
-        event
-        for event in events
-        if owner and owner in addresses(str(event.get("message", "")) + " " + str(event.get("payload", {})))
-    ]
+    log = events if isinstance(events, EventLog) else EventLog(events)
+    related = log.by_owner.get(owner, []) if owner else []
     probes, sources, commits = [], [], []
     for event in related:
         payload = event.get("payload") or {}
@@ -102,6 +129,7 @@ def boot_model(
     build_step: str = "build",
     test_step: str = "ctest",
 ) -> Dashboard:
+    events = events if isinstance(events, EventLog) else EventLog(events)
     commands = profile.get("build", {}).get("commands", [])
     expected = [str(value) for command in commands for value in command.get("expect_all", [])]
     sources = status.get("sources") or receipt.get("sources") or {}

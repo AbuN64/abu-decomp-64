@@ -6,7 +6,7 @@ import glob
 import json
 from pathlib import Path
 
-from .dashboard_model import Dashboard, Row, boot_model, mission_model
+from .dashboard_model import Dashboard, Event, EventLog, Row, boot_model, mission_model
 from .feed import EventReader, canonical_kind
 from .host_output import HostOutput
 from .panes import PANES, lifecycle_model
@@ -32,6 +32,7 @@ class Sources:
         self.cache: dict[Path, tuple[tuple, str]] = {}
         self.watched: set[Path] = set(paths)
         self.errors: list[str] = []
+        self.ordered: tuple[EventLog, EventLog] | None = None
         self.last_receipt = None
         self.panes = {name: PANES[name](options) for name, options in self.config.get("panes", {}).items()}
 
@@ -89,13 +90,23 @@ class Sources:
                 new = reader.read_new()
                 if reader.count < previous + len(new):
                     self.records[reader.path] = []
-                self.records[reader.path] = (self.records[reader.path] + new)[-4000:]
+                if new or reader.count < previous + len(new):
+                    self.ordered = None
+                self.records[reader.path] = (self.records[reader.path] + [Event(event) for event in new])[-4000:]
             except (ValueError, OSError) as error:
                 self.errors.append(f"{reader.path}: {error}")
-        all_events = sorted(
-            (event for records in self.records.values() for event in records), key=lambda event: event.get("time", "")
-        )
-        events = [event for event in all_events if self.kinds is None or canonical_kind(event) in self.kinds]
+        if self.ordered is None:
+            all_events = EventLog(
+                sorted(
+                    (event for records in self.records.values() for event in records),
+                    key=lambda event: event.get("time", ""),
+                )
+            )
+            self.ordered = (
+                all_events,
+                EventLog(event for event in all_events if self.kinds is None or canonical_kind(event) in self.kinds),
+            )
+        all_events, events = self.ordered
         if self.host:
             self.watched.add(self.host_path)
             self.host.read_new()
