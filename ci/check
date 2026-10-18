@@ -4,4 +4,4 @@ set -eu
 cd "$(dirname "$0")/.."
 ruff check src tests
 ruff format --check src tests
-PYTHONPATH=src python3 -m unittest discover -s tests
+PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" python3 -m unittest discover -s tests

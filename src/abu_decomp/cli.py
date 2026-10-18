@@ -88,6 +88,66 @@ def _run_port(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     return generate(load_spec(args.spec), args.destination.resolve()), 0, []
 
 
+def _event_arguments(parser: argparse.ArgumentParser) -> None:
+    actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
+    add = actions.add_parser("append", help="append one event through the Cake Taste writer")
+    add.add_argument("--actor", required=True, help="lane or tool name")
+    add.add_argument("--status", required=True, help="info|started|passed|failed|blocked|decision|handoff")
+    add.add_argument("--message", required=True, help="one line of fact")
+    add.add_argument("--kind", help="RUN-FAIL|PROBE|MATCH|HANDOFF|LAND|LANE|DECISION")
+    add.add_argument("--evidence", type=Path, help="file whose path and sha256 are recorded")
+    add.add_argument("--subject", help="subject object as JSON (repo, ref, version, function, address)")
+    add.add_argument("--lane", help="lane object as JSON (name, kind, model, track)")
+    add.add_argument("--payload", help="payload object as JSON")
+    tail = actions.add_parser("tail", help="show the last events with their schema 2 kind")
+    tail.add_argument("--lines", type=int, default=20, help="how many events (default 20)")
+    tail.add_argument("--kinds", help="comma-separated schema 2 kinds to keep")
+    validate = actions.add_parser("validate", help="validate every line of a feed; the feed is only read")
+    validate.add_argument("--path", type=Path, help="feed to check (default: the profile's events path)")
+
+
+def _json_object(name: str, text: str | None) -> dict[str, Any] | None:
+    if text is None:
+        return None
+    try:
+        value = json.loads(text)
+    except ValueError as exc:
+        raise DecompError("cli.arguments", f"--{name} is not JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise DecompError("cli.arguments", f"--{name} must be a JSON object")
+    return value
+
+
+def _run_event(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import events
+
+    path = (
+        args.path if args.action == "validate" and args.path is not None else events.events_path(_profile(args.profile))
+    )
+    if args.action == "append":
+        evidence = events.writer().evidence_of(args.evidence) if args.evidence else None
+        record = {
+            "actor": args.actor,
+            "status": args.status,
+            "message": args.message,
+            "kind": args.kind,
+            "evidence": evidence,
+            "subject": _json_object("subject", args.subject),
+            "lane": _json_object("lane", args.lane),
+            "payload": _json_object("payload", args.payload),
+        }
+        return events.append(path, record), 0, []
+    if args.action == "tail":
+        kinds = {kind.strip() for kind in args.kinds.split(",") if kind.strip()} if args.kinds else None
+        return {"path": str(path), "events": events.tail(path, args.lines, kinds)}, 0, []
+    report = events.validate(path)
+    findings = [
+        {"key": "events.invalid", "line": row["line"], "message": row["message"], "blocking": True}
+        for row in report["findings"]
+    ]
+    return {"path": str(path), "events": report["events"], "schemas": report["schemas"]}, int(bool(findings)), findings
+
+
 def _served_elsewhere(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     raise DecompError("internal.dispatch", f"{args.command} is served by main, not by a command handler")
 
@@ -102,6 +162,7 @@ COMMANDS: dict[str, Command] = {
     "unbake": Command("run unbake on the profile's project", _passthrough, _run_tool),
     "recipe": Command("run Recipe Maker on the profile's project", _passthrough, _run_tool),
     "taste": Command("run Cake Taste with the profile's Taste profile", _passthrough, _run_tool),
+    "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
     "port": Command("generate a native port repository skeleton", _port_arguments, _run_port),
     "describe": Command("list every command and its arguments as JSON", _none, _run_describe),
     "mcp": Command("serve the commands as MCP tools over stdio", _none, _served_elsewhere),
