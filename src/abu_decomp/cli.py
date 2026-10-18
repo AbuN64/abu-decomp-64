@@ -67,8 +67,6 @@ def _run_tool(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 
     stdin = sys.stdin.buffer.read() if "-" in args.args else b""
     called = invoke(args.command, _profile(args.profile), args.args, stdin=stdin, project=args.project, host=args.host)
-    if called.stderr:
-        sys.stderr.write(called.stderr)
     if called.ok:
         return called.describe(), 0, []
     findings = called.document.get("findings") or [

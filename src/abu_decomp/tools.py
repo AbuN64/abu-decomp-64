@@ -167,7 +167,6 @@ class ToolResult:
     argv: tuple[str, ...]
     returncode: int
     document: dict[str, Any]
-    stderr: str
     provenance: dict[str, dict[str, str]]
     context: dict[str, str]
 
@@ -237,7 +236,7 @@ def invoke(
             [str(Path(sys.executable).absolute()), "-I", "-c", bootstrap, *command],
             cwd=chosen.project,
             input=stdin,
-            capture_output=True,
+            stdout=subprocess.PIPE,  # one JSON document; the tool's stages stream live to our stderr, never buffered
             timeout=chosen.timeout_seconds,
             check=False,
             env=environment,
@@ -246,12 +245,11 @@ def invoke(
         raise DependencyError("dependency.timeout", f"{tool} exceeded {chosen.timeout_seconds:g}s") from exc
     except OSError as exc:
         raise DependencyError("dependency.process", f"cannot execute {tool}: {exc}") from exc
-    stderr = completed.stderr.decode("utf-8", errors="replace")
     try:
         document = json.loads(completed.stdout.decode("utf-8"))
     except (ValueError, UnicodeError) as exc:
         raise DependencyError(
-            "dependency.output", f"{tool} exited {completed.returncode} without one JSON document; {stderr.strip()}"
+            "dependency.output", f"{tool} exited {completed.returncode} without one JSON document (its stderr is above)"
         ) from exc
     if not isinstance(document, dict) or type(document.get("ok")) is not bool:
         raise DependencyError("dependency.output", f"{tool} JSON requires an explicit boolean ok")
@@ -264,7 +262,6 @@ def invoke(
         (tool, *command),
         completed.returncode,
         document,
-        stderr,
         provenance,
         {"project": str(chosen.project), "host": str(chosen.host), "profile_sha256": profile.digest},
     )

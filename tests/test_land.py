@@ -1,14 +1,26 @@
+import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from abu_decomp import DecompError
 from abu_decomp.config import load_profile
-from abu_decomp.land import LandError, Landing, code_percentages, diff_lines, function_name, parse_patches, run_process
+from abu_decomp.land import (
+    LandError,
+    Landing,
+    build_process,
+    code_percentages,
+    diff_lines,
+    function_name,
+    parse_patches,
+    run_process,
+)
 
 README = "| code [###] {a}% (~80%) 10 of 20 |\n| code [###] {b}% (~80%) 10 of 20 |\n"
 A_C = '#include "x.h"\nINCLUDE_ASM(const s32, "a", func_1);\nINCLUDE_ASM(const s32, "a", func_2);\n'
@@ -68,7 +80,7 @@ class LandTests(unittest.TestCase):
         self.assertEqual(project, self.tree)
         if args[0] == "sync" and "--check" not in args:
             self.on_sync()
-        return SimpleNamespace(ok=self.sync_ok(args), returncode=0, document={"ok": True, "findings": []}, stderr="")
+        return SimpleNamespace(ok=self.sync_ok(args), returncode=0, document={"ok": True, "findings": []})
 
     def sync_ok(self, args):
         return True
@@ -91,6 +103,7 @@ class LandTests(unittest.TestCase):
             patches,
             invoke=self.invoke,
             run=self.runner,
+            build=self.runner,
             append=append,
             pin=lambda: pin,
         )
@@ -249,7 +262,15 @@ class LandTests(unittest.TestCase):
             raise DecompError("events.writer", "no writer")
 
         landing = Landing(
-            self.profile, self.tree, self.base, [one], invoke=self.invoke, run=self.runner, append=boom, pin=lambda: "u"
+            self.profile,
+            self.tree,
+            self.base,
+            [one],
+            invoke=self.invoke,
+            run=self.runner,
+            build=self.runner,
+            append=boom,
+            pin=lambda: "u",
         )
         result, code, findings = landing.execute()
         self.assertEqual((code, result["pass"], findings[-1]["key"]), (1, False, "events.writer"))
@@ -265,6 +286,19 @@ class LandTests(unittest.TestCase):
         self.assertEqual(code_percentages("code [##] 76.77% (~78%) 1 of 2\ndata [] 5.0%"), [76.77])
         files = diff_lines("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n")
         self.assertEqual(files, {"x": (["new"], ["old"])})
+
+    def test_check_build_streams_its_output_live_and_keeps_the_tail(self):
+        seen = io.StringIO()
+        with mock.patch("sys.stderr", seen):
+            code, tail, _ = build_process(
+                [sys.executable, "-c", "import sys; print('one'); print('two', file=sys.stderr); sys.exit(3)"],
+                Path.cwd(),
+                None,
+                30,
+            )
+        self.assertEqual(code, 3)
+        self.assertEqual(sorted(seen.getvalue().split()), ["one", "two"])
+        self.assertEqual(sorted(tail.split()), ["one", "two"])
 
 
 if __name__ == "__main__":

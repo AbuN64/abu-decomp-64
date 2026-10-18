@@ -91,6 +91,10 @@ class ToolTests(unittest.TestCase):
             self.assertIn("from unbake.cli import main", command[3])
             self.assertEqual(command[4:], ["--project", str(self.root / "project"), "report", "--next"])
             self.assertEqual(call.call_args.kwargs["env"]["UNBAKE_HOST"], str(self.root / "host.toml"))
+            # the tool's stages stream live to our stderr: only its stdout JSON is captured
+            self.assertEqual(call.call_args.kwargs["stdout"], subprocess.PIPE)
+            self.assertNotIn("stderr", call.call_args.kwargs)
+            self.assertNotIn("capture_output", call.call_args.kwargs)
             self.assertTrue(result.ok)
             tools.invoke("recipe", self.profile, ["status"])
             self.assertEqual(call.call_args.args[0][4:], ["--project", str(self.root / "project"), "status", "--json"])

@@ -40,6 +40,7 @@ import re
 import subprocess
 import sys
 import time
+from collections import deque
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -123,6 +124,30 @@ def run_process(
     return done.returncode, done.stdout, done.stderr
 
 
+def build_process(
+    argv: Sequence[str], cwd: Path, env: dict[str, str] | None, timeout: float | None
+) -> tuple[int, str, str]:
+    """The project's check build: its output streams live to our stderr line by line (a job log shows progress while
+    it runs), and the last lines are kept for the failure finding."""
+    tail: deque[str] = deque(maxlen=40)
+    try:
+        with subprocess.Popen(
+            list(argv), cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
+        ) as child:
+            assert child.stdout is not None
+            deadline = None if timeout is None else time.monotonic() + timeout
+            for line in child.stdout:
+                sys.stderr.write(line)
+                tail.append(line)
+                if deadline is not None and time.monotonic() > deadline:
+                    child.kill()
+                    raise LandError("land.timeout", f"{argv[0]} exceeded {timeout:g}s")
+            code = child.wait()
+    except OSError as exc:
+        raise LandError("land.process", f"cannot execute {argv[0]}: {exc}") from exc
+    return code, "".join(tail), ""
+
+
 def diff_lines(text: str) -> dict[str, tuple[list[str], list[str]]]:
     """file -> (added lines, removed lines) of a `git diff -U0` document."""
     files: dict[str, tuple[list[str], list[str]]] = {}
@@ -164,6 +189,7 @@ class Landing:
         *,
         invoke: Callable[..., Any] = tools.invoke,
         run: Run = run_process,
+        build: Run = build_process,
         append: Callable[[Path, dict[str, Any]], dict[str, Any]] = events.append,
         pin: Callable[[], str] | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -174,7 +200,7 @@ class Landing:
             raise LandError("land.tree", f"proof tree {self.tree} is not a directory")
         self.profile = profile
         self.base, self.patches = base, list(patches)
-        self.invoke, self.run, self.append, self.clock = invoke, run, append, clock
+        self.invoke, self.run, self.build, self.append, self.clock = invoke, run, build, append, clock
         self.pin = pin or (lambda: tools.pins()["unbake"].commit)
         self.gates: list[dict[str, Any]] = []
         self.findings: list[dict[str, Any]] = []
@@ -276,8 +302,6 @@ class Landing:
                 f"unbake {' '.join(args)} refused: {first.get('message') or first.get('key')}",
                 unbake_findings=findings[:10],
             )
-        if called.stderr:
-            sys.stderr.write(called.stderr)
         return self.gate(name, called.ok, started)
 
     def setup(self) -> bool:
@@ -313,8 +337,7 @@ class Landing:
         env = dict(os.environ)
         env["UNBAKE_HOST"] = str(tools.settings(self.profile).host)
         env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
-        code, out, err = self.run(command, self.tree, env, self.config["timeout"])
-        sys.stderr.write(out + err)
+        code, out, err = self.build(command, self.tree, env, self.config["timeout"])
         if code:
             tail = "\n".join((out + err).strip().splitlines()[-12:])
             self.fail("land.check", f"{' '.join(command)} exited {code}", tail=tail)
