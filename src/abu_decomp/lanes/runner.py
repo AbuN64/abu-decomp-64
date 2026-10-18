@@ -163,6 +163,8 @@ class ContextCap:
 
     prepare = 230000
     limit = 256000
+    # Seconds a lane may take to finish after its HANDOFF.md is fresh and nothing is running.
+    handoff_window = float(os.environ.get("LANE_HANDOFF_SECONDS") or 60)
     notice_template = (
         "CONTEXT HANDOFF: stop starting new work. Finish the current safe operation, preserve all "
         "work/proofs/backups, write HANDOFF.md with state paths, metrics, exact next action and open "
@@ -203,11 +205,17 @@ class ContextCap:
             self.turn = (params.get("turn") or {}).get("id")
         elif method == "turn/completed":
             self.turn = None
+            # An interrupted turn never emits item/completed for the items it aborted, and an item/started
+            # can arrive after the interrupt was sent. Codex items cannot outlive their turn; real OS
+            # writers are tracked by native_jobs, so nothing here may keep the lane waiting for a ghost.
+            self.active.clear()
         elif method in ("item/started", "item/completed"):
             item = params.get("item") or {}
             # Unknown tool/action kinds are conservatively treated as possible writers.
             if item.get("type") not in ("agentMessage", "userMessage", "reasoning", "plan") and item.get("id"):
                 if method == "item/started":
+                    if self.turn is None:
+                        return  # a late start for a turn that already completed would never end
                     self.active.add(item["id"])
                 else:
                     self.active.discard(item["id"])
@@ -221,8 +229,8 @@ class ContextCap:
             self.handoff_first_observed_at = time.time()
         if fresh and not self.active and not native_jobs and self.handoff_deadline is None:
             self.handoff_first_eligible_at = time.time()
-            self.handoff_deadline = time.monotonic() + 60
-            self.handoff_deadline_at = self.handoff_first_eligible_at + 60
+            self.handoff_deadline = time.monotonic() + self.handoff_window
+            self.handoff_deadline_at = self.handoff_first_eligible_at + self.handoff_window
         if not self.turn:
             return []
         actions = []
@@ -547,6 +555,7 @@ def process(client, frame):
             if scenario in ('nativecap', 'wall-before'): native_job()
             if scenario in ('hard', 'nativecap'):
                 event('item/completed', item={'type': 'commandExecution', 'id': 'writer'})
+            elif scenario in ('ghost', 'ghost-hang'): pass
             else: finish('handoff')
         else:
             client.send({'id': rid, 'result': {}})
@@ -555,7 +564,10 @@ def process(client, frame):
             finish()
     elif method == 'turn/interrupt':
         client.send({'id': rid, 'result': {}})
-        finish('handoff', 'interrupted')
+        if scenario in ('ghost', 'ghost-hang'):
+            # Real codex: the aborted exec's start is reported after the interrupt and its end never is.
+            event('item/started', item={'type': 'commandExecution', 'id': 'exec-ghost'})
+        if scenario != 'ghost-hang': finish('handoff', 'interrupted')
     elif rid is not None: client.send({'id': rid, 'result': {}})
 
 def serve(connection):
@@ -576,7 +588,7 @@ while True:
         )
         fake.chmod(0o700)
 
-        def launch(scenario, wall=10, continues=0, done_when="result", rollover="1", name=None):
+        def launch(scenario, wall=10, continues=0, done_when="result", rollover="1", name=None, window=None):
             directory = work / (name or scenario)
             directory.mkdir()
             (directory / "scenario").write_text(scenario)
@@ -620,6 +632,8 @@ while True:
                 done_when,
             ]
             env = dict(os.environ, LANE_ROLLOVER=rollover)
+            if window is not None:
+                env["LANE_HANDOFF_SECONDS"] = str(window)
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
             return directory, process
 
@@ -644,7 +658,7 @@ while True:
         assert sum(frame.get("method") == "thread/start" for frame in requests) == 1
         print("OK(lane-rollover): non-Sol lane closes at first cap without LANE_ROLLOVER")
 
-        for scenario in ("rollover", "legacy", "pointer", "hard", "nativecap", "double", "identical"):
+        for scenario in ("rollover", "legacy", "pointer", "hard", "nativecap", "double", "identical", "ghost"):
             directory, process = launch(scenario, done_when="identical" if scenario == "identical" else "result")
             requests, terminal, errors = complete(directory, process)
             starts = [frame for frame in requests if frame.get("method") == "thread/start"]
@@ -675,6 +689,12 @@ while True:
             if scenario == "nativecap":
                 assert (directory / "native-finished").read_text() == "drained"
             print("OK(lane-rollover): " + scenario)
+
+        directory, process = launch("ghost-hang", window=1)
+        requests, terminal, errors = complete(directory, process, 8)
+        assert "no live process for active actions" in errors and terminal["status"] == "unfinished"
+        assert terminal["active_actions"] == ["exec-ghost"] and (directory / "HANDOFF.md").exists()
+        print("OK(lane-rollover): lost exec end with no live process ends the lane with exit 8, not a hang")
 
         directory, process = launch("steer")
         try:
@@ -1301,7 +1321,15 @@ def wait_turn():
             signal.alarm(0)
         context_signals(jobs)
         if context_cap.handoff_deadline is not None and time.monotonic() >= context_cap.handoff_deadline:
-            if context_cap.active or jobs:
+            if context_cap.active and not jobs:
+                # HANDOFF.md is written. Actions with no live process can never be drained by waiting: their
+                # end event was lost. Only a live native writer is allowed to hold the lane past the deadline.
+                context_notice(
+                    "handoff_deadline_ghost_actions",
+                    "handoff deadline exceeded; actions with no live process: " + ",".join(sorted(context_cap.active)),
+                )
+                stop(8, "RolloverFailed: handoff deadline exceeded with no live process for active actions")
+            elif jobs:
                 if not context_cap.handoff_deadline_reported:
                     context_cap.handoff_deadline_reported = True
                     context_notice(
