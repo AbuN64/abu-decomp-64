@@ -1,4 +1,4 @@
-"""Supervise a configured native process with an optional real GDB stop, headless (moved from cake_taste.panes)."""
+"""Supervise a configured native process with an optional real GDB stop, headless."""
 
 from __future__ import annotations
 

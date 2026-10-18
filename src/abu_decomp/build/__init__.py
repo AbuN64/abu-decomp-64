@@ -1,4 +1,4 @@
-"""Committed-source build and verified release build, moved 1:1 from cake_taste.build.
+"""Committed-source build and verified release build.
 
 `decomp build once|status` reads the profile `build` section (SCHEMA.md); `BuildProfile` gives the moved runner the
 project, runtime and output roots it used to read from a Cake Taste profile.

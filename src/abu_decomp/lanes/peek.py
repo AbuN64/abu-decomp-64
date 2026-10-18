@@ -5,10 +5,13 @@ lanepeek.py [--minutes N] NAME=PATH ...
 PATH is a Claude subagent .output JSONL or a Codex lane transcript.jsonl.
 Per lane: the last commands/edits (truncated) and counters that flag waste:
 full test suites, full multi-version builds, cold syncs, and edit->test alternations
-(code changes interleaved with test runs instead of all code first)."""
+(code changes interleaved with test runs instead of all code first).
+Registry lines `job NAME=[HOST:]LOG` flag a job whose open unbake stage runs past 5x its last run; `rig HOST REGEX` flags
+commands matching REGEX alive 15+ minutes at under 5% CPU (starved on slots or locks); HOST may be `local`."""
 
 import json
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -68,21 +71,112 @@ def codex(lines):
             yield t, "edit", "patch " + " ".join(p for p in paths if p)
 
 
-def main(argv):
-    minutes = 5.0
-    specs = []
-    while argv:
-        flag, argv = argv[0], argv[1:]
-        if flag == "--minutes":
-            minutes, argv = float(argv[0]), argv[1:]
-        elif flag == "--registry":
-            with open(argv[0]) as f:
-                specs += [l.strip() for l in f if l.strip() and not l.startswith("#")]
-            argv = argv[1:]
-        else:
-            specs.append(flag)
-    argv = specs
+OPEN = re.compile(r"^(?P<stage>\S.*?) started \(last run (?P<last>[\d.]+)s\)$")
+
+
+def read_log(where):
+    """A job log, local or HOST:PATH over ssh; only its tail is read."""
+    host, sep, path = where.partition(":")
+    if sep and "/" not in host:
+        out = subprocess.run(["ssh", host, "tail", "-c", "65536", path], capture_output=True, text=True, timeout=60)
+        return out.stdout.splitlines()
+    with open(where, errors="replace") as f:
+        return f.read()[-65536:].splitlines()
+
+
+def job(name, where, now, seen):
+    """Flags a job whose innermost open stage runs past 5x its own last run (at least 5 minutes): output-led, no guess.
+    The first time a stage is seen open is remembered across peeks, since the logs carry no clock."""
+    try:
+        lines = read_log(where)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"== JOB {name}: unreadable ({e})")
+        return
+    opened = [(i, m) for i, line in enumerate(lines) if (m := OPEN.match(line.strip()))]
+    if any(line.strip().endswith(("ALL-OK", "LAND-OK")) for line in lines[-3:]):
+        print(f"== JOB {name}: done ({lines[-1].strip()[:80]})")
+        return
+    if not opened:
+        print(f"== JOB {name}: no open stage; last: {lines[-1].strip()[:120] if lines else 'empty'}")
+        return
+    i, m = opened[-1]
+    key = f"{name}|{len(lines) - i}|{m.group('stage')}"
+    first = seen.setdefault(key, now)
+    ran, last = now - first, float(m.group("last"))
+    limit = max(5 * last, 300)
+    flag = (
+        f"STUCK? {ran / 60:.0f} min vs last run {last:.0f}s"
+        if ran > limit
+        else f"{ran / 60:.0f} min (limit {limit / 60:.0f})"
+    )
+    print(f"== JOB {name}: {m.group('stage')} | {flag}")
+
+
+def idle(spec, now):
+    """`rig HOST REGEX`: flags commands matching REGEX (whose parent does not match: workers idle by design) alive 15+
+    minutes at under 5% CPU, waiting on slots or locks rather than working. HOST `local` reads this machine."""
+    host, _, pattern = spec.partition(" ")
+    match = re.compile(pattern.strip())
+    ps = ["ps", "-eo", "pid=,ppid=,etimes=,times=,wchan:32=,args="]
+    out = subprocess.run(
+        ps if host == "local" else ["ssh", host, *ps], capture_output=True, text=True, timeout=60
+    ).stdout
+    rows = [r.split(None, 5) for r in out.splitlines()]
+    tool = {int(r[0]) for r in rows if len(r) == 6 and match.search(r[5])}
+    for parts in rows:
+        if len(parts) < 6 or int(parts[0]) not in tool or int(parts[1]) in tool:
+            continue
+        pid, wall, cpu, wchan, args = int(parts[0]), int(parts[2]), int(parts[3]), parts[4], parts[5]
+        if wall >= 900 and cpu < 0.05 * wall:
+            print(
+                f"== IDLE {host} pid {pid}: {wall // 60} min wall, {cpu}s CPU ({100 * cpu // wall}%), "
+                f"wchan {wchan}: {args[:90]}"
+            )
+
+
+def read_registry(path):
+    """The registry file's lines as (NAME=PATH specs, job lines, rig lines); comments and blanks are skipped."""
+    specs, jobs, rigs = [], [], []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("job "):
+                jobs.append(line[4:])
+            elif line.startswith("rig "):
+                rigs.append(line[4:])
+            else:
+                specs.append(line)
+    return specs, jobs, rigs
+
+
+def run(minutes, specs, jobs=(), rigs=(), state=None):
+    """Print the job flags, the idle-rig flags, then each lane's recent actions. `state` remembers when a job's open
+    stage was first seen; with no state path nothing is remembered between peeks."""
     now = time.time()
+    seen = {}
+    if state is not None:
+        try:
+            with open(state) as f:
+                seen = json.load(f)
+        except (OSError, ValueError):
+            seen = {}
+    for spec in jobs:
+        name, _, where = spec.partition("=")
+        job(name, where, now, seen)
+    if state is not None:
+        with open(state, "w") as f:
+            json.dump({k: v for k, v in seen.items() if now - v < 86400}, f)
+    for host in rigs:
+        try:
+            idle(host, now)
+        except subprocess.SubprocessError as e:
+            print(f"== IDLE {host}: unreadable ({e})")
+    activity(minutes, specs, now)
+
+
+def activity(minutes, argv, now):
     for spec in argv:
         name, _, path = spec.partition("=")
         try:
@@ -110,6 +204,22 @@ def main(argv):
         for t, k, s in recent[-8:]:
             when = datetime.fromtimestamp(t).strftime("%H:%M") if t else "  ?  "
             print(f"  {when} {k:4} {' '.join(s.split())[:150]}")
+
+
+def main(argv, state=None):
+    minutes = 5.0
+    specs, jobs, rigs = [], [], []
+    while argv:
+        flag, argv = argv[0], argv[1:]
+        if flag == "--minutes":
+            minutes, argv = float(argv[0]), argv[1:]
+        elif flag == "--registry":
+            found = read_registry(argv[0])
+            specs, jobs, rigs = specs + found[0], jobs + found[1], rigs + found[2]
+            argv = argv[1:]
+        else:
+            specs.append(flag)
+    run(minutes, specs, jobs, rigs, state)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,4 @@
-"""Atomic writes, SHA-256 digests and finite child runs shared by build, supervisor and stream.
-
-Moved 1:1 from cake_taste.files (the parts decomp uses) and cake_taste.logs.child.
-"""
+"""Atomic writes, SHA-256 digests and finite child runs shared by build, supervisor and stream."""
 
 from __future__ import annotations
 

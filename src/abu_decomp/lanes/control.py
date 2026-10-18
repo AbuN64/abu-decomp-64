@@ -202,18 +202,36 @@ def steer_lane(
 
 
 def peek_lanes(profile: Profile, names: list[str], minutes: float, extra: list[str]) -> dict[str, Any]:
-    """Recent activity of the named live lanes (all live lanes when none are named) plus any NAME=PATH given."""
+    """Recent activity of the named live lanes (all live lanes when none are named) plus any NAME=PATH given.
+
+    With `active_file` set the peek reads that registry as lanepeek.py does: NAME=PATH lanes plus `job` and `rig`
+    lines (named lanes select NAME=PATH lines and skip the job and rig checks); the stage clock lives beside it in
+    `.peek-stages.json`. Without it the live rows of the lane registry are the list."""
     seat = settings(profile)
-    rows = [row for row in registry.load(seat.registry) if row.get("state") == "live"]
+    jobs: list[str] = []
+    rigs: list[str] = []
+    state = None
+    if seat.active_file is not None:
+        try:
+            specs, jobs, rigs = peek.read_registry(seat.active_file)
+        except OSError as exc:
+            raise DecompError("lanes.peek", f"{seat.active_file}: {exc.strerror}") from exc
+        state = seat.active_file.with_name(".peek-stages.json")
+        found = {spec.partition("=")[0] for spec in specs}
+    else:
+        rows = [row for row in registry.load(seat.registry) if row.get("state") == "live"]
+        specs = [f"{row['name']}={row['transcript']}" for row in rows]
+        found = {row["name"] for row in rows}
     if names:
-        rows = [row for row in rows if row["name"] in names]
-        missing = set(names) - {row["name"] for row in rows}
+        missing = set(names) - found
         if missing:
             raise DecompError("lanes.unknown", f"no live lane {', '.join(sorted(missing))}")
-    specs = [f"{row['name']}={row['transcript']}" for row in rows] + extra
+        specs = [spec for spec in specs if spec.partition("=")[0] in names]
+        jobs, rigs = [], []
+    specs += extra
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        peek.main(["--minutes", str(minutes), *specs])
+        peek.run(minutes, specs, jobs, rigs, state)
     return {"lanes": [spec.partition("=")[0] for spec in specs], "text": output.getvalue()}
 
 
