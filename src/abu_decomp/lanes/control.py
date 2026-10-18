@@ -1,4 +1,4 @@
-"""`decomp lane launch|steer|peek|end`: the lane lifecycle over the registry, the ladder and systemd user units."""
+"""`decomp lane launch|continue|steer|peek|end`: the lane lifecycle over the registry, ladder and systemd units."""
 
 from __future__ import annotations
 
@@ -12,13 +12,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import abu_decomp
 from abu_decomp import DecompError, config
 from abu_decomp.config import Profile
-from abu_decomp.lanes import Ladder, Lane, overlap_findings, peek, registry, steer
+from abu_decomp.lanes import Ladder, Lane, continuation, overlap_findings, peek, registry, steer
 
 DONE_WHEN = ("identical", "result")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _KEYS = frozenset({"registry", "ladder", "codex", "socket_dir", "rules"})
+# `active_file`: the NAME=PATH list lanepeek reads; launch, continue and end keep it current when it is set.
+_OPTIONAL = frozenset({"active_file"})
+# Spec keys a registry row keeps so `decomp lane continue` can relaunch the lane as it was.
+INHERITED = ("model", "kind", "effort", "wall", "continues", "owns", "track", "done_when", "fanout", "max_agents")
 RUNNER = Path(__file__).with_name("runner.py")
 
 
@@ -29,15 +34,16 @@ class Settings:
     codex: Path
     socket_dir: Path
     rules: Path
+    active_file: Path | None = None
 
 
 def settings(profile: Profile) -> Settings:
     """The `lanes` section: registry file, model ladder, codex binary, socket directory and brief rules."""
     table = profile.section("lanes")
-    config.check_keys(profile.source_file, "lanes", table, _KEYS, _KEYS)
-    return Settings(
-        *(profile.path(f"lanes.{key}", table[key]) for key in ("registry", "ladder", "codex", "socket_dir", "rules"))
-    )
+    config.check_keys(profile.source_file, "lanes", table, _KEYS, _KEYS | _OPTIONAL)
+    paths = [profile.path(f"lanes.{key}", table[key]) for key in ("registry", "ladder", "codex", "socket_dir", "rules")]
+    active = profile.path("lanes.active_file", table["active_file"]) if "active_file" in table else None
+    return Settings(*paths, active_file=active)
 
 
 def announce(profile: Profile, row: dict[str, Any], status: str, message: str) -> dict[str, Any] | None:
@@ -74,8 +80,11 @@ def stop_unit(unit: str) -> None:
         raise DecompError("lanes.systemd", f"cannot stop {unit}: {called.stderr.strip()}")
 
 
-def launch(profile: Profile, spec: dict[str, Any]) -> dict[str, Any]:
-    """Check the ladder and the overlap guard, record the lane in the registry, then start its unit."""
+def launch(profile: Profile, spec: dict[str, Any], replaces: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Check the ladder and the overlap guard, record the lane in the registry, then start its unit.
+
+    `replaces` ({"name", "dir"}) is the lane this one continues: its rows end in the same registry write.
+    """
     seat = settings(profile)
     name = spec["name"]
     if not _NAME.fullmatch(name):
@@ -110,6 +119,11 @@ def launch(profile: Profile, spec: dict[str, Any]) -> dict[str, Any]:
     with registry.locked(seat.registry) as rows:
         units = registry.active_units()
         live = registry.live_rows(rows, units)
+        if replaces:
+            for old in rows:
+                if old.get("dir") == str(replaces["dir"]) and old.get("state") != "replaced":
+                    old.update(state="replaced", ended=old.get("ended") or time.time(), reason=f"continued by {name}")
+            live = [row for row in live if row.get("state") == "live"]
         findings = overlap_findings(lane, [registry.lane_of(row) for row in live], units)
         if findings:
             raise DecompError("lanes.overlap", "; ".join(findings))
@@ -124,11 +138,15 @@ def launch(profile: Profile, spec: dict[str, Any]) -> dict[str, Any]:
             cwd=str(cwd),
             rung=rung,
             owner_override=spec.get("owner_override") or None,
+            **{key: spec[key] for key in INHERITED if key not in {"model", "kind", "owns", "track"}},
+            **({"continued_from": replaces["name"]} if replaces else {}),
         )
         command = [
             "systemd-run", "--user", "--collect", "--quiet", f"--unit={unit}", f"--working-directory={directory}",
             f"--property=StandardOutput=append:{directory / 'launch.log'}",
             f"--property=StandardError=append:{directory / 'launch.log'}",
+            # The runner imports this same abu_decomp (its ladder), not whichever one the unit's python finds.
+            f"--setenv=PYTHONPATH={Path(abu_decomp.__file__).parents[1]}",
             sys.executable, str(RUNNER),
             "--codex", str(seat.codex), "--model", spec["model"], "--effort", spec["effort"],
             "--fanout", spec["fanout"], "--max-agents", str(spec["max_agents"]), "--cwd", str(cwd),
@@ -140,6 +158,9 @@ def launch(profile: Profile, spec: dict[str, Any]) -> dict[str, Any]:
             command += ["--owner-override", spec["owner_override"]]
         start_unit(command, directory)
         rows.append(row)
+    if seat.active_file:
+        old_dir = Path(replaces["dir"]) if replaces else None
+        continuation.replace_active(seat.active_file, old_dir, name, lane.transcript)
     return {
         "lane": row,
         "unit": unit,
@@ -208,4 +229,55 @@ def end(profile: Profile, name: str, reason: str, stop: bool) -> dict[str, Any]:
                 raise DecompError("lanes.live", f"{row['unit']} is still running; pass --stop to stop it")
             stop_unit(row["unit"])
         row.update(state="ended", ended=time.time(), reason=reason)
+    if seat.active_file:
+        continuation.replace_active(seat.active_file, Path(row["dir"]), None, None)
     return {"lane": row, "event": announce(profile, row, "passed", f"ended {name}: {reason}")}
+
+
+def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, Any]) -> dict[str, Any]:
+    """Launch NAME as the continuation of the closed lane in OLD_DIR, in the sibling directory NAME.
+
+    The spec comes from OLD's latest registry row, or from its unit's ExecStart for a lane launched before the
+    registry; `given` (owns, track, kind) fills what an old unit never recorded and otherwise overrides.
+    """
+    seat = settings(profile)
+    old_dir = old_dir.expanduser().resolve()
+    if not (old_dir / "brief.md").is_file():
+        raise DecompError("lanes.arguments", f"{old_dir / 'brief.md'} is missing")
+    rows = [row for row in registry.load(seat.registry) if row.get("dir") == str(old_dir)]
+    if rows:
+        old = rows[-1]
+        unit, spec = old["unit"], {key: old.get(key) for key in (*INHERITED, "cwd", "owner_override")}
+        old_name = old["name"]
+    else:
+        found = continuation.old_unit(old_dir)
+        if found is None:
+            raise DecompError("lanes.unknown", f"no registry row and no lane unit has --dir {old_dir}")
+        unit, spec = found
+        old_name = spec.get("name") or old_dir.name
+    if rows and any(spec.get(key) in (None, "", []) for key in INHERITED):
+        text = continuation.unit_text(unit)  # a row written before rows kept the full spec
+        recorded = continuation.unit_spec(text) if text else {}
+        spec.update({key: value for key, value in recorded.items() if spec.get(key) in (None, "", [])})
+    if unit in registry.active_units():
+        raise DecompError("lanes.live", f"{unit} is still active; continue a lane only after it has closed")
+    spec.update({key: value for key, value in given.items() if value not in (None, [], ())})
+    continuation.require(spec, INHERITED)
+    new_dir = old_dir.parent / name
+    if new_dir.exists() and any(new_dir.iterdir()):
+        raise DecompError("lanes.arguments", f"{new_dir} already exists and is not empty")
+    old_cwd = Path(spec.get("cwd") or old_dir)
+    brief = continuation.continuation_brief(
+        (old_dir / "brief.md").read_text(), seat.rules.read_text(), old_name, old_dir, new_dir
+    )
+    new_dir.mkdir(exist_ok=True)
+    (new_dir / "brief.md").write_text(brief)
+    spec.update(
+        name=name,
+        dir=str(new_dir),
+        cwd=str(new_dir if old_cwd == old_dir else old_cwd),
+        owns=[str(path) for path in spec["owns"]],
+        owner_override=spec.get("owner_override") or None,
+    )
+    result = launch(profile, spec, replaces={"name": old_name, "dir": str(old_dir)})
+    return {**result, "continued_from": {"name": old_name, "dir": str(old_dir), "unit": unit}}

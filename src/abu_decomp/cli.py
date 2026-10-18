@@ -172,6 +172,12 @@ def _lane_arguments(parser: argparse.ArgumentParser) -> None:
     steer.add_argument("--dir", type=Path, help="lane directory (a lane launched elsewhere)")
     steer.add_argument("--socket", type=Path, help="lane socket (a lane launched elsewhere)")
     steer.add_argument("file", type=Path, help="file holding the instruction text")
+    cont = actions.add_parser("continue", help="launch a fresh lane that continues a closed one from its handoff")
+    cont.add_argument("--from", dest="old_dir", type=Path, required=True, help="the closed lane's directory")
+    cont.add_argument("--name", required=True, help="the new lane; its directory is a sibling of --from")
+    cont.add_argument("--owns", action="append", help="owned path, when the old lane recorded none (repeatable)")
+    cont.add_argument("--track", choices=("official", "experiment"), help="when the old lane recorded none")
+    cont.add_argument("--kind", choices=("tooling", "impl"), help="when the old lane recorded none")
     peek = actions.add_parser("peek", help="recent actions and waste counters of live lanes")
     peek.add_argument("--minutes", type=float, default=5.0)
     peek.add_argument("--name", action="append", default=[], help="a live lane (default: all)")
@@ -190,6 +196,9 @@ def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
         spec = {key: value for key, value in vars(args).items() if key not in {"command", "action", "profile"}}
         spec["owns"] = [str(path) for path in args.owns]
         return control.launch(profile, spec), 0, []
+    if args.action == "continue":
+        given = {"owns": [str(path) for path in args.owns or []], "track": args.track, "kind": args.kind}
+        return control.continue_lane(profile, args.old_dir, args.name, given), 0, []
     if args.action == "steer":
         return control.steer_lane(profile, args.name, args.dir, args.socket, args.file), 0, []
     if args.action == "peek":
