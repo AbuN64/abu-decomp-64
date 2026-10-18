@@ -1,6 +1,6 @@
-"""Lanes boundary: launch, steer, peek and end AI lanes; the model ladder; the registry and its overlap guard.
+"""Lanes boundary: launch, steer and end AI lanes; the model ladder; the registry and its overlap guard.
 
-The launcher, steer and peek move here 1:1 from the orchestration scripts. The ladder values and the registry
+The launcher and steer move here 1:1 from the orchestration scripts. The ladder values and the registry
 file are workspace configuration; this module holds only the mechanism.
 """
 

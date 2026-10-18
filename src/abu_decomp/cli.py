@@ -186,10 +186,6 @@ def _lane_arguments(parser: argparse.ArgumentParser) -> None:
     cont.add_argument("--done-when", choices=("identical", "result"), help="when the old lane recorded none")
     cont.add_argument("--fanout", choices=("enabled", "disabled"), help="when the old lane recorded none")
     cont.add_argument("--max-agents", type=int, help="when the old lane recorded none")
-    peek = actions.add_parser("peek", help="recent actions and waste counters of live lanes")
-    peek.add_argument("--minutes", type=float, default=5.0)
-    peek.add_argument("--name", action="append", default=[], help="a live lane (default: all)")
-    peek.add_argument("extra", nargs="*", help="additional NAME=PATH transcripts")
     end = actions.add_parser("end", help="mark a lane ended in the registry")
     end.add_argument("--name", required=True)
     end.add_argument("--reason", required=True)
@@ -210,8 +206,6 @@ def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
         return control.continue_lane(profile, args.old_dir, args.name, given), 0, []
     if args.action == "steer":
         return control.steer_lane(profile, args.name, args.dir, args.socket, args.file), 0, []
-    if args.action == "peek":
-        return control.peek_lanes(profile, args.name, args.minutes, args.extra), 0, []
     return control.end(profile, args.name, args.reason, args.stop), 0, []
 
 
@@ -336,7 +330,7 @@ COMMANDS: dict[str, Command] = {
     "recipe": Command("run Recipe Maker on the profile's project", _passthrough, _run_tool),
     "taste": Command("run Cake Taste with the profile's Taste profile", _passthrough, _run_tool),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
-    "lane": Command("launch, steer, peek and end AI lanes", _lane_arguments, _run_lane),
+    "lane": Command("launch, steer and end AI lanes", _lane_arguments, _run_lane),
     "supervisor": Command("supervise a role headless, or stage an artifact", _supervisor_arguments, _run_supervisor),
     "build": Command("build committed sources and promote verified releases", _build_arguments, _run_build),
     "console": Command(

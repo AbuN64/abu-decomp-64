@@ -1,4 +1,4 @@
-"""The continuation rule for `decomp lane continue`: the new brief, the old lane's launch spec, the peek list.
+"""The continuation rule for `decomp lane continue`: the new brief, the old lane's launch spec, the active list.
 
 One rule for every lane: a lane that closed (context cap, wall, crash) is continued by a fresh lane in a sibling
 directory. Its brief is the old brief with the appended LANE RULES and any older `## Continuation` section dropped,
@@ -126,7 +126,7 @@ def old_unit(old_dir: Path, first: list[str] = ()) -> tuple[str, dict[str, Any]]
 
 
 def replace_active(path: Path, old_dir: Path, name: str | None, transcript: str | None) -> None:
-    """Rewrite the lanepeek list: drop the old lane's line (by its transcript path), then add the new one."""
+    """Rewrite the active list: drop the old lane's line (by its transcript path), then add the new one."""
     lines = path.read_text().splitlines() if path.exists() else []
     old = str(old_dir / "transcript.jsonl") if old_dir else None
     kept = [line for line in lines if not (old and line.partition("=")[2].strip() == old)]

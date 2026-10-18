@@ -146,7 +146,6 @@ class LaneControlTests(unittest.TestCase):
         before = self.registry_digest()
         transcript = self.root / "A" / "transcript.jsonl"
         transcript.write_text("")
-        run([*self.seat, "lane", "peek"])
         run([*self.seat, "lane", "steer", "--name", "A", str(self.root / "missing.txt")])
         self.assertEqual(self.registry_digest(), before)
         code, envelope = run([*self.seat, "lane", "end", "--name", "A", "--reason", "done"])
@@ -164,15 +163,6 @@ class LaneControlTests(unittest.TestCase):
         self.assertEqual(self.launch("B", "/work/a")[0], 0)
         rows = json.loads((self.root / "lanes.json").read_text())["lanes"]
         self.assertEqual([row["state"] for row in rows], ["ended", "live"])
-
-    def test_peek_shows_registered_lane_activity(self):
-        self.launch("A", "/work/a")
-        line = {"at": 4_000_000_000, "value": {"method": "item/completed", "params": {"item": {"command": "ls x"}}}}
-        (self.root / "A" / "transcript.jsonl").write_text(json.dumps(line) + "\n")
-        code, envelope = run([*self.seat, "lane", "peek", "--name", "A", "--minutes", "999999"])
-        self.assertEqual(code, 0)
-        self.assertIn("== A: 1 actions", envelope["result"]["text"])
-        self.assertEqual(run([*self.seat, "lane", "peek", "--name", "ZZ"])[1]["findings"][0]["key"], "lanes.unknown")
 
 
 if __name__ == "__main__":

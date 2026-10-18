@@ -103,7 +103,7 @@ class ContinueTests(unittest.TestCase):
         self.assertFalse((self.root / "A-2").exists())
         self.assertEqual(len(self.started), 1)
 
-    def test_inherits_the_registry_row_and_replaces_it_and_the_peek_line(self):
+    def test_inherits_the_registry_row_and_replaces_it_and_the_active_line(self):
         old = self.launch_a()
         self.units.clear()
         code, envelope = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "A-2"])
