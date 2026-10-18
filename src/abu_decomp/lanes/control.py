@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import abu_decomp
-from abu_decomp import DecompError, config
+from abu_decomp import DecompError, config, tools
 from abu_decomp.config import Profile
 from abu_decomp.lanes import Ladder, Lane, continuation, overlap_findings, registry, steer
 
@@ -54,7 +54,7 @@ def announce(profile: Profile, row: dict[str, Any], status: str, message: str) -
         path = events.events_path(profile)
     except DecompError:
         return None
-    lane = {key: row[key] for key in ("name", "kind", "model", "track")}
+    lane = {key: row[key] for key in ("name", "kind", "model", "track") if row.get(key)}
     try:
         return events.append(
             path, {"actor": row["name"], "status": status, "message": message, "kind": "LANE", "lane": lane}
@@ -104,6 +104,9 @@ def launch(profile: Profile, spec: dict[str, Any], replaces: dict[str, Any] | No
         raise DecompError("lanes.arguments", f"{brief} is missing; write the brief first")
     ladder = Ladder.load(seat.ladder)
     rung = ladder.check(spec["kind"], spec["model"], spec.get("owner_override"))
+    # The lane runs the tool installed with decomp, so it must be the version its project's own pin names.
+    if refused := tools.pin_findings(profile, cwd):
+        raise DecompError("lanes.tool_pin", "; ".join(refused))
     unit = unit_of(name)
     socket = seat.socket_dir / f"{name}.sock"
     lane = Lane(
@@ -152,7 +155,7 @@ def launch(profile: Profile, spec: dict[str, Any], replaces: dict[str, Any] | No
             "--fanout", spec["fanout"], "--max-agents", str(spec["max_agents"]), "--cwd", str(cwd),
             "--brief", str(brief), "--dir", str(directory), "--socket", str(socket), "--name", name,
             "--wall", str(spec["wall"]), "--continues", str(spec["continues"]), "--done-when", spec["done_when"],
-            "--kind", spec["kind"], "--ladder", str(seat.ladder),
+            "--kind", spec["kind"], "--ladder", str(seat.ladder), "--profile", str(profile.source_file),
         ]  # fmt: skip
         if spec.get("owner_override"):
             command += ["--owner-override", spec["owner_override"]]
@@ -221,8 +224,10 @@ def end(profile: Profile, name: str, reason: str, stop: bool) -> dict[str, Any]:
     return {"lane": row, "event": announce(profile, row, "passed", f"ended {name}: {reason}")}
 
 
-def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, Any]) -> dict[str, Any]:
+def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, Any], wait: int = 0) -> dict[str, Any]:
     """Launch NAME as the continuation of the closed lane in OLD_DIR, in the sibling directory NAME.
+
+    `wait` seconds are allowed for OLD's unit to close (the runner continues its own lane while its unit winds down).
 
     Each spec key comes from the first source that records it: OLD's latest registry row, then OLD/LAUNCH.json
     (written by the runner at start), then OLD's unit ExecStart (gone once a `--collect` unit ends). `given`
@@ -263,7 +268,12 @@ def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, A
     old_name = names[0] if names else old_dir.name
     candidates = list(dict.fromkeys([*units, f"lane-{old_dir.name}", f"lane-{old_dir.name.lower()}"]))
     unit = candidates[0]
-    active = [candidate for candidate in candidates if candidate in registry.active_units()]
+    deadline = time.monotonic() + wait
+    while True:
+        active = [candidate for candidate in candidates if candidate in registry.active_units()]
+        if not active or time.monotonic() >= deadline:
+            break
+        time.sleep(1)
     if active:
         raise DecompError("lanes.live", f"{active[0]} is still active; continue a lane only after it has closed")
     spec.update({key: value for key, value in given.items() if value not in (None, [], ())})

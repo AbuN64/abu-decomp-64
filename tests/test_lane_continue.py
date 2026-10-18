@@ -10,7 +10,9 @@ from unittest import mock
 
 from test_lane_control import LADDER
 
+from abu_decomp import DecompError
 from abu_decomp.cli import main
+from abu_decomp.config import load_profile
 from abu_decomp.lanes import continuation, control, registry
 
 RULES = "LANE RULES x\n- keep output small\n"
@@ -102,6 +104,23 @@ class ContinueTests(unittest.TestCase):
         self.assertEqual((code, envelope["findings"][0]["key"]), (1, "lanes.live"))
         self.assertFalse((self.root / "A-2").exists())
         self.assertEqual(len(self.started), 1)
+
+    def test_continue_waits_for_the_old_unit_to_close(self):
+        old = self.launch_a()
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            self.units.clear()
+
+        profile = load_profile(self.root / "seat.json")
+        with mock.patch.object(control.time, "sleep", sleep):
+            control.continue_lane(profile, old, "A-2", {}, 30)
+        self.assertEqual(sleeps, [1])
+        with self.assertRaises(DecompError) as caught:
+            self.units.add("lane-A-2")
+            control.continue_lane(profile, self.root / "A-2", "A-3", {}, 0)
+        self.assertEqual(caught.exception.key, "lanes.live")
 
     def test_inherits_the_registry_row_and_replaces_it_and_the_active_line(self):
         old = self.launch_a()

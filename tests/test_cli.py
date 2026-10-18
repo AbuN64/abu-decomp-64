@@ -56,7 +56,7 @@ class CliTests(unittest.TestCase):
     def test_describe_derives_arguments_from_the_parser(self):
         tree = {command["name"]: command for command in describe()["commands"]}
         self.assertEqual(list(tree), list(COMMANDS))
-        self.assertEqual(tree["unbake"]["arguments"][0]["nargs"], "...")
+        self.assertEqual(next(row for row in tree["unbake"]["arguments"] if row["name"] == "args")["nargs"], "...")
         port = tree["port"]["arguments"][0]["subcommands"]["new"]
         self.assertEqual([row["name"] for row in port], ["spec", "destination"])
 

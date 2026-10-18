@@ -823,6 +823,8 @@ ap.add_argument("--ladder", required=True, help="the owner model ladder file (mo
 # --owns PATH (repeatable) and --track are recorded in LAUNCH.json for `decomp lane continue`.
 ap.add_argument("--owns", action="append")
 ap.add_argument("--track", choices=("official", "experiment"))
+# --profile: the seat profile `decomp lane continue` runs with when this lane closes (absent: no automatic continuation).
+ap.add_argument("--profile")
 a = ap.parse_args()
 from abu_decomp import DecompError
 from abu_decomp.lanes import Ladder
@@ -982,6 +984,7 @@ def stop(code, why, cancelled=False):
     if code:
         print(why, file=sys.stderr, flush=True)
     record("end", {"exit": code, "why": why})
+    continue_lane(terminal)
     try:
         os.killpg(server.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -991,6 +994,48 @@ def stop(code, why, cancelled=False):
     except FileNotFoundError:
         pass
     sys.exit(code)
+
+
+def continue_lane(terminal):
+    """Continue this lane when it closed on an unfinished RESULT or a context handoff (abu_decomp.lanes.relaunch)."""
+    if not a.profile:
+        return
+    from pathlib import Path
+
+    from abu_decomp.config import load_profile
+    from abu_decomp.lanes import control, relaunch
+
+    directory = Path(a.dir)
+    action, why = relaunch.plan(
+        a.done_when or "result",
+        a.continues or 0,
+        relaunch.result_text(directory),
+        terminal["handoff"],
+        terminal["context_requested"],
+        terminal["status"] == "cancelled",
+    )
+    if action == "none":
+        return
+    row = {"name": a.name, "kind": a.kind, "model": a.model, "track": a.track}
+    profile = None
+    try:
+        profile = load_profile(Path(a.profile))
+        if action == "end":
+            control.announce(profile, row, "passed", "%s ended without a continuation: %s" % (a.name, why))
+            return
+        if action == "blocked":
+            control.announce(profile, row, "blocked", "%s not continued: %s" % (a.name, why))
+            return
+        successor = relaunch.next_name(a.name)
+        unit = relaunch.spawn(Path(a.profile), directory, successor, (a.continues or 0) - 1)
+        control.announce(profile, row, "info", "%s continues as %s (%s) via %s" % (a.name, successor, why, unit))
+    except Exception as error:  # the lane is closing; a failed continuation must not hide how it closed
+        print("ContinuationFailed: %s" % error, file=sys.stderr, flush=True)
+        if profile is not None:
+            try:
+                control.announce(profile, row, "failed", "%s not continued: %s" % (a.name, error))
+            except Exception:
+                pass
 
 
 signal.signal(signal.SIGALRM, lambda *_: stop(6, "WallReached: %s s" % a.wall))

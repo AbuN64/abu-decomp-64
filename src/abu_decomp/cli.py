@@ -46,6 +46,12 @@ def _passthrough(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("args", nargs=argparse.REMAINDER, help="the tool's own command and arguments")
 
 
+def _tool_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project", type=Path, help="the project tree to act on (default: the profile's project)")
+    parser.add_argument("--host", type=Path, help="the unbake host file for that tree (default: the profile's host)")
+    _passthrough(parser)
+
+
 def _run_profile(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     return _profile(args.profile).describe(), 0, []
 
@@ -60,7 +66,7 @@ def _run_tool(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     from abu_decomp.tools import invoke
 
     stdin = sys.stdin.buffer.read() if "-" in args.args else b""
-    called = invoke(args.command, _profile(args.profile), args.args, stdin=stdin)
+    called = invoke(args.command, _profile(args.profile), args.args, stdin=stdin, project=args.project, host=args.host)
     if called.stderr:
         sys.stderr.write(called.stderr)
     if called.ok:
@@ -186,6 +192,7 @@ def _lane_arguments(parser: argparse.ArgumentParser) -> None:
     cont.add_argument("--done-when", choices=("identical", "result"), help="when the old lane recorded none")
     cont.add_argument("--fanout", choices=("enabled", "disabled"), help="when the old lane recorded none")
     cont.add_argument("--max-agents", type=int, help="when the old lane recorded none")
+    cont.add_argument("--wait", type=int, default=0, help="seconds to wait for the old lane's unit to close")
     end = actions.add_parser("end", help="mark a lane ended in the registry")
     end.add_argument("--name", required=True)
     end.add_argument("--reason", required=True)
@@ -203,7 +210,7 @@ def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     if args.action == "continue":
         flags = ("track", "kind", "model", "effort", "wall", "continues", "done_when", "fanout", "max_agents")
         given = {"owns": [str(path) for path in args.owns or []], **{key: getattr(args, key) for key in flags}}
-        return control.continue_lane(profile, args.old_dir, args.name, given), 0, []
+        return control.continue_lane(profile, args.old_dir, args.name, given, args.wait), 0, []
     if args.action == "steer":
         return control.steer_lane(profile, args.name, args.dir, args.socket, args.file), 0, []
     return control.end(profile, args.name, args.reason, args.stop), 0, []
@@ -326,9 +333,9 @@ def _run_describe(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[d
 COMMANDS: dict[str, Command] = {
     "profile": Command("show the loaded seat profile", _none, _run_profile),
     "dependencies": Command("check every pinned tool is installed at its commit", _none, _run_dependencies),
-    "unbake": Command("run unbake on the profile's project", _passthrough, _run_tool),
-    "recipe": Command("run Recipe Maker on the profile's project", _passthrough, _run_tool),
-    "taste": Command("run Cake Taste with the profile's Taste profile", _passthrough, _run_tool),
+    "unbake": Command("run unbake on the profile's project (or --project)", _tool_arguments, _run_tool),
+    "recipe": Command("run Recipe Maker on the profile's project (or --project)", _tool_arguments, _run_tool),
+    "taste": Command("run Cake Taste with the profile's Taste profile", _tool_arguments, _run_tool),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
     "lane": Command("launch, steer and end AI lanes", _lane_arguments, _run_lane),
     "supervisor": Command("supervise a role headless, or stage an artifact", _supervisor_arguments, _run_supervisor),

@@ -132,8 +132,11 @@ class Settings:
     taste_profile: Path | None
 
 
-def settings(profile: Profile) -> Settings:
-    """The `tools` section: the decomp project, the unbake host file, one timeout, and the Taste profile."""
+def settings(profile: Profile, project: Path | None = None, host: Path | None = None) -> Settings:
+    """The `tools` section: the decomp project, the unbake host file, one timeout, and the Taste profile.
+
+    `project` and `host` (a lane's own tree and host file) replace the section's values for one call.
+    """
     file = profile.source_file
     table = profile.section("tools")
     check_keys(
@@ -141,9 +144,10 @@ def settings(profile: Profile) -> Settings:
         "tools",
         table,
         frozenset({"project", "host", "timeout_seconds"}),
-        frozenset({"project", "host", "timeout_seconds", "taste_profile"}),
+        frozenset({"project", "host", "timeout_seconds", "taste_profile", "pin_file"}),
     )
-    project, host = profile.path("tools.project", table["project"]), profile.path("tools.host", table["host"])
+    project = project.expanduser().resolve() if project else profile.path("tools.project", table["project"])
+    host = host.expanduser().resolve() if host else profile.path("tools.host", table["host"])
     timeout = table["timeout_seconds"]
     try:
         finite = type(timeout) in (int, float) and math.isfinite(timeout) and timeout > 0
@@ -196,16 +200,31 @@ def _command(tool: str, chosen: Settings, given: tuple[str, ...]) -> list[str]:
     return [*command, *given[1:]]
 
 
-def invoke(tool: str, profile: Profile, args: Sequence[str], *, stdin: bytes = b"") -> ToolResult:
-    """Run the installed tool's public main(argv) in a clean interpreter; one JSON document on stdout."""
+def invoke(
+    tool: str,
+    profile: Profile,
+    args: Sequence[str],
+    *,
+    stdin: bytes = b"",
+    project: Path | None = None,
+    host: Path | None = None,
+) -> ToolResult:
+    """Run the installed tool's public main(argv) in a clean interpreter; one JSON document on stdout.
+
+    `project` and `host` target another tree (a lane's own) with this same pinned tool; the default is the profile's.
+    """
     if tool not in TOOLS:
         raise DependencyError("dependency.unknown", f"unknown tool: {tool}")
+    if tool == "taste" and (project or host):
+        raise DependencyError("dependency.arguments", "taste takes no --project or --host")
     given = tuple(args)
     if given and given[0] == "--":
         given = given[1:]
     if not given or given[0].startswith("-") or any("\0" in arg for arg in given):
         raise DependencyError("dependency.arguments", "provide a public command followed by its arguments")
-    chosen = settings(profile)
+    chosen = settings(profile, project, host)
+    if project and (refused := pin_findings(profile, chosen.project)):
+        raise DependencyError("dependency.project_pin", "; ".join(refused))
     command = _command(tool, chosen, given)
     provenance = verify_dependencies()
     bootstrap = f"from {TOOLS[tool].module} import main; raise SystemExit(main())"
@@ -249,3 +268,47 @@ def invoke(tool: str, profile: Profile, args: Sequence[str], *, stdin: bytes = b
         provenance,
         {"project": str(chosen.project), "host": str(chosen.host), "profile_sha256": profile.digest},
     )
+
+
+# The wheel a project installs, named in its pin file: .../download/v0.5.7/unbake-0.5.7-py3-none-any.whl
+_WHEEL = re.compile(
+    r"/(?P<name>[A-Za-z0-9_.]+)-(?P<version>[0-9][A-Za-z0-9.]*)-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+\.whl"
+)
+
+
+def project_pins(file: Path) -> dict[str, str]:
+    """Tool command -> version the project's pin file installs (empty when it pins none of ours)."""
+    found: dict[str, str] = {}
+    for match in _WHEEL.finditer(file.read_text(errors="replace")):
+        for command, tool in TOOLS.items():
+            if _normal(match["name"]) == _normal(tool.distribution):
+                found[command] = match["version"]
+    return found
+
+
+def pin_file_of(profile: Profile, tree: Path) -> Path | None:
+    """The project pin file (`tools.pin_file`, default ci/run) in `tree` or the nearest ancestor that has one."""
+    try:
+        name = profile.section("tools").get("pin_file", "ci/run")
+    except DecompError:
+        return None
+    for directory in (tree, *tree.parents):
+        if (directory / name).is_file():
+            return directory / name
+        if (directory / ".git").exists():
+            break  # the project root: a pin file above it belongs to something else
+    return None
+
+
+def pin_findings(profile: Profile, tree: Path) -> list[str]:
+    """Why the pinned tools decomp would run on `tree` differ from the project's own pin; empty when they agree."""
+    file = pin_file_of(profile, tree.resolve())
+    if file is None:
+        return []
+    verify_dependencies()
+    findings = []
+    for command, wanted in project_pins(file).items():
+        have = metadata.distribution(TOOLS[command].distribution).version
+        if have != wanted:
+            findings.append(f"{command} {have} is installed with decomp but {file} pins {wanted}")
+    return findings
