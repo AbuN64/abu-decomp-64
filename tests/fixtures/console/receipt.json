@@ -1,0 +1,230 @@
+{
+  "id": "20261018T162542Z-b0970d1b",
+  "started_at": "2026-10-18T16:25:42+00:00",
+  "status": "promoted",
+  "steps": [
+    {
+      "name": "configure",
+      "argv": [
+        "cmake",
+        "--preset",
+        "linux-gcc-release",
+        "-DFETCHCONTENT_BASE_DIR=/home/abu/state/fetch",
+        "-DCMAKE_C_COMPILER_LAUNCHER=ccache"
+      ],
+      "cwd": "/home/abu/state/port/runtime/build/sources/engine",
+      "env_override": {
+        "CCACHE_DIR": "/home/abu/state/ccache",
+        "TMPDIR": "/home/abu/state/tmp"
+      },
+      "expected_exit_codes": [
+        0
+      ],
+      "log": "/home/abu/state/port/runtime/build/logs/20261018T162542Z-b0970d1b-configure.log",
+      "returncode": 0
+    },
+    {
+      "name": "build",
+      "argv": [
+        "/home/abu/state/port/bin/gate.sh",
+        "build",
+        "/home/abu/state/port/runtime/build/sources/engine/build/linux-gcc-release"
+      ],
+      "cwd": "/home/abu/state/port/runtime/build/sources/engine",
+      "env_override": {
+        "CCACHE_DIR": "/home/abu/state/ccache",
+        "TMPDIR": "/home/abu/state/tmp"
+      },
+      "expected_exit_codes": [
+        0
+      ],
+      "log": "/home/abu/state/port/runtime/build/logs/20261018T162542Z-b0970d1b-build.log",
+      "returncode": 0
+    },
+    {
+      "name": "ctest",
+      "argv": [
+        "/home/abu/state/port/bin/gate.sh",
+        "test",
+        "/home/abu/state/port/runtime/build/sources/engine/build/linux-gcc-release"
+      ],
+      "cwd": "/home/abu/state/port/runtime/build/sources/engine",
+      "env_override": {
+        "CCACHE_DIR": "/home/abu/state/ccache",
+        "TMPDIR": "/home/abu/state/tmp"
+      },
+      "expected_exit_codes": [
+        0
+      ],
+      "log": "/home/abu/state/port/runtime/build/logs/20261018T162542Z-b0970d1b-ctest.log",
+      "returncode": 0
+    },
+    {
+      "name": "data-directory",
+      "argv": [
+        "cmake",
+        "-E",
+        "make_directory",
+        "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/data"
+      ],
+      "cwd": "/home/abu/state/port/runtime/build",
+      "env_override": {},
+      "expected_exit_codes": [
+        0
+      ],
+      "log": "/home/abu/state/port/runtime/build/logs/20261018T162542Z-b0970d1b-data-directory.log",
+      "returncode": 0
+    },
+    {
+      "name": "data-assets",
+      "argv": [
+        "cmake",
+        "-E",
+        "copy",
+        "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/inputs/ui/frontend.rui",
+        "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/inputs/directory/resource-directory.bin",
+        "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/inputs/cartridge/cartridge.rwa",
+        "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/inputs/frontend_archive/frontend-archive.bin",
+        "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/data"
+      ],
+      "cwd": "/home/abu/state/port/runtime/build",
+      "env_override": {},
+      "expected_exit_codes": [
+        0
+      ],
+      "log": "/home/abu/state/port/runtime/build/logs/20261018T162542Z-b0970d1b-data-assets.log",
+      "returncode": 0
+    },
+    {
+      "name": "boot",
+      "argv": [
+        "/home/abu/state/port/runtime/build/sources/engine/build/linux-gcc-release/ragewars",
+        "--headless",
+        "--data-dir",
+        "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/data"
+      ],
+      "cwd": "/home/abu/state/port/runtime/build",
+      "env_override": {
+        "CCACHE_DIR": "/home/abu/state/ccache",
+        "TMPDIR": "/home/abu/state/tmp"
+      },
+      "expected_exit_codes": [
+        1
+      ],
+      "log": "/home/abu/state/port/runtime/build/logs/20261018T162542Z-b0970d1b-boot.log",
+      "returncode": 1
+    }
+  ],
+  "profile_sha256": "481322f1096b4fd41fc22fe3af720da6f8ede6b68f690b40712efa17b56c7952",
+  "sources": {
+    "engine": {
+      "repo": "/home/abu/code/rage-ports",
+      "ref": "refs/heads/main",
+      "commit": "1f8d01cb28fabec8af127ee3ac76218c04020373",
+      "tree": "7224c6ba06f008bde1fc49d869e0561227421e9a",
+      "snapshot": {
+        "commit": "1f8d01cb28fabec8af127ee3ac76218c04020373",
+        "archive_sha256": "99654108672382629a74a66afd7859feacdd73ea4d7ed5eeb419c24f1e75b315",
+        "files": 312,
+        "changed": 10,
+        "unchanged": 302,
+        "removed": 0
+      },
+      "source": "/home/abu/state/port/runtime/build/sources/engine",
+      "manifest": "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/manifests/engine.json",
+      "manifest_sha256": "5d4372a9cd86766712053e4f0898a2d4b0b30ada3c23804dcaf41ca91da28478",
+      "protected_top": [
+        "build"
+      ]
+    }
+  },
+  "inputs": {
+    "ui": {
+      "source": "/home/abu/.local/state/cake-taste-64/staging/releases/a/70eb292/data/frontend.rui",
+      "configured_path": "/home/abu/.local/state/cake-taste-64/staging/releases/a/70eb292/data/frontend.rui",
+      "source_alias": "/home/abu/.local/state/cake-taste-64/staging/releases/a/70eb292/data/frontend.rui",
+      "frozen": "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/inputs/ui/frontend.rui",
+      "sha256": "8e0c9c2654b40f94a82958f5485ba39745ebdc6d7447cf6d57054bb1713a9162",
+      "bytes": 2798408,
+      "source_mtime_ns": 1792180801374305706,
+      "metadata": {}
+    },
+    "directory": {
+      "source": "/home/abu/lanes/ASTRA/port-astra-3/assets/resource-directory.bin",
+      "configured_path": "/home/abu/lanes/ASTRA/port-astra-3/assets/resource-directory.bin",
+      "source_alias": "/home/abu/lanes/ASTRA/port-astra-3/assets/resource-directory.bin",
+      "frozen": "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/inputs/directory/resource-directory.bin",
+      "sha256": "a8b9aa6973599f041e2eef60dcbee4c5c55981b8f2fff10a0a5021af9f12cccc",
+      "bytes": 32,
+      "source_mtime_ns": 1792299992460387471,
+      "metadata": {}
+    },
+    "cartridge": {
+      "source": "/home/abu/lanes/ASTRA/port-astra-3/assets/cartridge.rwa",
+      "configured_path": "/home/abu/lanes/ASTRA/port-astra-3/assets/cartridge.rwa",
+      "source_alias": "/home/abu/lanes/ASTRA/port-astra-3/assets/cartridge.rwa",
+      "frozen": "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/inputs/cartridge/cartridge.rwa",
+      "sha256": "d198a44d207373c17078bf7f92a1cddf8ac61a91cdafa13e3ee939cecbcf7f6f",
+      "bytes": 2691980,
+      "source_mtime_ns": 1792300995170835952,
+      "metadata": {}
+    },
+    "frontend_archive": {
+      "source": "/home/abu/lanes/ASTRA/port-astra-12/assets/frontend-archive.bin",
+      "configured_path": "/home/abu/lanes/ASTRA/port-astra-12/assets/frontend-archive.bin",
+      "source_alias": "/home/abu/lanes/ASTRA/port-astra-12/assets/frontend-archive.bin",
+      "frozen": "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/inputs/frontend_archive/frontend-archive.bin",
+      "sha256": "02c0e3fc6ae824ed334445d5be89d6d85afc0163fcb765769749124280e6013b",
+      "bytes": 569925,
+      "source_mtime_ns": 1792338599270184907,
+      "metadata": {}
+    }
+  },
+  "outputs": {
+    "port": {
+      "source": "/home/abu/state/port/runtime/build/sources/engine/build/linux-gcc-release/ragewars",
+      "staged": "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/artifacts/port",
+      "sha256": "2244db6a06c733ed2dab5c94fac0af1cdd5073d31b55cc40c83fa7f647c6e160",
+      "bytes": 4809416
+    }
+  },
+  "releases": [
+    {
+      "name": "port",
+      "current": "/home/abu/state/port/runtime/releases/port/current",
+      "destination": "/home/abu/state/port/runtime/releases/port/1f8d01c",
+      "manifest": {
+        "name": "port",
+        "revision": "1f8d01c",
+        "files": {
+          "ragewars": {
+            "sha256": "2244db6a06c733ed2dab5c94fac0af1cdd5073d31b55cc40c83fa7f647c6e160",
+            "bytes": 4809416,
+            "mode": 493
+          },
+          "data/frontend.rui": {
+            "sha256": "8e0c9c2654b40f94a82958f5485ba39745ebdc6d7447cf6d57054bb1713a9162",
+            "bytes": 2798408,
+            "mode": 420
+          },
+          "data/resource-directory.bin": {
+            "sha256": "a8b9aa6973599f041e2eef60dcbee4c5c55981b8f2fff10a0a5021af9f12cccc",
+            "bytes": 32,
+            "mode": 420
+          },
+          "data/cartridge.rwa": {
+            "sha256": "d198a44d207373c17078bf7f92a1cddf8ac61a91cdafa13e3ee939cecbcf7f6f",
+            "bytes": 2691980,
+            "mode": 420
+          },
+          "data/frontend-archive.bin": {
+            "sha256": "02c0e3fc6ae824ed334445d5be89d6d85afc0163fcb765769749124280e6013b",
+            "bytes": 569925,
+            "mode": 420
+          }
+        }
+      }
+    }
+  ],
+  "finished_at": "2026-10-18T16:25:43+00:00"
+}

@@ -38,7 +38,7 @@ class TilesTests(unittest.TestCase):
 
     def test_console_tile_without_a_command_runs_decomp_console_for_its_own_id(self):
         config = up_config(self.profile())
-        self.assertEqual(config["roles"]["pc"]["command"][-3:], ["console", "--tile", "pc"])
+        self.assertEqual(config["roles"]["pc"]["command"][-3:], ["console", "tile", "pc"])
         self.assertEqual(config["roles"]["oc"]["command"], ["true"])
         self.assertIn("--profile", config["roles"]["pc"]["command"])
 

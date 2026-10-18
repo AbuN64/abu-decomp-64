@@ -203,6 +203,25 @@ def _run_stream(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dic
     return run(_profile(args.profile), tuple(args.args)), 0, []
 
 
+def _console_arguments(parser: argparse.ArgumentParser) -> None:
+    actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
+    tile = actions.add_parser("tile", help="run the console for one tile of the profile's tiles table")
+    tile.add_argument("tile", help="tile id")
+    actions.add_parser("refs", help="follow the configured git refs and append LAND events")
+    actions.add_parser("status-line", help="print the newest event for the compositor bar")
+
+
+def _run_console(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    profile = _profile(args.profile)
+    if args.action == "tile":
+        from abu_decomp.console.tiles import run_tile
+
+        return run_tile(profile, args.tile), 0, []
+    from abu_decomp.console.tiles import run_follower
+
+    return run_follower(profile, args.action), 0, []
+
+
 def _served_elsewhere(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     raise DecompError("internal.dispatch", f"{args.command} is served by main, not by a command handler")
 
@@ -219,6 +238,9 @@ COMMANDS: dict[str, Command] = {
     "taste": Command("run Cake Taste with the profile's Taste profile", _passthrough, _run_tool),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
     "lane": Command("launch, steer, peek and end AI lanes", _lane_arguments, _run_lane),
+    "console": Command(
+        "run a tile console, the git ref follower or the bar status line", _console_arguments, _run_console
+    ),
     "stream": Command("serve, supervise, control and capture the headless tile stream", _passthrough, _run_stream),
     "port": Command("generate a native port repository skeleton", _port_arguments, _run_port),
     "describe": Command("list every command and its arguments as JSON", _none, _run_describe),

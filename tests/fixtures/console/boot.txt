@@ -1,0 +1,414 @@
+boot-step: Sys_Init
+Sys_Init: SDL_Init begin headless=true flags=0x0
+Sys_Init: SDL_Init succeeded
+Sys_Init: Sys_PathsInit begin application_id=ragewars-port
+Sys_Init: Sys_PathsInit succeeded config=/home/abu/.config/ragewars-port data=/home/abu/.local/share/ragewars-port
+Sys_Init: Sys_VideoInit skipped (headless)
+boot-step: Com_Init
+Com_FSInit: configuring resource search root
+/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/data
+Com_FSInit: root configured; no files read or validated yet
+Com_CvarRegister: volume=0.15 (archived default)
+Com_CommandRegister: echo, set, quit registered
+boot-step: Game_Init
+Com_FSRead: opening resource
+/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/data/frontend.rui
+Com_FSRead: complete; bytes=2798408; capacity=67108864
+Game_Init: native UI preload complete bytes=2798408 images=88 fonts=3 strings=844
+Game_Init: session cold state constructed; transition not begun
+Game_Init: camera defaults constructed logical=320x240 mode=0 overlay_slots=4
+Game_Init: initial camera projection complete; next player owner
+Game_Init: player owner 0x80449DB0 constructed players=0 available=0 active=0
+Game_Init: collision owner 0x8023EE00 constructed records=35 query=reset
+Com_FSRead: opening resource
+/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/data/resource-directory.bin
+Com_FSRead: complete; bytes=32; capacity=33
+Game_Init: resource-directory owner 0x80265964 read offset=0x18 world=0x0050f768
+Game_Init: camera reset owner 0x8044A370 reset views=0 effects=8 text=16 listener=fallback
+Game_Init: player reset owner 0x804499B0 reset players=0 controllers=4 feedback=0
+Game_Init: world cold state constructed counters=11 selection=2 level=-1
+Com_FSLoad: opening bounded resource
+/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/data/cartridge.rwa
+Game_Init: world indexes loaded cartridge=24 levels=37 texture_sets=507
+Game_Init: resource unpack owner 0x80285130 decoded object_types=702
+Game_Init: objects index loaded count=347
+Game_Init: intelligence owner 0x8044D934 prepared records=169 scalar=1
+Game_Init: particle callback 0x8044D804 prepared records=224 channels=9
+Game_Init: world resource tables loaded binaries=0 graphicsets=69 cinemas=38
+Game_Init: cinema directory owner 0x80403BE0 loaded bytes=2824
+Game_Init: weapon data owner 0x8020A604 initialized types=22 modes=2 words=308
+Game_Init: world preview owner 0x8044CFF8 reset persistent=4648 secondary=1952 timer=21
+Game_Init: world shape owner 0x8044B600 prepared presets=5 resolved=3 absent=2
+Game_Init: particle runtime owner 0x8044C050 initialized available=128 visible=0 buckets=3
+Game_Init: scene effect owner 0x8044DB70 initialized available=32 active=0 defaults=2
+Game_Init: render effect owner 0x8044ADF0 initialized available=32 active=0
+Game_Init: scene actor owner 0x8044EBB0 initialized states=32 callbacks=3 records=96 particles=100
+Game_Init: scene collision owner 0x8023EE00 reset records=35 query=reset
+Game_Init: scene record owner 0x8044B0E0 initialized available=8 active=0 scale=1
+Game_Init: sound source owner 0x8025C8D8 initialized available=15 playing=0 state=0
+Game_Init: scene panel owner 0x8044ED24 initialized panels=2 y=-40,-20 state=1 scripts=complete
+Game_Init: scene name owner 0x8028D380 selected level=0 name=PROVING GROUNDS bytes=16
+Game_Init: scene matrix owner 0x8044BFD0 initialized matrices=800 capacity=400 frame=0
+Game_Init: scene collision callback 0x8044C3D4 loaded vertices=3 triangles=1 min_y=-361.0546875
+Game_Init: scene resources loaded data=184 resources=4 metadata=6 extra=0
+Game_Init: scene partition callback 0x8044C108 initialized tables=4 entries=0 buckets=48
+Game_Init: scene reference callback 0x8044DA54 bound entries=0
+Game_Init: scene light owner 0x8044BE04 initialized ambient=56,56,56 direction=-85,60,-72 flag=0
+Game_Init: scene navigation owner 0x8020CA10 initialized points=41 portals=64 available=41 lookup=1681 parameters=16
+Game_Init: scene placement owner 0x8028FF0C decoded records=13 default_face=bound
+Game_Init: scene spawn selection owner 0x8044D3E8 selected key=3010 enabled=1 level=0
+Game_Init: scene spawn list owner 0x8044D220 selected count=8 random=0x089e63a9
+Game_Init: actor reset owner 0x80246184 initialized index=0 model=174 type=1120 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00032104
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=-361.0546875 class_callback=none
+Game_Init: actor resource cache owner 0x8025193C root=load table=load,hit geometry=load key=0x57d018
+Game_Init: actor model owner 0x80246BE8 acquired model=174 animations=37 geometry=232 groups=44
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=-819.1999512,0.0000000,102.3999939 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=44 flags=0x00072104 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x380001 flags=0xe0000400
+Game_Init: original actor constructor 0x802466A0 returned index=0
+Game_Init: scene position lookup owner 0x80286728 returned region=null spawn_actors=1 view_y=204.7999878
+Game_Init: actor reset owner 0x80246184 initialized index=1 model=274 type=1604 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00012101
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=-153.5999908 class_callback=0x80205EC4
+Game_Init: actor class owner 0x80205EC4 initialized table=class3 update=0x80206018
+Game_Init: actor resource cache owner 0x8025193C root=load table=load,hit geometry=load key=0x5dcdc0
+Game_Init: actor model owner 0x80246BE8 acquired model=274 animations=1 geometry=64 groups=1
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=-1740.7999268,-153.5999908,-614.3999634 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=1 flags=0x00050101 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x380002 flags=0xe0000800
+Game_Init: original actor constructor 0x802466A0 returned index=1
+Game_Init: actor reset owner 0x80246184 initialized index=2 model=274 type=1604 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00012101
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=-153.5999908 class_callback=0x80205EC4
+Game_Init: actor class owner 0x80205EC4 initialized table=class3 update=0x80206018
+Game_Init: actor resource cache owner 0x8025193C root=hit table=hit,hit geometry=hit key=0x5dcdc0
+Game_Init: actor model owner 0x80246BE8 acquired model=274 animations=1 geometry=64 groups=1
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=-1075.1999512,-153.5999908,-614.3999634 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=1 flags=0x00050101 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x380003 flags=0xe0000c00
+Game_Init: original actor constructor 0x802466A0 returned index=2
+Game_Init: actor reset owner 0x80246184 initialized index=3 model=274 type=1604 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00012101
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=0.0000000 class_callback=0x80205EC4
+Game_Init: actor class owner 0x80205EC4 initialized table=class3 update=0x80206018
+Game_Init: actor resource cache owner 0x8025193C root=hit table=hit,hit geometry=hit key=0x5dcdc0
+Game_Init: actor model owner 0x80246BE8 acquired model=274 animations=1 geometry=64 groups=1
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=-1280.0000000,0.0000000,204.7999878 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=1 flags=0x00050101 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x380004 flags=0xe0001000
+Game_Init: original actor constructor 0x802466A0 returned index=3
+Game_Init: actor reset owner 0x80246184 initialized index=4 model=274 type=1604 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00012101
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=-153.5999908 class_callback=0x80205EC4
+Game_Init: actor class owner 0x80205EC4 initialized table=class3 update=0x80206018
+Game_Init: actor resource cache owner 0x8025193C root=hit table=hit,hit geometry=hit key=0x5dcdc0
+Game_Init: actor model owner 0x80246BE8 acquired model=274 animations=1 geometry=64 groups=1
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=-2150.3999023,-153.5999908,-1126.4000244 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=1 flags=0x00050101 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x380005 flags=0xe0001400
+Game_Init: original actor constructor 0x802466A0 returned index=4
+Game_Init: actor reset owner 0x80246184 initialized index=5 model=274 type=1604 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00012101
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=-307.1999817 class_callback=0x80205EC4
+Game_Init: actor class owner 0x80205EC4 initialized table=class3 update=0x80206018
+Game_Init: actor resource cache owner 0x8025193C root=hit table=hit,hit geometry=hit key=0x5dcdc0
+Game_Init: actor model owner 0x80246BE8 acquired model=274 animations=1 geometry=64 groups=1
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=-153.5999908,-307.1999817,1382.4000244 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=1 flags=0x00050101 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x380006 flags=0xe0001800
+Game_Init: original actor constructor 0x802466A0 returned index=5
+Game_Init: actor reset owner 0x80246184 initialized index=6 model=274 type=1604 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00012101
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=-307.1999817 class_callback=0x80205EC4
+Game_Init: actor class owner 0x80205EC4 initialized table=class3 update=0x80206018
+Game_Init: actor resource cache owner 0x8025193C root=hit table=hit,hit geometry=hit key=0x5dcdc0
+Game_Init: actor model owner 0x80246BE8 acquired model=274 animations=1 geometry=64 groups=1
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=-2201.5998535,-307.1999817,1382.4000244 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=1 flags=0x00050101 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x380007 flags=0xe0001c00
+Game_Init: original actor constructor 0x802466A0 returned index=6
+Game_Init: actor reset owner 0x80246184 initialized index=7 model=274 type=1604 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00012101
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=0.0000000 class_callback=0x80205EC4
+Game_Init: actor class owner 0x80205EC4 initialized table=class3 update=0x80206018
+Game_Init: actor resource cache owner 0x8025193C root=hit table=hit,hit geometry=hit key=0x5dcdc0
+Game_Init: actor model owner 0x80246BE8 acquired model=274 animations=1 geometry=64 groups=1
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=-2560.0000000,0.0000000,-1536.0000000 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=1 flags=0x00050101 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x380008 flags=0xe0002000
+Game_Init: original actor constructor 0x802466A0 returned index=7
+Game_Init: actor reset owner 0x80246184 initialized index=8 model=274 type=1604 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00012101
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=0.0000000 class_callback=0x80205EC4
+Game_Init: actor class owner 0x80205EC4 initialized table=class3 update=0x80206018
+Game_Init: actor resource cache owner 0x8025193C root=hit table=hit,hit geometry=hit key=0x5dcdc0
+Game_Init: actor model owner 0x80246BE8 acquired model=274 animations=1 geometry=64 groups=1
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=-1280.0000000,0.0000000,716.7999878 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=1 flags=0x00050101 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x380009 flags=0xe0002400
+Game_Init: original actor constructor 0x802466A0 returned index=8
+Game_Init: actor reset owner 0x80246184 initialized index=9 model=274 type=1604 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00012101
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=0.0000000 class_callback=0x80205EC4
+Game_Init: actor class owner 0x80205EC4 initialized table=class3 update=0x80206018
+Game_Init: actor resource cache owner 0x8025193C root=hit table=hit,hit geometry=hit key=0x5dcdc0
+Game_Init: actor model owner 0x80246BE8 acquired model=274 animations=1 geometry=64 groups=1
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=-972.7999878,0.0000000,972.7999878 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=1 flags=0x00050101 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x38000a flags=0xe0002800
+Game_Init: original actor constructor 0x802466A0 returned index=9
+Game_Init: actor reset owner 0x80246184 initialized index=10 model=274 type=1604 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00012101
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=-153.5999908 class_callback=0x80205EC4
+Game_Init: actor class owner 0x80205EC4 initialized table=class3 update=0x80206018
+Game_Init: actor resource cache owner 0x8025193C root=hit table=hit,hit geometry=hit key=0x5dcdc0
+Game_Init: actor model owner 0x80246BE8 acquired model=274 animations=1 geometry=64 groups=1
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=204.7999878,-153.5999908,-972.7999878 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=1 flags=0x00050101 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x38000b flags=0xe0002c00
+Game_Init: original actor constructor 0x802466A0 returned index=10
+Game_Init: actor reset owner 0x80246184 initialized index=11 model=274 type=1604 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00012101
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=0.0000000 class_callback=0x80205EC4
+Game_Init: actor class owner 0x80205EC4 initialized table=class3 update=0x80206018
+Game_Init: actor resource cache owner 0x8025193C root=hit table=hit,hit geometry=hit key=0x5dcdc0
+Game_Init: actor model owner 0x80246BE8 acquired model=274 animations=1 geometry=64 groups=1
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=-1587.1999512,0.0000000,-51.1999969 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=1 flags=0x00050101 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x38000c flags=0xe0003000
+Game_Init: original actor constructor 0x802466A0 returned index=11
+Game_Init: actor reset owner 0x80246184 initialized index=12 model=274 type=1604 motion=-1 floor_y=1
+Game_Init: actor orientation owner 0x8024D870 initialized quaternion=0,0,0,1 render_flags=0x17800074
+Game_Init: actor animation owner 0x80262480 initialized tracks=2 current=-1 next=0 flags=0x00012101
+Game_Init: actor body owner 0x80213AAC initialized health=25600 state=-1 ground_y=-153.5999908 class_callback=0x80205EC4
+Game_Init: actor class owner 0x80205EC4 initialized table=class3 update=0x80206018
+Game_Init: actor resource cache owner 0x8025193C root=hit table=hit,hit geometry=hit key=0x5dcdc0
+Game_Init: actor model owner 0x80246BE8 acquired model=274 animations=1 geometry=64 groups=1
+Game_Init: actor transform owner 0x8024B53C initialized scale=0.5,0.5,0.5 translation=204.7999878,-153.5999908,-768.0000000 axes=swapped
+Game_Init: actor bounds owner 0x8026EE20 initialized groups=1 flags=0x00050101 model_returned=1
+Game_Init: actor identity owner 0x80250BF0 assigned serial=0x38000d flags=0xe0003400
+Game_Init: original actor constructor 0x802466A0 returned index=12
+Game_Init: scene actor peer resolution owner 0x8024DDB4 completed actors=12 links=0
+Game_Init: original scene actor callback 0x8044C7B8 returned actors=13
+Game_Init: scene actor indexing owner 0x80286950 completed switches=0 specials=0
+Game_Init: object type lookup owner 0x8028B25C classified actors=13 bd7=absent bd6=absent
+Game_Init: library random owner 0x802A01E8 selected choice=2 state=0x0029e2c0
+Game_Init: scene pending objects owner 0x8044D5C4 completed lists=0,0 updates=1
+Game_Init: actor activation owner 0x8024B2D0 dispatched index=1 class=3
+Game_Init: actor action owner 0x80205F18 began delay=49.6714668 duration=0 random=0x27d5eef8
+Game_Init: actor state entry owner 0x80206080 initialized delay=158.3333282 flags=0x400 random=0x22332e95
+Game_Init: actor state selection owner 0x80214178 returned state=0
+Game_Init: original actor activation owner 0x8024B2D0 returned index=1
+Game_Init: actor activation owner 0x8024B2D0 dispatched index=2 class=3
+Game_Init: actor action owner 0x80205F18 began delay=55.6120605 duration=0 random=0xdf6d9d7c
+Game_Init: actor state entry owner 0x80206080 initialized delay=122.6417694 flags=0x400 random=0xa591af61
+Game_Init: actor state selection owner 0x80214178 returned state=0
+Game_Init: original actor activation owner 0x8024B2D0 returned index=2
+Game_Init: actor activation owner 0x8024B2D0 dispatched index=3 class=3
+Game_Init: actor action owner 0x80205F18 began delay=58.7263718 duration=0 random=0x29d1e3a0
+Game_Init: actor state entry owner 0x80206080 initialized delay=641.6591797 flags=0x400 random=0x4f6b390d
+Game_Init: actor state selection owner 0x80214178 returned state=0
+Game_Init: original actor activation owner 0x8024B2D0 returned index=3
+Game_Init: actor activation owner 0x8024B2D0 dispatched index=4 class=3
+Game_Init: actor action owner 0x80205F18 began delay=57.3342323 duration=0 random=0x3b01aa64
+Game_Init: actor state entry owner 0x80206080 initialized delay=312.2112427 flags=0x400 random=0xf2385699
+Game_Init: actor state selection owner 0x80214178 returned state=0
+Game_Init: original actor activation owner 0x8024B2D0 returned index=4
+Game_Init: actor activation owner 0x8024B2D0 dispatched index=5 class=3
+Game_Init: actor action owner 0x80205F18 began delay=53.9589005 duration=0 random=0x577b02c8
+Game_Init: actor state entry owner 0x80206080 initialized delay=116.6651611 flags=0x400 random=0x7ce38b05
+Game_Init: actor state selection owner 0x80214178 returned state=0
+Game_Init: original actor activation owner 0x8024B2D0 returned index=5
+Game_Init: actor activation owner 0x8024B2D0 dispatched index=6 class=3
+Game_Init: actor action owner 0x80205F18 began delay=59.3894386 duration=0 random=0x2fd765cc
+Game_Init: actor state entry owner 0x80206080 initialized delay=123.0138016 flags=0x400 random=0xb9321151
+Game_Init: actor state selection owner 0x80214178 returned state=0
+Game_Init: original actor activation owner 0x8024B2D0 returned index=6
+Game_Init: actor activation owner 0x8024B2D0 dispatched index=7 class=3
+Game_Init: actor action owner 0x80205F18 began delay=45.1890221 duration=0 random=0x5901f470
+Game_Init: actor state entry owner 0x80206080 initialized delay=387.7962646 flags=0x400 random=0x0e1a9c7d
+Game_Init: actor state selection owner 0x80214178 returned state=0
+Game_Init: original actor activation owner 0x8024B2D0 returned index=7
+Game_Init: actor activation owner 0x8024B2D0 dispatched index=8 class=3
+Game_Init: actor action owner 0x80205F18 began delay=51.7566757 duration=0 random=0xa497b7b4
+Game_Init: actor state entry owner 0x80206080 initialized delay=631.4205933 flags=0x400 random=0xddba1789
+Game_Init: actor state selection owner 0x80214178 returned state=0
+Game_Init: original actor activation owner 0x8024B2D0 returned index=8
+Game_Init: actor activation owner 0x8024B2D0 dispatched index=9 class=3
+Game_Init: actor action owner 0x80205F18 began delay=59.6624641 duration=0 random=0x1781e098
+Game_Init: actor state entry owner 0x80206080 initialized delay=113.5568542 flags=0x400 random=0xce166575
+Game_Init: actor state selection owner 0x80214178 returned state=0
+Game_Init: original actor activation owner 0x8024B2D0 returned index=9
+Game_Init: actor activation owner 0x8024B2D0 dispatched index=10 class=3
+Game_Init: actor action owner 0x80205F18 began delay=48.1038094 duration=0 random=0x3b5a081c
+Game_Init: actor state entry owner 0x80206080 initialized delay=125.5460587 flags=0x400 random=0x4f5f2141
+Game_Init: actor state selection owner 0x80214178 returned state=0
+Game_Init: original actor activation owner 0x8024B2D0 returned index=10
+Game_Init: actor activation owner 0x8024B2D0 dispatched index=11 class=3
+Game_Init: actor action owner 0x80205F18 began delay=51.0831070 duration=0 random=0x29a86f40
+Game_Init: actor state entry owner 0x80206080 initialized delay=213.7188721 flags=0x400 random=0xe1dc5ded
+Game_Init: actor state selection owner 0x80214178 returned state=0
+Game_Init: original actor activation owner 0x8024B2D0 returned index=11
+Game_Init: actor activation owner 0x8024B2D0 dispatched index=12 class=3
+Game_Init: actor action owner 0x80205F18 began delay=52.0612068 duration=0 random=0x968c3f04
+Game_Init: actor state entry owner 0x80206080 initialized delay=207.0102081 flags=0x400 random=0xd93b6679
+Game_Init: actor state selection owner 0x80214178 returned state=0
+Game_Init: original actor activation owner 0x8024B2D0 returned index=12
+Game_Init: scene pickup spawn owner 0x8044D668 completed lists=0,0 updates=1
+Game_Init: actor body update owner 0x8024BE3C advanced index=1 elapsed=1.0 saved_active=1
+Game_Init: actor animation state owner 0x80213ED4 prepared key=0x52d0 scale=1.0 flags=0x400
+Game_Init: actor animation selection owner 0x80246A08 returned index=1 selection=-1 random=0xd93b6679
+Game_Init: actor animation state owner 0x80213ED4 returned state=0 key=0x52d0 queued=0
+Game_Init: actor body update owner 0x802164A8 returned index=1
+Game_Init: actor motion owner 0x80246E44 entered index=1 flags=0x50101
+Game_Init: actor animation advance owner 0x802472F0 returned index=1 motion_table=0x5dcdc0 pending tracks=unchanged
+Game_Init: actor motion vectors owners 0x80271F68,0x80271F34 target=-1740.7999268,-153.5999908,-614.3999634
+Game_Init: actor collision owners 0x8024715C,0x80243A90 returned collided=0 stationary
+Game_Init: actor motion owner 0x80246E44 returned index=1 saved_active=1
+Game_Init: actor body update owner 0x8024BE3C advanced index=2 elapsed=1.0 saved_active=1
+Game_Init: actor animation state owner 0x80213ED4 prepared key=0x52d0 scale=1.0 flags=0x400
+Game_Init: actor animation selection owner 0x80246A08 returned index=2 selection=-1 random=0xd93b6679
+Game_Init: actor animation state owner 0x80213ED4 returned state=0 key=0x52d0 queued=0
+Game_Init: actor body update owner 0x802164A8 returned index=2
+Game_Init: actor motion owner 0x80246E44 entered index=2 flags=0x50101
+Game_Init: actor animation advance owner 0x802472F0 returned index=2 motion_table=0x5dcdc0 pending tracks=unchanged
+Game_Init: actor motion vectors owners 0x80271F68,0x80271F34 target=-1075.1999512,-153.5999908,-614.3999634
+Game_Init: actor collision owners 0x8024715C,0x80243A90 returned collided=0 stationary
+Game_Init: actor motion owner 0x80246E44 returned index=2 saved_active=1
+Game_Init: actor body update owner 0x8024BE3C advanced index=3 elapsed=1.0 saved_active=1
+Game_Init: actor animation state owner 0x80213ED4 prepared key=0x52d0 scale=1.0 flags=0x400
+Game_Init: actor animation selection owner 0x80246A08 returned index=3 selection=-1 random=0xd93b6679
+Game_Init: actor animation state owner 0x80213ED4 returned state=0 key=0x52d0 queued=0
+Game_Init: actor body update owner 0x802164A8 returned index=3
+Game_Init: actor motion owner 0x80246E44 entered index=3 flags=0x50101
+Game_Init: actor animation advance owner 0x802472F0 returned index=3 motion_table=0x5dcdc0 pending tracks=unchanged
+Game_Init: actor motion vectors owners 0x80271F68,0x80271F34 target=-1280.0000000,0.0000000,204.7999878
+Game_Init: actor collision owners 0x8024715C,0x80243A90 returned collided=0 stationary
+Game_Init: actor motion owner 0x80246E44 returned index=3 saved_active=1
+Game_Init: actor body update owner 0x8024BE3C advanced index=4 elapsed=1.0 saved_active=1
+Game_Init: actor animation state owner 0x80213ED4 prepared key=0x52d0 scale=1.0 flags=0x400
+Game_Init: actor animation selection owner 0x80246A08 returned index=4 selection=-1 random=0xd93b6679
+Game_Init: actor animation state owner 0x80213ED4 returned state=0 key=0x52d0 queued=0
+Game_Init: actor body update owner 0x802164A8 returned index=4
+Game_Init: actor motion owner 0x80246E44 entered index=4 flags=0x50101
+Game_Init: actor animation advance owner 0x802472F0 returned index=4 motion_table=0x5dcdc0 pending tracks=unchanged
+Game_Init: actor motion vectors owners 0x80271F68,0x80271F34 target=-2150.3999023,-153.5999908,-1126.4000244
+Game_Init: actor collision owners 0x8024715C,0x80243A90 returned collided=0 stationary
+Game_Init: actor motion owner 0x80246E44 returned index=4 saved_active=1
+Game_Init: actor body update owner 0x8024BE3C advanced index=5 elapsed=1.0 saved_active=1
+Game_Init: actor animation state owner 0x80213ED4 prepared key=0x52d0 scale=1.0 flags=0x400
+Game_Init: actor animation selection owner 0x80246A08 returned index=5 selection=-1 random=0xd93b6679
+Game_Init: actor animation state owner 0x80213ED4 returned state=0 key=0x52d0 queued=0
+Game_Init: actor body update owner 0x802164A8 returned index=5
+Game_Init: actor motion owner 0x80246E44 entered index=5 flags=0x50101
+Game_Init: actor animation advance owner 0x802472F0 returned index=5 motion_table=0x5dcdc0 pending tracks=unchanged
+Game_Init: actor motion vectors owners 0x80271F68,0x80271F34 target=-153.5999908,-307.1999817,1382.4000244
+Game_Init: actor collision owners 0x8024715C,0x80243A90 returned collided=0 stationary
+Game_Init: actor motion owner 0x80246E44 returned index=5 saved_active=1
+Game_Init: actor body update owner 0x8024BE3C advanced index=6 elapsed=1.0 saved_active=1
+Game_Init: actor animation state owner 0x80213ED4 prepared key=0x52d0 scale=1.0 flags=0x400
+Game_Init: actor animation selection owner 0x80246A08 returned index=6 selection=-1 random=0xd93b6679
+Game_Init: actor animation state owner 0x80213ED4 returned state=0 key=0x52d0 queued=0
+Game_Init: actor body update owner 0x802164A8 returned index=6
+Game_Init: actor motion owner 0x80246E44 entered index=6 flags=0x50101
+Game_Init: actor animation advance owner 0x802472F0 returned index=6 motion_table=0x5dcdc0 pending tracks=unchanged
+Game_Init: actor motion vectors owners 0x80271F68,0x80271F34 target=-2201.5998535,-307.1999817,1382.4000244
+Game_Init: actor collision owners 0x8024715C,0x80243A90 returned collided=0 stationary
+Game_Init: actor motion owner 0x80246E44 returned index=6 saved_active=1
+Game_Init: actor body update owner 0x8024BE3C advanced index=7 elapsed=1.0 saved_active=1
+Game_Init: actor animation state owner 0x80213ED4 prepared key=0x52d0 scale=1.0 flags=0x400
+Game_Init: actor animation selection owner 0x80246A08 returned index=7 selection=-1 random=0xd93b6679
+Game_Init: actor animation state owner 0x80213ED4 returned state=0 key=0x52d0 queued=0
+Game_Init: actor body update owner 0x802164A8 returned index=7
+Game_Init: actor motion owner 0x80246E44 entered index=7 flags=0x50101
+Game_Init: actor animation advance owner 0x802472F0 returned index=7 motion_table=0x5dcdc0 pending tracks=unchanged
+Game_Init: actor motion vectors owners 0x80271F68,0x80271F34 target=-2560.0000000,0.0000000,-1536.0000000
+Game_Init: actor collision owners 0x8024715C,0x80243A90 returned collided=0 stationary
+Game_Init: actor motion owner 0x80246E44 returned index=7 saved_active=1
+Game_Init: actor body update owner 0x8024BE3C advanced index=8 elapsed=1.0 saved_active=1
+Game_Init: actor animation state owner 0x80213ED4 prepared key=0x52d0 scale=1.0 flags=0x400
+Game_Init: actor animation selection owner 0x80246A08 returned index=8 selection=-1 random=0xd93b6679
+Game_Init: actor animation state owner 0x80213ED4 returned state=0 key=0x52d0 queued=0
+Game_Init: actor body update owner 0x802164A8 returned index=8
+Game_Init: actor motion owner 0x80246E44 entered index=8 flags=0x50101
+Game_Init: actor animation advance owner 0x802472F0 returned index=8 motion_table=0x5dcdc0 pending tracks=unchanged
+Game_Init: actor motion vectors owners 0x80271F68,0x80271F34 target=-1280.0000000,0.0000000,716.7999878
+Game_Init: actor collision owners 0x8024715C,0x80243A90 returned collided=0 stationary
+Game_Init: actor motion owner 0x80246E44 returned index=8 saved_active=1
+Game_Init: actor body update owner 0x8024BE3C advanced index=9 elapsed=1.0 saved_active=1
+Game_Init: actor animation state owner 0x80213ED4 prepared key=0x52d0 scale=1.0 flags=0x400
+Game_Init: actor animation selection owner 0x80246A08 returned index=9 selection=-1 random=0xd93b6679
+Game_Init: actor animation state owner 0x80213ED4 returned state=0 key=0x52d0 queued=0
+Game_Init: actor body update owner 0x802164A8 returned index=9
+Game_Init: actor motion owner 0x80246E44 entered index=9 flags=0x50101
+Game_Init: actor animation advance owner 0x802472F0 returned index=9 motion_table=0x5dcdc0 pending tracks=unchanged
+Game_Init: actor motion vectors owners 0x80271F68,0x80271F34 target=-972.7999878,0.0000000,972.7999878
+Game_Init: actor collision owners 0x8024715C,0x80243A90 returned collided=0 stationary
+Game_Init: actor motion owner 0x80246E44 returned index=9 saved_active=1
+Game_Init: actor body update owner 0x8024BE3C advanced index=10 elapsed=1.0 saved_active=1
+Game_Init: actor animation state owner 0x80213ED4 prepared key=0x52d0 scale=1.0 flags=0x400
+Game_Init: actor animation selection owner 0x80246A08 returned index=10 selection=-1 random=0xd93b6679
+Game_Init: actor animation state owner 0x80213ED4 returned state=0 key=0x52d0 queued=0
+Game_Init: actor body update owner 0x802164A8 returned index=10
+Game_Init: actor motion owner 0x80246E44 entered index=10 flags=0x50101
+Game_Init: actor animation advance owner 0x802472F0 returned index=10 motion_table=0x5dcdc0 pending tracks=unchanged
+Game_Init: actor motion vectors owners 0x80271F68,0x80271F34 target=204.7999878,-153.5999908,-972.7999878
+Game_Init: actor collision owners 0x8024715C,0x80243A90 returned collided=0 stationary
+Game_Init: actor motion owner 0x80246E44 returned index=10 saved_active=1
+Game_Init: actor body update owner 0x8024BE3C advanced index=11 elapsed=1.0 saved_active=1
+Game_Init: actor animation state owner 0x80213ED4 prepared key=0x52d0 scale=1.0 flags=0x400
+Game_Init: actor animation selection owner 0x80246A08 returned index=11 selection=-1 random=0xd93b6679
+Game_Init: actor animation state owner 0x80213ED4 returned state=0 key=0x52d0 queued=0
+Game_Init: actor body update owner 0x802164A8 returned index=11
+Game_Init: actor motion owner 0x80246E44 entered index=11 flags=0x50101
+Game_Init: actor animation advance owner 0x802472F0 returned index=11 motion_table=0x5dcdc0 pending tracks=unchanged
+Game_Init: actor motion vectors owners 0x80271F68,0x80271F34 target=-1587.1999512,0.0000000,-51.1999969
+Game_Init: actor collision owners 0x8024715C,0x80243A90 returned collided=0 stationary
+Game_Init: actor motion owner 0x80246E44 returned index=11 saved_active=1
+Game_Init: actor body update owner 0x8024BE3C advanced index=12 elapsed=1.0 saved_active=1
+Game_Init: actor animation state owner 0x80213ED4 prepared key=0x52d0 scale=1.0 flags=0x400
+Game_Init: actor animation selection owner 0x80246A08 returned index=12 selection=-1 random=0xd93b6679
+Game_Init: actor animation state owner 0x80213ED4 returned state=0 key=0x52d0 queued=0
+Game_Init: actor body update owner 0x802164A8 returned index=12
+Game_Init: actor motion owner 0x80246E44 entered index=12 flags=0x50101
+Game_Init: actor animation advance owner 0x802472F0 returned index=12 motion_table=0x5dcdc0 pending tracks=unchanged
+Game_Init: actor motion vectors owners 0x80271F68,0x80271F34 target=204.7999878,-153.5999908,-768.0000000
+Game_Init: actor collision owners 0x8024715C,0x80243A90 returned collided=0 stationary
+Game_Init: actor motion owner 0x80246E44 returned index=12 saved_active=1
+Game_Init: navigation owners 0x8020AA40,0x8020ABF0 returned platforms=12
+Game_Init: player finalizer owner 0x80449E18 returned players=0
+Game_Init: camera overlay owners 0x8044A6CC,0x8044A7D0 reset views=0 fallback=4
+Game_Init: viewport layout owner 0x80236874 updated views=0 fallback=320x240 far=2816 timer=1
+Game_Init: controller accessory owner 0x8044AE70 reset connected=0 first=-1 phase=2 lease=-1 feedback=8
+Game_Init: text owner 0x8044ECB0 reset maps=2 entries=256 shading=144 resource=3
+Game_Init: save directory owner 0x80404D84 initialized slots=4 notes=16 enabled=1
+Game_Init: frontend request owner 0x8041EA70 reset records=3 initialized=0
+Game_Init: resource drain owner 0x80255228 completed=1 pending=0 worker_references=0
+Game_Init: resource flush owner 0x80253908 evicted=2 retained=6
+Com_FSLoad: opening bounded resource
+/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/data/frontend-archive.bin
+Game_Init: frontend archive reader owner 0x802A0D38 loaded bytes=569925 operations=7 users=1
+Game_Init: frontend workspace owner 0x802A16F8 initialized buffers=2 bytes_each=12288 active=0 depth=0
+Game_Init: frontend manager prologue 0x80297FA0 copied dimensions=320x240 dispatch_owner=-1
+Game_Init: frontend graphics reset owner 0x80411EEC cleared archive tables enabled=1 secondary=0
+Game_Init: frontend clipping owner 0x8040F534 initialized bounds=0,319,0,239 inclusive
+Game_Init: frontend input context owner 0x8029AA78 initialized devices=16 axes_each=16 button_bytes=64 callback=null
+Game_Init: frontend manager storage owner 0x80297FA0 initialized handlers=64 cache=75 threshold=4000
+Game_Init: frontend clock owner 0x802A18CC sampled milliseconds=5
+Game_Init: frontend manager screens initialized count=35 current=-1 focus=-1 paging=1
+Game_Init: frontend handler registration owner 0x802982C4 registered ids=9,11 defaults=2 draws=2 overrides=0 flags=1
+Game_Init: frontend graphics archive owner 0x8040FB94 opened sections=10 images=201 string_banks=11 textures=cleared
+ERROR: Game_Init: original frontend string bank owner 0x8040F9E0 has no native implementation

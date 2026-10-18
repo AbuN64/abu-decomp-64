@@ -1,0 +1,775 @@
+[
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:00:52.879954+00:00",
+    "actor": "PORT-ASTRA-12",
+    "status": "info",
+    "message": "Question: does zero reference count alone permit eviction at0x80253908? Source SCENE/802508E0_9.CPP:218 and _2.CPP:35,167 (C outside NON_MATCHING; matching not remeasured). Answer: ENGINE-ASTRA-10 original probe20261018T155037896562Z retains flags0x1802/count0; predicate is mask0x702. Native correction now preserves independent pin/bank claims. Original completion80252774 count2 drop1 retains caller ref (probe155035455757Z). No original-C defect found; native simplification corrected.",
+    "evidence": "/home/abu/state/oracle/engine-astra-10/port12/CONTRACT.md"
+  },
+  {
+    "kind": "COMMIT",
+    "schema": 1,
+    "time": "2026-10-18T16:01:18.742401+00:00",
+    "actor": "git",
+    "status": "info",
+    "message": "rage-ports e21e1d2 Preserve independent resource claims during frontend cache flush",
+    "evidence": null
+  },
+  {
+    "kind": "PORT-FAIL",
+    "schema": 1,
+    "time": "2026-10-18T16:01:20.888006+00:00",
+    "actor": "PORT-ASTRA-12",
+    "status": "info",
+    "message": "Question: what original state does 0x80253908 establish, and what runs next? Source and qualification: SCENE/802508E0_2.CPP:35/167 and _6.CPP:66 C outside NON_MATCHING; original probes20261018T155037896562Z and155035455757Z establish independent pin/count2 semantics; original C not shown wrong. Answer: e21e1d2 promoted: Game_Init: frontend manager prologue 0x80297FA0 copied dimensions=320x240 dispatch_owner=-1. ERROR: Game_Init: original frontend graphics reset owner 0x80411EEC has no native implementation. First frontend frame incomplete.",
+    "evidence": "/home/abu/lanes/ASTRA/port-astra-12/cache_locks-receipt.json"
+  },
+  {
+    "kind": "DECOMP",
+    "schema": 1,
+    "time": "2026-10-18T16:04:25.087518+00:00",
+    "actor": "PORT-ASTRA-12",
+    "status": "info",
+    "message": "Question: what is the graphics archive header consumed by0x8040FB94? FRONTEND/8040B45C_35.CPP:530-710 is NON_MATCHING with overlapping Images/ArchiveContext/Palettes drafts and unnamed header fields. Answer: original read probe20261018T155041089662Z proves84 bytes: ten offset/size pairs plusFFFFFFFF. This narrows missing types; payload interpretation remains unproven. Graphics reset80411EEC clears its whole owner; native field map separately qualified from original consumers, including string banks rather than assuming the draft Palettes name.",
+    "evidence": "/home/abu/lanes/ASTRA/port-astra-12/GRAPHICS_FIELDS.md"
+  },
+  {
+    "kind": "COMMIT",
+    "schema": 1,
+    "time": "2026-10-18T16:04:25.139569+00:00",
+    "actor": "git",
+    "status": "info",
+    "message": "rage-ports 2ef3004 Reset the original frontend graphics archive ownership",
+    "evidence": null
+  },
+  {
+    "kind": "PORT-FAIL",
+    "schema": 1,
+    "time": "2026-10-18T16:04:30.893057+00:00",
+    "actor": "PORT-ASTRA-12",
+    "status": "info",
+    "message": "Question: what original state does 0x80411EEC establish, and what runs next? Source and qualification: FRONTEND/8040B45C_39.CPP:339 C outside NON_MATCHING; original asm80411EEC clears0x2A8; native field map GRAPHICS_FIELDS.md; header probe155041089662Z; record payloads remain opaque/unloaded. Answer: 2ef3004 promoted: Game_Init: frontend graphics reset owner 0x80411EEC cleared archive tables enabled=1 secondary=0. ERROR: Game_Init: original frontend clipping owner 0x8040F534 has no native implementation. First frontend frame incomplete.",
+    "evidence": "/home/abu/lanes/ASTRA/port-astra-12/graphics-receipt.json"
+  },
+  {
+    "kind": "COMMIT",
+    "schema": 1,
+    "time": "2026-10-18T16:05:44.051020+00:00",
+    "actor": "git",
+    "status": "info",
+    "message": "rage-ports 3d33e36 Set original inclusive frontend clipping bounds",
+    "evidence": null
+  },
+  {
+    "kind": "PORT-FAIL",
+    "schema": 1,
+    "time": "2026-10-18T16:05:47.720863+00:00",
+    "actor": "PORT-ASTRA-12",
+    "status": "info",
+    "message": "Question: what original state does 0x8040F534 establish, and what runs next? Source and qualification: FRONTEND/8040B45C_35.CPP:426 C outside NON_MATCHING; asm/us-rev1/func_8040F534_de.s:13-28 proves inclusive width-1/height-1; one native clip owns global limit values. Answer: 3d33e36 promoted: Game_Init: frontend clipping owner 0x8040F534 initialized bounds=0,319,0,239 inclusive. ERROR: Game_Init: original frontend input context owner 0x8029AA78 has no native implementation. First frontend frame incomplete.",
+    "evidence": "/home/abu/lanes/ASTRA/port-astra-12/clip-receipt.json"
+  },
+  {
+    "kind": "COMMIT",
+    "schema": 1,
+    "time": "2026-10-18T16:07:15.242307+00:00",
+    "actor": "git",
+    "status": "info",
+    "message": "rage-ports b3265da Initialize the original frontend input event context",
+    "evidence": null
+  },
+  {
+    "kind": "PORT-FAIL",
+    "schema": 1,
+    "time": "2026-10-18T16:07:22.006169+00:00",
+    "actor": "PORT-ASTRA-12",
+    "status": "info",
+    "message": "Question: what original state does 0x8029AA78 establish, and what runs next? Source and qualification: RESMGR/8029AA48_12.CPP:15 C outside NON_MATCHING; axis asm8029A324:33-69 and button asm80299E80:46-69 type the0xC44 owner; MATH/8029AE80.CPP DeviceAxes is NON_MATCHING and not copied; no events dispatched. Answer: b3265da promoted: Game_Init: frontend input context owner 0x8029AA78 initialized devices=16 axes_each=16 button_bytes=64 callback=null. ERROR: Game_Init: original frontend menu manager storage owner 0x80297FA0 has no native implementation. First frontend frame incomplete.",
+    "evidence": "/home/abu/lanes/ASTRA/port-astra-12/frontend_input-receipt.json"
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "Does graphics archive reset clear exactly 0x2A8 bytes and set enable/secondary flags?",
+      "decomp_path": "src/FRONTEND/8040B45C_39.CPP:339; asm/us-rev1/func_80411EEC_de.s:13",
+      "match_state": "unknown",
+      "function": "func_80411EEC_de",
+      "owner_address": "0x80411f6c"
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:24.505479+00:00",
+    "actor": "repro",
+    "status": "started",
+    "message": "Does graphics archive reset clear exactly 0x2A8 bytes and set enable/secondary flags?",
+    "evidence": null
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "Does graphics archive reset clear exactly 0x2A8 bytes and set enable/secondary flags?",
+      "decomp_path": "src/FRONTEND/8040B45C_39.CPP:339; asm/us-rev1/func_80411EEC_de.s:13",
+      "match_state": "unknown",
+      "function": "func_80411EEC_de",
+      "owner_address": "0x80411f6c",
+      "result": "174 checks, 0 differences",
+      "run_id": "20261018T160725079318Z",
+      "checks": 174,
+      "differences": 0
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:25.354897+00:00",
+    "actor": "repro",
+    "status": "passed",
+    "message": "Does graphics archive reset clear exactly 0x2A8 bytes and set enable/secondary flags?",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/runs/20261018T160725079318Z/probe.json"
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+      "decomp_path": "src/MATH/802A2274.CPP:11; asm/us-rev1/func_802A1270_de.s:13",
+      "match_state": "unmatched",
+      "function": "func_802A2274",
+      "owner_address": "0x802a2274"
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:25.553880+00:00",
+    "actor": "repro",
+    "status": "started",
+    "message": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+    "evidence": null
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+      "decomp_path": "src/MATH/802A2274.CPP:11; asm/us-rev1/func_802A1270_de.s:13",
+      "match_state": "unmatched",
+      "function": "func_802A2274",
+      "owner_address": "0x802a2274",
+      "result": "13 checks, 0 differences",
+      "run_id": "20261018T160726138048Z",
+      "checks": 13,
+      "differences": 0
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:26.490132+00:00",
+    "actor": "repro",
+    "status": "passed",
+    "message": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/runs/20261018T160726138048Z/probe.json"
+  },
+  {
+    "kind": "DECOMP",
+    "payload": {
+      "question": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+      "decomp_path": "src/MATH/802A2274.CPP:11; asm/us-rev1/func_802A1270_de.s:13",
+      "match_state": "unmatched",
+      "function": "func_802A2274",
+      "owner_address": "0x802a2274",
+      "result": "13 checks, 0 differences",
+      "run_id": "20261018T160726138048Z",
+      "checks": 13,
+      "differences": 0
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:26.491419+00:00",
+    "actor": "repro",
+    "status": "info",
+    "message": "Original behavior characterized for decomp matching; 13 checks, 0 differences",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/runs/20261018T160726138048Z/probe.json"
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+      "decomp_path": "src/MATH/802A2274.CPP:11; asm/us-rev1/func_802A1270_de.s:13",
+      "match_state": "unmatched",
+      "function": "func_802A2274",
+      "owner_address": "0x802a2274"
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:26.728265+00:00",
+    "actor": "repro",
+    "status": "started",
+    "message": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+    "evidence": null
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+      "decomp_path": "src/MATH/802A2274.CPP:11; asm/us-rev1/func_802A1270_de.s:13",
+      "match_state": "unmatched",
+      "function": "func_802A2274",
+      "owner_address": "0x802a2274",
+      "result": "13 checks, 0 differences",
+      "run_id": "20261018T160727353238Z",
+      "checks": 13,
+      "differences": 0
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:27.606083+00:00",
+    "actor": "repro",
+    "status": "passed",
+    "message": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/runs/20261018T160727353238Z/probe.json"
+  },
+  {
+    "kind": "DECOMP",
+    "payload": {
+      "question": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+      "decomp_path": "src/MATH/802A2274.CPP:11; asm/us-rev1/func_802A1270_de.s:13",
+      "match_state": "unmatched",
+      "function": "func_802A2274",
+      "owner_address": "0x802a2274",
+      "result": "13 checks, 0 differences",
+      "run_id": "20261018T160727353238Z",
+      "checks": 13,
+      "differences": 0
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:27.606625+00:00",
+    "actor": "repro",
+    "status": "info",
+    "message": "Original behavior characterized for decomp matching; 13 checks, 0 differences",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/runs/20261018T160727353238Z/probe.json"
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+      "decomp_path": "src/MATH/802A2274.CPP:11; asm/us-rev1/func_802A1270_de.s:13",
+      "match_state": "unmatched",
+      "function": "func_802A2274",
+      "owner_address": "0x802a2274"
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:27.789917+00:00",
+    "actor": "repro",
+    "status": "started",
+    "message": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+    "evidence": null
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+      "decomp_path": "src/MATH/802A2274.CPP:11; asm/us-rev1/func_802A1270_de.s:13",
+      "match_state": "unmatched",
+      "function": "func_802A2274",
+      "owner_address": "0x802a2274",
+      "result": "13 checks, 0 differences",
+      "run_id": "20261018T160728348477Z",
+      "checks": 13,
+      "differences": 0
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:28.617137+00:00",
+    "actor": "repro",
+    "status": "passed",
+    "message": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/runs/20261018T160728348477Z/probe.json"
+  },
+  {
+    "kind": "DECOMP",
+    "payload": {
+      "question": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+      "decomp_path": "src/MATH/802A2274.CPP:11; asm/us-rev1/func_802A1270_de.s:13",
+      "match_state": "unmatched",
+      "function": "func_802A2274",
+      "owner_address": "0x802a2274",
+      "result": "13 checks, 0 differences",
+      "run_id": "20261018T160728348477Z",
+      "checks": 13,
+      "differences": 0
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:28.621944+00:00",
+    "actor": "repro",
+    "status": "info",
+    "message": "Original behavior characterized for decomp matching; 13 checks, 0 differences",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/runs/20261018T160728348477Z/probe.json"
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+      "decomp_path": "src/MATH/802A2274.CPP:11; asm/us-rev1/func_802A1270_de.s:13",
+      "match_state": "unmatched",
+      "function": "func_802A2274",
+      "owner_address": "0x802a2274"
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:28.776490+00:00",
+    "actor": "repro",
+    "status": "started",
+    "message": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+    "evidence": null
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+      "decomp_path": "src/MATH/802A2274.CPP:11; asm/us-rev1/func_802A1270_de.s:13",
+      "match_state": "unmatched",
+      "function": "func_802A2274",
+      "owner_address": "0x802a2274",
+      "result": "13 checks, 0 differences",
+      "run_id": "20261018T160729309832Z",
+      "checks": 13,
+      "differences": 0
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:29.536712+00:00",
+    "actor": "repro",
+    "status": "passed",
+    "message": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/runs/20261018T160729309832Z/probe.json"
+  },
+  {
+    "kind": "DECOMP",
+    "payload": {
+      "question": "What are workspace buffer selection and clamped current/min/max statistics? Entry+4 with original lui pre-established.",
+      "decomp_path": "src/MATH/802A2274.CPP:11; asm/us-rev1/func_802A1270_de.s:13",
+      "match_state": "unmatched",
+      "function": "func_802A2274",
+      "owner_address": "0x802a2274",
+      "result": "13 checks, 0 differences",
+      "run_id": "20261018T160729309832Z",
+      "checks": 13,
+      "differences": 0
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:29.537828+00:00",
+    "actor": "repro",
+    "status": "info",
+    "message": "Original behavior characterized for decomp matching; 13 checks, 0 differences",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/runs/20261018T160729309832Z/probe.json"
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "Does the generated workspace initializer execute its reset child at original entry 0x802A2270?",
+      "decomp_path": "src/RESMGR/802A23A4_6.CPP:10; generated funcs_86.c static_0_802A2270",
+      "match_state": "unknown",
+      "function": "func_802A16F8_de",
+      "owner_address": "0x802a26f8"
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:29.715682+00:00",
+    "actor": "repro",
+    "status": "started",
+    "message": "Does the generated workspace initializer execute its reset child at original entry 0x802A2270?",
+    "evidence": null
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "Does the generated workspace initializer execute its reset child at original entry 0x802A2270?",
+      "decomp_path": "src/RESMGR/802A23A4_6.CPP:10; generated funcs_86.c static_0_802A2270",
+      "match_state": "unknown",
+      "function": "func_802A16F8_de",
+      "owner_address": "0x802a26f8",
+      "result": "4 checks, 1 differences; boundaries: func_8025305C_de",
+      "run_id": "20261018T160730119654Z",
+      "checks": 4,
+      "differences": 1
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:07:30.274367+00:00",
+    "actor": "repro",
+    "status": "failed",
+    "message": "Does the generated workspace initializer execute its reset child at original entry 0x802A2270?",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/runs/20261018T160730119654Z/probe.json"
+  },
+  {
+    "kind": "HANDOFF",
+    "schema": 1,
+    "time": "2026-10-18T16:10:06.904996+00:00",
+    "actor": "ENGINE-ASTRA-11",
+    "status": "info",
+    "message": "PORT12: graphics reset174/174 and workspace52/52 original checks; typed contract /home/abu/state/oracle/engine-astra-11/port12/CONTRACT.md. Packets {\"graphics\": \"db7ed2ddd75358accc66e98b48be45586a418e8a6f86ac4431da4d019b123b94\", \"workspace\": \"0582b41c015bcec5e339e5ad6a0eb737e693b79171db38b75a3240678eeb7956\"}. Engine initializer defect: split at802A2270 returns after lui; audit20261018T160730119654Z fails1/4. Boundary repair in progress.",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/CONTRACT.md"
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "Does the generated workspace initializer execute its reset child at original entry 0x802A2270?",
+      "decomp_path": "src/RESMGR/802A23A4_6.CPP:10; generated funcs_86.c static_0_802A2270",
+      "match_state": "unknown",
+      "function": "func_802A16F8_de",
+      "owner_address": "0x802a26f8"
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:11:05.587775+00:00",
+    "actor": "repro",
+    "status": "started",
+    "message": "Does the generated workspace initializer execute its reset child at original entry 0x802A2270?",
+    "evidence": null
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "Does the generated workspace initializer execute its reset child at original entry 0x802A2270?",
+      "decomp_path": "src/RESMGR/802A23A4_6.CPP:10; generated funcs_86.c static_0_802A2270",
+      "match_state": "unknown",
+      "function": "func_802A16F8_de",
+      "owner_address": "0x802a26f8",
+      "result": "4 checks, 1 differences; boundaries: func_8025305C_de",
+      "run_id": "20261018T161105978609Z",
+      "checks": 4,
+      "differences": 1
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:11:06.142827+00:00",
+    "actor": "repro",
+    "status": "failed",
+    "message": "Does the generated workspace initializer execute its reset child at original entry 0x802A2270?",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/runs/20261018T161105978609Z/probe.json"
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "After explicit original-entry boundary repair, does the full workspace initializer reset selection, cursor and statistics?",
+      "decomp_path": "src/RESMGR/802A23A4_6.CPP:10; generated funcs_86.c static_0_802A2270",
+      "match_state": "unknown",
+      "function": "func_802A16F8_de",
+      "owner_address": "0x802a26f8"
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:11:06.255732+00:00",
+    "actor": "repro",
+    "status": "started",
+    "message": "After explicit original-entry boundary repair, does the full workspace initializer reset selection, cursor and statistics?",
+    "evidence": null
+  },
+  {
+    "kind": "PROBE",
+    "payload": {
+      "question": "After explicit original-entry boundary repair, does the full workspace initializer reset selection, cursor and statistics?",
+      "decomp_path": "src/RESMGR/802A23A4_6.CPP:10; generated funcs_86.c static_0_802A2270",
+      "match_state": "unknown",
+      "function": "func_802A16F8_de",
+      "owner_address": "0x802a26f8",
+      "result": "8 checks, 0 differences; boundaries: func_8025305C_de",
+      "run_id": "20261018T161106747372Z",
+      "checks": 8,
+      "differences": 0
+    },
+    "schema": 1,
+    "time": "2026-10-18T16:11:06.929477+00:00",
+    "actor": "repro",
+    "status": "passed",
+    "message": "After explicit original-entry boundary repair, does the full workspace initializer reset selection, cursor and statistics?",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/runs/20261018T161106747372Z/probe.json"
+  },
+  {
+    "kind": "COMMIT",
+    "schema": 1,
+    "time": "2026-10-18T16:11:17.137527+00:00",
+    "actor": "git",
+    "status": "info",
+    "message": "cake-taste-64 63123b1 Fail public probes when recorded checks differ",
+    "evidence": null
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:12:12.561363+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original boot checkpoint; native now stops in cartridge resource owner0x8044B7C0/us-rev1 0x8044C410.",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/pak.png"
+  },
+  {
+    "kind": "HANDOFF",
+    "schema": 1,
+    "time": "2026-10-18T16:12:16.824028+00:00",
+    "actor": "PORT-ASTRA-12",
+    "status": "info",
+    "message": "Question: what follows input8029AA78? MATH/80297CD0_3.CPP:119-149 is C outside NON_MATCHING (match not remeasured). Answer: b3265da public82/82 reaches remaining manager storage80297FA0; nine pushed commits, release hashes verified, no frontend frame. Next batch2-3owners before one full suite; no gate after cadence steer.",
+    "evidence": "/home/abu/lanes/ASTRA/port-astra-12/proof.json"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:12:18.560388+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original boot after CONTINUE WITHOUT SAVING; compare the next native boot owners.",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/past-pak.png"
+  },
+  {
+    "kind": "HANDOFF",
+    "schema": 1,
+    "time": "2026-10-18T16:12:29.121165+00:00",
+    "actor": "ENGINE-ASTRA-11",
+    "status": "info",
+    "message": "PORT12 corrected full workspace initializer passes8/8; run 20261018T161106747372Z; packet 06a80c7c879c42caf5b8919dff50c403a6a6b33fe1cf297efd9c34b3213fd0ba. Engine-only boundary repair is isolated; allocator boundary remains explicit. Typed contract updated.",
+    "evidence": "/home/abu/state/oracle/engine-astra-11/port12/CONTRACT.md"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:12:43.611681+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Inspect original intro skip after Start.",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/after-intro.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:12:48.615788+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original title/front-end input checkpoint.",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/title-or-menu.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:12:53.619366+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original menu after Start; native world-resource initialization comparison.",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/front-menu.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:13:03.617098+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original one-player menu after no-save confirmation.",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/new-game-menu.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:13:07.616759+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original character selection.",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/character.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:13:12.615840+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original trial selection after character confirmation.",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/trial-selection.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:13:21.614603+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original selected trial load checkpoint.",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/trial-loading.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:13:28.532587+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original trial briefing after optional Rumble Pak prompt.",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/trial-briefing.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:13:39.631120+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Inspect original controlled-match entry.",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/gameplay-first.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:13:51.603907+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original match after movement and fire input.",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/gameplay-moving.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:13:59.617092+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "End voice-allocation diagnostic",
+    "evidence": "/home/abu/state/oracle/scenarios/b3433a2b086e472ca36bf0cabda36a23/audio-end.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:15:18.569650+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original boot checkpoint; native now stops in cartridge resource owner0x8044B7C0/us-rev1 0x8044C410.",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/pak.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:15:24.576734+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original boot after CONTINUE WITHOUT SAVING; compare the next native boot owners.",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/past-pak.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:15:49.613386+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Inspect original intro skip after Start.",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/after-intro.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:15:54.612825+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original title/front-end input checkpoint.",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/title-or-menu.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:15:59.622643+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original menu after Start; native world-resource initialization comparison.",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/front-menu.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:16:09.617919+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original one-player menu after no-save confirmation.",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/new-game-menu.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:16:13.622108+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original character selection.",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/character.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:16:18.616241+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original trial selection after character confirmation.",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/trial-selection.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:16:27.628198+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original selected trial load checkpoint.",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/trial-loading.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:16:34.533103+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original trial briefing after optional Rumble Pak prompt.",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/trial-briefing.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:16:45.615367+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Inspect original controlled-match entry.",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/gameplay-first.png"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:16:57.620826+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "Original match after movement and fire input.",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/gameplay-moving.png"
+  },
+  {
+    "kind": "COMMIT",
+    "schema": 1,
+    "time": "2026-10-18T16:17:02.140191+00:00",
+    "actor": "git",
+    "status": "info",
+    "message": "rage-ports 170d34c Construct original frontend storage before loading its graph",
+    "evidence": null
+  },
+  {
+    "kind": "COMMIT",
+    "schema": 1,
+    "time": "2026-10-18T16:17:02.148585+00:00",
+    "actor": "git",
+    "status": "info",
+    "message": "rage-ports 6316a77 Sample the original frontend clock before initializing screens",
+    "evidence": null
+  },
+  {
+    "kind": "PORT-FAIL",
+    "schema": 1,
+    "time": "2026-10-18T16:17:04.364371+00:00",
+    "actor": "PORT-ASTRA-12",
+    "status": "info",
+    "message": "Question: what original state does 0x80297FA0 + 0x802A18CC establish, and what runs next? Source and qualification: twoowner batch170d34c+6316a77; MATH/80297CD0_3.CPP:119-149 and MATH/802A2870.CPP:41, MENU/GFX/804143B0_2.CPP:7 C outside NON_MATCHING; matching not remeasured; source callback order; no graph or frame yet. Answer: 6316a77 promoted: Game_Init: frontend manager screens initialized count=35 current=-1 focus=-1 paging=1. ERROR: Game_Init: original frontend handler registration owner 0x802982C4 has no native implementation. First frontend frame incomplete.",
+    "evidence": "/home/abu/lanes/ASTRA/port-astra-12/storage_clock-receipt.json"
+  },
+  {
+    "kind": "PROBE",
+    "schema": 1,
+    "time": "2026-10-18T16:17:05.668559+00:00",
+    "actor": "engine",
+    "status": "info",
+    "message": "End voice-allocation diagnostic",
+    "evidence": "/home/abu/state/oracle/scenarios/e3e5ca23caa349b4b1f36cb6c395e8c7/audio-end.png"
+  },
+  {
+    "kind": "COMMIT",
+    "schema": 1,
+    "time": "2026-10-18T16:25:42.360892+00:00",
+    "actor": "git",
+    "status": "info",
+    "message": "rage-ports d21d07d Register original frontend default and draw handlers",
+    "evidence": null
+  },
+  {
+    "kind": "COMMIT",
+    "schema": 1,
+    "time": "2026-10-18T16:25:42.362730+00:00",
+    "actor": "git",
+    "status": "info",
+    "message": "rage-ports 1f8d01c Open original frontend image and string-bank directories",
+    "evidence": null
+  }
+]

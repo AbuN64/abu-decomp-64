@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "role": "port",
+  "phase": "held_until_restart",
+  "attempt": 1,
+  "step": "Game_Init",
+  "failure_reason": "Game_Init: original frontend handler registration owner 0x802982C4 has no native implementation",
+  "failure_kind": "debugger",
+  "debugger_stopped": true,
+  "stack": "/home/abu/state/port/evidence/port-runs/20261018T161704398765Z-1/failure-stack.txt",
+  "capture": null,
+  "last_result": "",
+  "exit_code": null,
+  "retry_remaining_seconds": 0,
+  "retry_delay_seconds": 30,
+  "paused": false,
+  "command": [
+    "/home/abu/state/port/runtime/releases/port/6316a77/ragewars",
+    "--headless",
+    "--data-dir",
+    "/home/abu/state/port/runtime/releases/port/6316a77/data"
+  ],
+  "binary_sha256": "ceaeaee6a16a76297c4bc825973c0f5972394c3da90bb9e6ddf3246ab2856cbd",
+  "started_at": "2026-10-18T16:17:04.398752+00:00",
+  "terminal_rows_columns": [
+    29,
+    106
+  ],
+  "updated_at": "2026-10-18T16:17:05.311893+00:00"
+}

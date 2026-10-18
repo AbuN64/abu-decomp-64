@@ -1,0 +1,72 @@
+{
+ "ok": true,
+ "result": {
+  "digest": "42a78f5414b001356d12a100bcbc65b7f2e03a26f5f66cdc202d2c9ca4185a2f",
+  "next": [
+   {
+    "name": "func_80208000_de",
+    "version": "us",
+    "size": 4,
+    "percent": 0.0,
+    "path": "src/WORLD/80207ABC_4.CPP",
+    "state": "unmatched"
+   },
+   {
+    "name": "func_8025E10C_de",
+    "version": "us",
+    "size": 4,
+    "percent": 0.0,
+    "path": "src/RENDER_2/8025DE50_21.CPP",
+    "state": "unmatched"
+   },
+   {
+    "name": "func_80276598_us",
+    "version": "us",
+    "size": 4,
+    "percent": 0.0,
+    "path": "src/ANIM/80275E44_2.CPP",
+    "state": "unmatched"
+   },
+   {
+    "name": "func_802ADBDC_eu",
+    "version": "eu",
+    "size": 4,
+    "percent": 0.0,
+    "path": "src/sdk/libgultra_inferred/802AD870_3.CPP",
+    "state": "unmatched"
+   },
+   {
+    "name": "func_802ADBE0_eu",
+    "version": "eu",
+    "size": 4,
+    "percent": 0.0,
+    "path": "src/sdk/libgultra_inferred/802AD870_3.CPP",
+    "state": "unmatched"
+   },
+   {
+    "name": "func_802B748C_de",
+    "version": "de",
+    "size": 4,
+    "percent": 50.0,
+    "path": "src/SDK/OS_2/802B748C.CPP",
+    "state": "fuzzy"
+   },
+   {
+    "name": "func_802B755C_eu",
+    "version": "eu",
+    "size": 4,
+    "percent": 33.33,
+    "path": "src/sdk/lib_802BB630/802BC380.CPP",
+    "state": "fuzzy"
+   },
+   {
+    "name": "func_802B772C_eu",
+    "version": "eu",
+    "size": 4,
+    "percent": 33.33,
+    "path": "src/SDK/OS/802BC4D0.CPP",
+    "state": "fuzzy"
+   }
+  ]
+ }
+}

@@ -10,7 +10,7 @@ config object, so `up_config` merges the table into the `up` section and refuses
       "roles": {"<id>": {"title", "command", "env", "overlay_app_id", "headless", "console"}}
     }
 
-A role with a `console` object is a console tile: `decomp console --tile ID` reads its sources (see
+A role with a `console` object is a console tile: `decomp console tile ID` reads its sources (see
 abu_decomp.console.tiles). `command` may then be omitted and the tile runs `decomp console` itself.
 """
 
@@ -36,7 +36,7 @@ def table(profile: Any) -> dict[str, Any]:
 
 
 def console_command(profile: Any, role: str) -> list[str]:
-    return [sys.executable, "-m", "abu_decomp", "--profile", str(profile.source_file), "console", "--tile", role]
+    return [sys.executable, "-m", "abu_decomp", "--profile", str(profile.source_file), "console", "tile", role]
 
 
 def up_config(profile: Any) -> dict[str, Any]:

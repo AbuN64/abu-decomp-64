@@ -1,0 +1,179 @@
+admit jobs=8 MemAvailable_kB=58679246
+Internal ctest changing into directory: /home/abu/state/port/runtime/build/sources/engine/build/linux-gcc-release
+Test project /home/abu/state/port/runtime/build/sources/engine/build/linux-gcc-release
+      Start 84: port_startup_failure
+      Start 27: frontend_input
+      Start 17: frontend_storage
+      Start 24: frontend_workspace
+      Start 25: frontend_graphics
+      Start 18: frontend_clock
+      Start 23: frontend_reader
+      Start 79: resource_cache
+ 1/86 Test #27: frontend_input ...................   Passed    0.00 sec
+ 2/86 Test #17: frontend_storage .................   Passed    0.00 sec
+ 3/86 Test #24: frontend_workspace ...............   Passed    0.00 sec
+ 4/86 Test #25: frontend_graphics ................   Passed    0.00 sec
+ 5/86 Test #18: frontend_clock ...................   Passed    0.00 sec
+ 6/86 Test #23: frontend_reader ..................   Passed    0.00 sec
+      Start 29: camera_update
+      Start 22: frontend_startup
+      Start 56: scene_placement
+      Start 21: save_directory
+      Start 76: actor_body_update
+      Start 30: camera_layout
+ 7/86 Test #79: resource_cache ...................   Passed    0.00 sec
+ 8/86 Test #29: camera_update ....................   Passed    0.00 sec
+ 9/86 Test #22: frontend_startup .................   Passed    0.00 sec
+10/86 Test #56: scene_placement ..................   Passed    0.00 sec
+11/86 Test #21: save_directory ...................   Passed    0.00 sec
+12/86 Test #76: actor_body_update ................   Passed    0.00 sec
+      Start 73: scene_pending
+      Start 62: actor_body
+      Start 70: actor_index
+      Start 20: text_state
+      Start 69: actor_peers
+      Start 47: scene_panels
+13/86 Test #30: camera_layout ....................   Passed    0.00 sec
+14/86 Test #73: scene_pending ....................   Passed    0.00 sec
+15/86 Test #62: actor_body .......................   Passed    0.00 sec
+16/86 Test #70: actor_index ......................   Passed    0.00 sec
+17/86 Test #20: text_state .......................   Passed    0.00 sec
+18/86 Test #69: actor_peers ......................   Passed    0.00 sec
+      Start 66: scene_identity
+      Start 10: controllers
+      Start 74: actor_action
+      Start 81: actor_selection
+      Start 32: collision
+      Start 77: actor_state_animation
+19/86 Test #47: scene_panels .....................   Passed    0.00 sec
+20/86 Test #66: scene_identity ...................   Passed    0.00 sec
+21/86 Test #10: controllers ......................   Passed    0.00 sec
+22/86 Test #74: actor_action .....................   Passed    0.00 sec
+23/86 Test #81: actor_selection ..................   Passed    0.00 sec
+24/86 Test #32: collision ........................   Passed    0.00 sec
+      Start 80: scene_platforms
+      Start 78: actor_motion
+      Start 86: n64lint
+      Start 72: library_random
+      Start 83: platform_lifecycle
+      Start 71: scene_objectives
+25/86 Test #77: actor_state_animation ............   Passed    0.00 sec
+26/86 Test #80: scene_platforms ..................   Passed    0.00 sec
+27/86 Test #78: actor_motion .....................   Passed    0.00 sec
+28/86 Test #72: library_random ...................   Passed    0.00 sec
+      Start 75: actor_state
+      Start 28: camera
+      Start 57: scene_spawn_selection
+      Start 68: actor_class3
+29/86 Test #71: scene_objectives .................   Passed    0.00 sec
+30/86 Test #86: n64lint ..........................   Passed    0.01 sec
+31/86 Test #83: platform_lifecycle ...............   Passed    0.00 sec
+32/86 Test #75: actor_state ......................   Passed    0.00 sec
+33/86 Test #28: camera ...........................   Passed    0.00 sec
+34/86 Test #57: scene_spawn_selection ............   Passed    0.00 sec
+      Start 63: actor_model
+      Start 55: scene_navigation
+      Start 51: scene_resources
+      Start 53: scene_references
+      Start 49: scene_matrix
+      Start 50: scene_collision
+35/86 Test #68: actor_class3 .....................   Passed    0.00 sec
+36/86 Test #63: actor_model ......................   Passed    0.00 sec
+37/86 Test #55: scene_navigation .................   Passed    0.00 sec
+38/86 Test #51: scene_resources ..................   Passed    0.00 sec
+39/86 Test #53: scene_references .................   Passed    0.00 sec
+40/86 Test #49: scene_matrix .....................   Passed    0.00 sec
+      Start 65: actor_bounds
+      Start 64: actor_transform
+      Start 60: actor_orientation
+      Start 45: scene_record
+      Start 52: scene_partition
+      Start 42: scene_effect
+41/86 Test #50: scene_collision ..................   Passed    0.00 sec
+42/86 Test #65: actor_bounds .....................   Passed    0.00 sec
+43/86 Test #64: actor_transform ..................   Passed    0.00 sec
+44/86 Test #60: actor_orientation ................   Passed    0.00 sec
+45/86 Test #45: scene_record .....................   Passed    0.00 sec
+46/86 Test #52: scene_partition ..................   Passed    0.00 sec
+      Start 67: scene_position
+      Start 61: actor_animation
+      Start 59: actor
+      Start 43: render_effect
+      Start 41: particle_runtime
+      Start 37: world_resources
+47/86 Test #42: scene_effect .....................   Passed    0.00 sec
+48/86 Test #67: scene_position ...................   Passed    0.00 sec
+49/86 Test #61: actor_animation ..................   Passed    0.00 sec
+50/86 Test #59: actor ............................   Passed    0.00 sec
+51/86 Test #43: render_effect ....................   Passed    0.00 sec
+52/86 Test #41: particle_runtime .................   Passed    0.00 sec
+      Start 58: scene_spawn_list
+      Start 46: sound_source
+      Start 54: scene_light
+      Start 85: n64lint_rules
+      Start  2: memory
+      Start 35: unpack
+53/86 Test #37: world_resources ..................   Passed    0.00 sec
+54/86 Test #84: port_startup_failure .............   Passed    0.04 sec
+55/86 Test #58: scene_spawn_list .................   Passed    0.00 sec
+56/86 Test #46: sound_source .....................   Passed    0.00 sec
+57/86 Test #54: scene_light ......................   Passed    0.00 sec
+58/86 Test #85: n64lint_rules ....................   Passed    0.00 sec
+59/86 Test  #2: memory ...........................   Passed    0.00 sec
+      Start 48: scene_name
+      Start  1: math
+      Start 33: directory
+      Start 44: scene_actor
+      Start 13: hud
+      Start 39: world_preview
+      Start 40: material
+60/86 Test #35: unpack ...........................   Passed    0.01 sec
+61/86 Test #48: scene_name .......................   Passed    0.00 sec
+62/86 Test  #1: math .............................   Passed    0.00 sec
+63/86 Test #33: directory ........................   Passed    0.00 sec
+64/86 Test #44: scene_actor ......................   Passed    0.00 sec
+65/86 Test #13: hud ..............................   Passed    0.00 sec
+66/86 Test #39: world_preview ....................   Passed    0.00 sec
+      Start 36: particles
+      Start  4: commands
+      Start 34: archive
+      Start 82: invalid_arguments
+      Start 38: weapons
+      Start 12: session
+      Start 16: frontend
+67/86 Test #40: material .........................   Passed    0.01 sec
+68/86 Test #36: particles ........................   Passed    0.00 sec
+69/86 Test  #4: commands .........................   Passed    0.00 sec
+70/86 Test #34: archive ..........................   Passed    0.00 sec
+71/86 Test #82: invalid_arguments ................   Passed    0.00 sec
+72/86 Test #38: weapons ..........................   Passed    0.00 sec
+73/86 Test #12: session ..........................   Passed    0.00 sec
+      Start  6: file
+      Start 11: replay
+      Start  3: cvars
+      Start 14: ui_assets
+      Start  8: sound
+      Start  7: renderer
+      Start 15: ui_draw
+74/86 Test #16: frontend .........................   Passed    0.01 sec
+75/86 Test  #6: file .............................   Passed    0.00 sec
+76/86 Test #11: replay ...........................   Passed    0.00 sec
+77/86 Test  #3: cvars ............................   Passed    0.00 sec
+78/86 Test #14: ui_assets ........................   Passed    0.00 sec
+79/86 Test  #8: sound ............................   Passed    0.00 sec
+80/86 Test  #7: renderer .........................   Passed    0.00 sec
+      Start 31: player
+      Start  5: ticks
+      Start  9: input
+      Start 19: frontend_registration
+      Start 26: frontend_archive
+81/86 Test #15: ui_draw ..........................   Passed    0.00 sec
+82/86 Test #31: player ...........................   Passed    0.00 sec
+83/86 Test  #5: ticks ............................   Passed    0.00 sec
+84/86 Test  #9: input ............................   Passed    0.00 sec
+85/86 Test #19: frontend_registration ............   Passed    0.00 sec
+86/86 Test #26: frontend_archive .................   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 86
+
+Total Test time (real) =   0.06 sec

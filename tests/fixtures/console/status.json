@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "phase": "promoted",
+  "started_at": "2026-10-18T16:25:42+00:00",
+  "updated_at": "2026-10-18T16:25:43+00:00",
+  "sources": {
+    "engine": {
+      "repo": "/home/abu/code/rage-ports",
+      "ref": "refs/heads/main",
+      "commit": "1f8d01cb28fabec8af127ee3ac76218c04020373",
+      "tree": "7224c6ba06f008bde1fc49d869e0561227421e9a",
+      "snapshot": {
+        "commit": "1f8d01cb28fabec8af127ee3ac76218c04020373",
+        "archive_sha256": "99654108672382629a74a66afd7859feacdd73ea4d7ed5eeb419c24f1e75b315",
+        "files": 312,
+        "changed": 10,
+        "unchanged": 302,
+        "removed": 0
+      },
+      "source": "/home/abu/state/port/runtime/build/sources/engine",
+      "manifest": "/home/abu/state/port/runtime/build/runs/20261018T162542Z-b0970d1b/manifests/engine.json",
+      "manifest_sha256": "5d4372a9cd86766712053e4f0898a2d4b0b30ada3c23804dcaf41ca91da28478",
+      "protected_top": [
+        "build"
+      ]
+    }
+  },
+  "last_result": "promoted",
+  "error": null,
+  "gate": "boot",
+  "log_path": "/home/abu/state/port/runtime/build/logs/20261018T162542Z-b0970d1b-boot.log",
+  "receipt": "/home/abu/state/port/runtime/build/receipts/20261018T162542Z-b0970d1b.json"
+}
