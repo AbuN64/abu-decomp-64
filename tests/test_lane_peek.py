@@ -1,7 +1,9 @@
 import contextlib
 import io
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,6 +49,30 @@ class JobTests(unittest.TestCase):
         self.assertEqual(printed(peek.job, "J", str(self.log), NOW, {}), "== JOB J: no open stage; last: noise\n")
         self.log.write_text("")
         self.assertEqual(printed(peek.job, "J", str(self.log), NOW, {}), "== JOB J: no open stage; last: empty\n")
+
+    def test_a_silent_log_with_no_holder_and_no_marker_is_dead_with_its_refusal(self):
+        self.write("slow: a stage ran long", "Refused: unbake setup needs a host", "exiting")
+        os.utime(self.log, (NOW - 3600, NOW - 3600))
+        with mock.patch.object(peek, "process_rows", return_value=[]), mock.patch.object(peek, "_fds", return_value=[]):
+            text = printed(peek.job, "J", str(self.log), NOW, {})
+        self.assertEqual(
+            text,
+            "== DEAD J: log idle 60 min, no process holds it, no success marker; "
+            "last: Refused: unbake setup needs a host\n",
+        )
+
+    def test_a_held_or_recent_log_is_not_dead(self):
+        self.write("match started (last run 60.0s)")
+        os.utime(self.log, (NOW - 3600, NOW - 3600))
+        rows = [["9", "1", "5", "0", "-", f"bash run.sh {self.log}"]]
+        with (
+            mock.patch.object(peek, "process_rows", return_value=rows),
+            mock.patch.object(peek, "_fds", return_value=[]),
+        ):
+            self.assertIn("== JOB J: match", printed(peek.job, "J", str(self.log), NOW, {}))
+        os.utime(self.log, (NOW - 30, NOW - 30))
+        with mock.patch.object(peek, "process_rows", return_value=[]), mock.patch.object(peek, "_fds", return_value=[]):
+            self.assertIn("== JOB J: match", printed(peek.job, "J", str(self.log), NOW, {}))
 
     def test_unreadable_log_is_named(self):
         text = printed(peek.job, "J", str(Path(self.temp.name) / "missing"), NOW, {})
@@ -161,6 +187,146 @@ class DecompPeekTests(unittest.TestCase):
             code, envelope = peeked("--name", "A", "--minutes", "999999")
             self.assertNotIn("JOB", envelope["result"]["text"])
             self.assertEqual(peeked("--name", "ZZ")[1]["findings"][0]["key"], "lanes.unknown")
+
+
+def claude_line(at, content, **extra):
+    return json.dumps({"timestamp": at, "message": {"role": "assistant", "content": content, **extra}})
+
+
+def tool(command):
+    return [{"type": "tool_use", "name": "Bash", "input": {"command": command}}]
+
+
+class StaleTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def task(self, *lines):
+        path = self.root / "task.output"
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def test_old_last_action_is_flagged_with_the_command_in_flight(self):
+        path = self.task(
+            claude_line(NOW - 3600, tool("echo a")), claude_line(NOW - 1800, tool("python3 -m unittest discover"))
+        )
+        text = printed(peek.activity, 5.0, [f"L={path}"], NOW)
+        self.assertIn("== STALE L: no new action for 30 min, in flight: python3 -m unittest discover\n", text)
+
+    def test_recent_action_finished_agent_and_stopped_unit_are_not_flagged(self):
+        path = self.task(claude_line(NOW - 60, tool("echo a")))
+        self.assertNotIn("STALE", printed(peek.activity, 5.0, [f"L={path}"], NOW))
+        old = self.task(claude_line(NOW - 3600, [{"type": "text", "text": "done"}], stop_reason="end_turn"))
+        self.assertNotIn("STALE", printed(peek.activity, 5.0, [f"L={old}"], NOW))
+        old = self.task(claude_line(NOW - 3600, tool("x")))
+        self.assertNotIn("STALE", printed(peek.activity, 5.0, [f"L={old}"], NOW, peek.Thresholds(), {"L": False}))
+
+    def test_threshold_comes_from_the_thresholds(self):
+        path = self.task(claude_line(NOW - 3600, tool("x")))
+        self.assertNotIn("STALE", printed(peek.activity, 5.0, [f"L={path}"], NOW, peek.Thresholds(stale_minutes=90)))
+
+    def test_lines_without_a_timestamp_take_the_earlier_one(self):
+        """Streamed content blocks of one message land on several lines, some without a timestamp (printed as ?)."""
+        bare = json.dumps({"message": {"role": "assistant", "content": tool("echo bare")}})
+        path = self.task(claude_line(NOW - 100, tool("echo a")), bare)
+        text = printed(peek.activity, 5.0, [f"L={path}"], NOW)
+        self.assertNotIn("  ?  ", text)
+        self.assertEqual(
+            [t for t, _, _ in peek.claude([claude_line(NOW - 100, tool("a")), bare])], [NOW - 100, NOW - 100]
+        )
+
+    def test_a_transcript_without_stamps_uses_the_file_time(self):
+        path = self.task(json.dumps({"message": {"role": "assistant", "content": tool("x")}}))
+        os.utime(path, (NOW - 7200, NOW - 7200))
+        self.assertIn("STALE L: no new action for 120 min", printed(peek.activity, 5.0, [f"L={path}"], NOW))
+
+
+class OwnedIdleTests(unittest.TestCase):
+    PS = (
+        "10 1 3000 5 ep_poll python3 -m unittest discover\n"
+        "11 10 3000 1 ep_poll python3 worker\n"
+        "12 1 3000 2500 - python3 /own/busy.py\n"
+        "13 1 100 0 - python3 /own/young.py\n"
+        "14 1 3000 0 - python3 /own/dir/tool.py\n"
+        "15 1 3000 0 - unrelated\n"
+    )
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.proc = Path(self.temp.name)
+        for pid, cwd in {10: "/own/repo", 11: "/own/repo", 12: "/own/repo", 13: "/own/repo", 15: "/else"}.items():
+            (self.proc / str(pid)).mkdir()
+            os.symlink(cwd, self.proc / str(pid) / "cwd")
+
+    def test_cwd_or_argv_under_the_owned_dirs_flags_starved_top_level_processes(self):
+        rows = [r.split(None, 5) for r in self.PS.splitlines()]
+        text = printed(peek.owned_idle, "L", ("/own",), "local", rows, peek.Thresholds(), str(self.proc))
+        self.assertEqual(
+            text.splitlines(),
+            [
+                "== IDLE L pid 10 on local: 50 min wall, 5s CPU (0%), wchan ep_poll: python3 -m unittest discover",
+                "== IDLE L pid 14 on local: 50 min wall, 0s CPU (0%), wchan -: python3 /own/dir/tool.py",
+            ],
+        )
+
+    def test_the_lane_supervisor_and_its_agent_wait_by_design_but_their_commands_are_flagged(self):
+        rows = [
+            ["30", "1", "3000", "0", "poll", "python3 runner.py --cwd /own --name L --owns /own"],
+            ["31", "30", "3000", "0", "ep_poll", "codex app-server /own"],
+            ["32", "31", "3000", "0", "ep_poll", "python3 -m unittest /own"],
+        ]
+        text = printed(peek.owned_idle, "L", ("/own",), "rig", rows, peek.Thresholds(), "/nope")
+        self.assertEqual([line.split(":")[0] for line in text.splitlines()], ["== IDLE L pid 32 on rig"])
+
+    def test_owned_dir_prefix_is_a_path_boundary_and_the_peek_is_never_flagged(self):
+        rows = [[str(os.getpid()), "1", "3000", "0", "-", "python3 /own/x"], ["20", "1", "3000", "0", "-", "/owned/x"]]
+        self.assertEqual(printed(peek.owned_idle, "L", ("/own",), "rig", rows, peek.Thresholds(), "/nope"), "")
+
+    def test_run_checks_each_lane_on_local_and_rig_hosts_from_registry_facts(self):
+        path = self.proc / "t.jsonl"
+        path.write_text("")
+        calls = []
+
+        def ps(host):
+            calls.append(host)
+            return [["10", "1", "3000", "0", "-", "python3 /own/x"]]
+
+        facts = {"L": peek.LaneFacts(("/own",)), "OFF": peek.LaneFacts(("/own",), running=False)}
+        with mock.patch.object(peek, "process_rows", ps):
+            text = printed(
+                peek.run, 5.0, [f"L={path}", f"OFF={path}"], [], ["h unbake"], None, peek.Thresholds(), facts
+            )
+        self.assertEqual(calls, ["h", "local", "h"])
+        self.assertIn("== IDLE L pid 10 on local:", text)
+        self.assertIn("== IDLE L pid 10 on h:", text)
+        self.assertNotIn("IDLE OFF", text)
+
+    def test_owns_fall_back_to_launch_json_beside_the_transcript(self):
+        (self.proc / "LAUNCH.json").write_text(json.dumps({"owns": ["/own"]}))
+        self.assertEqual(peek.launch_owns(self.proc / "transcript.jsonl"), ("/own",))
+        self.assertEqual(peek.launch_owns(self.proc / "nowhere" / "transcript.jsonl"), ())
+
+
+class RunnerTimeoutTests(unittest.TestCase):
+    def test_a_hung_test_fails_fast_with_a_stack_dump(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "test_hang.py").write_text(
+                "import select, unittest\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_hang(self):\n"
+                "        select.select([], [], [], 60)\n"
+            )
+            runner = Path(__file__).resolve().parents[1] / "ci" / "run_tests.py"
+            env = {**os.environ, "ABU_TEST_TIMEOUT": "1"}
+            called = subprocess.run(
+                [sys.executable, str(runner), directory], capture_output=True, text=True, env=env, timeout=30
+            )
+        self.assertEqual(called.returncode, 1)
+        self.assertIn("test exceeded 1s", called.stderr)
+        self.assertIn("test_hang", called.stderr)
 
 
 if __name__ == "__main__":

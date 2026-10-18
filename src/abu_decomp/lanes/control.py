@@ -21,7 +21,7 @@ DONE_WHEN = ("identical", "result")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _KEYS = frozenset({"registry", "ladder", "codex", "socket_dir", "rules"})
 # `active_file`: the NAME=PATH list lanepeek reads; launch, continue and end keep it current when it is set.
-_OPTIONAL = frozenset({"active_file"})
+_OPTIONAL = frozenset({"active_file", "stale_minutes", "idle_minutes", "idle_cpu_percent"})
 # Spec keys a registry row keeps so `decomp lane continue` can relaunch the lane as it was.
 INHERITED = ("model", "kind", "effort", "wall", "continues", "owns", "track", "done_when", "fanout", "max_agents")
 RUNNER = Path(__file__).with_name("runner.py")
@@ -35,6 +35,7 @@ class Settings:
     socket_dir: Path
     rules: Path
     active_file: Path | None = None
+    limits: peek.Thresholds = peek.DEFAULT
 
 
 def settings(profile: Profile) -> Settings:
@@ -43,7 +44,8 @@ def settings(profile: Profile) -> Settings:
     config.check_keys(profile.source_file, "lanes", table, _KEYS, _KEYS | _OPTIONAL)
     paths = [profile.path(f"lanes.{key}", table[key]) for key in ("registry", "ladder", "codex", "socket_dir", "rules")]
     active = profile.path("lanes.active_file", table["active_file"]) if "active_file" in table else None
-    return Settings(*paths, active_file=active)
+    limits = {key: float(table[key]) for key in ("stale_minutes", "idle_minutes", "idle_cpu_percent") if key in table}
+    return Settings(*paths, active_file=active, limits=peek.Thresholds(**limits))
 
 
 def announce(profile: Profile, row: dict[str, Any], status: str, message: str) -> dict[str, Any] | None:
@@ -234,8 +236,24 @@ def peek_lanes(profile: Profile, names: list[str], minutes: float, extra: list[s
     specs += extra
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        peek.run(minutes, specs, jobs, rigs, state)
+        peek.run(minutes, specs, jobs, rigs, state, seat.limits, lane_facts(seat))
     return {"lanes": [spec.partition("=")[0] for spec in specs], "text": output.getvalue()}
+
+
+def lane_facts(seat: Settings) -> dict[str, peek.LaneFacts]:
+    """Owned dirs and running state per live registry lane. A lane whose unit is not active is not running; when the
+    unit list cannot be read every lane counts as running. Lanes without a row fall back to their LAUNCH.json."""
+    try:
+        units: set[str] | None = registry.active_units()
+    except (DecompError, OSError):
+        units = None
+    return {
+        row["name"]: peek.LaneFacts(
+            tuple(row.get("owns") or ()), units is None or not row.get("unit") or row["unit"] in units
+        )
+        for row in registry.load(seat.registry)
+        if row.get("state") == "live"
+    }
 
 
 def end(profile: Profile, name: str, reason: str, stop: bool) -> dict[str, Any]:

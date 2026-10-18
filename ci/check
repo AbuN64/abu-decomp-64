@@ -2,9 +2,10 @@
 # Lint, format and the test suite; every test runs in seconds with mocked tools.
 set -eu
 cd "$(dirname "$0")/.."
-ruff check src tests
-ruff format --check src tests
-PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" python3 -m unittest discover -s tests
+ruff check src tests ci
+ruff format --check src tests ci
+# Every test has a timeout (ci/run_tests.py, ABU_TEST_TIMEOUT seconds), so a hang fails with a stack dump.
+PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" python3 ci/run_tests.py tests
 # The Wayland input bridge is C: build it warning-clean from its protocol XML (generated into a scratch dir).
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
