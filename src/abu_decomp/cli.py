@@ -222,6 +222,43 @@ def _run_console(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
     return run_follower(profile, args.action), 0, []
 
 
+def _supervisor_arguments(parser: argparse.ArgumentParser) -> None:
+    actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
+    for name, text in (
+        ("run", "supervise a role headless until SIGTERM (SIGHUP restarts, SIGUSR1 pauses the retry)"),
+        ("status", "print a supervised role's status file"),
+        ("viewer", "exec the viewer command on an artifact role's current image"),
+    ):
+        actions.add_parser(name, help=text).add_argument("--role", required=True)
+    show = actions.add_parser("show-artifact", help="stage one real PNG/JPEG result for an artifact role")
+    show.add_argument("--role", required=True)
+    show.add_argument("--source", type=Path, required=True)
+    show.add_argument("--name", required=True)
+
+
+def _run_supervisor(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp.supervisor.cli import run
+
+    result = run(
+        _profile(args.profile), args.action, args.role, getattr(args, "source", None), getattr(args, "name", None)
+    )
+    return result, 0, []
+
+
+def _build_arguments(parser: argparse.ArgumentParser) -> None:
+    actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
+    once = actions.add_parser("once", help="pin committed sources, run the gates and promote the releases")
+    once.add_argument("--prove-only", action="store_true", help="run the gates without promoting")
+    actions.add_parser("status", help="print the latest and current build receipts")
+
+
+def _run_build(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp.build.cli import run
+
+    argv = [args.action, *(["--prove-only"] if getattr(args, "prove_only", False) else [])]
+    return run(_profile(args.profile), argv), 0, []
+
+
 def _served_elsewhere(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     raise DecompError("internal.dispatch", f"{args.command} is served by main, not by a command handler")
 
@@ -238,6 +275,8 @@ COMMANDS: dict[str, Command] = {
     "taste": Command("run Cake Taste with the profile's Taste profile", _passthrough, _run_tool),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
     "lane": Command("launch, steer, peek and end AI lanes", _lane_arguments, _run_lane),
+    "supervisor": Command("supervise a role headless, or stage an artifact", _supervisor_arguments, _run_supervisor),
+    "build": Command("build committed sources and promote verified releases", _build_arguments, _run_build),
     "console": Command(
         "run a tile console, the git ref follower or the bar status line", _console_arguments, _run_console
     ),

@@ -32,6 +32,7 @@ include = ["abu_decomp", "abu_decomp.*"]
 [tool.setuptools.package-data]
 "abu_decomp.port" = ["template/**/*", "template/**/.*"]
 "abu_decomp.stream" = ["input_bridge.c", "INPUT.md", "protocols/*.xml"]
+"abu_decomp.build" = ["SCHEMA.md"]
 
 [tool.ruff]
 line-length = 120

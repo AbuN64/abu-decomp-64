@@ -16,17 +16,16 @@ Project facts (paths, addresses, titles, repositories, ports, lane names) live i
 | Module | Boundary |
 |---|---|
 | `cli` | One entry point. Every command prints one envelope `{ok, result, findings, stages, invocation}`; help is plain text and `mcp` speaks MCP on stdout. Commands register in `COMMANDS` with their own argument definitions. |
-| `config` | One explicit JSON seat profile. Unknown or missing top-level keys fail with `file:key`. Each component validates its own section: `tools`, `events`, `stream`, `console`, `lanes`, `supervisor`. |
+| `config` | One explicit JSON seat profile. Unknown or missing top-level keys fail with `file:key`. Each component validates its own section: `tools`, `events`, `stream`, `console`, `lanes`, `supervisor`, `build`. |
 | `tools` | Pins and passthrough. Pins are this distribution's own direct requirements, read from its installed metadata. `decomp dependencies` requires each tool's `direct_url.json` at the pinned commit, Recipe Maker on the same unbake commit, and Cake Taste free of unbake and Recipe Maker. `decomp unbake|recipe|taste ...` runs the tool's `main(argv)` in an isolated interpreter; project, host and Taste profile come only from the `tools` section. |
 | `events` | Imports the Cake Taste writer (rule below) and requires event schema 2. Section `events`: `{path}`. `decomp event append|tail|validate`; `tail` shows the schema 2 kind of every line. `RUNG` is an unknown kind everywhere (no reader map; old feeds are rewritten once outside the tool). |
 | `stream` | Compositor, tile grid, transport, capture. A tile is a video role or a console. |
 | `console` | The one Textual console. Panes read files and CLI JSON only: progress.json, `unbake report --next`, event feeds, run status, lane PULSE.json and transcripts. |
 | `lanes` | Launch, steer, peek, end; the model ladder; the registry with its overlap guard. Ladder values and the registry file are workspace configuration. Section `lanes`: `registry`, `ladder`, `codex`, `socket_dir`, `rules`. Only `launch` and `end` write the registry. |
-| `supervisor` | Runs a target under gdb with retry and capture, the boot gate, RUN-FAIL events. Headless; the console reads its status file. |
+| `supervisor` | Runs a target under gdb with retry and capture, the boot gate, RUN-FAIL events. Headless; the console reads its status file. Section `supervisor`: `{runtime_root, roles}`; `decomp supervisor run|status|show-artifact|viewer --role R`. `run` stops on SIGTERM; SIGHUP restarts the run, SIGUSR1 toggles the retry pause. RUN-FAIL goes to the seat `events` feed. |
+| `build` | Committed-source build and verified releases (`build/SCHEMA.md`). Section `build`: the build tables plus `project_root`, `runtime_root`, `output_root`. `decomp build once [--prove-only]|status`. |
 | `port` | Generates a port repository skeleton from a port spec (below). |
 | `mcp` | The MCP shim (below). |
-
-`stream`, `console` and `supervisor` hold types only until their code moves from Cake Taste at the rig cutover.
 
 ## Event schema 2
 
