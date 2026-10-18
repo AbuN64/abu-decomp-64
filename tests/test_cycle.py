@@ -33,8 +33,13 @@ class Tools:
 
 
 class FakeRefs:
+    pull_seconds = None
+
     def __init__(self, profile, config):
         self.config = config
+        self.pulls = 0
+        if config.get("pull_seconds"):
+            self.pull_seconds = config["pull_seconds"]
         self.read, self.write = os.pipe()
         os.set_blocking(self.read, False)  # like the inotify fds RefSource returns
         self.pending = 0
@@ -50,8 +55,24 @@ class FakeRefs:
         self.pending = 1
         os.write(self.write, b"x")
 
+    def pull(self):
+        self.pulls += 1
+        if self.pulls == 1:
+            self.land()  # the first pull fetched one new commit; later pulls find nothing
 
-class CycleTests(unittest.TestCase):
+
+class Builds:
+    def __init__(self, ok=True):
+        self.ok, self.argvs = ok, []
+
+    def __call__(self, argv, **_kw):
+        self.argvs.append(argv)
+        if self.ok:
+            return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+        return SimpleNamespace(returncode=1, stdout='{"ok": false, "findings": [{"message": "gate boot"}]}', stderr="")
+
+
+class CycleBase(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -62,7 +83,7 @@ class CycleTests(unittest.TestCase):
         (self.root / "host.toml").write_text("")
         self.events = []
 
-    def cycle(self, numbers, *, recipe_ok=True, refs=False, **extra):
+    def cycle(self, numbers, *, recipe_ok=True, refs=False, builds=None, **extra):
         table = {
             "sources": ["src", "include"],
             "suffixes": [".c", ".h", ".CPP"],
@@ -72,7 +93,8 @@ class CycleTests(unittest.TestCase):
             **extra,
         }
         if refs:
-            table["refs"] = {"repos": [], "state_path": "seen.json"}
+            table["refs"] = {"repos": [], "state_path": "seen.json", **(refs if isinstance(refs, dict) else {})}
+        table = {key: value for key, value in table.items() if value is not None}
         document = {
             "schema_version": 1,
             "name": "t",
@@ -88,10 +110,13 @@ class CycleTests(unittest.TestCase):
             invoke=self.tools,
             append=lambda _path, record: self.events.append(record),
             ref_source=FakeRefs,
+            run_command=builds or Builds(),
         )
         self.addCleanup(cycle.close)
         return cycle
 
+
+class CycleTests(CycleBase):
     def test_one_touched_source_file_runs_recipe_and_report_exactly_once(self):
         cycle = self.cycle([100, 100])
         (self.project / "src/game/a.c").write_text("int a;\n")
@@ -178,3 +203,48 @@ class CycleTests(unittest.TestCase):
         after = {"us": {"code_matched": 2, "data_matched": 5}, "eu": {"code_matched": 3}}
         self.assertEqual(delta_message(before, after), "progress us code 1->2 (+1)")
         self.assertIsNone(delta_message(after, after))
+
+
+class BuildLoopTests(CycleBase):
+    """The live build loop 1:1: build once at start, then once per landed ref, no source roots, no report."""
+
+    def loop(self, builds, **extra):
+        refs = extra.pop("refs", True)
+        return self.cycle([], refs=refs, builds=builds, sources=None, suffixes=None, recipe=None, report=False,
+                          build=["once"], **extra)  # fmt: skip
+
+    def test_build_runs_at_start_and_once_per_landed_ref(self):
+        builds = Builds()
+        cycle = self.loop(builds, run_at_start=True)
+        self.assertEqual(cycle.watcher.directories, {})
+        cycle.refs.land()
+        runs = cycle.serve(max_runs=2)
+        self.assertEqual([run["trigger"] for run in runs], [["start"], ["landed refs"]])
+        self.assertEqual(len(builds.argvs), 2)
+        self.assertEqual(builds.argvs[0][-4:], ["--profile", str(self.root / "seat.json"), "build", "once"])
+        self.assertEqual(self.tools.calls, [])
+
+    def test_a_failed_build_is_one_run_fail_with_the_finding(self):
+        cycle = self.loop(Builds(ok=False))
+        cycle.refs.land()
+        run = cycle.serve(max_runs=1)[0]
+        self.assertFalse(run["build"])
+        self.assertEqual(
+            [(e["kind"], e["message"]) for e in self.events], [("RUN-FAIL", "cycle build once failed: gate boot")]
+        )
+
+    def test_land_refs_append_land_but_trigger_nothing(self):
+        cycle = self.loop(Builds(), land_refs={"repos": [], "state_path": "land.json"})
+        cycle.land_refs.land()
+        cycle.refs.land()
+        runs = cycle.serve(max_runs=1)
+        self.assertEqual(runs[0]["trigger"], ["landed refs"])
+        cycle.land_refs.land()
+        self.assertEqual(cycle.land_refs.scan(), 1)  # LAND appended by the source; no burst was opened for it
+
+    def test_the_pull_timer_moves_refs_and_the_landing_triggers_one_build(self):
+        builds = Builds()
+        cycle = self.loop(builds, refs={"pull_seconds": 0.01})
+        run = cycle.serve(max_runs=1)[0]
+        self.assertGreaterEqual(cycle.refs.pulls, 1)
+        self.assertEqual((run["trigger"], len(builds.argvs)), (["landed refs"], 1))

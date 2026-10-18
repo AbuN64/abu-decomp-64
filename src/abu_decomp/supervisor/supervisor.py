@@ -335,12 +335,23 @@ class Supervisor:
                 await self._countdown()
 
 
+def pidfile(status_path: Path) -> Path:
+    """Where the headless supervisor publishes its pid, so a console can send it SIGHUP and SIGUSR1."""
+    return status_path.with_name(status_path.name + ".pid")
+
+
 def run_supervisor(profile: Any, role_id: str, config: dict[str, Any]) -> dict[str, Any]:
     """Run the role headless until SIGTERM or SIGINT. SIGHUP restarts the run now; SIGUSR1 toggles the retry pause.
 
-    The console draws the status file (`supervisor_status`); this process draws nothing.
+    The console draws the status file (`supervisor_status`); this process draws nothing. Its pid is in
+    `pidfile(status_path)` while it runs.
     """
     supervisor = Supervisor(profile, role_id, config)
+    published = pidfile(supervisor.status_path)
+    published.parent.mkdir(parents=True, exist_ok=True)
+    temporary = published.with_name(published.name + ".new")
+    temporary.write_text(f"{os.getpid()}\n")
+    os.replace(temporary, published)
 
     def restart() -> None:
         supervisor.paused = False
@@ -365,5 +376,10 @@ def run_supervisor(profile: Any, role_id: str, config: dict[str, Any]) -> dict[s
             await task
         await supervisor._stop_child()
 
-    asyncio.run(serve())
+    try:
+        asyncio.run(serve())
+    finally:
+        with suppress(FileNotFoundError):
+            if published.read_text().strip() == str(os.getpid()):
+                published.unlink()
     return {"closed": True, "role": role_id, "status_path": str(supervisor.status_path)}

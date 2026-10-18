@@ -6,6 +6,7 @@ import asyncio
 import ctypes
 import hashlib
 import os
+import signal
 from contextlib import suppress
 from pathlib import Path
 from typing import ClassVar
@@ -101,9 +102,9 @@ class ConsoleApp(App):
         Binding("f7", "pause", "Pause retry", show=False),
     ]
 
-    def __init__(self, sources: Sources, supervisor=None):
+    def __init__(self, sources: Sources, supervisor=None, signals: SupervisorSignals | None = None):
         super().__init__(driver_class=ConsoleDriver)
-        self.sources, self.supervisor = sources, supervisor
+        self.sources, self.supervisor, self.signals = sources, supervisor, signals
         self.widgets: dict[str, EvidenceRow] = {}
         self.watchers: dict[Path, int] = {}
         self.refresh_pending = False
@@ -201,11 +202,15 @@ class ConsoleApp(App):
         if self.supervisor:
             self.supervisor.paused = False
             self.supervisor.restart.set()
+        elif self.signals:
+            self.notify(self.signals.send(signal.SIGHUP, "restart"))
 
     def action_pause(self) -> None:
         if self.supervisor:
             self.supervisor.paused = not self.supervisor.paused
             self.supervisor.persist()
+        elif self.signals:
+            self.notify(self.signals.send(signal.SIGUSR1, "pause toggle"))
 
     async def on_unmount(self) -> None:
         loop = asyncio.get_running_loop()
@@ -219,6 +224,21 @@ class ConsoleApp(App):
             await self.supervisor._stop_child()
 
 
+class SupervisorSignals:
+    """F5 and F7 for a headless `decomp supervisor run`: SIGHUP restarts the run, SIGUSR1 toggles the retry pause."""
+
+    def __init__(self, pidfile: Path) -> None:
+        self.pidfile = pidfile
+
+    def send(self, number: int, action: str) -> str:
+        try:
+            pid = int(self.pidfile.read_text())
+            os.kill(pid, number)
+        except (OSError, ValueError) as error:
+            return f"supervisor {action} not sent: {error}"
+        return f"supervisor {action} sent to {pid}"
+
+
 def run_console(
     path: Path,
     *,
@@ -228,6 +248,13 @@ def run_console(
     host_log: Path | None = None,
     sources: dict | None = None,
 ) -> None:
+    status = (sources or {}).get("supervisor_status")
+    signals = None
+    if status:
+        from abu_decomp.supervisor.supervisor import pidfile
+
+        signals = SupervisorSignals(pidfile(Path(status)))
     ConsoleApp(
-        Sources(path, title=title, config=sources, kinds=kinds, host_log=host_log, limit=min(max_lines, 200))
+        Sources(path, title=title, config=sources, kinds=kinds, host_log=host_log, limit=min(max_lines, 200)),
+        signals=signals,
     ).run()
