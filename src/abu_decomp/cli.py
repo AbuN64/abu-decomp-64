@@ -148,6 +148,55 @@ def _run_event(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
     return {"path": str(path), "events": report["events"], "schemas": report["schemas"]}, int(bool(findings)), findings
 
 
+def _lane_arguments(parser: argparse.ArgumentParser) -> None:
+    actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
+    launch = actions.add_parser(
+        "launch", help="start a lane as a systemd user unit after the ladder and overlap checks"
+    )
+    launch.add_argument("--name", required=True)
+    launch.add_argument("--kind", required=True, choices=("tooling", "impl"))
+    launch.add_argument("--model", required=True)
+    launch.add_argument("--effort", required=True)
+    launch.add_argument("--track", required=True, choices=("official", "experiment"))
+    launch.add_argument("--owns", required=True, action="append", help="absolute path the lane may write (repeatable)")
+    launch.add_argument("--dir", type=Path, required=True, help="lane directory holding brief.md")
+    launch.add_argument("--cwd", type=Path, required=True)
+    launch.add_argument("--wall", type=int, required=True, help="wall seconds")
+    launch.add_argument("--continues", type=int, required=True)
+    launch.add_argument("--done-when", required=True, choices=("identical", "result"))
+    launch.add_argument("--fanout", required=True, choices=("enabled", "disabled"))
+    launch.add_argument("--max-agents", type=int, required=True)
+    launch.add_argument("--owner-override", help="the owner's reason for a model outside the ladder")
+    steer = actions.add_parser("steer", help="append the text of a file to a lane's active turn")
+    steer.add_argument("--name", help="a registered live lane")
+    steer.add_argument("--dir", type=Path, help="lane directory (a lane launched elsewhere)")
+    steer.add_argument("--socket", type=Path, help="lane socket (a lane launched elsewhere)")
+    steer.add_argument("file", type=Path, help="file holding the instruction text")
+    peek = actions.add_parser("peek", help="recent actions and waste counters of live lanes")
+    peek.add_argument("--minutes", type=float, default=5.0)
+    peek.add_argument("--name", action="append", default=[], help="a live lane (default: all)")
+    peek.add_argument("extra", nargs="*", help="additional NAME=PATH transcripts")
+    end = actions.add_parser("end", help="mark a lane ended in the registry")
+    end.add_argument("--name", required=True)
+    end.add_argument("--reason", required=True)
+    end.add_argument("--stop", action="store_true", help="also stop the lane's running unit")
+
+
+def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp.lanes import control
+
+    profile = _profile(args.profile)
+    if args.action == "launch":
+        spec = {key: value for key, value in vars(args).items() if key not in {"command", "action", "profile"}}
+        spec["owns"] = [str(path) for path in args.owns]
+        return control.launch(profile, spec), 0, []
+    if args.action == "steer":
+        return control.steer_lane(profile, args.name, args.dir, args.socket, args.file), 0, []
+    if args.action == "peek":
+        return control.peek_lanes(profile, args.name, args.minutes, args.extra), 0, []
+    return control.end(profile, args.name, args.reason, args.stop), 0, []
+
+
 def _served_elsewhere(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     raise DecompError("internal.dispatch", f"{args.command} is served by main, not by a command handler")
 
@@ -163,6 +212,7 @@ COMMANDS: dict[str, Command] = {
     "recipe": Command("run Recipe Maker on the profile's project", _passthrough, _run_tool),
     "taste": Command("run Cake Taste with the profile's Taste profile", _passthrough, _run_tool),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
+    "lane": Command("launch, steer, peek and end AI lanes", _lane_arguments, _run_lane),
     "port": Command("generate a native port repository skeleton", _port_arguments, _run_port),
     "describe": Command("list every command and its arguments as JSON", _none, _run_describe),
     "mcp": Command("serve the commands as MCP tools over stdio", _none, _served_elsewhere),
