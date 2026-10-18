@@ -197,6 +197,12 @@ def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     return control.end(profile, args.name, args.reason, args.stop), 0, []
 
 
+def _run_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp.cycle import serve
+
+    return serve(_profile(args.profile)), 0, []
+
+
 def _run_stream(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp.stream.cli import run
 
@@ -280,6 +286,7 @@ COMMANDS: dict[str, Command] = {
     "console": Command(
         "run a tile console, the git ref follower or the bar status line", _console_arguments, _run_console
     ),
+    "cycle": Command("rerun Recipe and unbake report whenever the decomp sources settle", _none, _run_cycle),
     "stream": Command("serve, supervise, control and capture the headless tile stream", _passthrough, _run_stream),
     "port": Command("generate a native port repository skeleton", _port_arguments, _run_port),
     "describe": Command("list every command and its arguments as JSON", _none, _run_describe),
