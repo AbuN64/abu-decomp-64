@@ -1,0 +1,3 @@
+Sys_Init: headless platform ready
+{{boot_subsystem}}: entering {{boot_label}} owner {{boot_owner}}
+ERROR: {{boot_subsystem}}: original {{boot_label}} owner {{boot_owner}} has no native implementation

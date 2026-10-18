@@ -1,0 +1,7 @@
+#!/bin/sh
+# Lint, format and the test suite; every test runs in seconds with mocked tools.
+set -eu
+cd "$(dirname "$0")/.."
+ruff check src tests
+ruff format --check src tests
+PYTHONPATH=src python3 -m unittest discover -s tests

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abu-decomp-64"
+version = "0.1.0"
+description = "The N64 decompilation dev cycle and its seat over unbake, Recipe Maker and Cake Taste"
+readme = "README.md"
+license = {file = "LICENSE"}
+classifiers = ["License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)"]
+requires-python = ">=3.13"
+# Direct pins by commit. `decomp dependencies` reads these lines from the installed metadata and checks
+# each installed tool against them, so this table is the only place a pin is written.
+dependencies = [
+  "unbake @ git+https://github.com/AbuN64/cake-unbake-64@21cc6394c7d5bc17c554d052c43c38f92b943f79",
+  "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@572cfc195d1e8474b921b830cc402fa0a78d5bb6",
+  "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@a7bae4c2da4c0ba7281975e08d18207ca6821114",
+]
+
+[project.optional-dependencies]
+dev = ["ruff==0.16.9"]
+
+[project.scripts]
+decomp = "abu_decomp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["abu_decomp", "abu_decomp.*"]
+
+[tool.setuptools.package-data]
+"abu_decomp.port" = ["template/**/*", "template/**/.*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
