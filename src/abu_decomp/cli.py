@@ -206,6 +206,44 @@ def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     return control.end(profile, args.name, args.reason, args.stop), 0, []
 
 
+def _probe_arguments(parser: argparse.ArgumentParser) -> None:
+    actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
+    request = actions.add_parser("request", help="queue one oracle probe request and announce it as HANDOFF")
+    request.add_argument("--requester", required=True, help="requesting lane")
+    request.add_argument("--address", required=True, help="owner address, 0x...")
+    request.add_argument("--function", required=True, help="function name")
+    request.add_argument("--question", required=True, help="one line: what the probe must observe")
+    request.add_argument("--decomp-path", help="decomp source path of the owner")
+    request.add_argument("--match-state", help="match state of that source")
+    request.add_argument("--evidence", type=Path, action="append", default=[], help="file the request rests on")
+    request.add_argument("--supersedes", help="id of the request this one replaces")
+    actions.add_parser("serve", help="the open requests, oldest first, each with its Taste repro story")
+    status = actions.add_parser("status", help="every request joined to its PROBE events")
+    status.add_argument("--id", help="one request")
+
+
+def _run_probe(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import probe
+
+    profile = _profile(args.profile)
+    if args.action == "request":
+        result = probe.make_request(
+            profile,
+            requester=args.requester,
+            address=args.address,
+            function=args.function,
+            question=args.question,
+            decomp_path=args.decomp_path,
+            match_state=args.match_state,
+            evidence=args.evidence,
+            supersedes=args.supersedes,
+        )
+        return result, 0, []
+    if args.action == "serve":
+        return probe.serve(profile), 0, []
+    return probe.status(profile, args.id), 0, []
+
+
 def _run_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp.cycle import serve
 
@@ -295,6 +333,7 @@ COMMANDS: dict[str, Command] = {
     "console": Command(
         "run a tile console, the git ref follower or the bar status line", _console_arguments, _run_console
     ),
+    "probe": Command("queue oracle probe requests and join them to PROBE events", _probe_arguments, _run_probe),
     "cycle": Command("rerun Recipe and unbake report whenever the decomp sources settle", _none, _run_cycle),
     "stream": Command("serve, supervise, control and capture the headless tile stream", _passthrough, _run_stream),
     "port": Command("generate a native port repository skeleton", _port_arguments, _run_port),

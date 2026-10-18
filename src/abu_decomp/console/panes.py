@@ -15,6 +15,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -248,7 +249,68 @@ class LanesPane:
         return rows
 
 
+class ExperimentsPane:
+    """Open and running probe requests with their age, the last PROBE per owner address, and the host counters."""
+
+    name = "experiments"
+    uses_events = True
+
+    def __init__(self, config: dict[str, Any]):
+        self.requests = Path(config["queue"]) / "requests"
+        self.limit = int(config.get("limit", 8))
+
+    def rows(self, sources: Any, events: list[dict[str, Any]]) -> list[Row]:
+        from abu_decomp.probe import join, load
+
+        sources.watched.add(self.requests / ".console-watch")
+        # every PROBE the feeds still hold (the last 4000 per feed), not only the kind-filtered, shown window
+        held = [event for records in sources.records.values() for event in records]
+        probes = sorted((e for e in held if canonical_kind(e) == "PROBE"), key=lambda e: str(e.get("time", "")))
+        del events
+        joined = join(load(self.requests), probes)
+        rows = []
+        waiting = [row for row in joined if row["state"] in ("open", "running")]
+        for row in waiting:
+            request = row["request"]
+            created = datetime.fromisoformat(request["created"]).timestamp()
+            title = (
+                f"{row['state']} {age(time.time() - created)}  {request['address']} {request['function']}"
+                f"  · {request['question']}"
+            )
+            lines = [f"{key}: {request.get(key)}" for key in ("id", "requester", "decomp_path", "match_state")]
+            lines += [f"evidence: {item['path']} {item['sha256'][:12]}" for item in request.get("evidence", [])]
+            rows.append(
+                Row(f"req-{row['id']}", title, "\n".join(lines), "planned" if row["state"] == "open" else "event")
+            )
+        if not waiting:
+            rows.append(
+                Row("req-none", f"no open probe requests ({len(joined)} in the queue)", str(self.requests), "planned")
+            )
+        latest: dict[str, dict[str, Any]] = {}
+        for event in probes:
+            address = str((event.get("payload") or {}).get("owner_address") or "unknown")
+            if address != "unknown":
+                latest[address] = event
+        for address, event in sorted(latest.items(), key=lambda item: str(item[1].get("time")), reverse=True)[
+            : self.limit
+        ]:
+            payload = event.get("payload") or {}
+            title = (
+                f"{str(event.get('time', ''))[11:19]} {address} [{payload.get('match_state', 'unknown')}]"
+                f" {event.get('status')} · {payload.get('question') or event.get('message', '')}"
+            )
+            state = "stop" if event.get("status") in ("failed", "blocked") else "passed"
+            rows.append(Row(f"probe-{address}", title, "\n".join(format_event(event)), state))
+        if sources.host is not None:
+            host = sources.host
+            rows.append(
+                Row("host", f"host frames {host.frames} · graphics {host.graphics_tasks} · VI {host.vi}", "", "raw")
+            )
+        return rows
+
+
 PANES: dict[str, Callable[[dict[str, Any]], Any]] = {
+    "experiments": ExperimentsPane,
     "progress": ProgressPane,
     "landings": LandingsPane,
     "lanes": LanesPane,
@@ -258,8 +320,16 @@ PANES: dict[str, Callable[[dict[str, Any]], Any]] = {
 def lifecycle_model(panes: dict[str, Any], sources: Any, events: list[dict[str, Any]], title: str) -> Dashboard:
     rows: list[Row] = []
     for name, pane in panes.items():
-        rows.extend(pane.rows(events) if name == "landings" else pane.rows(sources))
+        if getattr(pane, "uses_events", False):
+            rows.extend(pane.rows(sources, events))
+        else:
+            rows.extend(pane.rows(events) if name == "landings" else pane.rows(sources))
     live = sum(1 for row in rows if row.key.startswith("lane-") and row.key != "lane-none")
     landed = sum(1 for row in rows if row.key.startswith("land-") and row.key != "land-none")
     first = next((row.title for row in rows if row.key.startswith("progress-")), "no progress.json")
-    return Dashboard(f"{title} · {live} live lanes · {landed} landings", first, rows, rows[0].key if rows else None)
+    heading = f"{title} · {live} live lanes · {landed} landings"
+    if "experiments" in panes:
+        waiting = sum(1 for row in rows if row.key.startswith("req-") and row.key != "req-none")
+        first = next((row.title for row in rows if row.key.startswith("probe-")), "no PROBE yet")
+        heading = f"{title} · {waiting} open probe requests"
+    return Dashboard(heading, first, rows, rows[0].key if rows else None)
