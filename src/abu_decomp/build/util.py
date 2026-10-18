@@ -16,6 +16,8 @@ class BuildFailure(Exception):
         super().__init__(message)
         self.step = step
         self.steps = steps or []
+
+
 def validate_identifiers(config):
     """Reject path-bearing names and duplicates before creating a workspace."""
     for section in ("sources", "inputs", "checks", "commands", "outputs", "releases"):
