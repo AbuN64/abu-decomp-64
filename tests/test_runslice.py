@@ -65,7 +65,7 @@ class Enter(unittest.TestCase):
                 "-m",
                 "abu_decomp",
                 "make",
-            ],  # fmt: skip
+            ],
         )
         self.assertEqual(env[runslice.ENTERED], "decomp.slice")
 
