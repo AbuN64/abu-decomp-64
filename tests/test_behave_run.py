@@ -240,6 +240,122 @@ class RunTests(unittest.TestCase):
         _, envelope = self.invoke("--cases", "3")
         self.assertEqual(envelope["result"]["cases"], 3)
 
+    def seeded_probe(self, profile, work, name, request, function):
+        """A function that only runs over the captured memory: unmapped without the seed, ok with it."""
+        done = self.fake_probe(profile, work, name, request, function)
+        if "seed" not in request:
+            for row in done["cases"]:
+                row.update(status="unmapped", detail="unmapped 00000000 4 last 0")
+        return done
+
+    def seed(self):
+        return {
+            "memory": [{"addr": "0x80000000", "file": "/ram.bin", "sha256": "ab" * 32}],
+            "sp": "0x80123400",
+            "case": {"name": "seed-f-hit1", "registers": {"r4": "0x80000100", "r5": "0x7"}},
+            "capture": {
+                "function": "f",
+                "hit": 1,
+                "rom_sha1": "c" * 40,
+                "rdram_sha256": "d" * 64,
+                "sp": "0x80123400",
+                "rdram_path": "/ram.bin",
+                "cached": False,
+            },
+        }
+
+    def seeded_run(self, seed):
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(run, "probe", self.seeded_probe),
+            mock.patch.object(run, "capture_seed", lambda *a: (seed, "" if seed else "no capture section")),
+            mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
+            mock.patch.object(
+                run.build_candidate,
+                "build",
+                lambda *a, **k: cand.Image(
+                    self.root / "c.bin", 0x80800000, ({"name": "f", "offset": 0, "size": 0x40},), 0x40, "ab" * 32
+                ),
+            ),
+            contextlib.redirect_stdout(stdout),
+        ):
+            main(
+                [
+                    "--profile",
+                    str(self.seat),
+                    "behave",
+                    "--function",
+                    "f",
+                    "--candidate",
+                    str(self.candidate),
+                    "--cases",
+                    "8",
+                ]
+            )
+        return json.loads(stdout.getvalue())
+
+    def test_strict_memory_that_completes_no_case_is_seeded_from_the_oracle_before_the_lenient_fallback(self):
+        envelope = self.seeded_run(self.seed())
+        result = envelope["result"]
+        self.assertEqual(result["oracle_seed"]["function"], "f")
+        self.assertEqual(result["oracle_seed"]["rom_sha1"], "c" * 40)
+        self.assertNotIn("lenient", [f["key"] for f in envelope["findings"]])
+        self.assertIn("behave.seed", [f["key"] for f in envelope["findings"]])
+        final = [r for n, r in self.probes if n in ("original", "candidate")][-2:]
+        for request in final:
+            self.assertEqual(request["seed"]["memory"][0]["file"], "/ram.bin")
+            self.assertEqual(request["sp"], "0x80123400")
+            self.assertFalse(request.get("lenient"))
+            self.assertEqual(request["cases"][-1]["name"], "seed-f-hit1")  # the entry registers, one more case
+            self.assertEqual(request["cases"][-1]["registers"]["r4"], "0x80000100")
+        learn = [r for n, r in self.probes if n == "learn"]
+        self.assertTrue(all(r["cases"][-1]["name"] != "seed-f-hit1" for r in learn))
+        self.assertEqual(result["cases"], 9)
+        self.assertEqual(result["verdict"], "same")
+
+    def test_without_a_capture_the_lenient_fallback_still_runs_and_says_why_there_is_no_seed(self):
+        envelope = self.seeded_run(None)
+        keys = [f["key"] for f in envelope["findings"]]
+        self.assertIn("behave.seed", keys)
+        self.assertIn("behave.lenient", keys)
+        self.assertNotIn("oracle_seed", envelope["result"])
+        self.assertTrue(any(r.get("lenient") for _, r in self.probes))
+
+    def test_no_capture_flag_goes_straight_to_the_lenient_fallback(self):
+        called = []
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(run, "probe", self.seeded_probe),
+            mock.patch.object(run, "capture_seed", lambda *a: called.append(a) or (None, "")),
+            mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
+            contextlib.redirect_stdout(stdout),
+        ):
+            main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6", "--no-capture"])
+        self.assertEqual(called, [])
+        self.assertIn("behave.lenient", [f["key"] for f in json.loads(stdout.getvalue())["findings"]])
+
+    def test_a_probe_with_other_stubs_asks_for_its_own_capture(self):
+        asked = []
+
+        def probe(profile, work, name, request, function):
+            done = self.seeded_probe(profile, work, name, request, function)
+            done["record"]["stubs"] = {"g": "boundary"}
+            return done
+
+        def grab(*a):
+            asked.append(a[-1])
+            return {**self.seed(), "capture": {**self.seed()["capture"], "stubs": list(a[-1])}}, ""
+
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(run, "probe", probe),
+            mock.patch.object(run, "capture_seed", grab),
+            mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
+            contextlib.redirect_stdout(stdout),
+        ):
+            main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6"])
+        self.assertEqual(asked, [["g"]])  # asked once with the stubs of the probe, not again for the same set
+
     def test_an_unknown_function_is_a_named_refusal(self):
         stdout = io.StringIO()
         with (

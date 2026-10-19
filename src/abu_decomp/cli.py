@@ -437,13 +437,26 @@ def _behave_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cases", type=int, help="input combinations to run, capped (default: profile behave.cases)")
     parser.add_argument("--seed", type=int, default=1, help="seed of the deterministic input set (default 1)")
     parser.add_argument("--depth", type=int, help="calls deep the original callees run; deeper ones are stubs")
+    parser.add_argument(
+        "--no-capture", action="store_true", help="never ask the oracle for run-time memory when strict memory fails"
+    )
+    parser.add_argument("--capture-hit", type=int, default=1, help="which entry of the function the capture stops at")
 
 
 def _run_behave(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp.behave.run import Options, run
 
     options = Options(
-        args.function, args.candidate, args.version, args.cases, args.seed, args.project, args.host, args.depth
+        args.function,
+        args.candidate,
+        args.version,
+        args.cases,
+        args.seed,
+        args.project,
+        args.host,
+        args.depth,
+        capture=not args.no_capture,
+        hit=args.capture_hit,
     )
     return run(_profile(args.profile), options)
 

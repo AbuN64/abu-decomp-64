@@ -54,6 +54,10 @@ class Options:
     cache: bool = True
     lenient: bool = False  # unmapped reads answer zero and calls outside the closure are stubs (set when no case ran)
     deepened: bool = False  # depth was raised by this command (not given), so it may be raised again
+    capture: bool = True  # ask the oracle for real run-time memory when strict memory completes no case
+    hit: int = 1  # which entry of the function the capture stops at
+    recaptured: bool = False  # the capture was repeated for this probe's stubs (once per run: no loop)
+    seeded: dict[str, Any] | None = None  # the capture's seed (see capture_seed): RDRAM image, sp, entry case
 
 
 def configuration(profile: Profile) -> dict[str, Any]:
@@ -109,6 +113,35 @@ def probe(profile: Profile, work: Path, name: str, request: dict[str, Any], func
     record = called.document["result"]["probe"]
     results = json.loads(Path(record["cases_path"]).read_text())
     return {"record": record, "cases": results}
+
+
+def capture_seed(
+    profile: Profile, version: str, function: str, hit: int, stubs: list[str]
+) -> tuple[dict[str, Any] | None, str]:
+    """One `taste repro capture`: the oracle run to the function's entry, with what each of `stubs` (the callees the
+    probe cuts off) returned and wrote on the way out. The seed (RDRAM image, entry stack pointer and the entry
+    registers as one case whose stubs answer as the real ones did) with the capture record that names it, or the
+    reason there is none."""
+    called = invoke(
+        "taste",
+        profile,
+        [
+            "repro",
+            "capture",
+            "--function",
+            function,
+            "--version",
+            version,
+            "--hit",
+            str(hit),
+            *(["--stubs", ",".join(stubs)] if stubs else []),
+        ],
+    )
+    if not called.ok:
+        findings = called.document.get("findings") or [{"message": f"taste exited {called.returncode}"}]
+        return None, "; ".join(str(f.get("message") or f) for f in findings)
+    result = called.document["result"]
+    return {**result["seed"], "capture": result["capture"]}, ""
 
 
 def _request(
@@ -187,6 +220,8 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         it never returns in any budget we would record, and stays fatal."""
         nonlocal waited, budget, hopeless
         request = dict(request, event_budget=budget, **({"lenient": True} if options.lenient else {}))
+        if options.seeded:  # real run-time memory under every generated case, the entry stack where it was
+            request = dict(request, seed={"memory": options.seeded["memory"]}, sp=options.seeded["sp"])
         done = probe(profile, work, name, request, options.function)
         waited += done["record"].get("lock_wait_seconds", 0.0)
         for _ in range(2):
@@ -281,6 +316,9 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
             break
     mark = lap("learn", mark)
     cases, regions = inputs.seeded_cases(proto, count, options.seed, layout, learned)
+    if options.seeded:  # the registers the real game entered the function with, over the captured memory
+        entry = options.seeded["case"]
+        cases = [*cases, {**entry, "labels": {"seed": entry["name"]}}]
     memory_end = layout.reach(regions)
     image = None
     if candidate_file:
@@ -314,11 +352,48 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
     mark = lap("original", mark)
     record = original["record"]
     cut = [name for name, why in record.get("stubs", {}).items() if why == "boundary"]
-    if (
+    starved = (
         not options.lenient
         and not any(c["status"] == "ok" for c in original["cases"])
         and any(c["status"] == "unmapped" or "indirect-call" in c["detail"] for c in original["cases"])
-    ):
+    )
+    if starved and options.capture and options.seeded is None:
+        # strict memory completes no case: the function reads state the game built at run time. The real ROM is run
+        # to its entry and both bodies run again over that memory (and its entry registers as one more case); only
+        # when that is not available does the lenient memory below stand in.
+        seed, why = capture_seed(profile, version, options.function, options.hit, sorted(record.get("stubs", {})))
+        if seed is None:
+            findings.append(
+                {"key": "behave.seed", "blocking": False, "message": f"no oracle capture to seed memory: {why}"}
+            )
+            options = replace(options, capture=False)
+        else:
+            again, code, more = run(profile, replace(options, seeded=seed))
+            shown = seed["capture"]
+            more.append(
+                {
+                    "key": "behave.seed",
+                    "blocking": False,
+                    "message": f"strict memory completed no case; seeded from the oracle at entry {shown['hit']} of "
+                    f"{shown['function']} (rdram {shown['rdram_sha256'][:12]}, rom sha1 {shown['rom_sha1'][:12]})",
+                }
+            )
+            return again, code, [*findings, *more]
+    if options.seeded and options.capture and not options.recaptured:
+        # the recorded calls hold for the callees that were stubs when the oracle ran (a call inside a stub is not
+        # the probe's call): a probe with other stubs (another depth) needs its own capture
+        asked = set(options.seeded["capture"].get("stubs", []))
+        if set(record.get("stubs", {})) - asked:
+            seed, why = capture_seed(profile, version, options.function, options.hit, sorted(record["stubs"]))
+            if seed is None:
+                findings.append(
+                    {"key": "behave.seed", "blocking": False, "message": f"no oracle capture for these stubs: {why}"}
+                )
+                options = replace(options, capture=False)
+            else:
+                again, code, more = run(profile, replace(options, seeded=seed, recaptured=True))
+                return again, code, [*findings, *more]
+    if starved:
         # no case got through: the input memory lacks state the program built at run time (null pointers and
         # function pointers the original dereferences). Both bodies run again over a memory where unmapped reads
         # answer zero, so what each does with the same garbage is still compared.
@@ -350,6 +425,26 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         )
         return deeper, code, [*findings, *more]
     stack = _stack(record)
+    seed_used = None
+    if options.seeded:
+        shown = options.seeded["capture"]
+        seed_used = {
+            k: shown[k]
+            for k in (
+                "function",
+                "hit",
+                "rom_sha1",
+                "rdram_sha256",
+                "sp",
+                "rdram_path",
+                "cached",
+                "calls",
+                "calls_complete",
+                "calls_unresolved",
+                "calls_dropped_writes",
+            )
+            if k in shown
+        }
     common = {
         "function": options.function,
         "version": version,
@@ -359,6 +454,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         "seed": options.seed,
         "depth": depth,
         "probe": {k: record[k] for k in PROBE_KEYS if k in record},
+        **({"oracle_seed": seed_used} if seed_used else {}),
     }
     cache = drain_cache()
     if image is None:
