@@ -10,16 +10,28 @@ installed the pins that must agree are compared and the ones that would have to 
 
 Any mismatch refuses the deploy and names the file, the pin, what it says now and what it must say. When they agree,
 each checkout the seat names in `tools.checkouts` (a tool's code run from a git checkout) is brought to the pinned
-commit (fetch, detached checkout) and refused, untouched, when it has local changes. Each venv then gets the four
-requirements (the old ones uninstalled first, so pip cannot keep a stale commit), then a smoke test:
-`decomp dependencies` (provenance) and `unbake symbols --version V` on the project.
+commit (fetch, detached checkout) and refused, untouched, when it has local changes.
+
+A deploy never changes a file under a running process. Each `--venv PATH` is a live path that is a symlink: the four
+requirements are installed into a fresh venv beside it (`PATH.<sha12>`, pip run by that venv's own python so console
+script shebangs point into it), the smoke test (`decomp dependencies` for provenance and `unbake symbols --version V`
+on the project) runs against the fresh venv, and only then is the symlink swapped with rename(2). Processes started
+through PATH's console scripts keep their versioned tree; superseded versions stay until purge removes them (policy
+`venv_versions`: not the live target, not the newest rollback, no process using it). A live path that is still a real
+directory is migrated once, with `--migrate`: refused while any process uses it, then the real directory and a
+symlink to the fresh venv are exchanged with renameat2(RENAME_EXCHANGE) (no instant without a venv at PATH), the old
+directory is kept as `PATH.legacy-<stamp>`, and the link is read back.
 """
 
 from __future__ import annotations
 
+import ctypes
+import os
 import re
+import shutil
 import subprocess
 import tempfile
+import time
 import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -152,27 +164,93 @@ def plan(
     return requirements, moves
 
 
-def install(venv: Path, requirements: Sequence[dict[str, str]], run: Run) -> list[dict[str, Any]]:
+def versioned_path(live: Path, decomp: str) -> Path:
+    """`<live>.<sha12>`, or `<live>.<sha12>-N` when that name is already taken (a redeploy of the same commit)."""
+    base = live.with_name(f"{live.name}.{decomp[:12]}")
+    candidate, number = base, 1
+    while candidate.exists() or candidate.is_symlink():
+        number += 1
+        candidate = base.with_name(f"{base.name}-{number}")
+    return candidate
+
+
+def users_of(path: Path, proc: Path = Path("/proc")) -> list[int]:
+    """PIDs with an argv word, a working directory or a mapped file at or under `path` (a venv is in use when a
+    process was started from it or has loaded a file of it)."""
+    prefix = str(path).rstrip("/")
+    inside = (prefix, prefix + "/")
+    found = []
+    for entry in sorted(proc.iterdir(), key=lambda e: e.name):
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            argv = (entry / "cmdline").read_bytes().decode(errors="replace").split("\0")
+            hit = any(word == prefix or word.startswith(inside[1]) for word in argv)
+            hit = hit or (cwd := os.readlink(entry / "cwd")) == prefix or cwd.startswith(inside[1])
+            if not hit:
+                with open(entry / "maps", errors="replace") as maps:
+                    hit = any(" " + inside[1] in line for line in maps)
+        except OSError:
+            continue
+        if hit:
+            found.append(int(entry.name))
+    return found
+
+
+def exchange(first: Path, second: Path) -> None:
+    """Atomically swap two paths (renameat2 RENAME_EXCHANGE): works between a directory and a symlink."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    code = libc.renameat2(-100, os.fsencode(first), -100, os.fsencode(second), 2)
+    if code:
+        error = ctypes.get_errno()
+        raise DeployError("deploy.swap", f"cannot exchange {first} and {second}: {os.strerror(error)}")
+
+
+def point(live: Path, target: Path, *, migrate: bool, users: Callable[[Path], list[int]], stamp: str) -> dict[str, Any]:
+    """Make `live` a symlink to `target`, atomically. A symlink is replaced with rename(2) of a fresh link; a real
+    directory is exchanged with one (needs `migrate`, and no process using it) and kept as `<live>.legacy-<stamp>`."""
+    fresh = live.with_name(f".{live.name}.{os.getpid()}.new")
+    fresh.unlink(missing_ok=True)
+    fresh.symlink_to(target)
+    row: dict[str, Any] = {"live": str(live), "target": str(target)}
+    try:
+        if live.is_symlink() or not live.exists():
+            row["previous"] = os.path.realpath(live) if live.exists() else ""
+            os.rename(fresh, live)
+        else:
+            if not migrate:
+                raise DeployError(
+                    "deploy.migrate", f"{live} is a real directory; run once with --migrate to convert it"
+                )
+            busy = users(live)
+            if busy:
+                raise DeployError(
+                    "deploy.migrate_busy",
+                    f"{live} is used by pids {busy}: moving it would break their later imports; "
+                    "let them end, then run --migrate again",
+                )
+            exchange(fresh, live)
+            legacy = live.with_name(f"{live.name}.legacy-{stamp}")
+            os.rename(fresh, legacy)
+            row["previous"] = str(legacy)
+    finally:
+        fresh.unlink(missing_ok=True)
+    row["readback"] = os.path.realpath(live) == os.path.realpath(target) and live.is_symlink()
+    return row
+
+
+def install(venv: Path, base: Path, requirements: Sequence[dict[str, str]], run: Run) -> list[dict[str, Any]]:
+    """Create `venv` with the python of `base` (the venv it replaces), then pip install with the new venv's python."""
     python = venv / "bin" / "python"
-    names = [r["name"] for r in requirements]
-    steps = [
-        ("uninstall", [str(python), "-m", "pip", "uninstall", "-y", *names]),
-        (
-            "install",
-            [
-                str(python),
-                "-m",
-                "pip",
-                "install",
-                *(f"{r['name']} @ git+{r['url']}@{r['commit']}" for r in requirements),
-            ],
-        ),
-    ]
+    specs = [f"{r['name']} @ git+{r['url']}@{r['commit']}" for r in requirements]
     done: list[dict[str, Any]] = []
-    for name, argv in steps:
+    for name, argv in (
+        ("create", [str(base / "bin" / "python"), "-m", "venv", str(venv)]),
+        ("install", [str(python), "-m", "pip", "install", *specs]),
+    ):
         code, output = run(argv, None)
         done.append({"step": name, "ok": code == 0, "tail": output[-400:] if code else ""})
-        if code and name == "install":
+        if code:
             break
     return done
 
@@ -267,6 +345,9 @@ def deploy(
     *,
     fetch: Fetch = fetch_file,
     run: Run = run_command,
+    migrate: bool = False,
+    users: Callable[[Path], list[int]] = users_of,
+    stamp: str | None = None,
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     check_sha("--sha", decomp)
     wanted = {command: check_sha(f"--{command}", sha) for command, sha in commits.items() if sha}
@@ -275,6 +356,10 @@ def deploy(
     for venv in venvs:
         if not (venv / "bin" / "python").is_file():
             raise DeployError("deploy.venv", f"{venv} is not a venv (no bin/python)")
+        if not venv.is_symlink() and not migrate:
+            raise DeployError(
+                "deploy.migrate", f"{venv} is a real directory, not a symlink; run once with --migrate to convert it"
+            )
     project = tools.project_dir(profile)
     requirements, moves = plan(decomp, wanted, fetch, tools.pin_file_of(profile, project))
     findings = [
@@ -300,28 +385,41 @@ def deploy(
     result["checkouts"], findings = align_checkouts(wanted, run)
     if findings:
         return result, 1, findings
-    for venv in venvs:
-        steps = install(venv, requirements, run)
-        row: dict[str, Any] = {"venv": str(venv), "steps": steps}
+    stamp = stamp or time.strftime("%Y%m%d-%H%M%S")
+    for live in venvs:
+        venv = versioned_path(live, decomp)
+        steps = install(venv, live, requirements, run)
+        row: dict[str, Any] = {"venv": str(live), "versioned": str(venv), "steps": steps}
+        result["venvs"].append(row)
         if all(step["ok"] for step in steps):
             row["smoke"] = smoke(venv, project, tools.host_file(profile), run)
-            for check in row["smoke"]:
-                if not check["ok"]:
-                    findings.append(
-                        {
-                            "key": "deploy.smoke",
-                            "blocking": True,
-                            "message": f"{venv}: {check['check']} failed: {check['tail']}",
-                        }
-                    )
+            bad = [check for check in row["smoke"] if not check["ok"]]
+            findings += [
+                {"key": "deploy.smoke", "blocking": True, "message": f"{venv}: {c['check']} failed: {c['tail']}"}
+                for c in bad
+            ]
         else:
             failed = next(step for step in steps if not step["ok"])
+            bad = [failed]
             findings.append(
                 {
                     "key": "deploy.install",
                     "blocking": True,
-                    "message": f"{venv}: pip {failed['step']} failed: {failed['tail']}",
+                    "message": f"{venv}: {failed['step']} failed: {failed['tail']}",
                 }
             )
-        result["venvs"].append(row)
+        if bad:
+            shutil.rmtree(venv, ignore_errors=True)  # our own half-built venv, never linked, so nothing uses it
+            continue
+        try:
+            row["swap"] = point(live, venv, migrate=migrate, users=users, stamp=stamp)
+        except DeployError as error:
+            findings.append({"key": error.key, "blocking": True, "message": str(error)})
+            shutil.rmtree(venv, ignore_errors=True)  # built but never linked, so nothing uses it
+            continue
+        row["swap"]["readback_smoke"] = smoke(live, project, tools.host_file(profile), run)
+        if not row["swap"]["readback"] or not all(c["ok"] for c in row["swap"]["readback_smoke"]):
+            findings.append(
+                {"key": "deploy.readback", "blocking": True, "message": f"{live} does not read back to {venv}"}
+            )
     return result, int(bool(findings)), findings

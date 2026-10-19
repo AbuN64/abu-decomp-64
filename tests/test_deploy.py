@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,9 +32,9 @@ class DeployTests(unittest.TestCase):
         (self.project / "ci").mkdir(parents=True)
         (self.project / "versions" / "us-rev1").mkdir(parents=True)
         self.pin_file(unbake="0.5.12")
-        for name in ("venv-a", "venv-b"):
-            (self.root / name / "bin").mkdir(parents=True)
-            (self.root / name / "bin" / "python").write_text("")
+        for name in ("venv-a", "venv-b"):  # live paths: symlinks to a versioned venv
+            self.make_venv(self.root / f"{name}.old")
+            (self.root / name).symlink_to(self.root / f"{name}.old")
         (self.root / "host.toml").write_text("")
         sections = {"tools": {"project": str(self.project), "host": "host.toml", "timeout_seconds": 5}}
         (self.root / "seat.json").write_text(json.dumps({"schema_version": 1, "name": "seat", **sections}))
@@ -52,6 +53,12 @@ class DeployTests(unittest.TestCase):
         }
         self.commands = []
         self.fail = None
+        self.busy = {}
+
+    @staticmethod
+    def make_venv(path):
+        (path / "bin").mkdir(parents=True)
+        (path / "bin" / "python").write_text("")
 
     def pin_file(self, **versions):
         rows = [
@@ -69,11 +76,14 @@ class DeployTests(unittest.TestCase):
 
     def runner(self, argv, cwd=None):
         self.commands.append(list(argv))
+        if "venv" in argv and "-m" in argv and not (self.fail and self.fail in " ".join(argv)):
+            self.make_venv(Path(argv[-1]))
         if self.fail and self.fail in " ".join(argv):
             return 1, "boom"
         return 0, "ok output"
 
-    def deploy(self, sha=D1, venvs=("venv-a",), **commits):
+    def deploy(self, sha=D1, venvs=("venv-a",), extra=None, **commits):
+        extra = extra or {}
         return deploy.deploy(
             self.profile,
             sha,
@@ -81,24 +91,38 @@ class DeployTests(unittest.TestCase):
             {"unbake": None, "recipe": None, "taste": None, **commits},
             fetch=self.fetch,
             run=self.runner,
+            users=lambda path: self.busy.get(path.name, []),
+            stamp="T",
+            **extra,
         )
 
     def test_agreeing_pins_install_git_commits_into_every_venv_and_smoke_test(self):
         result, code, findings = self.deploy(venvs=("venv-a", "venv-b"), unbake=U1)
         self.assertEqual((code, findings), (0, []))
-        installs = [c for c in self.commands if "install" in c and "uninstall" not in c]
+        installs = [c for c in self.commands if "install" in c]
         self.assertEqual(len(installs), 2)
         specs = installs[0][installs[0].index("install") + 1 :]
         self.assertEqual(specs[0], f"abu-decomp-64 @ git+{deploy.DECOMP_URL}@{D1}")
         self.assertIn(f"unbake @ git+{URL['unbake']}@{U1}", specs)
         self.assertTrue(all("@ git+https://" in spec and ".whl" not in spec for spec in specs))
-        self.assertEqual(sum(c[0].endswith("decomp") and c[1] == "dependencies" for c in self.commands), 2)
+        self.assertEqual(
+            sum(c[0].endswith("decomp") and c[1] == "dependencies" for c in self.commands), 4
+        )  # per venv: fresh, then via the link
         symbols = [c for c in self.commands if c[0].endswith("unbake")]
-        self.assertEqual(len(symbols), 2)
+        self.assertEqual(len(symbols), 4)
         self.assertEqual(symbols[0][-3:], ["symbols", "--version", "us-rev1"])
         self.assertIn("--host", symbols[0])
         self.assertEqual(
             [row["venv"] for row in result["venvs"]], [str(self.root / "venv-a"), str(self.root / "venv-b")]
+        )
+        for name in ("venv-a", "venv-b"):  # swapped to a fresh versioned venv; the old tree is untouched
+            self.assertEqual(os.path.realpath(self.root / name), str(self.root / f"{name}.{D1[:12]}"))
+            self.assertTrue((self.root / f"{name}.old" / "bin" / "python").is_file())
+        self.assertTrue(all(row["swap"]["readback"] for row in result["venvs"]))
+        pip = [c for c in installs if c[0].endswith(f"venv-a.{D1[:12]}/bin/python")]
+        self.assertEqual(len(pip), 1)  # pip runs by the new venv's own python, never the live link
+        self.assertFalse(
+            any(c[:1] == [str(self.root / "venv-a" / "bin" / "python")] and "pip" in c for c in self.commands)
         )
 
     def test_pins_that_disagree_are_named_and_nothing_is_installed(self):
@@ -134,9 +158,58 @@ class DeployTests(unittest.TestCase):
         self.fail = "pip install"
         _, code, findings = self.deploy()
         self.assertEqual((code, findings[0]["key"]), (1, "deploy.install"))
+        self.assertEqual(os.path.realpath(self.root / "venv-a"), str(self.root / "venv-a.old"))  # live untouched
+        self.assertFalse((self.root / f"venv-a.{D1[:12]}").exists())
         self.fail = "dependencies"
         _, code, findings = self.deploy()
         self.assertEqual((code, findings[0]["key"]), (1, "deploy.smoke"))
+        self.assertEqual(os.path.realpath(self.root / "venv-a"), str(self.root / "venv-a.old"))
+        self.assertFalse((self.root / f"venv-a.{D1[:12]}").exists())
+
+    def test_a_redeploy_of_one_commit_gets_its_own_versioned_dir(self):
+        self.deploy()
+        result, code, _ = self.deploy()
+        self.assertEqual(code, 0)
+        self.assertEqual(result["venvs"][0]["versioned"], str(self.root / f"venv-a.{D1[:12]}-2"))
+        self.assertEqual(os.path.realpath(self.root / "venv-a"), str(self.root / f"venv-a.{D1[:12]}-2"))
+        self.assertEqual(result["venvs"][0]["swap"]["previous"], str(self.root / f"venv-a.{D1[:12]}"))
+        self.assertTrue((self.root / f"venv-a.{D1[:12]}" / "bin" / "python").is_file())
+
+    def test_a_real_directory_needs_migrate_and_an_idle_tree(self):
+        real = self.root / "venv-c"
+        self.make_venv(real)
+        with self.assertRaises(deploy.DeployError) as caught:
+            self.deploy(venvs=("venv-c",))
+        self.assertEqual(caught.exception.key, "deploy.migrate")
+        self.busy = {"venv-c": [4242]}
+        _, code, findings = self.deploy(venvs=("venv-c",), extra={"migrate": True})
+        self.assertEqual((code, findings[0]["key"]), (1, "deploy.migrate_busy"))
+        self.assertIn("4242", findings[0]["message"])
+        self.assertFalse(real.is_symlink())  # nothing moved while a process used it
+        self.assertFalse((self.root / f"venv-c.{D1[:12]}").exists())
+        self.busy = {}
+        result, code, findings = self.deploy(venvs=("venv-c",), extra={"migrate": True})
+        self.assertEqual((code, findings), (0, []))
+        swap = result["venvs"][0]["swap"]
+        self.assertTrue(real.is_symlink() and swap["readback"])
+        self.assertEqual(os.path.realpath(real), str(self.root / f"venv-c.{D1[:12]}"))
+        self.assertTrue((self.root / "venv-c.legacy-T" / "bin" / "python").is_file())
+        self.assertEqual(swap["previous"], str(self.root / "venv-c.legacy-T"))
+
+    def test_users_of_finds_processes_by_argv_and_cwd(self):
+        proc = self.root / "proc"
+        for pid, argv, cwd in (
+            ("11", f"{self.root}/v/bin/python\0x", "/"),
+            ("12", "sh\0-c", f"{self.root}/v/lib"),
+            ("13", "sh", "/"),
+            ("14", f"{self.root}/vv/bin/python", "/"),
+        ):
+            (proc / pid).mkdir(parents=True)
+            (proc / pid / "cmdline").write_text(argv)
+            (proc / pid / "cwd").symlink_to(cwd)
+            (proc / pid / "maps").write_text("")
+        (proc / "self").mkdir()
+        self.assertEqual(deploy.users_of(self.root / "v", proc), [11, 12])
 
     def test_cache_report_reads_unbake_stage_telemetry(self):
         stages = {

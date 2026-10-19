@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import traceback
@@ -267,14 +268,20 @@ def _tools_arguments(parser: argparse.ArgumentParser) -> None:
     deploy.add_argument("--sha", required=True, help="the decomp commit (40 hex)")
     for tool in ("unbake", "recipe", "taste"):
         deploy.add_argument(f"--{tool}", help=f"the {tool} commit to deploy (default: the one decomp pins)")
-    deploy.add_argument("--venv", type=Path, required=True, nargs="+", help="venvs to install into")
+    deploy.add_argument("--venv", type=Path, required=True, nargs="+", help="live venv paths (symlinks) to deploy to")
+    deploy.add_argument(
+        "--migrate",
+        action="store_true",
+        help="convert a live venv that is still a real directory (once, needs it idle)",
+    )
 
 
 def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import deploy
 
     commits = {tool: getattr(args, tool) for tool in ("unbake", "recipe", "taste")}
-    return deploy.deploy(_profile(args.profile), args.sha, [path.resolve() for path in args.venv], commits)
+    live = [Path(os.path.abspath(path)) for path in args.venv]  # never resolve: the live path is the symlink
+    return deploy.deploy(_profile(args.profile), args.sha, live, commits, migrate=args.migrate)
 
 
 def _probe_arguments(parser: argparse.ArgumentParser) -> None:
