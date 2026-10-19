@@ -824,6 +824,12 @@ class LandTests(unittest.TestCase):
         self.assertIn("c.c", git(self.tree, "status", "--porcelain"))
         self.assertTrue((self.tree / "c.c").read_text().endswith("// x\n"))
 
+    def test_a_falling_functions_percentage_beside_a_rising_code_one_is_not_a_code_loss(self):
+        row = "<pre><code>code      [###]  {c}%  1 of 2</code><br><code>functions [###]  {f}%  3 of 4</code></pre>"
+        self.assertEqual(code_percentages(row.format(c="77.44", f="90.67")), [77.44])
+        self.assertEqual(code_percentages(row.format(c="77.55", f="90.58")), [77.55])
+        self.assertEqual(code_percentages(README.format(a="50.00", b="60.00")), [50.0, 60.0])
+
     def test_unbake_refusal_and_check_failure_stop_the_run_with_a_named_finding(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})
         self.sync_ok = lambda args: args != ("sync", "--check") and "--check" not in args

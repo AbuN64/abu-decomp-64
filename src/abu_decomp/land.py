@@ -111,7 +111,7 @@ DEFAULT_MARKERS = ("INCLUDE_ASM", "NON_MATCHING", "GLOBAL_ASM")
 REFUSAL_KEYS = frozenset(
     {"land.symbol_conflict", "land.symbol_invalid", "land.symbol_clash", "land.commit_subject", "land.commit_hook"}
 )
-_PERCENT = re.compile(r"\bcode\b[^%\n]*?(\d+(?:\.\d+)?)%")
+_PERCENT = re.compile(r"\bcode\s+\[[^\]\n]*\]\s*(\d+(?:\.\d+)?)%")  # the `code [bar] NN.NN%` row, not the `<code>` tags
 _NAME = re.compile(r"([A-Za-z_]\w*)\s*\)\s*;?\s*$")
 _PATH_NAME = re.compile(r"([A-Za-z_]\w*)\.\w+\"")
 _SYMBOL = re.compile(r"^\s*([A-Za-z_.$][\w.$]*)\s*=\s*(0[xX][0-9A-Fa-f]+|\d+)\s*;")
@@ -519,7 +519,9 @@ def function_name(line: str) -> str | None:
 
 
 def code_percentages(text: str) -> list[float]:
-    """Every `code ... NN.NN%` figure of a README, in order (one per version, plus any unnamed sections)."""
+    """Every `code [bar] NN.NN%` row of a README, in order (one per version). The data, functions and blobs rows sit on
+    the same line inside `<code>` tags and are not code: a split adds functions to the count of all and lowers
+    their percentage with no loss of code."""
     return [float(value) for value in _PERCENT.findall(text)]
 
 
