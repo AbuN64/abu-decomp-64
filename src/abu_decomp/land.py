@@ -12,7 +12,16 @@ Gates, in order; the first failure stops the run and the rest are reported as sk
                file landing is excluded whole. Files matching `land.union_paths` never conflict: their added lines are
                merged into the tree's file as a line union (deduplicated, tree order kept, new lines appended). A
                function counts as converted only when every file of the patch that mentions it landed (otherwise a
-               `land.function_split` finding names it). No patch landing at all fails the gate
+               `land.function_split` finding names it). No patch landing at all fails the gate.
+               Within a round a function two patches both carry lands once: a later patch's change block that an
+               earlier patch already made (identical body) is a no-op, and one that rewrites a function an earlier
+               patch converted differently is dropped (the first body stays) with a non-blocking
+               `land.duplicate_function` finding naming both lanes; the rest of that file still lands. In a union
+               file, symbol lines (`name = 0xADDR;`) merge by name: the same name at the same address is one line,
+               and the same name at another address is not added and gets a `land.symbol_conflict` finding that
+               carries both addresses. A symbol line splat itself rejects (the host's splat parses it alone) is not
+               added either: a blocking `land.symbol_invalid` finding carries its reason, so a symbol line never
+               fails `unbake setup`
   setup        `unbake setup` when the pinned unbake commit differs from the tree's last setup (a marker in the git dir)
   sync         `unbake sync`
   check        the configured check command with jobs from the configured admit command
@@ -64,6 +73,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from collections import deque
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -82,10 +92,41 @@ DEFAULT_MARKERS = ("INCLUDE_ASM", "NON_MATCHING", "GLOBAL_ASM")
 _PERCENT = re.compile(r"\bcode\b[^%\n]*?(\d+(?:\.\d+)?)%")
 _NAME = re.compile(r"([A-Za-z_]\w*)\s*\)\s*;?\s*$")
 _PATH_NAME = re.compile(r"([A-Za-z_]\w*)\.\w+\"")
+_SYMBOL = re.compile(r"^\s*([A-Za-z_.$][\w.$]*)\s*=\s*(0[xX][0-9A-Fa-f]+|\d+)\s*;")
+_LITERAL = re.compile(r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|//.*")
+_SYMBOLISH = re.compile(r"^\s*[A-Za-z_.$][\w.$]*\s*=[^;]*;")
+_HUNK = re.compile(r"^@@ -(\d+)")
 
 
 class LandError(DecompError):
     pass
+
+
+# Run by the host's own splat interpreter: splat's own symbol_addrs reader on each line alone, so a line it would reject
+# when `unbake setup` runs it is found here instead (stdin: a JSON list of lines; stdout: {line: reason}).
+SPLAT_CHECK = r"""
+import contextlib, io, json, sys, types
+from pathlib import Path
+import spimdisasm
+from splat.util import symbols
+class Known:
+    def known_types(self):
+        return spimdisasm.common.gKnownTypes
+symbols.disassembler_instance = types.SimpleNamespace(get_instance=lambda: Known())
+bad = {}
+for line in json.load(sys.stdin):
+    if "segment:" in line:
+        continue
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            symbols.handle_sym_addrs(Path("symbol_addrs.txt"), [line], [])
+    except BaseException as error:
+        text = [t.strip() for t in out.getvalue().replace("\r", "\n").splitlines()]
+        text = [t for t in text if t and "it/s" not in t and not t.startswith(("Loading symbols", "error reading"))]
+        bad[line] = " | ".join(text[:4]) or type(error).__name__
+print(json.dumps(bad))
+"""
 
 
 def _split_row(row: str) -> tuple[str, str, str | None]:
@@ -293,15 +334,93 @@ def section_additions(section: str) -> list[str]:
     return found
 
 
-def union_merge(existing: str, added: Sequence[str]) -> str:
-    """`existing` plus the added lines it lacks, appended in patch order; nothing is reordered or removed."""
+def symbol_line(line: str) -> tuple[str, int] | None:
+    """(name, address) of a `name = 0xADDR;` symbol line, else None."""
+    found = _SYMBOL.match(line)
+    return (found[1], int(found[2], 0)) if found else None
+
+
+def union_merge(existing: str, added: Sequence[str]) -> tuple[str, list[dict[str, Any]]]:
+    """`existing` plus the added lines it lacks, appended in patch order; nothing is reordered or removed. A symbol
+    line whose name is already there at the same address is the same line (attributes aside); at another address it is
+    left out and returned as a conflict {name, kept, refused, line}."""
     lines = existing.splitlines()
     seen = set(lines)
+    names: dict[str, int] = {}
+    for line in lines:
+        if (symbol := symbol_line(line)) and symbol[0] not in names:
+            names[symbol[0]] = symbol[1]
+    conflicts: list[dict[str, Any]] = []
     for line in added:
-        if line not in seen:
-            seen.add(line)
-            lines.append(line)
-    return "\n".join(lines) + "\n" if lines else ""
+        if line in seen:
+            continue
+        symbol = symbol_line(line)
+        if symbol and symbol[0] in names:
+            if names[symbol[0]] != symbol[1]:
+                conflicts.append(
+                    {"name": symbol[0], "kept": f"0x{names[symbol[0]]:X}", "refused": f"0x{symbol[1]:X}", "line": line}
+                )
+            continue
+        seen.add(line)
+        if symbol:
+            names[symbol[0]] = symbol[1]
+        lines.append(line)
+    return ("\n".join(lines) + "\n" if lines else ""), conflicts
+
+
+def change_blocks(section: str) -> list[dict[str, Any]]:
+    """The change blocks of a patch section: each run of removed/added lines between context lines, as {old: the
+    1-based first line of it in the file the patch was cut against, hunk: its hunk's number, removed, added}."""
+    blocks: list[dict[str, Any]] = []
+    old = hunk = 0
+    current: dict[str, Any] | None = None
+    inside = False
+    for line in section.splitlines():
+        if line.startswith("@@"):
+            found = _HUNK.match(line)
+            old, inside, current, hunk = int(found[1]) if found else 1, True, None, hunk + 1
+        elif not inside or line.startswith("\\"):
+            continue
+        elif line.startswith(("-", "+")):
+            if current is None:
+                current = {"old": old, "hunk": hunk, "removed": [], "added": []}
+                blocks.append(current)
+            current["removed" if line[0] == "-" else "added"].append(line[1:])
+            old += line[0] == "-"
+        else:
+            current = None
+            old += 1
+    return blocks
+
+
+def chunk_lines(lines: Sequence[str]) -> list[list[str]]:
+    """Added lines as top-level chunks: a chunk ends at the line that closes its braces (or a `;` outside any)."""
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    depth = 0
+    for line in lines:
+        current.append(line)
+        code = _LITERAL.sub("", line).strip()
+        depth += code.count("{") - code.count("}")
+        if depth <= 0 and code.endswith(("}", ";")):
+            chunks.append(current)
+            current, depth = [], 0
+    return [*chunks, current] if current else chunks
+
+
+def defined_name(chunk: Sequence[str], names: Sequence[str]) -> str | None:
+    """The one of `names` a chunk defines: the earliest of them that it names before a parenthesis."""
+    text = "\n".join(chunk)
+    hits = [(m.start(), n) for n in names if (m := re.search(rf"\b{re.escape(n)}\s*\(", text))]
+    return min(hits)[1] if hits else None
+
+
+def find_run(lines: Sequence[str], run: Sequence[str], near: int) -> int | None:
+    """Index of the occurrence of `run` in `lines` nearest to `near`, or None."""
+    if not run or len(run) > len(lines):
+        return None
+    hits = [i for i in range(len(lines) - len(run) + 1) if list(lines[i : i + len(run)]) == list(run)]
+    return min(hits, key=lambda i: abs(i - near)) if hits else None
 
 
 def marker_lines(lines: Sequence[str], markers: Sequence[str]) -> list[str]:
@@ -333,6 +452,7 @@ class Landing:
         pin: Callable[[], str] | None = None,
         messages: dict[str, str] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        splat_check: Callable[[Sequence[str]], dict[str, str] | None] | None = None,
     ) -> None:
         self.config = settings(profile)
         self.tree = tree.expanduser().resolve()
@@ -348,6 +468,10 @@ class Landing:
         self.lanes: list[dict[str, Any]] = []
         self.extra: dict[str, Any] = {}
         self.recipe_summary: dict[str, Any] | None = None
+        self.splat_check = splat_check or self.run_splat_check
+        self.owner: dict[str, str] = {}  # function -> the first lane of this round that converted it
+        self.lane_now = ""
+        self.duplicates: list[dict[str, Any]] = []
 
     # git -------------------------------------------------------------------------------------------------------
     def git(self, *args: str, ok: bool = True) -> str:
@@ -381,6 +505,28 @@ class Landing:
         elif dirty:
             self.fail("land.dirty", f"tree has {len(dirty)} tracked changes before landing", files=dirty[:20])
         return self.gate("base", not self.findings, started, head=head)
+
+    def run_splat_check(self, lines: Sequence[str]) -> dict[str, str] | None:
+        """{line: reason} for the symbol lines the host's splat rejects; None when the host names no splat."""
+        try:
+            splat = tomllib.loads(tools.host_file(self.profile).read_text()).get("tools", {}).get("splat")
+        except (DecompError, OSError, ValueError):
+            splat = None
+        python = Path(splat).parent / "python" if splat else None
+        if python is None or not python.is_file() or not lines:
+            return None if python is None or not python.is_file() else {}
+        done = subprocess.run(
+            [str(python), "-I", "-c", SPLAT_CHECK],
+            input=json.dumps(list(lines)),
+            cwd=self.tree,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        if done.returncode:
+            raise LandError("land.splat_check", f"the splat symbol check failed: {done.stderr.strip()[-300:]}")
+        return json.loads(done.stdout)
 
     def is_union(self, name: str) -> bool:
         return any(fnmatch.fnmatchcase(name, glob) for glob in self.config["union_paths"])
@@ -418,7 +564,7 @@ class Landing:
             try:
                 reason = self.try_apply(whole)
                 if reason is not None and len(plain) == 1:
-                    refused.append({"file": plain[0][0], "reason": reason, "section": plain[0][1]})
+                    self.settle(plain[0][0], plain[0][1], reason, refused)
                 elif reason is not None:
                     for name, text in plain:
                         part = self.write_part(text)
@@ -427,7 +573,7 @@ class Landing:
                         finally:
                             os.unlink(part)
                         if why is not None:
-                            refused.append({"file": name, "reason": why, "section": text})
+                            self.settle(name, text, why, refused)
             finally:
                 if whole != path:
                     os.unlink(whole)
@@ -435,15 +581,168 @@ class Landing:
             target = self.tree / name
             old = target.read_text(errors="replace") if target.is_file() else ""
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(union_merge(old, section_additions(text)))
+            added = section_additions(text)
+            have = set(old.splitlines())
+            looks = [x for x in dict.fromkeys(added) if _SYMBOLISH.match(x) and x not in have]
+            rejected = self.splat_check(looks) if looks else {}
+            if rejected is None:
+                self.extra["symbol_check"] = "skipped: the host config names no splat"
+            for line, why in (rejected or {}).items():
+                self.findings.append(
+                    {
+                        "key": "land.symbol_invalid",
+                        "message": f"lane {self.lane_now}: {name}: `{line}` was not added, splat rejects it: {why}",
+                        "blocking": True,
+                        "lane": self.lane_now,
+                        "file": name,
+                        "line": line,
+                        "reason": why,
+                    }
+                )
+            merged, conflicts = union_merge(old, [x for x in added if x not in (rejected or {})])
+            target.write_text(merged)
             self.git("add", "--", name)
+            for conflict in conflicts:
+                self.findings.append(
+                    {
+                        "key": "land.symbol_conflict",
+                        "message": f"lane {self.lane_now}: {conflict['name']} in {name} is {conflict['refused']} in "
+                        f"this patch but {conflict['kept']} in the tree; the line was not added",
+                        "blocking": True,
+                        "lane": self.lane_now,
+                        "file": name,
+                        **conflict,
+                    }
+                )
         return refused
+
+    def settle(self, name: str, text: str, reason: str, refused: list[dict[str, str]]) -> None:
+        """A section git could not apply: merge it by change block (a block an earlier patch of the round already made
+        is a no-op, a function an earlier patch converted differently keeps the first body), else refuse the file."""
+        why = self.merge_section(name, text, reason)
+        if why is not None:
+            refused.append({"file": name, "reason": why, "section": text})
+
+    def merge_section(self, name: str, text: str, reason: str) -> str | None:
+        """None when the section is settled (merged, or nothing left to do), else the reason it is refused."""
+        head = text.split("\n@@", 1)[0]
+        if "deleted file mode" in head and not (self.tree / name).exists():
+            return None  # an earlier patch of the round already removed the file
+        path = self.tree / name
+        if (
+            "\n@@" not in text
+            or not path.is_file()
+            or re.search(r"^(new file|rename |copy |Binary|GIT binary)", head, re.M)
+        ):
+            return reason
+        original = path.read_text(errors="replace")
+        lines, delta, found = original.splitlines(), 0, []
+        hunks: dict[int, list[dict[str, Any]]] = {}
+        for block in change_blocks(text):
+            hunks.setdefault(block["hunk"], []).append(block)
+        for blocks in hunks.values():
+            done = self.settle_blocks(lines, delta, blocks) or self.drop_duplicate_hunk(lines, delta, blocks)
+            if done is None:
+                return reason
+            lines, delta, more = done
+            found += more
+        for row in found:
+            if row["functions"]:
+                self.note_duplicate(name, row)
+        if lines != original.splitlines():
+            path.write_text("\n".join(lines) + ("\n" if original.endswith("\n") or not original else ""))
+            self.git("add", "--", name)
+        return None
+
+    def settle_blocks(
+        self, lines: list[str], delta: int, blocks: Sequence[dict[str, Any]]
+    ) -> tuple[list[str], int, list[dict[str, Any]]] | None:
+        """The change blocks of one hunk applied to `lines` by content: a block applies where its removed lines are, is
+        a no-op where its added lines already are, and otherwise may be a group of stand-ins an earlier patch converted
+        in part. None when any block does neither (the hunk is then a duplicate or a conflict)."""
+        lines, found = list(lines), []
+        for block in blocks:
+            removed, added, near = block["removed"], block["added"], block["old"] - 1 + delta
+            names = sorted({n for n in map(function_name, marker_lines(removed, self.config["markers"])) if n})
+            at = find_run(lines, removed, near)
+            if at is not None:
+                lines[at : at + len(removed)] = added
+                delta += len(added) - len(removed)
+            elif added and find_run(lines, added, near) is not None:
+                found.append({"functions": [n for n in names if n in self.owner], "identical": True})
+            elif (merged := self.merge_functions(lines, block)) is not None:
+                delta += len(merged[0]) - len(lines)
+                lines = merged[0]
+                found += merged[1]
+            else:
+                return None
+        return lines, delta, found
+
+    def drop_duplicate_hunk(
+        self, lines: list[str], delta: int, blocks: Sequence[dict[str, Any]]
+    ) -> tuple[list[str], int, list[dict[str, Any]]] | None:
+        """A hunk whose every stand-in an earlier patch of the round already converted (differently) is that patch's
+        function: the first body stays and the hunk, which converts the function with its other lines, is dropped."""
+        marked = [x for block in blocks for x in marker_lines(block["removed"], self.config["markers"])]
+        names = sorted({n for n in map(function_name, marked) if n})
+        if not marked or not names or any(n not in self.owner for n in names) or any(x in lines for x in marked):
+            return None
+        return lines, delta, [{"functions": names, "identical": False}]
+
+    def merge_functions(self, lines: list[str], block: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]] | None:
+        """One change block that replaces several stand-in lines, when some of them an earlier patch already converted:
+        each function's replacement chunk goes in for its stand-in line that is still there, and one whose stand-in is
+        gone (an earlier patch's function) is a no-op when the chunk is already in the file and a duplicate when not."""
+        removed, added = block["removed"], block["added"]
+        names = [function_name(x) if marker_lines([x], self.config["markers"]) else None for x in removed]
+        if not removed or not all(names):
+            return None
+        chunks = chunk_lines(added)
+        chosen: dict[str, int] = {}
+        for index, chunk in enumerate(chunks):
+            name = defined_name(chunk, [n for n in names if n])
+            if name and name not in chosen:
+                chosen[name] = index
+        out, found, first = list(lines), [], True
+        spare = [c for i, c in enumerate(chunks) if i not in chosen.values() and find_run(out, c, 0) is None]
+        for name, line in zip(names, removed, strict=True):
+            if name not in chosen:
+                return None
+            chunk = chunks[chosen[name]]
+            at = find_run(out, [line], block["old"] - 1)
+            if at is not None:
+                out[at : at + 1] = [*(x for c in spare if first for x in c), *chunk]
+                first = False
+            elif name in self.owner:
+                found.append({"functions": [name], "identical": find_run(out, chunk, 0) is not None})
+            else:
+                return None
+        return out, found
+
+    def note_duplicate(self, name: str, row: dict[str, Any]) -> None:
+        kept = sorted({self.owner[n] for n in row["functions"]})
+        self.duplicates.append({"lane": self.lane_now, "file": name, "kept": kept, **row})
+        if not row["identical"]:
+            self.findings.append(
+                {
+                    "key": "land.duplicate_function",
+                    "message": f"{', '.join(row['functions'])} in {name}: lane {self.lane_now} has another body than "
+                    f"lane {' and '.join(kept)}; the first stays",
+                    "blocking": False,
+                    "lane": self.lane_now,
+                    "kept_lane": kept,
+                    "file": name,
+                    "functions": row["functions"],
+                }
+            )
 
     def apply_patches(self) -> bool:
         started = self.clock()
         for lane, path in self.patches:
             row: dict[str, Any] = {"lane": lane, "patch": str(path), "status": "applied", "files": []}
             self.lanes.append(row)
+            self.lane_now = lane
+            self.duplicates = []
             if not path.is_file():
                 row.update(status="excluded", reason=f"patch file {path} does not exist")
                 continue
@@ -454,6 +753,7 @@ class Landing:
                 row.update(status="excluded", reason="; ".join(f"{r['file']}: {r['reason']}" for r in refused))
             changed = diff_lines(self.git("diff-tree", "-r", "-p", "-U0", "--no-renames", "--no-color", before, after))
             row["files"] = sorted(changed)
+            row["duplicates"] = self.duplicates
             row["refused"] = [{"file": r["file"], "reason": r["reason"]} for r in refused]
             if row["status"] == "excluded":
                 continue
@@ -473,6 +773,8 @@ class Landing:
                 "net": len(removed) - len(added_lines),
                 "names": sorted({n for n in map(function_name, removed) if n}),
             }
+            for n in row["functions"]["names"]:
+                self.owner.setdefault(n, lane)
             if split:
                 row["functions"]["split"] = sorted(split)
                 self.findings.append(
@@ -777,6 +1079,7 @@ class Landing:
             "gates": self.gates,
             "lanes": self.lanes,
             "untracked_other": self.extra.get("untracked_other", []),
+            **({"symbol_check": self.extra["symbol_check"]} if "symbol_check" in self.extra else {}),
             **self.groups(),
         }
         if self.recipe_summary is not None:

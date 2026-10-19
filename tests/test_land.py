@@ -427,6 +427,111 @@ class LandTests(unittest.TestCase):
         self.assertEqual(row["functions"]["split"], ["func_1"])
         self.assertIn("land.function_split", [f["key"] for f in findings])
 
+    def test_a_function_two_patches_both_carry_lands_once(self):
+        stand = "".join(f'INCLUDE_ASM(const s32, "d", func_{n});\n' for n in (1, 2, 3))
+        self.seed({"d.c": '#include "x.h"\n' + stand + "int tail(void) { return 9; }\n"})
+
+        def body(n, value):
+            return f"int func_{n}(void) {{ return {value}; }}\n"
+
+        def text(*rows):
+            return '#include "x.h"\n' + "".join(rows) + "int tail(void) { return 9; }\n"
+
+        stand_row = lambda n: f'INCLUDE_ASM(const s32, "d", func_{n});\n'  # noqa: E731
+        one = self.patch("one", {"d.c": text(body(1, 1), stand_row(2), stand_row(3))})
+        two = self.patch("two", {"d.c": text(body(1, 1), body(2, 2), stand_row(3))})
+        three = self.patch("three", {"d.c": text(stand_row(1), body(2, 22), body(3, 3))})
+        result, code, findings = self.land([one, two, three])
+        self.assertEqual(code, 0)
+        self.assertEqual((self.tree / "d.c").read_text(), text(body(1, 1), body(2, 2), body(3, 3)))
+        rows = {row["lane"]: row for row in result["lanes"]}
+        self.assertEqual([r["status"] for r in rows.values()], ["applied"] * 3)
+        self.assertEqual([r["refused"] for r in rows.values()], [[], [], []])
+        self.assertEqual(rows["two"]["functions"]["names"], ["func_2"])
+        self.assertEqual(rows["three"]["functions"]["names"], ["func_3"])
+        keys = [f["key"] for f in findings if f["key"] != "land.commit_message"]
+        self.assertEqual(keys, ["land.duplicate_function"])
+        duplicate = next(f for f in findings if f["key"] == "land.duplicate_function")
+        self.assertEqual(
+            (duplicate["lane"], duplicate["kept_lane"], duplicate["functions"]), ("three", ["two"], ["func_2"])
+        )
+        self.assertFalse(duplicate["blocking"])
+        self.assertIn("three", duplicate["message"])
+        self.assertIn("two", duplicate["message"])
+
+    def test_a_wrapped_function_another_patch_converted_differently_is_dropped_with_its_whole_hunk(self):
+        wrapped = (
+            '#ifdef NON_MATCHING\n#include "TYPES.H"\ns32 func_1(const s32 *t) {\n    return t[0];\n}\n'
+            '#else\nINCLUDE_ASM(const s32, "d", func_1);\n#endif\n'
+        )
+        head = "s32 helper(void) { return 0; }\n" + "".join(f"/* filler {n} */\n" for n in range(8))
+        tail = "int tail(void) { return 9; }\n"
+        self.seed({"d.c": head + wrapped + tail})
+        first = self.patch("first", {"d.c": head + "s32 func_1(const s32 *t) { return t[1]; }\n" + tail})
+        second_body = "s32 func_1(const s32 *t) {\n    return t[2];\n}\n"
+        second = self.patch(
+            "second",
+            {"d.c": head.replace("return 0;", "return 7;") + second_body + tail},
+        )
+        result, code, findings = self.land([first, second])
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (self.tree / "d.c").read_text(),
+            head.replace("return 0;", "return 7;") + "s32 func_1(const s32 *t) { return t[1]; }\n" + tail,
+        )
+        self.assertEqual([r["refused"] for r in result["lanes"]], [[], []])
+        self.assertEqual(result["lanes"][0]["functions"]["names"], ["func_1"])
+        self.assertEqual(result["lanes"][1]["functions"]["names"], [])
+        self.assertEqual(
+            [f["key"] for f in findings if f["key"] == "land.duplicate_function"], ["land.duplicate_function"]
+        )
+
+    def test_symbol_lines_merge_by_name_and_a_conflicting_address_is_refused_with_both(self):
+        addrs = "versions/us/symbol_addrs.txt"
+        self.seed({addrs: "base = 0x1; // type:func\n"})
+        head = "base = 0x1; // type:func\n"
+        one = self.patch("one", {addrs: head + "foo = 0x10; // type:func\n"})
+        two = self.patch("two", {addrs: head + "foo = 0x10; // type:func size:0x4\nbar = 0x20; // type:func\n"})
+        three = self.patch("three", {addrs: head + "bar = 0x30; // type:func\nbaz = 0x40;\n"})
+        result, code, findings = self.land([one, two, three])
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (self.tree / addrs).read_text(), head + "foo = 0x10; // type:func\nbar = 0x20; // type:func\nbaz = 0x40;\n"
+        )
+        self.assertEqual([r["status"] for r in result["lanes"]], ["applied"] * 3)
+        conflict = [f for f in findings if f["key"] == "land.symbol_conflict"]
+        self.assertEqual(len(conflict), 1)
+        self.assertEqual((conflict[0]["name"], conflict[0]["kept"], conflict[0]["refused"]), ("bar", "0x20", "0x30"))
+        self.assertEqual(conflict[0]["lane"], "three")
+        self.assertIn("0x20", conflict[0]["message"])
+        self.assertIn("0x30", conflict[0]["message"])
+
+    def test_a_symbol_line_splat_rejects_is_refused_with_its_reason_and_the_rest_merge(self):
+        addrs = "versions/us/symbol_addrs.txt"
+        self.seed({addrs: "base = 0x1;\n"})
+        one = self.patch("one", {addrs: "base = 0x1;\nok = 0x2; // type:func\nbad = 0x3; // type:data\n"})
+        seen = []
+
+        def check(lines):
+            seen.append(list(lines))
+            return {line: "Unrecognized symbol type in 'type:data'" for line in lines if "type:data" in line}
+
+        append = lambda path, record: {"ok": True}  # noqa: E731
+        landing = Landing(
+            self.profile, self.tree, self.base, [one], invoke=self.invoke, run=self.runner, build=self.runner,
+            append=append, pin=lambda: "u1", splat_check=check,
+        )  # fmt: skip
+        result, code, findings = landing.execute()
+        self.assertEqual(code, 0)
+        self.assertEqual((self.tree / addrs).read_text(), "base = 0x1;\nok = 0x2; // type:func\n")
+        self.assertEqual(seen, [["ok = 0x2; // type:func", "bad = 0x3; // type:data"]])
+        invalid = [f for f in findings if f["key"] == "land.symbol_invalid"]
+        self.assertEqual(len(invalid), 1)
+        self.assertTrue(invalid[0]["blocking"])
+        self.assertEqual(invalid[0]["line"], "bad = 0x3; // type:data")
+        self.assertIn("type:data", invalid[0]["message"])
+        self.assertNotIn("symbol_check", result)
+
     def test_union_paths_must_be_a_list_of_globs(self):
         seat = json.loads((self.root / "seat.json").read_text())
         seat["land"]["union_paths"] = "versions/*"
