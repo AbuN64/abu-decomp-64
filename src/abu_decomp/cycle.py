@@ -3,14 +3,18 @@
 It blocks on inotify only: one watch per directory under the configured source roots (new directories are added as
 they appear) and the landed refs' directories (RefSource, moved from the old console follower). A matching change
 opens a burst; the burst ends after `settle_seconds` with no further matching change, and then the steps run once:
-the configured Recipe Maker command (`decomp recipe ...`), then `unbake report`. MATCH carries the per-version numbers
-of the previous and the new report when they differ; LAND is appended per new landed commit by RefSource; a failed
+the configured Recipe Maker command (`decomp recipe ...`), the `propose` steps, then `unbake report`. MATCH carries
+the per-version numbers of the previous and the new report when they differ; LAND is appended per new landed
+commit by RefSource; a failed
 step appends RUN-FAIL. Nothing runs on a timer: the only timeouts are the settle window of an open burst and, when
 a refs table sets `pull_seconds`, the `git pull --ff-only` that moves the local refs (RefSource's own timer).
 
 A run's steps, in order, each optional: `build` (a fresh `decomp build ARGS` process, so it reads the profile file as
-it is now), `recipe`, then `unbake report` with its MATCH (`report`, default true). `run_at_start` runs once before
-waiting, as the old build loop did. `land_refs` is a second refs table that only appends LAND and triggers nothing.
+it is now), `recipe`, `propose` (Recipe's proposal verbs on the files the landed commits changed, as `decomp land`
+runs them on its proof tree: abu_decomp.proposals; the result is one LAND event from the cycle's actor carrying the
+summary, and nothing is applied), then `unbake report` with its MATCH (`report`, default true). `run_at_start` runs
+once before waiting, as the old build loop did. `land_refs` is a second refs table that only appends LAND and
+triggers nothing, except that with `propose` its new commits run the proposals alone.
 
     "cycle": {
       "sources": ["src", "include"],          relative to tools.project; watched recursively
@@ -18,6 +22,7 @@ waiting, as the old build loop did. `land_refs` is a second refs table that only
       "exclude": ["build"],                   directory names never watched
       "settle_seconds": 2,
       "recipe": ["check", "--all"],           Recipe Maker command and arguments; omit for report-only
+      "propose": [{"name": "structure", "args": ["structure", "--json", "--paths", "{files}"]}],
       "refs": {"repos": [{"name", "path", "ref"}], "state_path": "...", "seed_commits": 0, "pull_seconds": 60},
       "land_refs": {...same shape, its own state_path...},
       "build": ["once"], "report": true, "run_at_start": false,
@@ -40,7 +45,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, tools
+from abu_decomp import DecompError, events, proposals, tools
 from abu_decomp.config import Profile
 from abu_decomp.stream.inotify import ATTRIB, CLOSE_WRITE, CREATE, DELETE, ISDIR, MOVED_TO, Watcher, drain
 
@@ -51,6 +56,7 @@ KEYS = frozenset(
         "exclude",
         "settle_seconds",
         "recipe",
+        "propose",
         "refs",
         "land_refs",
         "build",
@@ -74,13 +80,17 @@ def settings(profile: Profile) -> dict[str, Any]:
     if sources and (not isinstance(table.get("suffixes"), list) or not table["suffixes"]):
         raise DecompError("config.schema", "cycle.suffixes: a nonempty list is required with sources")
     report = table.get("report", True)
-    project = tools.settings(profile).project if sources or report or table.get("recipe") else None
+    propose = (
+        proposals.check_steps(profile.source_file, "cycle.propose", table["propose"]) if "propose" in table else []
+    )
+    project = tools.settings(profile).project if sources or report or table.get("recipe") or propose else None
     return {
         "sources": [project / value for value in sources] if project else [],
         "suffixes": tuple(table.get("suffixes", ())),
         "exclude": frozenset(table.get("exclude", ())),
         "settle": float(table.get("settle_seconds", 2)),
         "recipe": list(table["recipe"]) if table.get("recipe") else None,
+        "propose": propose,
         "refs": table.get("refs"),
         "land_refs": table.get("land_refs"),
         "build": list(table["build"]) if table.get("build") else None,
@@ -169,6 +179,23 @@ class Cycle:
             },
         )
 
+    def propose(self, landed: list[str] | None) -> dict[str, Any] | None:
+        """Recipe's proposals for the landed files (else the changed sources of the burst); one LAND event."""
+        project = tools.settings(self.profile).project
+        files = proposals.source_files(project, landed or [])
+        summary = proposals.run(self.profile, None, self.config["propose"], files, invoke=self.invoke)
+        self.append(
+            self.feed,
+            {
+                "actor": self.config["actor"],
+                "status": "info" if all(step.get("ok") for step in summary.values()) else "failed",
+                "kind": "LAND",
+                "message": f"{proposals.line(summary)} for {len(files)} landed file(s)",
+                "payload": {"recipe": summary, "files": files[:50]},
+            },
+        )
+        return summary
+
     def report(self) -> dict[str, dict[str, int]] | None:
         try:
             result = self.invoke("unbake", self.profile, ["report"])
@@ -197,9 +224,14 @@ class Cycle:
         self.fail("build " + " ".join(args), str(finding.get("message", f"exit {called.returncode}")))
         return False
 
-    def run(self, trigger: list[str]) -> dict[str, Any]:
+    def run(self, trigger: list[str], landed: list[str] | None = None) -> dict[str, Any]:
         """The steps for one settled burst: build, Recipe, then the report and its MATCH (each when configured)."""
         record: dict[str, Any] = {"trigger": sorted(set(trigger)), "build": None, "recipe": None, "match": None}
+        if set(trigger) == {"landed tree"}:  # commits of the landed-only refs: just Recipe's proposals
+            record["propose"] = self.propose(landed)
+            self.runs.append(record)
+            print("cycle run " + json.dumps(record), file=sys.stderr, flush=True)
+            return record
         if self.config["build"]:
             record["build"] = self.build()
         if self.config["recipe"]:
@@ -211,6 +243,8 @@ class Cycle:
             except DecompError as error:
                 record["recipe"] = False
                 self.fail("recipe " + " ".join(self.config["recipe"]), error.detail)
+        if self.config["propose"]:
+            record["propose"] = self.propose(landed)
         now = self.report() if self.config["report"] else None
         if now is not None:
             message = delta_message(self.last, now) if self.last is not None else None
@@ -245,11 +279,13 @@ class Cycle:
             if getattr(source, "pull_seconds", None)
         }
         burst: list[str] = []
+        landed: list[str] = []
         deadline: float | None = None
         if self.land_refs:
             self.land_refs.scan()
         if self.refs and self.refs.scan():  # commits that landed while the cycle was down
             burst, deadline = ["landed refs"], time.monotonic() + self.config["settle"]
+            landed.extend(self.refs.touched)
         if self.config["run_at_start"] and not self.runs:
             self.run(["start"])
         while max_runs is None or len(self.runs) < max_runs:
@@ -264,6 +300,10 @@ class Cycle:
                     drain(fd)
                     if source.scan() and source is self.refs:
                         woke.append("landed refs")
+                        landed.extend(source.touched)
+                    elif source is self.land_refs and self.config["propose"] and source.touched:
+                        woke.append("landed tree")
+                        landed.extend(source.touched)
             for source in sources:
                 due = pulls.get(id(source))
                 if due is not None and time.monotonic() >= due:
@@ -273,8 +313,8 @@ class Cycle:
                 burst.extend(woke)
                 deadline = time.monotonic() + self.config["settle"]
             elif deadline is not None and time.monotonic() >= deadline:
-                self.run(burst)
-                burst, deadline = [], None
+                self.run(burst, landed)
+                burst, landed, deadline = [], [], None
         return self.runs
 
     def close(self) -> None:

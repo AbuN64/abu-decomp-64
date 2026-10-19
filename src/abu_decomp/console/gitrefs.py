@@ -38,6 +38,7 @@ class RefSource:
             }
             for item in config["repos"]
         ]
+        self.touched: list[str] = []  # files the commits of the last scan changed, repo-relative
         self.state_path = profile.resolve_path(config["state_path"])
         self.seen: dict[str, str] = json.loads(self.state_path.read_text()) if self.state_path.is_file() else {}
 
@@ -50,6 +51,7 @@ class RefSource:
     def scan(self) -> int:
         """Append one event per commit not yet reported; return how many."""
         count = 0
+        self.touched = []
         for repo in self.repos:
             head = _git(repo["path"], "rev-parse", repo["ref"])
             if not head:
@@ -60,6 +62,8 @@ class RefSource:
             span = f"{old}..{head}" if old else head
             limit = ["-n", str(self.seen_limit(old))]
             log = _git(repo["path"], "log", "--reverse", "--format=%h %s", *limit, span)
+            names = _git(repo["path"], "log", "--format=", "--name-only", *limit, span)
+            self.touched.extend(name for name in names.splitlines() if name)
             for line in log.splitlines():
                 sha, _, subject = line.partition(" ")
                 self.append(self.profile, self.actor, "info", f"{repo['name']} {sha} {subject}", kind="LAND")

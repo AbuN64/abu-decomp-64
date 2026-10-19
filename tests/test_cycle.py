@@ -24,6 +24,9 @@ class Tools:
 
     def __call__(self, tool, profile, args):
         self.calls.append((tool, tuple(args)))
+        if tool == "recipe" and args[0] == "structure":
+            document = {"ok": True, "result": {"moves": 2, "files": ["src/game/a.c"]}}
+            return SimpleNamespace(ok=True, returncode=0, document=document)
         if tool == "recipe":
             return SimpleNamespace(ok=self.recipe_ok, returncode=0 if self.recipe_ok else 2, document={"ok": True})
         return SimpleNamespace(ok=True, returncode=0, document=report(self.numbers.pop(0)))
@@ -43,6 +46,7 @@ class FakeRefs:
         self.read, self.write = os.pipe()
         os.set_blocking(self.read, False)  # like the inotify fds RefSource returns
         self.pending = 0
+        self.touched = []
 
     def watch_fds(self):
         return [self.read]
@@ -185,6 +189,31 @@ class CycleTests(CycleBase):
         run = cycle.serve(max_runs=1)[0]
         self.assertEqual(run["trigger"], ["landed refs"])
         self.assertEqual(self.tools.count("recipe"), 1)
+
+    def test_landed_files_get_recipe_proposals_as_one_land_event_and_nothing_applied(self):
+        steps = [{"name": "structure", "args": ["structure", "--json", "--paths", "{files}"]}]
+        (self.project / "src/game/a.c").write_text("int a;\n")
+        cycle = self.cycle([100, 100], refs=True, recipe=None, propose=steps)
+        cycle.refs.touched = ["src/game/a.c", "README.md", "src/game/gone.c"]
+        cycle.refs.land()
+        run = cycle.serve(max_runs=1)[0]
+        self.assertEqual(run["propose"]["structure"], {"ok": True, "moves": 2, "files": 1})
+        self.assertIn(("recipe", ("structure", "--json", "--paths", "src/game/a.c")), self.tools.calls)
+        proposed = [e for e in self.events if e.get("payload", {}).get("recipe")]
+        self.assertEqual([(e["kind"], e["status"]) for e in proposed], [("LAND", "info")])
+        self.assertIn("recipe proposes structure 2 moves", proposed[0]["message"])
+        self.assertEqual(proposed[0]["payload"]["files"], ["src/game/a.c"])
+
+    def test_a_landed_only_ref_runs_the_proposals_and_nothing_else(self):
+        steps = [{"name": "structure", "args": ["structure", "--json", "--paths", "{files}"]}]
+        (self.project / "src/game/a.c").write_text("int a;\n")
+        land_refs = {"repos": [], "state_path": "l.json", "pull_seconds": 0.01}
+        cycle = self.cycle([100], refs=True, recipe=None, propose=steps, land_refs=land_refs)
+        cycle.land_refs.touched = ["src/game/a.c"]  # the first pull fetches one commit
+        run = cycle.serve(max_runs=1)[0]
+        self.assertEqual(run["trigger"], ["landed tree"])
+        self.assertEqual([call[1][0] for call in self.tools.calls if call[0] == "recipe"], ["structure"])
+        self.assertEqual(self.tools.count("unbake"), 1)  # only the baseline report; the landed-only burst skips it
 
     def test_report_only_without_a_recipe(self):
         cycle = self.cycle([100, 100], recipe=None)

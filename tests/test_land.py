@@ -64,7 +64,7 @@ class LandTests(unittest.TestCase):
         }
         (self.root / "seat.json").write_text(json.dumps({"schema_version": 1, "name": "seat", **sections}))
         self.profile = load_profile(self.root / "seat.json")
-        self.unbake, self.commands, self.events = [], [], []
+        self.unbake, self.commands, self.events, self.recipes = [], [], [], []
         self.on_sync = lambda: None
         self.on_check = lambda: None
 
@@ -79,8 +79,14 @@ class LandTests(unittest.TestCase):
         return lane, path
 
     def invoke(self, tool, profile, args, project=None):
-        self.unbake.append(tuple(args))
         self.assertEqual(project, self.tree)
+        if tool == "recipe":
+            self.recipes.append(tuple(args))
+            ok = args[0] != "name"
+            result = {"moves": 2, "files": ["a.c", "x.c"], "suggestions": [{"to": "a/b.c"}]}
+            document = {"ok": ok, "result": result if ok else None, "findings": [] if ok else [{"message": "no map"}]}
+            return SimpleNamespace(ok=ok, returncode=0 if ok else 1, document=document)
+        self.unbake.append(tuple(args))
         if args[0] == "sync" and "--check" not in args:
             self.on_sync()
         return SimpleNamespace(ok=self.sync_ok(args), returncode=0, document={"ok": True, "findings": []})
@@ -136,6 +142,53 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.unbake, [("setup",), ("sync",), ("sync",), ("sync", "--check")])
         self.assertEqual([e["kind"] for e in self.events], ["LAND"])
         self.assertEqual(self.events[0]["status"], "passed")
+
+    def with_recipe(self, steps):
+        document = json.loads((self.root / "seat.json").read_text())
+        document["land"]["recipe"] = steps
+        (self.root / "seat.json").write_text(json.dumps(document))
+        self.profile = load_profile(self.root / "seat.json")
+
+    def test_recipe_proposals_run_on_the_landed_files_and_ride_the_result_and_the_event(self):
+        self.with_recipe(
+            [
+                {"name": "structure", "args": ["structure", "--json", "--paths", "{files}"]},
+                {"name": "names", "args": ["name", "next", "--json"]},
+            ]
+        )
+        one = self.patch(
+            "L1", {"a.c": A_C.replace('INCLUDE_ASM(const s32, "a", func_1);\n', "int func_1(void) { return 1; }\n")}
+        )
+        result, code, findings = self.land([one])
+        self.assertEqual(code, 0)  # a refusing step informs; the landing still passes
+        self.assertEqual(self.recipes[0], ("structure", "--json", "--paths", "a.c"))
+        self.assertEqual(result["recipe"]["structure"]["moves"], 2)
+        self.assertEqual(result["recipe"]["names"], {"ok": False, "error": "no map"})
+        self.assertEqual([f["key"] for f in findings], ["land.recipe"])
+        self.assertFalse(findings[0]["blocking"])
+        self.assertTrue(self.gates(result)["recipe"])
+        self.assertIn("recipe proposes structure 2 moves", self.events[0]["message"])
+        self.assertEqual(self.events[0]["payload"]["recipe"]["structure"]["suggestions"], 1)
+        self.assertEqual(self.git_status(), "")  # proposals never touch tracked files beyond the patches' own
+
+    def git_status(self):
+        return "".join(
+            line + "\n" for line in git(self.tree, "status", "--porcelain").splitlines() if not line.startswith("M ")
+        )
+
+    def test_a_failed_gate_runs_no_recipe(self):
+        self.with_recipe([{"name": "structure", "args": ["structure", "--json", "--paths", "{files}"]}])
+        one = self.patch("L1", {"a.c": A_C.replace("func_1", "func_9")})
+        self.sync_ok = lambda args: args[0] != "sync"
+        result, code, _ = self.land([one])
+        self.assertEqual(code, 1)
+        self.assertEqual(self.recipes, [])
+        self.assertIsNone(self.gates(result)["recipe"])
+
+    def test_recipe_steps_that_write_the_tree_are_refused_in_the_profile(self):
+        with self.assertRaises(DecompError):
+            self.with_recipe([{"name": "apply", "args": ["apply"]}])
+            self.land([])
 
     def test_commit_plan_one_entry_per_lane_with_the_project_message(self):
         one = self.patch(

@@ -29,8 +29,14 @@ Section `land` of the seat profile:
       "asm_suffix": ".s",
       "readme": "README.md",
       "timeout_seconds": 7200,                        per check/jobs call
+      "recipe": [{"name": "structure", "args": ["structure", "--json", "--paths", "{files}"]}],
+      "recipe_suffixes": [".c", ".h"],                landed files Recipe is asked about (default .c .h .cpp)
       "actor": "land"
     }
+
+`recipe` (optional) runs the pinned Recipe Maker's proposal verbs (abu_decomp.proposals) on the landed tree after the
+last gate passed: names and structure suggestions, never applied, so no lane's pending patch loses its file. The
+result's `recipe` holds each step's summary and the LAND event carries it; a failing step is a non-blocking finding.
 
 Project facts (the markers, the README, the check command) come only from that section; the tree is the argument.
 """
@@ -49,13 +55,14 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, tools
+from abu_decomp import DecompError, events, proposals, tools
 from abu_decomp.config import Profile, check_keys
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
 Run = Callable[[Sequence[str], Path, "dict[str, str] | None", "float | None"], "tuple[int, str, str]"]
 
 GATES = ("base", "apply", "setup", "sync", "check", "sync_after", "sync_check", "markers", "untracked_s", "readme")
+OPTIONAL_GATES = ("recipe",)
 DEFAULT_MARKERS = ("INCLUDE_ASM", "NON_MATCHING", "GLOBAL_ASM")
 _PERCENT = re.compile(r"\bcode\b[^%\n]*?(\d+(?:\.\d+)?)%")
 _NAME = re.compile(r"([A-Za-z_]\w*)\s*\)\s*;?\s*$")
@@ -118,7 +125,19 @@ def settings(profile: Profile) -> dict[str, Any]:
         "land",
         table,
         frozenset({"check"}),
-        frozenset({"check", "jobs", "markers", "asm_suffix", "readme", "timeout_seconds", "actor"}),
+        frozenset(
+            {
+                "check",
+                "jobs",
+                "markers",
+                "asm_suffix",
+                "readme",
+                "timeout_seconds",
+                "actor",
+                "recipe",
+                "recipe_suffixes",
+            }
+        ),
     )
 
     def argv(key: str) -> list[str] | None:
@@ -143,6 +162,10 @@ def settings(profile: Profile) -> dict[str, Any]:
         "readme": str(table.get("readme", "README.md")),
         "timeout": float(timeout),
         "actor": str(table.get("actor", "land")),
+        "recipe": proposals.check_steps(profile.source_file, "land.recipe", table["recipe"])
+        if "recipe" in table
+        else [],
+        "recipe_suffixes": tuple(table.get("recipe_suffixes", proposals.SUFFIXES)),
     }
 
 
@@ -244,6 +267,7 @@ class Landing:
         self.findings: list[dict[str, Any]] = []
         self.lanes: list[dict[str, Any]] = []
         self.extra: dict[str, Any] = {}
+        self.recipe_summary: dict[str, Any] | None = None
 
     # git -------------------------------------------------------------------------------------------------------
     def git(self, *args: str, ok: bool = True) -> str:
@@ -435,6 +459,23 @@ class Landing:
             "readme", not any(f["key"] == "land.readme" for f in self.findings), started, base=old, now=new
         )
 
+    def recipe(self) -> bool:
+        """Recipe's proposals on the landed tree; they inform and never fail the landing."""
+        started = self.clock()
+        touched = [f for row in self.lanes if row["status"] == "applied" for f in row["files"]]
+        files = proposals.source_files(self.tree, touched, self.config["recipe_suffixes"])
+        self.recipe_summary = proposals.run(self.profile, self.tree, self.config["recipe"], files, invoke=self.invoke)
+        for name, step in self.recipe_summary.items():
+            if not step.get("ok"):
+                self.findings.append(
+                    {
+                        "key": "land.recipe",
+                        "message": f"recipe {name} gave no proposal: {step.get('error', '?')}",
+                        "blocking": False,
+                    }
+                )
+        return self.gate("recipe", True, started, files=len(files))
+
     # grouping -----------------------------------------------------------------------------------------------------
     def groups(self) -> dict[str, Any]:
         """Per-lane file groups: a file belongs to the last applied lane whose patch changed it; changed files no
@@ -503,6 +544,7 @@ class Landing:
             self.markers,
             self.untracked,
             self.readme,
+            *([self.recipe] if self.config["recipe"] else []),
         ]
 
     def execute(self) -> Result:
@@ -512,7 +554,7 @@ class Landing:
                 failed = True
                 break
         done = {row["gate"] for row in self.gates}
-        for name in GATES:
+        for name in (*GATES, *(g for g in OPTIONAL_GATES if self.config["recipe"])):
             if name not in done:
                 self.gates.append({"gate": name, "pass": None, "skipped": True})
         result: dict[str, Any] = {
@@ -525,6 +567,8 @@ class Landing:
             "untracked_other": self.extra.get("untracked_other", []),
             **self.groups(),
         }
+        if self.recipe_summary is not None:
+            result["recipe"] = self.recipe_summary
         result["commits"] = self.commits(result["groups"])
         result["commit_commands"] = [
             f"git add -- {(files := ' '.join(shlex.quote(f) for f in c['files']))} "
@@ -545,6 +589,7 @@ class Landing:
         message = (
             f"land {len(names)} lane(s) at {str(result['head'] or '')[:12]}: "
             f"{result['functions']['converted']} converted"
+            + (f"; {proposals.line(result['recipe'])}" if result.get("recipe") else "")
             if result["pass"]
             else f"land failed: {blocking['key'] if blocking else 'unknown'}"
         )
@@ -558,6 +603,7 @@ class Landing:
                 "base": result["base"],
                 "gates": {row["gate"]: row["pass"] for row in self.gates},
                 "lanes": {row["lane"]: {"status": row["status"], **(row.get("functions") or {})} for row in self.lanes},
+                **({"recipe": result["recipe"]} if result.get("recipe") else {}),
             },
         }
         try:
