@@ -23,6 +23,7 @@ from .dashboard_model import Row, event_epoch
 from .human import payload_of
 
 CLIP = 110
+PIN_STEP = 48  # the pinned step stays short so a one-line hud still shows the stop after it
 
 
 def clip(text: str) -> str:
@@ -97,7 +98,7 @@ class LanePane:
             newest[str(payload_of(event).get("op") or "status")] = event
         lines = []
         if "step" in newest:
-            lines.append(title_of(newest["step"]))
+            lines.append(title_of(newest["step"])[:PIN_STEP])
         if "stop" in newest:
             lines.append(title_of(newest["stop"]))
         results = [title_of(newest[op]) for op in ("build", "test") if op in newest]

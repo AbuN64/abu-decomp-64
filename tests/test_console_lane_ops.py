@@ -88,6 +88,7 @@ class OpsPaneTests(unittest.TestCase):
                 "n64host: graphics tasks=75000 elapsed_ms=2542697 dl=0x806D2000 bytes=4928",
                 "n64host: screen updates=152400 elapsed_ms=2542068 graphics_tasks=74984",
                 "n64host: TLB fault va=00800004 thread=8011f880",
+                "n64host: audio queued_samples=736 nonzero_samples=0",
             ]
         )
         self.assertEqual(

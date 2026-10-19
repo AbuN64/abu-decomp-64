@@ -4,7 +4,7 @@
                                                   host_log comes from the tile's console
 
 Sources are the oracle host's own output: the tile's `host_log` (n64host lines: RSP graphics tasks with their display
-list, VI swaps with the screen counter, TLB faults, audio queue) and, when set, the `trace` file Cake Taste writes with
+list, VI swaps with the screen counter, TLB faults, audio driver) and, when set, the `trace` file Cake Taste writes with
 N64R_TRACE (`vi thread function` per guest function entry; PI DMA, OS, VI and RSP/RDP calls are named by their
 libultra function). `runs` is Cake Taste's repro runs root: the newest runs' `events.txt` (what `taste repro probe`
 and `decomp behave` executed: `case c0`, `call func args`, `ret values`, `end ok`) become one row per case,
@@ -31,10 +31,6 @@ HOST = [
     (
         re.compile(r"TLB fault va=([0-9a-fA-F]+) thread=([0-9a-fA-F]+)"),
         lambda m: f"TLB fault va 0x{m[1].upper()} thread 0x{m[2].upper()}",
-    ),
-    (
-        re.compile(r"audio queued_samples=(\d+) nonzero_samples=(\d+)"),
-        lambda m: f"AI queue {m[1]} samples, {m[2]} nonzero",
     ),
     (re.compile(r"audio driver=(\S+) rate=(\d+)"), lambda m: f"AI {m[1]} {m[2]} Hz"),
 ]
