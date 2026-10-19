@@ -23,6 +23,14 @@ def in_slice(slice_name: str, cgroup: str) -> bool:
     return any(slice_name in line.partition(":")[2].partition(":")[2].split("/") for line in cgroup.splitlines())
 
 
+def in_service(cgroup_text: str) -> bool:
+    """Whether the unified (`0::`) cgroup path of a /proc/<pid>/cgroup text ends in a `.service` unit."""
+    for line in cgroup_text.splitlines():
+        if line.startswith("0::"):
+            return line[3:].rstrip("/").rpartition("/")[2].endswith(".service")
+    return False
+
+
 def _read_cgroup() -> str:
     try:
         return Path("/proc/self/cgroup").read_text(encoding="utf-8")
@@ -58,8 +66,12 @@ def enter(
     warn: Callable[[str], None] = lambda text: sys.stderr.write(text + "\n"),
 ) -> bool:
     """Re-execs `argv` inside `slice_name` and does not return when it does. Returns False when the command should
-    run in place: no slice named, already in it, already tried by a parent, or the host cannot do it (one warning)."""
-    if not slice_name or os.environ.get(ENTERED) == slice_name or in_slice(slice_name, cgroup()):
+    run in place: no slice named, already in it, already tried by a parent, running as a service, or the host cannot
+    do it (one warning). A service is placed by its unit's `Slice=`; only session processes are moved."""
+    if not slice_name or os.environ.get(ENTERED) == slice_name:
+        return False
+    text = cgroup()
+    if in_slice(slice_name, text) or in_service(text):
         return False
     if which("systemd-run") is None:
         warn(f"decomp: run slice {slice_name} not entered: systemd-run is missing; running in place")
