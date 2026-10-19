@@ -122,7 +122,8 @@ class PaneTests(unittest.TestCase):
         self.assertIn("trying   func_802BD430_de", row.details)
         self.assertEqual(model.heading, "DECOMP · 1 active lanes")
         self.assertTrue(model.footer.startswith("landed today 2 · RW us functions "), model.footer)
-        self.assertIn("code ", model.footer)
+        # the README's own figure and metric: code bytes matched of total, two decimals
+        self.assertRegex(model.footer, r"code \d\d\.\d\d% \([\d,]+ of [\d,]+ bytes\)")
 
     def test_a_quiet_lane_is_listed_as_idle_and_no_lane_is_hardcoded(self):
         self.lane("RW-A", score=envelope([variant("v", 5)]), done=[])

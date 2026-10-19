@@ -228,7 +228,7 @@ class MatchingPane:
     def footer(self, sources: Any) -> str:
         parts = [f"landed today {self.landed_today(sources)}"]
         if self.progress:
-            from .panes import percent, progress_versions
+            from .panes import progress_versions
 
             path = Path(self.progress["path"])
             sources.watched.add(path)
@@ -237,7 +237,8 @@ class MatchingPane:
                 parts.append(
                     f"{self.progress.get('label', 'main')} {self.progress['version']} "
                     f"functions {cart['functions_matched']}/{cart['functions_total']} "
-                    f"code {percent(cart['code_matched'], cart['code_total'])}"
+                    f"code {100 * cart['code_matched'] / cart['code_total']:.2f}% "
+                    f"({cart['code_matched']:,} of {cart['code_total']:,} bytes)"
                 )
             except (KeyError, ValueError, TypeError):
                 parts.append(f"{self.progress.get('label', 'main')} progress unavailable")
