@@ -44,6 +44,9 @@ DECOMP_URL = "https://github.com/AbuN64/abu-decomp-64"
 SHA = re.compile(r"[0-9a-f]{40}")
 _PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)\s*@\s*git\+(?P<url>https://[^@\s]+)@(?P<commit>[0-9a-f]{40})$")
 
+# Every process the deploy starts carries this variable (value: the deploy's pid), and so do their descendants.
+MARK = "ABU_DECOMP_DEPLOY"
+
 Fetch = Callable[[str, str, str], str]
 Run = Callable[[Sequence[str], Path | None], "tuple[int, str]"]
 
@@ -68,7 +71,8 @@ def fetch_file(url: str, sha: str, path: str) -> str:
 
 
 def run_command(argv: Sequence[str], cwd: Path | None = None) -> tuple[int, str]:
-    done = subprocess.run(list(argv), cwd=cwd, capture_output=True, text=True, check=False)
+    env = {**os.environ, MARK: str(os.getpid())}
+    done = subprocess.run(list(argv), cwd=cwd, env=env, capture_output=True, text=True, check=False)
     return done.returncode, (done.stdout + done.stderr)[-2000:]
 
 
@@ -174,14 +178,39 @@ def versioned_path(live: Path, decomp: str) -> Path:
     return candidate
 
 
+def _ancestors(proc: Path, pid: int) -> set[int]:
+    """`pid` and the chain of processes that started it (a `timeout`, shell or ssh wrapper carries the deploy's own
+    `--venv LIVE` argv and waits for it, so it is the deploy, not another user)."""
+    chain: set[int] = set()
+    while pid > 0 and pid not in chain:
+        chain.add(pid)
+        try:
+            stat = (proc / str(pid) / "stat").read_text()
+            pid = int(stat[stat.rindex(")") + 2 :].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return chain
+
+
+def _marked(entry: Path) -> bool:
+    """Whether the process descends from this deploy (it carries MARK with this deploy's pid). An unreadable
+    environment is not marked: a process that cannot be shown to be ours counts as a user."""
+    try:
+        return f"{MARK}={os.getpid()}".encode() in (entry / "environ").read_bytes().split(b"\0")
+    except OSError:
+        return False
+
+
 def users_of(path: Path, proc: Path = Path("/proc")) -> list[int]:
     """PIDs with an argv word, a working directory or a mapped file at or under `path` (a venv is in use when a
-    process was started from it or has loaded a file of it)."""
+    process was started from it or has loaded a file of it), other than this deploy: its ancestors and every
+    process it started (marked with MARK, detached ones too)."""
     prefix = str(path).rstrip("/")
     inside = (prefix, prefix + "/")
+    own = _ancestors(proc, os.getpid())
     found = []
     for entry in sorted(proc.iterdir(), key=lambda e: e.name):
-        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+        if not entry.name.isdigit() or int(entry.name) in own or _marked(entry):
             continue
         try:
             argv = (entry / "cmdline").read_bytes().decode(errors="replace").split("\0")

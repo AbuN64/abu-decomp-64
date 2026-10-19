@@ -211,6 +211,38 @@ class DeployTests(unittest.TestCase):
         (proc / "self").mkdir()
         self.assertEqual(deploy.users_of(self.root / "v", proc), [11, 12])
 
+    def fake_proc(self, rows):
+        """rows: pid -> (ppid, argv, environ words); every process has cwd / and no maps."""
+        proc = self.root / "proc"
+        for pid, (ppid, argv, environ) in rows.items():
+            (proc / str(pid)).mkdir(parents=True)
+            (proc / str(pid) / "stat").write_text(f"{pid} (name with ) paren) S {ppid} 1 1 0\n")
+            (proc / str(pid) / "cmdline").write_text(argv)
+            (proc / str(pid) / "environ").write_text("\0".join(environ))
+            (proc / str(pid) / "cwd").symlink_to("/")
+            (proc / str(pid) / "maps").write_text("")
+        return proc
+
+    def test_users_of_skips_the_deploys_own_ancestors_and_marked_children(self):
+        me = os.getpid()
+        venv = f"{self.root}/v"
+        proc = self.fake_proc(
+            {
+                me: (500, f"{venv}/bin/decomp\0tools\0deploy\0--venv\0{venv}", []),
+                500: (400, f"timeout\0300\0{venv}/bin/decomp\0--venv\0{venv}", []),  # wrapper that started us
+                400: (1, f"sh\0-c\0{venv}/bin/decomp", []),
+                21: (me, f"{venv}/bin/python\0-m\0pip", [f"{deploy.MARK}={me}"]),  # a child
+                22: (1, f"{venv}/bin/python\0collector", ["HOME=/x", f"{deploy.MARK}={me}"]),  # detached grandchild
+                23: (1, f"{venv}/bin/python\0job", ["HOME=/x"]),  # an unmarked user
+                24: (1, f"{venv}/bin/python\0job", [f"{deploy.MARK}={me + 1}"]),  # another deploy's child
+            }
+        )
+        self.assertEqual(deploy.users_of(self.root / "v", proc), [23, 24])
+
+    def test_run_command_marks_what_it_starts(self):
+        code, output = deploy.run_command(["sh", "-c", f"echo ${deploy.MARK}"])
+        self.assertEqual((code, output.strip()), (0, str(os.getpid())))
+
     def test_cache_report_reads_unbake_stage_telemetry(self):
         stages = {
             "path": ["score"],
