@@ -118,12 +118,16 @@ class CheckoutTests(unittest.TestCase):
         (venv / "bin" / "python").write_text("")
         with mock.patch("abu_decomp.deploy.plan", return_value=(self.requirements(), [])):
             (self.copy / "f").write_text("mine")
-            _, code, findings = deploy.deploy(self.profile, "a" * 40, [venv], {}, run=run, migrate=True, users=lambda _: [])
+            _, code, findings = deploy.deploy(
+                self.profile, "a" * 40, [venv], {}, run=run, migrate=True, users=lambda _: []
+            )
             self.assertEqual((code, findings[0]["key"], calls), (1, "deploy.checkout_dirty", []))
             (self.copy / "f").write_text("2")
             git(self.copy, "checkout", "-q", "--", "f")
             git(self.copy, "reset", "-q", "--hard", self.old)
-            result, code, findings = deploy.deploy(self.profile, "a" * 40, [venv], {}, run=run, migrate=True, users=lambda _: [])
+            result, code, findings = deploy.deploy(
+                self.profile, "a" * 40, [venv], {}, run=run, migrate=True, users=lambda _: []
+            )
         self.assertEqual(code, 1 if any(f["key"] == "deploy.smoke" for f in findings) else 0)
         self.assertEqual(tools.checkout_head(self.copy), self.new)
         self.assertEqual(result["checkouts"][0]["ok"], True)
