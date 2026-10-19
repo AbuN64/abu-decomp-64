@@ -31,8 +31,14 @@ Section `land` of the seat profile:
       "timeout_seconds": 7200,                        per check/jobs call
       "recipe": [{"name": "structure", "args": ["structure", "--json", "--paths", "{files}"]}],
       "recipe_suffixes": [".c", ".h"],                landed files Recipe is asked about (default .c .h .cpp)
-      "actor": "land"
+      "actor": "land",
+      "subject_limit": 72                             longest commit subject the plan may print (default 72)
     }
+
+The commit plan always passes the project's commit rules: the subject is at most `subject_limit` characters (the
+function list moves to the body, then directories are trimmed to "and N more dirs"), and every message is run through
+the tree's own commit-msg hook (git's hooks path) before anything is committed; a violation is a blocking
+`land.commit_subject` / `land.commit_hook` finding that fails the landing, never a refusal at commit time.
 
 `recipe` (optional) runs the pinned Recipe Maker's proposal verbs (abu_decomp.proposals) on the landed tree after the
 last gate passed: names and structure suggestions, never applied, so no lane's pending patch loses its file. The
@@ -49,6 +55,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -63,6 +70,7 @@ Run = Callable[[Sequence[str], Path, "dict[str, str] | None", "float | None"], "
 
 GATES = ("base", "apply", "setup", "sync", "check", "sync_after", "sync_check", "markers", "untracked_s", "readme")
 OPTIONAL_GATES = ("recipe",)
+DEFAULT_SUBJECT_LIMIT = 72
 DEFAULT_MARKERS = ("INCLUDE_ASM", "NON_MATCHING", "GLOBAL_ASM")
 _PERCENT = re.compile(r"\bcode\b[^%\n]*?(\d+(?:\.\d+)?)%")
 _NAME = re.compile(r"([A-Za-z_]\w*)\s*\)\s*;?\s*$")
@@ -118,6 +126,28 @@ def top_dirs(files: Sequence[str]) -> list[str]:
     return [found[key] for key in sorted(found)]
 
 
+def commit_message(marker: str, names: Sequence[str], dirs: Sequence[str], limit: int) -> tuple[str, str | None]:
+    """The project convention as (subject, body): "Fix N <marker> stand-ins in <dirs> by matching <names> as C" when it
+    fits `limit`, else "... by matching C" with the dirs trimmed ("A, B and 3 more dirs", "5 dirs", none) and the full
+    function list as the body paragraph."""
+    count = len(names)
+    head = f"Fix {count} {marker} stand-in{'s' if count > 1 else ''}"
+    full = f"{head}{f' in {sentence_list(dirs)}' if dirs else ''} by matching {sentence_list(names)} as C"
+    if len(full) <= limit:
+        return full, None
+    body = f"Matched as C: {', '.join(names)}"
+    options = [sentence_list(dirs)]
+    for keep in range(len(dirs) - 1, 0, -1):
+        more = len(dirs) - keep
+        options.append(f"{', '.join(dirs[:keep])} and {more} more dir{'s' if more > 1 else ''}")
+    options.append(f"{len(dirs)} dirs" if len(dirs) > 1 else "")
+    for where in options:
+        subject = f"{head}{f' in {where}' if where else ''} by matching C"
+        if len(subject) <= limit:
+            return subject, body
+    return head[:limit].rstrip(), body
+
+
 def settings(profile: Profile) -> dict[str, Any]:
     table = profile.section("land")
     check_keys(
@@ -136,6 +166,7 @@ def settings(profile: Profile) -> dict[str, Any]:
                 "actor",
                 "recipe",
                 "recipe_suffixes",
+                "subject_limit",
             }
         ),
     )
@@ -154,7 +185,11 @@ def settings(profile: Profile) -> dict[str, Any]:
     timeout = table.get("timeout_seconds", 7200)
     if type(timeout) not in (int, float) or timeout <= 0:
         raise LandError("config.schema", f"{profile.source_file}:land.timeout_seconds: expected a positive number")
+    limit = table.get("subject_limit", DEFAULT_SUBJECT_LIMIT)
+    if type(limit) is not int or limit < 20:
+        raise LandError("config.schema", f"{profile.source_file}:land.subject_limit: expected an integer of 20 or more")
     return {
+        "subject_limit": limit,
         "check": argv("check"),
         "jobs": argv("jobs"),
         "markers": tuple(markers),
@@ -510,14 +545,11 @@ class Landing:
         for group in groups:
             row = by_lane[group["lane"]]
             names = row["functions"]["names"]
+            body = None
             message = self.messages.get(row["lane"])
             if message is None and names:
-                where = sentence_list(top_dirs(row["files"]) or top_dirs(group["files"]))
-                count = len(names)
-                message = (
-                    f"Fix {count} {self.config['markers'][0]} stand-in{'s' if count > 1 else ''}"
-                    f"{f' in {where}' if where else ''} by matching {sentence_list(names)} as C"
-                )
+                dirs = top_dirs(row["files"]) or top_dirs(group["files"])
+                message, body = commit_message(self.config["markers"][0], names, dirs, self.config["subject_limit"])
             elif message is None:
                 self.findings.append(
                     {
@@ -527,8 +559,54 @@ class Landing:
                         "lane": row["lane"],
                     }
                 )
-            plan.append({"lane": row["lane"], "files": group["files"], "functions": names, "message": message})
+            plan.append(
+                {"lane": row["lane"], "files": group["files"], "functions": names, "message": message, "body": body}
+            )
+        self.check_messages(plan)
         return plan
+
+    def hook_path(self) -> Path | None:
+        """The tree's commit-msg hook (git's own hooks path), when it exists and is executable."""
+        found = self.git("rev-parse", "--git-path", "hooks/commit-msg", ok=False).strip()
+        path = (self.tree / found) if found else None
+        return path if path and path.is_file() and os.access(path, os.X_OK) else None
+
+    def check_messages(self, plan: Sequence[dict[str, Any]]) -> None:
+        """Every planned message passes the subject limit and the tree's commit-msg hook before any commit."""
+        limit, hook = self.config["subject_limit"], self.hook_path()
+        git_dir = (self.tree / self.git("rev-parse", "--git-dir", ok=False).strip()) if hook else None
+        for entry in plan:
+            if not entry["message"]:
+                continue
+            if len(entry["message"].splitlines()[0]) > limit:
+                self.fail(
+                    "land.commit_subject",
+                    f"lane {entry['lane']}: commit subject is {len(entry['message'].splitlines()[0])} characters, "
+                    f"the limit is {limit}; shorten --patch LANE=PATH:MESSAGE",
+                    lane=entry["lane"],
+                )
+            if hook and git_dir:
+                text = entry["message"] + (f"\n\n{entry['body']}" if entry["body"] else "") + "\n"
+                code, output = self.run_hook(hook, git_dir, text)
+                if code:
+                    self.fail(
+                        "land.commit_hook",
+                        f"lane {entry['lane']}: the commit-msg hook refuses {entry['message']!r}: {output[-300:]}",
+                        lane=entry["lane"],
+                    )
+
+    def run_hook(self, hook: Path, git_dir: Path, text: str) -> tuple[int, str]:
+        """Run the hook on a message file kept in the git dir (never /tmp), as `git commit` does."""
+        handle, name = tempfile.mkstemp(prefix="LAND_MSG_", dir=git_dir)
+        try:
+            with os.fdopen(handle, "w") as out:
+                out.write(text)
+            done = subprocess.run(
+                [str(hook), name], cwd=self.tree, capture_output=True, text=True, timeout=60, check=False
+            )
+            return done.returncode, (done.stderr or done.stdout).strip()
+        finally:
+            os.unlink(name)
 
     # run --------------------------------------------------------------------------------------------------------
     def stages(self) -> list[Callable[[], bool]]:
@@ -570,9 +648,12 @@ class Landing:
         if self.recipe_summary is not None:
             result["recipe"] = self.recipe_summary
         result["commits"] = self.commits(result["groups"])
+        if any(f["blocking"] and f["key"].startswith("land.commit_") for f in self.findings):
+            result["pass"] = False
         result["commit_commands"] = [
             f"git add -- {(files := ' '.join(shlex.quote(f) for f in c['files']))} "
-            f"&& git commit -m {shlex.quote(c['message'])} -- {files}"
+            f"&& git commit -m {shlex.quote(c['message'])}"
+            f"{f' -m {shlex.quote(c["body"])}' if c['body'] else ''} -- {files}"
             for c in result["commits"]
             if c["files"] and c["message"]
         ]

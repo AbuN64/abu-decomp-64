@@ -16,6 +16,7 @@ from abu_decomp.land import (
     Landing,
     build_process,
     code_percentages,
+    commit_message,
     diff_lines,
     function_name,
     parse_messages,
@@ -209,6 +210,81 @@ class LandTests(unittest.TestCase):
             "git add -- a.c && git commit -m 'Fix 1 INCLUDE_ASM stand-in by matching func_1 as C' -- a.c",
         )
         self.assertEqual(len(result["commit_commands"]), 2)
+
+    def test_subject_is_capped_with_the_function_list_in_the_body(self):
+        names = [f"func_{8025522 + i}_us" for i in range(10)]
+        dirs = ["GFX", "MENU", "TEXTURE"]
+        subject, body = commit_message("INCLUDE_ASM", names, dirs, 72)
+        self.assertEqual(subject, "Fix 10 INCLUDE_ASM stand-ins in GFX, MENU and TEXTURE by matching C")
+        self.assertLessEqual(len(subject), 72)
+        self.assertEqual(body, "Matched as C: " + ", ".join(names))
+        many = [f"DIR{i}" for i in range(12)]
+        subject, body = commit_message("INCLUDE_ASM", names, many, 72)
+        self.assertEqual(subject, "Fix 10 INCLUDE_ASM stand-ins in DIR0 and 11 more dirs by matching C")
+        subject, _ = commit_message("INCLUDE_ASM", names, many[:5], 72)
+        self.assertEqual(subject, "Fix 10 INCLUDE_ASM stand-ins in DIR0, DIR1 and 3 more dirs by matching C")
+        self.assertEqual(commit_message("INCLUDE_ASM", names, many, 30)[0], "Fix 10 INCLUDE_ASM stand-ins")
+        self.assertEqual(commit_message("INCLUDE_ASM", names, [], 72)[0], "Fix 10 INCLUDE_ASM stand-ins by matching C")
+
+    def test_subject_of_exactly_the_limit_keeps_the_names(self):
+        full = "Fix 2 INCLUDE_ASM stand-ins in AB by matching aaaa and bbbb as C"
+        self.assertEqual(commit_message("INCLUDE_ASM", ["aaaa", "bbbb"], ["AB"], len(full)), (full, None))
+        shorter = commit_message("INCLUDE_ASM", ["aaaa", "bbbb"], ["AB"], len(full) - 1)
+        self.assertEqual(shorter, ("Fix 2 INCLUDE_ASM stand-ins in AB by matching C", "Matched as C: aaaa, bbbb"))
+
+    def test_long_lists_land_with_a_short_subject_and_a_body_paragraph(self):
+        names = [f"func_{i:04d}_long_name_to_overflow" for i in range(6)]
+        (self.tree / "a.c").write_text("".join(f'INCLUDE_ASM(const s32, "a", {n});\n' for n in names))
+        git(self.tree, "commit", "-qam", "many")
+        base = git(self.tree, "rev-parse", "HEAD").strip()
+        one = self.patch("L1", {"a.c": "".join(f"int {n}(void) {{ return 1; }}\n" for n in names)})
+        result, code, _ = self.land([one], base=base)
+        self.assertEqual(code, 0)
+        plan = result["commits"][0]
+        self.assertLessEqual(len(plan["message"]), 72)
+        self.assertEqual(plan["body"], "Matched as C: " + ", ".join(names))
+        command = result["commit_commands"][0]
+        self.assertIn(f"-m 'Matched as C: {', '.join(names)}' -- a.c", command)
+        self.assertEqual(command.count(" -m "), 2)
+
+    def hook(self, text):
+        path = self.tree / ".git" / "hooks" / "commit-msg"
+        path.write_text(text)
+        path.chmod(0o755)
+
+    def landing(self, patches, messages):
+        return Landing(
+            self.profile,
+            self.tree,
+            self.base,
+            patches,
+            invoke=self.invoke,
+            run=self.runner,
+            build=self.runner,
+            append=lambda path, record: {"ok": True},
+            pin=lambda: "u1",
+            messages=messages,
+        )
+
+    def test_commit_msg_hook_violation_is_a_finding_before_any_commit(self):
+        self.hook('#!/bin/sh\nif [ "$(head -n1 "$1" | wc -c)" -gt 21 ]; then echo \'subject too long\'; exit 1; fi\n')
+        one = self.patch("L1", {"c.c": "int untouched(void) { return 1; }\n"})
+        two = self.patch("L2", {"b.c": "int func_3(void) { return 3; }\n"})
+        result, code, findings = self.landing([one, two], {"L1": "Fix the pin: a long subject"}).execute()
+        self.assertEqual(code, 1)
+        self.assertFalse(result["pass"])
+        self.assertEqual(
+            [(f["key"], f["lane"]) for f in findings], [("land.commit_hook", "L1"), ("land.commit_hook", "L2")]
+        )
+        self.assertIn("subject too long", findings[0]["message"])
+        self.assertEqual(git(self.tree, "rev-parse", "HEAD").strip(), self.base)
+        self.assertEqual(list((self.tree / ".git").glob("LAND_MSG_*")), [])
+
+    def test_passing_hook_and_over_limit_explicit_subject(self):
+        self.hook("#!/bin/sh\nexit 0\n")
+        one = self.patch("L1", {"c.c": "int untouched(void) { return 1; }\n"})
+        _, code, findings = self.landing([one], {"L1": "x" * 73}).execute()
+        self.assertEqual((code, [f["key"] for f in findings]), (1, ["land.commit_subject"]))
 
     def test_explicit_patch_message_names_a_repin_only_commit(self):
         three = self.patch("L3", {"c.c": "int untouched(void) { return 1; }\n"})
