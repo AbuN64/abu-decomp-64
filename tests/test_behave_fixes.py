@@ -13,9 +13,7 @@ class AutoSymbolTests(unittest.TestCase):
             build.mkdir(parents=True)
             (build / "undefined_funcs_auto.txt").write_text("func_auto_8044ECB0 = 0x8044ECB0;\nbad line\n")
             (build / "undefined_syms_auto.txt").write_text("D_389E = 0x3B6E;\n")
-            self.assertEqual(
-                cand.auto_symbols(Path(tmp), "v1"), {"func_auto_8044ECB0": 0x8044ECB0, "D_389E": 0x3B6E}
-            )
+            self.assertEqual(cand.auto_symbols(Path(tmp), "v1"), {"func_auto_8044ECB0": 0x8044ECB0, "D_389E": 0x3B6E})
             self.assertEqual(cand.auto_symbols(Path(tmp), "none"), {})
 
     def test_auto_symbols_are_provided_unless_the_symbol_table_has_them(self):
