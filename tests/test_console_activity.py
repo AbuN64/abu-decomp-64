@@ -108,12 +108,14 @@ class ActivityTests(unittest.TestCase):
             op="landed",
             functions=["func_1", "func_2"],
             gates={"check": True},
+            lanes={"RW-SOL-B": {"status": "applied"}, "RW-SOL-C": {"status": "excluded"}},
             recipe=recipe,
         )
         row = self.model().rows[0]
         self.assertEqual(
             row.title, "Landed 2 functions → Recipe suggests name code_802AB940 in src/GFX/CODE_802AB940.CPP"
         )
+        self.assertEqual(row.tag, "RW-SOL-B")
         self.assertIn("Went through Recipe Maker", row.details)
         self.assertIn("module: src/GFX/A.CPP -> code_802AB940", row.details)
 
@@ -154,6 +156,16 @@ class HumanTests(unittest.TestCase):
                 "Committed to rage-ports (abc1234): Select original background",
             ),
             ({"kind": "RUN-FAIL", "actor": "cycle", "message": "build failed"}, "cycle stopped: build failed"),
+            (
+                {
+                    "kind": "PROBE",
+                    "actor": "repro",
+                    "status": "started",
+                    "message": "Observe the original behavior of func_9",
+                    "payload": {"function": "func_9"},
+                },
+                "Probing func_9 on the original game",
+            ),
         ]
         for event, expected in cases:
             self.assertEqual(sentence(event), expected)

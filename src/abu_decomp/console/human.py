@@ -91,6 +91,9 @@ def sentence(event: dict[str, Any]) -> str:
         if not passed(event):
             return "Landing failed: " + message.partition(": ")[2]
         return f"Landed {count} matched functions (checked on a proof tree)"
+    if kind == "PROBE" and event.get("status") == "started":
+        name = payload.get("function") or message.rsplit(" ", 1)[-1]
+        return f"Probing {name} on the original game"
     if kind == "PROBE" and "checks" in payload:
         name = payload.get("function") or message
         checks, differences = payload["checks"], payload.get("differences", "?")

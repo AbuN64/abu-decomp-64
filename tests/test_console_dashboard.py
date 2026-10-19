@@ -73,6 +73,7 @@ class ConsoleModelTests(unittest.TestCase):
         self.assertRegex(passing, r"^Passing: \d+ of \d+ boot steps ✓$")
         self.assertRegex(stopped, r"^Stopped at: .+ — the port has no native code for this original function yet$")
         self.assertTrue(nxt.startswith("Next: ") and "nothing planned" not in nxt)
+        self.assertLessEqual(len(nxt), 86)  # one line, never the raw log fragment in full
         dated = [row for row in model.rows if row.state in ("passed", "stop")]
         self.assertTrue(dated and all(row.when for row in dated))
         self.assertGreater(next(r.when for r in model.rows if r.state == "stop"), dated[0].when)

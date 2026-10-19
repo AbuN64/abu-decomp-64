@@ -108,7 +108,8 @@ class ConsoleApp(App):
     Screen { background: #101820; color: #d8e2eb; layers: base above; }
     #heading { height: 1; background: #1b2a3a; color: #9fb4c4; padding: 0 1; text-wrap: nowrap;
                text-overflow: ellipsis; }
-    #pinned { height: auto; background: #162330; color: #c3d0db; padding: 0 1; }
+    #pinned { height: auto; background: #162330; color: #c3d0db; padding: 0 1; text-wrap: nowrap;
+              text-overflow: ellipsis; }
     #rows { padding: 0 1; }
     #foot { height: 1; background: #1b2a3a; color: #7f93a4; padding: 0 1; text-wrap: nowrap;
             text-overflow: ellipsis; }

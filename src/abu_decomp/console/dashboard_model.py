@@ -144,8 +144,10 @@ def plain_reason(reason: str) -> str:
 def boot_status(rows: list[Row], passed: int, total: int, stop_index: int | None, reason: str) -> list[str]:
     """The three plain status lines kept above the boot rows."""
     stopped = next((r for r in rows if r.state == "stop"), None)
-    after = [r for r in rows if r.state == "planned" and r.key.startswith(("gate-", "plan-"))]
-    nxt = next(iter(after), None)
+    planned = [r for r in rows if r.state == "planned"]
+    nxt = next((r for r in planned if r.key.startswith("plan-")), None) or next(
+        (r for r in planned if r.key.startswith("gate-")), None
+    )
     return [
         f"Passing: {passed} of {total} boot steps ✓",
         f"Stopped at: {stopped.title} — {plain_reason(reason)}"

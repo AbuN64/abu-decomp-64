@@ -93,7 +93,7 @@ class ActivityPane:
         payload, kind = payload_of(event), canonical_kind(event)
         function = function_of(event)
         when, key = event_epoch(event), f"act-{event.get('time')}-{event.get('actor')}-{event.get('message')}"
-        lane = str(payload.get("lane") or event.get("actor") or "")
+        lane = str(payload.get("lane") or "")
         if function:
             version = payload.get("version") or next(
                 (payload_of(e).get("version") for e in history[function] if payload_of(e).get("version")), None
@@ -147,9 +147,9 @@ class ActivityPane:
                 "Went through Recipe Maker after the landing gates passed.\n"
                 f"Functions: {functions}\n{proposal}\n\n{block(event)}"
             )
-            return Row(
-                key, title, details, "passed" if event.get("status") == "passed" else "stop", when=when, tag=lane
-            )
+            applied = ", ".join(n for n, row in (payload.get("lanes") or {}).items() if row.get("status") == "applied")
+            state = "passed" if event.get("status") == "passed" else "stop"
+            return Row(key, title, details, state, when=when, tag=applied)
         if kind == "RUN-FAIL" and when and now - when <= self.fail_seconds:
             return Row(key, sentence(event), block(event), "stop", when=when)
         return None
