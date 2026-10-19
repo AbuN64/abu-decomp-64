@@ -341,7 +341,11 @@ def lifecycle_model(panes: dict[str, Any], sources: Any, events: list[dict[str, 
         heading = f"{title} · {waiting} open probe requests"
     footer = ""
     if "matching" in panes:
-        active = sum(1 for row in rows if row.key.startswith("match-") and row.key not in ("match-idle", "match-none"))
+        active = sum(
+            1
+            for row in rows
+            if row.key.startswith("match-") and not row.key.startswith(("match-idle", "match-none", "match-fail"))
+        )
         heading = f"{title} · {active} active lanes"
         first = ""
         footer = panes["matching"].footer(sources)

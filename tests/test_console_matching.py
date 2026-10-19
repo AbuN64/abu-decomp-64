@@ -146,6 +146,7 @@ class PaneTests(unittest.TestCase):
         rows = [r for r in self.read().rows if r.key.startswith("match-fail-")]
         self.assertEqual([r.state for r in rows], ["stop"])
         self.assertIn("cannot fast-forward: ahead 1, behind 12", rows[0].title)
+        self.assertEqual(self.read().heading, "DECOMP · 0 active lanes")  # a failure row is not a lane
         self.assertEqual([r for r in self.read(fail_seconds=-1).rows if r.key.startswith("match-fail-")], [])
 
     def test_no_lane_directories_and_a_missing_progress_file_say_so(self):
