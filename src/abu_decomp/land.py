@@ -515,6 +515,7 @@ class Landing:
         clock: Callable[[], float] = time.monotonic,
         splat_check: Callable[[Sequence[str]], dict[str, str] | None] | None = None,
         splat_file_check: Callable[[Sequence[str]], dict[str, str] | None] | None = None,
+        ready: Callable[[], None] | None = None,
     ) -> None:
         self.config = settings(profile)
         self.tree = tree.expanduser().resolve()
@@ -530,6 +531,9 @@ class Landing:
         self.lanes: list[dict[str, Any]] = []
         self.extra: dict[str, Any] = {}
         self.recipe_summary: dict[str, Any] | None = None
+        # the tool checks the real invoke makes on this tree, made before any input is written to it (a fake invoke
+        # runs no installed tool, so it has none to check)
+        self.ready = ready or ((lambda: tools.ready(profile, self.tree)) if invoke is tools.invoke else (lambda: None))
         self.splat_check = splat_check or self.run_splat_check
         self.splat_file_check = splat_file_check or self.run_splat_file_check
         self.base_tree = ""  # the tree of the base commit: what a replay starts from
@@ -578,6 +582,11 @@ class Landing:
             self.fail("land.base", f"tree HEAD {head[:12]} is not base {self.base} ({wanted[:12]})")
         elif dirty:
             self.fail("land.dirty", f"tree has {len(dirty)} tracked changes before landing", files=dirty[:20])
+        else:
+            try:  # every refusal that does not depend on the inputs comes before the first is written
+                self.ready()
+            except DecompError as exc:
+                self.fail(exc.key, exc.detail)
         return self.gate("base", not self.findings, started, head=head)
 
     def splat_python(self) -> Path | None:

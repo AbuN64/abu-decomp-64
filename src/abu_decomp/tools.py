@@ -326,6 +326,15 @@ def _command(tool: str, chosen: Settings | TasteSettings, given: tuple[str, ...]
     return [*command, *given[1:]]
 
 
+def ready(profile: Profile, project: Path) -> None:
+    """Refuse, before anything runs on `project`, when the installed tools are not the pinned ones or the project's
+    own pin file names other versions: the checks every invoke on another tree makes, for a caller that writes to that
+    tree first (a landing) and must refuse before it does."""
+    if refused := pin_findings(profile, project):
+        raise DependencyError("dependency.project_pin", "; ".join(refused))
+    verify_dependencies()
+
+
 def invoke(
     tool: str,
     profile: Profile,
@@ -349,8 +358,8 @@ def invoke(
     if not given or any("\0" in arg for arg in given):
         raise DependencyError("dependency.arguments", "provide a public command followed by its arguments")
     chosen: Settings | TasteSettings = taste_settings(profile) if tool == "taste" else settings(profile, project, host)
-    if isinstance(chosen, Settings) and project and (refused := pin_findings(profile, chosen.project)):
-        raise DependencyError("dependency.project_pin", "; ".join(refused))
+    if isinstance(chosen, Settings) and project:
+        ready(profile, chosen.project)
     command = _command(tool, chosen, given)
     provenance = verify_dependencies()
     where = {"profile_sha256": profile.digest}

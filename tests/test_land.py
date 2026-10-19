@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from abu_decomp import DecompError
+from abu_decomp import tools as land_tools
 from abu_decomp.config import load_profile
 from abu_decomp.land import (
     LandError,
@@ -598,6 +599,28 @@ class LandTests(unittest.TestCase):
         )
         self.assertEqual(merged, "b = 0x2;\n# note\nc = 0x4;\n")  # a retracted; b's stale removal is not exact
         self.assertEqual([c["name"] for c in conflicts], ["b"])
+
+    def test_a_tool_provenance_refusal_comes_before_any_input_is_written_to_the_tree(self):
+        one = self.patch(
+            "L1", {"a.c": A_C.replace('INCLUDE_ASM(const s32, "a", func_1);\n', "int func_1(void) { return 1; }\n")}
+        )
+
+        def refuse():
+            raise DecompError("dependency.provenance", "unbake has invalid VCS provenance")
+
+        result, code, findings = self.landing_with([one], ready=refuse).execute()
+        self.assertEqual(code, 1)
+        self.assertEqual([f["key"] for f in findings], ["dependency.provenance"])
+        self.assertEqual(git(self.tree, "status", "--porcelain", "--untracked-files=no"), "")
+        self.assertEqual((self.tree / "a.c").read_text(), A_C)
+        self.assertEqual((self.unbake, self.commands), ([], []))  # no tool ran either
+        self.assertEqual(result["lanes"], [])
+
+    def test_the_real_invoke_checks_the_tools_on_the_tree_and_a_fake_one_does_not(self):
+        with mock.patch("abu_decomp.land.tools.ready") as ready:
+            Landing(self.profile, self.tree, self.base, [], invoke=land_tools.invoke).ready()
+            Landing(self.profile, self.tree, self.base, [], invoke=self.invoke).ready()
+        ready.assert_called_once_with(self.profile, self.tree.resolve())
 
     def build_rounds(self, bad, count=5):
         """count inputs d1..dN each touching its own file; check fails while a file holds BAD."""
