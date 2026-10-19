@@ -6,6 +6,7 @@
         "scores": "logs/*.log",                per lane: logs holding an unbake JSON envelope, newest first
         "matched": ["exact", "already-exact"], outcomes that count as matched
         "active_seconds": 1800,                a lane is active when one of its files changed this recently
+        "fail_seconds": 3600,                  RUN-FAIL events this recent are listed (tile kinds: add RUN-FAIL)
         "progress": {"path": ".../progress.json", "version": "de", "label": "RW"}   footer figures
     }}
 
@@ -111,6 +112,7 @@ class MatchingPane:
         self.scores = str(config.get("scores", "logs/*.log"))
         self.matched = tuple(config.get("matched", DEFAULT_MATCHED))
         self.active = float(config.get("active_seconds", 1800))
+        self.fail_seconds = float(config.get("fail_seconds", 3600))
         self.progress = config.get("progress")
 
     def lane_dirs(self) -> list[Path]:
@@ -175,11 +177,35 @@ class MatchingPane:
         for lane in self.lane_dirs():
             row = self.block(sources, lane, now, landed_text)
             (rows if row else idle).append(row or lane.name)
+        rows.extend(self.failures(sources, now))
         if idle:
             rows.append(Row("match-idle", "idle: " + ", ".join(idle), "no file changed recently", "planned"))
         if not rows:
             rows.append(Row("match-none", "no lane directories", self.lanes, "planned"))
         return rows
+
+    def failures(self, sources: Any, now: float) -> list[Row]:
+        """RUN-FAIL events of the last `fail_seconds` (cycle steps, a repo that cannot fast-forward), newest first."""
+        from datetime import datetime
+
+        found = []
+        for records in sources.records.values():
+            for event in records:
+                if canonical_kind(event) != "RUN-FAIL":
+                    continue
+                try:
+                    when = datetime.fromisoformat(str(event.get("time"))).timestamp()
+                except ValueError:
+                    continue
+                if now - when <= self.fail_seconds:
+                    found.append((when, event))
+        found.sort(key=lambda item: item[0], reverse=True)
+        return [
+            Row(
+                f"match-fail-{when}", short("FAIL " + str(e.get("message", "")), 120), str(e.get("message", "")), "stop"
+            )
+            for when, e in found[:3]
+        ]
 
     def landed_today(self, sources: Any) -> int:
         today = time.strftime("%Y-%m-%d")

@@ -140,6 +140,14 @@ class PaneTests(unittest.TestCase):
         self.assertIn("outcome  func_9_de blocked-tool", row.details)
         self.assertIn("refusal  none", row.details)
 
+    def test_a_recent_run_fail_is_listed_and_an_old_one_is_not(self):
+        profile = FeedProfile(self.root)
+        append_event(profile, "git", "failed", "r cannot fast-forward: ahead 1, behind 12", kind="RUN-FAIL")
+        rows = [r for r in self.read().rows if r.key.startswith("match-fail-")]
+        self.assertEqual([r.state for r in rows], ["stop"])
+        self.assertIn("cannot fast-forward: ahead 1, behind 12", rows[0].title)
+        self.assertEqual([r for r in self.read(fail_seconds=-1).rows if r.key.startswith("match-fail-")], [])
+
     def test_no_lane_directories_and_a_missing_progress_file_say_so(self):
         model = self.read(progress={"path": str(self.root / "gone.json"), "version": "us"})
         self.assertEqual([r.key for r in model.rows], ["match-none"])

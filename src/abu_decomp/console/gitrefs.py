@@ -38,6 +38,7 @@ class RefSource:
             }
             for item in config["repos"]
         ]
+        self.stuck: dict[str, str] = {}  # repo -> why its last pull could not fast-forward
         self.touched: list[str] = []  # files the commits of the last scan changed, repo-relative
         self.state_path = profile.resolve_path(config["state_path"])
         self.seen: dict[str, str] = json.loads(self.state_path.read_text()) if self.state_path.is_file() else {}
@@ -77,10 +78,38 @@ class RefSource:
         return 50 if old else self.seed
 
     def pull(self) -> None:
+        """`git pull --ff-only` per repo. A repo that cannot fast-forward (diverged, dirty, fetch failure) appends one
+        RUN-FAIL naming why, again only when the reason changes, so a stuck checkout is never silent."""
         for repo in self.repos:
-            subprocess.run(
-                ["git", "-C", str(repo["path"]), "pull", "--ff-only", "--quiet"], capture_output=True, check=False
+            done = subprocess.run(
+                ["git", "-C", str(repo["path"]), "pull", "--ff-only", "--quiet"],
+                capture_output=True,
+                text=True,
+                check=False,
             )
+            if done.returncode == 0:
+                self.stuck.pop(repo["name"], None)
+                continue
+            reason = self.stuck_reason(repo["path"], (done.stderr or done.stdout).strip())
+            if self.stuck.get(repo["name"]) != reason:
+                self.stuck[repo["name"]] = reason
+                self.append(
+                    self.profile,
+                    self.actor,
+                    "failed",
+                    f"{repo['name']} cannot fast-forward: {reason}",
+                    kind="RUN-FAIL",
+                )
+
+    @staticmethod
+    def stuck_reason(path: Path, error: str) -> str:
+        counts = _git(path, "rev-list", "--left-right", "--count", "HEAD...@{u}").split()
+        dirty = len(_git(path, "status", "--porcelain", "--untracked-files=no").splitlines())
+        parts = [f"ahead {counts[0]}, behind {counts[1]}"] if len(counts) == 2 else []
+        if dirty:
+            parts.append(f"{dirty} uncommitted file(s)")
+        last = error.splitlines()[-1] if error else "git pull failed"
+        return ", ".join([*parts, last[:120]])
 
     def watch_fds(self) -> list[int]:
         fds = []
