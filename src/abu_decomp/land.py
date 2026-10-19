@@ -36,7 +36,7 @@ Gates, in order; the first failure stops the run and the rest are reported as sk
                exactly the versions whose symbol facts, yaml or ROM changed (unbake stamps each version's extraction
                in the tree), then builds
   sync         `unbake sync`
-  check        the configured check command with jobs from the configured admit command
+  check        the configured check command as `unbake-run [--work N] -- CHECK -j{j}` (N, the admit answer, caps it)
   sync_after   `unbake sync` again, after check
   sync_check   `unbake sync --check`
   If setup, sync, check, sync_after or sync_check fails with more than one input landed, the failure is bisected by
@@ -61,8 +61,8 @@ runs each of `commit_commands`; the `-- files` pathspec keeps the other lanes' s
 Section `land` of the seat profile:
 
     "land": {
-      "check": ["make", "check"],                     required; run in the tree, `-j N` appended when `jobs` is set
-      "jobs": ["/path/admit", "8"],                   prints the job count; omit for make's own default
+      "check": ["make", "check"],                     required; run in the tree under unbake-run, `-j{j}` added
+      "jobs": ["/path/admit", "8"],                   prints N, the cap on the build's slot share; omit for no cap
       "markers": ["INCLUDE_ASM", "NON_MATCHING"],     substrings marking a stand-in line (default adds GLOBAL_ASM)
       "asm_suffix": ".s",
       "union_paths": ["versions/*/symbol_addrs.txt"], append-only fact files merged as a line union (fnmatch globs)
@@ -324,6 +324,40 @@ def settings(profile: Profile) -> dict[str, Any]:
         else [],
         "recipe_suffixes": tuple(table.get("recipe_suffixes", proposals.SUFFIXES)),
     }
+
+
+def explicit_jobs(argv: Sequence[str]) -> tuple[int | None, list[str]]:
+    """(N, argv without the flag) for a `-jN`, `-j N`, `--jobs N` or `--jobs=N` in argv; (None, argv) if none."""
+    rest, jobs, i = [], None, 0
+    while i < len(argv):
+        arg = argv[i]
+        value = None
+        if arg in ("-j", "--jobs") and i + 1 < len(argv) and argv[i + 1].isdigit():
+            value, i = argv[i + 1], i + 1
+        elif re.fullmatch(r"-j\d+|--jobs=\d+", arg):
+            value = re.sub(r"\D", "", arg)
+        if value is None:
+            rest.append(arg)
+        else:
+            jobs = int(value)
+        i += 1
+    return jobs, rest
+
+
+def build_command(argv: Sequence[str], cap: int | str | None = None) -> list[str]:
+    """The one builder of a proof build: `unbake-run [--work N] -- ARGV0 -j{j} REST`. unbake-run turns `-j{j}` into the
+    build's share of the host slots (a make jobserver fed from the slot pool), so every build holds slots. N caps that
+    share: the seat's admit answer, or the caller's own `-jN`/`--jobs N` (a request for N slots, which wins)."""
+    explicit, rest = explicit_jobs(argv)
+    work = explicit or cap
+    return [
+        str(Path(sys.executable).parent / "unbake-run"),
+        *(["--work", str(work)] if work else []),
+        "--",
+        *rest[:1],
+        "-j{j}",
+        *rest[1:],
+    ]
 
 
 def run_process(
@@ -1126,7 +1160,6 @@ class Landing:
 
     def check(self) -> bool:
         started = self.clock()
-        command = list(self.config["check"])
         jobs = None
         if self.config["jobs"]:
             code, out, err = self.run(self.config["jobs"], self.tree, None, 60)
@@ -1137,7 +1170,7 @@ class Landing:
                 )
                 return self.gate("check", False, started)
             jobs = int(text)
-            command += [f"-j{jobs}"]
+        command = build_command(self.config["check"], jobs)
         env = dict(os.environ)
         env["UNBAKE_HOST"] = str(tools.host_file(self.profile))
         env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")

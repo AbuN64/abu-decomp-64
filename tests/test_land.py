@@ -143,7 +143,10 @@ class LandTests(unittest.TestCase):
         self.assertEqual(lanes["L1"]["converted"], 1)
         self.assertEqual(lanes["L1"]["names"], ["func_1"])
         self.assertEqual(result["functions"], {"converted": 2, "added": 0})
-        self.assertEqual([c[0] for c in self.commands], [("admit", "8"), ("make", "check", "-j6")])
+        run_bin = str(Path(sys.executable).parent / "unbake-run")
+        self.assertEqual(
+            [c[0] for c in self.commands], [("admit", "8"), (run_bin, "--work", "6", "--", "make", "-j{j}", "check")]
+        )
         self.assertTrue(self.commands[1][1])  # UNBAKE_HOST reaches the check command
         self.assertEqual(
             self.unbake, [("setup",), ("sync",), ("sync",), ("sync", "--check"), ("audit", "--against", self.base)]
@@ -871,7 +874,7 @@ class LandTests(unittest.TestCase):
         )  # fmt: skip
         result, code, findings = landing.execute()
         self.assertEqual((code, [f["key"] for f in findings], result["credit_falls"]), (0, ["land.commit_message"], []))
-        self.assertEqual(len([c for c in self.commands if c[0][0] == "make"]), 1)  # no measuring builds
+        self.assertEqual(len([c for c in self.commands if "make" in c[0]]), 1)  # no measuring builds
 
     def test_credit_fall_arguments_are_checked(self):
         with self.assertRaises(LandError):
@@ -948,7 +951,7 @@ class LandTests(unittest.TestCase):
             run_process(argv, cwd, env, timeout)
             if argv[0] == "git"
             else (2, "", "boom")
-            if argv[0] == "make"
+            if "make" in argv
             else (0, "4", "")
         )
         self.sync_ok = lambda args: True

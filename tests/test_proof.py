@@ -38,8 +38,12 @@ class ProofTests(unittest.TestCase):
 
     def test_command_adds_the_admit_jobs_unless_the_caller_gave_some(self):
         tree = Path(self.temp.name)
-        self.assertEqual(proof.command(self.profile, tree, ["check"])[1:], ["make", "-j6", "check"])
-        self.assertEqual(proof.command(self.profile, tree, ["-j2", "check"])[1:], ["make", "-j2", "check"])
+        self.assertEqual(
+            proof.command(self.profile, tree, ["check"])[1:], ["--work", "6", "--", "make", "-j{j}", "check"]
+        )
+        for given, work in ((["-j2", "check"], "2"), (["--jobs=3", "check"], "3"), (["-j", "4", "check"], "4")):
+            expected = ["--work", work, "--", "make", "-j{j}", "check"]
+            self.assertEqual(proof.command(self.profile, tree, given)[1:], expected)
 
     def test_a_passing_build_writes_one_match_event_for_the_lane(self):
         (result, code, findings), events = self.build("echo ok", "check")

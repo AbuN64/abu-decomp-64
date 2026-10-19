@@ -2,7 +2,7 @@
 
 A lane that needs the project's own make (a proof build of a patch, one target of the Makefile) runs it here instead of
 raw, so the stream shows it: the build runs in the project tree under the unbake slot pool (`unbake-run`, the pinned
-unbake's own wrapper), with the job count the seat's `land.jobs` admit command gives, and its output streams to stderr.
+unbake's own wrapper), capped by the seat's `land.jobs` admit command, and its output streams to stderr.
 One MATCH event (op "build", status passed) or RUN-FAIL event (op "build") says how it came out. Emitting never fails
 the command; project, host and lane come the same way as for `decomp unbake`."""
 
@@ -35,10 +35,10 @@ def job_count(profile: Profile, project: Path) -> str | None:
 
 
 def command(profile: Profile, project: Path, given: Sequence[str]) -> list[str]:
-    """unbake-run make [-jN] ARGS: the job flag is added unless the caller gave one (-j, --jobs)."""
-    own = any(a == "-j" or a.startswith(("-j", "--jobs")) for a in given)
-    jobs = None if own else job_count(profile, project)
-    return [str(Path(sys.executable).parent / "unbake-run"), "make", *([f"-j{jobs}"] if jobs else []), *given]
+    """`unbake-run [--work N] -- make -j{j} ARGS` through the one builder `land.build_command`; N is the seat's admit
+    answer (a cap), asked only when the caller gave no `-j`/`--jobs`; a given N is the cap instead."""
+    own, _ = land.explicit_jobs(given)
+    return land.build_command(["make", *given], None if own else job_count(profile, project))
 
 
 def run(
