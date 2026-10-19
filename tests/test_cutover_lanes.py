@@ -12,7 +12,7 @@ from abu_decomp import DecompError, tools
 from abu_decomp.config import load_profile
 from abu_decomp.lanes import control, registry, relaunch
 
-WHEEL = "WHEEL=https://github.com/AbuN64/cake-unbake-64/releases/download/v0.5.8/unbake-0.5.8-py3-none-any.whl\n"
+WHEEL = "WHEEL=https://github.com/AbuN64/cake-unbake-64/releases/download/v0.5.9/unbake-0.5.9-py3-none-any.whl\n"
 
 
 class RelaunchRuleTests(unittest.TestCase):
@@ -115,7 +115,7 @@ class ProjectTargetTests(unittest.TestCase):
     def test_a_lane_tree_and_host_replace_the_profiles_for_one_call(self):
         envelope = {"ok": True, "result": {}, "findings": [], "stages": [], "invocation": "x"}
         done = subprocess.CompletedProcess([], 0, json.dumps(envelope).encode(), b"")
-        unbake = Distribution("https://github.com/AbuN64/cake-unbake-64", "a" * 40, version="0.5.8")
+        unbake = Distribution("https://github.com/AbuN64/cake-unbake-64", "a" * 40, version="0.5.9")
         with installed(unbake=unbake), mock.patch("abu_decomp.tools.subprocess.run", return_value=done) as call:
             result = tools.invoke(
                 "unbake", self.profile, ["status"], project=self.root / "tree", host=self.root / "tree/host.toml"
@@ -134,7 +134,7 @@ class ProjectTargetTests(unittest.TestCase):
             with self.assertRaises(tools.DependencyError) as caught:
                 tools.invoke("unbake", self.profile, ["status"], project=self.root / "tree")
             self.assertEqual(caught.exception.key, "dependency.project_pin")
-            self.assertIn("pins 0.5.8", caught.exception.detail)
+            self.assertIn("pins 0.5.9", caught.exception.detail)
             call.assert_not_called()
 
     def test_pin_file_lookup_stops_at_the_project_root(self):
@@ -197,7 +197,7 @@ class LaunchPinTests(unittest.TestCase):
         self.assertFalse((self.root / "lanes.json").exists())
 
     def test_launch_passes_when_the_pins_agree_and_hands_the_runner_the_profile(self):
-        ok = Distribution("https://github.com/AbuN64/cake-unbake-64", "a" * 40, version="0.5.8")
+        ok = Distribution("https://github.com/AbuN64/cake-unbake-64", "a" * 40, version="0.5.9")
         with installed(unbake=ok):
             control.launch(self.profile, self.spec)
         command = self.started[0]
