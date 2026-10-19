@@ -30,7 +30,8 @@ localStorage.setItem('mlSettings', JSON.stringify(saved));
 // No chrome: the page is the stream, always fitted to the window, with sound as soon as the browser allows it.
 const style = document.createElement('style');
 style.textContent = 'html,body{margin:0!important;padding:0!important;overflow:hidden!important;background:#000!important}'
-  + '#root{position:fixed!important;inset:0!important;overflow:hidden!important;background:#000}';
+  + '#root{position:fixed!important;inset:0!important;overflow:hidden!important;background:#000}'
+  + '.sidebar-overlay{opacity:.15;transition:opacity .2s}.sidebar-overlay:hover,.sidebar-overlay.sidebar-show{opacity:1}';
 document.head.appendChild(style);
 let audio;
 let blocked = false;

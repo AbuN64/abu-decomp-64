@@ -32,6 +32,7 @@ class BrowserTests(unittest.TestCase):
             self.assertNotIn("Start audio", result)
             self.assertNotIn("Native size", result)
             self.assertIn("overflow:hidden!important", result)
+            self.assertIn(".sidebar-overlay{opacity:.15", result)
             self.assertIn("addEventListener('resize', sizeVideo)", result)
             self.assertIn("'keydown'", result)
             self.assertIn('"width": 1920', result)
