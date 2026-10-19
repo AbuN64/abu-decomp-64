@@ -8,7 +8,7 @@ import os
 import sys
 import time
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -25,10 +25,16 @@ DEFAULTS: dict[str, Any] = {
     "arena_base": 0x80A00000,
     "region_bytes": 0x400,
     "timeout_seconds": 2,
+    "event_budget": 20000,  # call/stub/store events one case may write; a case over it ends fatal event-budget
+    "event_budget_cap": 300000,  # the most the budget is raised to for a function that needs more
+    "depth_cap": 3,  # calls deep the original callees may run when no case ran to completion with fewer
     "learn_cases": 8,
     "learn_rounds": 8,
     "headers": ["include/**/*.h", "include/**/*.H", "src/**/*.c", "src/**/*.C", "src/**/*.CPP", "src/**/*.cpp"],
 }
+
+
+PROBE_KEYS = ("closure", "stubs", "statuses", "wall_seconds", "cached", "event_budget", "events_max")
 
 
 class BehaveError(DecompError):
@@ -46,6 +52,8 @@ class Options:
     host: Path | None
     depth: int | None = None
     cache: bool = True
+    lenient: bool = False  # unmapped reads answer zero and calls outside the closure are stubs (set when no case ran)
+    deepened: bool = False  # depth was raised by this command (not given), so it may be raised again
 
 
 def configuration(profile: Profile) -> dict[str, Any]:
@@ -113,6 +121,8 @@ def _request(
     memory_end: int,
     question: str,
     candidate: dict[str, Any] | None = None,
+    budget: int | None = None,
+    lenient: bool = False,
 ) -> dict[str, Any]:
     rows = [{k: v for k, v in case.items() if k != "labels"} for case in cases]
     request: dict[str, Any] = {
@@ -122,11 +132,17 @@ def _request(
         "cases": rows,
         "memory_end": memory_end,
         "timeout_seconds": config["timeout_seconds"],
+        "event_budget": budget or config["event_budget"],
+        **({"lenient": True} if lenient else {}),
         "story": {"question": question},
     }
     if candidate:
         request["candidate"] = candidate
     return request
+
+
+def out_of_budget(case: dict[str, Any]) -> bool:
+    return case["status"] == "fatal" and case["detail"].startswith("event-budget")
 
 
 def _stack(record: dict[str, Any]) -> tuple[int, int]:
@@ -161,16 +177,36 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         return time.monotonic()
 
     waited = 0.0
+    config = configuration(profile)
+    budget = config["event_budget"]
+    hopeless = False  # a case that did not finish at the cap: later probes do not measure it again
 
     def ask(name: str, request: dict[str, Any]) -> dict[str, Any]:
-        """One probe; the seconds it queued behind another isolated repro are added to the timing."""
-        nonlocal waited
+        """One probe; the seconds it queued behind another isolated repro are added to the timing. A case that
+        runs out of its event budget is measured alone at the cap: when it finishes there, the budget is raised
+        to twice what it wrote (for this and every later probe) and the probe repeats; when it still does not,
+        it never returns in any budget we would record, and stays fatal."""
+        nonlocal waited, budget, hopeless
+        request = dict(request, event_budget=budget, **({"lenient": True} if options.lenient else {}))
         done = probe(profile, work, name, request, options.function)
         waited += done["record"].get("lock_wait_seconds", 0.0)
+        for _ in range(2):
+            spent = [i for i, c in enumerate(done["cases"]) if out_of_budget(c)]
+            if not spent or hopeless or budget >= config["event_budget_cap"]:
+                break
+            pilot = dict(request, cases=[request["cases"][spent[0]]], event_budget=config["event_budget_cap"])
+            alone = probe(profile, work, name + "-measure", pilot, options.function)
+            waited += alone["record"].get("lock_wait_seconds", 0.0)
+            if out_of_budget(alone["cases"][0]):
+                hopeless = True
+                break
+            budget = min(config["event_budget_cap"], max(budget, 2 * alone["cases"][0].get("events_written", budget)))
+            request = dict(request, event_budget=budget)
+            done = probe(profile, work, name, request, options.function)
+            waited += done["record"].get("lock_wait_seconds", 0.0)
         stages["lock_wait"] = round(waited, 3)
         return done
 
-    config = configuration(profile)
     chosen = settings(profile, options.project, options.host)
     version = options.version or _project_version(chosen.project)
     if not version:
@@ -278,6 +314,42 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
     )
     mark = lap("original", mark)
     record = original["record"]
+    cut = [name for name, why in record.get("stubs", {}).items() if why == "boundary"]
+    if (
+        not options.lenient
+        and not any(c["status"] == "ok" for c in original["cases"])
+        and any(c["status"] == "unmapped" or "indirect-call" in c["detail"] for c in original["cases"])
+    ):
+        # no case got through: the input memory lacks state the program built at run time (null pointers and
+        # function pointers the original dereferences). Both bodies run again over a memory where unmapped reads
+        # answer zero, so what each does with the same garbage is still compared.
+        again, code, more = run(profile, replace(options, lenient=True))
+        more.append(
+            {
+                "key": "behave.lenient",
+                "blocking": False,
+                "message": "no case ran with strict memory; compared over a lenient memory (unmapped reads zero)",
+            }
+        )
+        if again.get("probe") is not None:
+            again["probe"]["lenient"] = True
+        return again, code, [*findings, *more]
+    if (
+        not any(c["status"] == "ok" for c in original["cases"])
+        and cut
+        and depth < config["depth_cap"]
+        and (options.depth is None or options.deepened)
+    ):
+        # callees cut off at the boundary answer zero and starve loops and pointer reads: let the next level run
+        deeper, code, more = run(profile, replace(options, depth=depth + 1, deepened=True))
+        more.append(
+            {
+                "key": "behave.depth",
+                "blocking": False,
+                "message": f"no case completed at depth {depth} ({len(cut)} callees stubbed); ran at depth {depth + 1}",
+            }
+        )
+        return deeper, code, [*findings, *more]
     stack = _stack(record)
     common = {
         "function": options.function,
@@ -287,7 +359,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         "cases": len(cases),
         "seed": options.seed,
         "depth": depth,
-        "probe": {k: record[k] for k in ("closure", "stubs", "statuses", "wall_seconds", "cached") if k in record},
+        "probe": {k: record[k] for k in PROBE_KEYS if k in record},
     }
     cache = drain_cache()
     if image is None:

@@ -58,7 +58,31 @@ def symbol_table(profile: Profile, version: str, project: Path | None, host: Pat
     return called.document["result"]["symbols"][version]
 
 
-def linker_script(base: int, symbols: dict[str, list[Any]], originals: dict[str, int] | None = None) -> str:
+_ASSIGN = re.compile(r"^\s*([A-Za-z_.$][\w.$]*)\s*=\s*(0[xX][0-9a-fA-F]+)\s*;")
+
+
+def auto_symbols(project: Path, version: str) -> dict[str, int]:
+    """The addresses the project's own link defines outside its symbol table: build/<version>/undefined_funcs_auto.txt
+    and undefined_syms_auto.txt (linker assignments the build generates for targets nothing names)."""
+    found: dict[str, int] = {}
+    for name in ("undefined_funcs_auto.txt", "undefined_syms_auto.txt"):
+        try:
+            lines = (project / "build" / version / name).read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            match = _ASSIGN.match(line)
+            if match:
+                found[match[1]] = int(match[2], 16)
+    return found
+
+
+def linker_script(
+    base: int,
+    symbols: dict[str, list[Any]],
+    originals: dict[str, int] | None = None,
+    auto: dict[str, int] | None = None,
+) -> str:
     """The link script: `originals` pins sibling functions to their original addresses (a script assignment
     overrides the object's own definition), every other known symbol is provided at its address."""
     pinned = "\n".join(f"{name} = 0x{vram:08X};" for name, vram in (originals or {}).items())
@@ -66,6 +90,8 @@ def linker_script(base: int, symbols: dict[str, list[Any]], originals: dict[str,
         pinned
         + "\n"
         + "\n".join(f"PROVIDE({name} = 0x{row[0]:08X});" for name, row in symbols.items() if row[0] is not None)
+        + "\n"
+        + "\n".join(f"PROVIDE({name} = 0x{vram:08X});" for name, vram in (auto or {}).items() if name not in symbols)
     )
     return f"""{rows}
 SECTIONS {{
@@ -199,7 +225,7 @@ def build(
         for name in text_symbols(tools["mips_objdump"], obj)
         if name != function and name in symbols and symbols[name][0] is not None
     }
-    (work / "link.ld").write_text(linker_script(base, symbols, siblings))
+    (work / "link.ld").write_text(linker_script(base, symbols, siblings, auto_symbols(chosen.project, version)))
     elf = work / "candidate.elf"
     link = subprocess.run(
         [tools["mips_ld"], "-T", str(work / "link.ld"), "-o", str(elf), str(obj)],
