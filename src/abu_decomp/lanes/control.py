@@ -95,6 +95,10 @@ def launch(profile: Profile, spec: dict[str, Any], replaces: dict[str, Any] | No
         raise DecompError("lanes.arguments", "--wall must be positive and --continues nonnegative")
     if (spec["fanout"] == "enabled") != (spec["max_agents"] > 0):
         raise DecompError("lanes.arguments", "enabled fanout needs a positive --max-agents; disabled needs 0")
+    for export in spec.get("export") or []:
+        path = Path(export)
+        if not path.is_absolute() or not any(path.is_relative_to(Path(owned)) for owned in spec["owns"]):
+            raise DecompError("lanes.arguments", f"--export must be an absolute path under an --owns path: {export}")
     directory, cwd = Path(spec["dir"]), Path(spec["cwd"])
     for label, path in (("--dir", directory), ("--cwd", cwd)):
         if not path.is_absolute() or not path.is_dir():
@@ -161,6 +165,8 @@ def launch(profile: Profile, spec: dict[str, Any], replaces: dict[str, Any] | No
             command += ["--owner-override", spec["owner_override"]]
         for path in lane.owns:
             command += ["--owns", path]
+        for path in spec.get("export") or []:
+            command += ["--export", path]
         command += ["--track", spec["track"]]
         start_unit(command, directory)
         rows.append(row)
@@ -237,7 +243,7 @@ def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, A
     old_dir = old_dir.expanduser().resolve()
     if not (old_dir / "brief.md").is_file():
         raise DecompError("lanes.arguments", f"{old_dir / 'brief.md'} is missing")
-    keys = (*INHERITED, "cwd", "owner_override")
+    keys = (*INHERITED, "cwd", "owner_override", "export")
     spec: dict[str, Any] = {}
     units: list[str] = []
     names: list[str] = []

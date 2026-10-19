@@ -175,6 +175,9 @@ def _lane_arguments(parser: argparse.ArgumentParser) -> None:
     launch.add_argument("--effort", required=True)
     launch.add_argument("--track", required=True, choices=("official", "experiment"))
     launch.add_argument("--owns", required=True, action="append", help="absolute path the lane may write (repeatable)")
+    launch.add_argument(
+        "--export", action="append", help="absolute file under an owned path whose changed content counts as progress"
+    )
     launch.add_argument("--dir", type=Path, required=True, help="lane directory holding brief.md")
     launch.add_argument("--cwd", type=Path, required=True)
     launch.add_argument("--wall", type=int, required=True, help="wall seconds")
@@ -192,6 +195,7 @@ def _lane_arguments(parser: argparse.ArgumentParser) -> None:
     cont.add_argument("--from", dest="old_dir", type=Path, required=True, help="the closed lane's directory")
     cont.add_argument("--name", required=True, help="the new lane; its directory is a sibling of --from")
     cont.add_argument("--owns", action="append", help="owned path, overrides the old lane's value (repeatable)")
+    cont.add_argument("--export", action="append", help="export file, overrides the old lane's value (repeatable)")
     cont.add_argument("--track", choices=("official", "experiment"), help="overrides the old lane's value")
     cont.add_argument("--kind", choices=("tooling", "impl"), help="overrides the old lane's value")
     # A lane with no registry row, LAUNCH.json or unit (launched before LAUNCH.json): every setting comes from these.
@@ -216,10 +220,15 @@ def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     if args.action == "launch":
         spec = {key: value for key, value in vars(args).items() if key not in {"command", "action", "profile"}}
         spec["owns"] = [str(path) for path in args.owns]
+        spec["export"] = list(args.export or [])
         return control.launch(profile, spec), 0, []
     if args.action == "continue":
         flags = ("track", "kind", "model", "effort", "wall", "continues", "done_when", "fanout", "max_agents")
-        given = {"owns": [str(path) for path in args.owns or []], **{key: getattr(args, key) for key in flags}}
+        given = {
+            "owns": [str(path) for path in args.owns or []],
+            "export": list(args.export or []),
+            **{key: getattr(args, key) for key in flags},
+        }
         return control.continue_lane(profile, args.old_dir, args.name, given, args.wait), 0, []
     if args.action == "steer":
         return control.steer_lane(profile, args.name, args.dir, args.socket, args.file), 0, []

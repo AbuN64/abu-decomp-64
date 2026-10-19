@@ -6,6 +6,7 @@ registry, the ladder and the overlap guard apply exactly as for any launch. A la
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -65,12 +66,31 @@ def gained_commits(owns: list[str], since: float) -> bool:
     return False
 
 
-def progress(said: str, owns: list[str], since: float) -> str:
-    """The evidence this link progressed (RESULT reports a commit, an owned tree gained one), or "" for none."""
+def export_hashes(exports: list[str]) -> dict[str, str]:
+    """Content hash of each declared export file that exists (a missing one has no entry)."""
+    return {path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in exports if Path(path).is_file()}
+
+
+def changed_export(exports: list[str], before: dict[str, str], since: float) -> bool:
+    """A declared export file is newer than `since` and its content differs from `before` (the link's start)."""
+    now = export_hashes(exports)
+    return any(Path(path).stat().st_mtime > since and digest != before.get(path) for path, digest in now.items())
+
+
+def progress(
+    said: str, owns: list[str], since: float, exports: list[str] | None = None, before: dict[str, str] | None = None
+) -> str:
+    """The evidence this link progressed (RESULT reports a commit, an owned tree gained one, an export changed).
+
+    `exports` are the lane-declared files (under its owned dirs) that carry work instead of commits; `before` is their
+    hashes when the link started, which equal the previous link's last ones. "" means no progress.
+    """
     if reported_commit(said):
         return "RESULT reports a commit"
     if gained_commits(owns, since):
         return "an owned git tree gained a commit"
+    if changed_export(exports or [], before or {}, since):
+        return "a declared export file changed"
     return ""
 
 

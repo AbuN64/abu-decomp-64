@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -52,6 +53,24 @@ class RelaunchRuleTests(unittest.TestCase):
         self.assertIn("budget spent", why)
         self.assertEqual(relaunch.next_budget(3, "x"), 3)
         self.assertEqual(relaunch.next_budget(3, ""), 2)
+
+    def test_a_changed_export_keeps_the_budget_an_unchanged_or_missing_one_spends_it(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as tmp:
+            export = Path(tmp) / "out.patch"
+            export.write_text("v1")
+            before = relaunch.export_hashes([str(export)])
+            start = time.time() - 10
+            self.assertEqual(relaunch.progress("partial", [], start, [str(export)], before), "")  # unchanged
+            export.write_text("v2")
+            self.assertEqual(
+                relaunch.progress("partial", [], start, [str(export)], before), "a declared export file changed"
+            )
+            self.assertEqual(relaunch.progress("partial", [], time.time() + 10, [str(export)], before), "")  # not newer
+            export.unlink()
+            self.assertEqual(relaunch.progress("partial", [], start, [str(export)], before), "")  # missing
+            self.assertEqual(relaunch.progress("partial", [], start), "")  # none declared
+            export.write_text("v1")  # created by this link
+            self.assertTrue(relaunch.progress("partial", [], start, [str(export)], {}))
 
     def test_progress_evidence_is_a_reported_commit_or_a_new_commit_in_an_owned_tree(self):
         self.assertTrue(relaunch.reported_commit("done: 3a6b1752d99e8b33de36634040bf614e543a5c3d pushed"))

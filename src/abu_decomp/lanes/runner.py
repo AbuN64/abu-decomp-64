@@ -822,6 +822,9 @@ ap.add_argument("--owner-override")
 ap.add_argument("--ladder", required=True, help="the owner model ladder file (models.toml)")
 # --owns PATH (repeatable) and --track are recorded in LAUNCH.json for `decomp lane continue`.
 ap.add_argument("--owns", action="append")
+# --export PATH (repeatable): a file under an owned dir that carries this lane's work instead of commits; a link whose
+# export changed (newer than the link start, other hash) progressed and keeps its --continues budget.
+ap.add_argument("--export", action="append")
 ap.add_argument("--track", choices=("official", "experiment"))
 # --profile: the seat profile `decomp lane continue` runs with when this lane closes (absent: no automatic continuation).
 ap.add_argument("--profile")
@@ -904,6 +907,7 @@ terminal_path = os.path.join(a.dir, "LIFECYCLE-STATE.json")
 if os.path.exists(terminal_path):
     os.replace(terminal_path, terminal_path + ".previous-%d" % time.time_ns())
 STARTED = time.time()  # this link's start: commits after it count as its progress
+EXPORTS_BEFORE = __import__("abu_decomp.lanes.relaunch", fromlist=["x"]).export_hashes(a.export or [])
 log = open(os.path.join(a.dir, "transcript.jsonl"), "a", buffering=1)
 
 
@@ -1008,7 +1012,7 @@ def continue_lane(terminal):
 
     directory = Path(a.dir)
     said = relaunch.result_text(directory)
-    progressed = relaunch.progress(said, a.owns or [], STARTED)
+    progressed = relaunch.progress(said, a.owns or [], STARTED, a.export or [], EXPORTS_BEFORE)
     action, why = relaunch.plan(
         a.done_when or "result",
         a.continues or 0,
