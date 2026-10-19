@@ -43,6 +43,8 @@ Gates, in order; the first failure stops the run and the rest are reported as sk
   input: the tree is rebuilt with growing prefixes of the inputs (warm caches, ceil(log2 n) builds) until the first
   input whose presence breaks the build is found; that input is refused alone (`land.input_build_failed`, the build's
   reason; the result's `refused_inputs`) and the rest are built again. `attempts` lists every build.
+  audit        `unbake audit --against BASE`, the call the project's own `ci/run audit` makes, on the final tree: the
+               source rules the landing adds over the base (raw-offset, ...) are refused here exactly as CI refuses them
   markers      no marker line (INCLUDE_ASM, NON_MATCHING, ...) added in a file no applied patch touched
   untracked_s  no untracked assembly file (every one a patch or sync produced is tracked or staged)
   readme       no code percentage in the README lower than at the base, unless an input declares the fall:
@@ -107,10 +109,22 @@ from abu_decomp.config import Profile, check_keys
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
 Run = Callable[[Sequence[str], Path, "dict[str, str] | None", "float | None"], "tuple[int, str, str]"]
 
-GATES = ("base", "apply", "setup", "sync", "check", "sync_after", "sync_check", "markers", "untracked_s", "readme")
+GATES = (
+    "base",
+    "apply",
+    "setup",
+    "sync",
+    "check",
+    "sync_after",
+    "sync_check",
+    "audit",
+    "markers",
+    "untracked_s",
+    "readme",
+)
 OPTIONAL_GATES = ("recipe",)
 # A failed build gate that can be the fault of one input (not the admit command or the tree's own state).
-BISECTABLE = frozenset({"land.setup", "land.sync", "land.check", "land.sync_after", "land.sync_check"})
+BISECTABLE = frozenset({"land.setup", "land.sync", "land.check", "land.sync_after", "land.sync_check", "land.audit"})
 DEFAULT_SUBJECT_LIMIT = 72
 DEFAULT_MARKERS = ("INCLUDE_ASM", "NON_MATCHING", "GLOBAL_ASM")
 # The findings that say why an input was refused: they stay when the input's other findings go with its changes.
@@ -1425,6 +1439,7 @@ class Landing:
             self.check,
             lambda: unbake("sync_after", "sync_after", "sync"),
             lambda: unbake("sync_check", "sync_check", "sync", "--check"),
+            lambda: unbake("audit", "audit", "audit", "--against", str(self.extra.get("base", self.base))),
         ]
 
     def after_stages(self) -> list[Callable[[], bool]]:

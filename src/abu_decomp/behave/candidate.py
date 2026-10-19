@@ -86,6 +86,16 @@ def auto_symbols(project: Path, version: str) -> dict[str, int]:
     return found
 
 
+_AUTO_NAME = re.compile(r"^D_auto_([0-9A-Fa-f]{8})$")
+
+
+def named_addresses(names: list[str]) -> dict[str, int]:
+    """Data labels the build's unbake names after their own address (`D_auto_800D7068`, a label inside an unclaimed
+    asm blob): the real link defines them from the asm, a candidate object is linked alone and reads the address
+    off the name."""
+    return {n: int(m[1], 16) for n in names if (m := _AUTO_NAME.match(n))}
+
+
 def linker_script(
     base: int,
     symbols: dict[str, list[Any]],
@@ -280,6 +290,8 @@ def build(
     lacking = [
         n for n in undefined_symbols(tools["mips_objdump"], obj) if n not in symbols and n not in auto and n != function
     ]
+    auto = {**named_addresses(lacking), **auto}
+    lacking = [n for n in lacking if n not in auto]
     if lacking:
         auto = {
             **auto,

@@ -145,7 +145,9 @@ class LandTests(unittest.TestCase):
         self.assertEqual(result["functions"], {"converted": 2, "added": 0})
         self.assertEqual([c[0] for c in self.commands], [("admit", "8"), ("make", "check", "-j6")])
         self.assertTrue(self.commands[1][1])  # UNBAKE_HOST reaches the check command
-        self.assertEqual(self.unbake, [("setup",), ("sync",), ("sync",), ("sync", "--check")])
+        self.assertEqual(
+            self.unbake, [("setup",), ("sync",), ("sync",), ("sync", "--check"), ("audit", "--against", self.base)]
+        )
         self.assertEqual([e["kind"] for e in self.events], ["LAND"])
         self.assertEqual(self.events[0]["status"], "passed")
 
@@ -921,6 +923,20 @@ class LandTests(unittest.TestCase):
         self.assertEqual(code_percentages(row.format(c="77.44", f="90.67")), [77.44])
         self.assertEqual(code_percentages(row.format(c="77.55", f="90.58")), [77.55])
         self.assertEqual(code_percentages(README.format(a="50.00", b="60.00")), [50.0, 60.0])
+
+    def test_the_audit_gate_runs_the_ci_audit_against_the_base_and_refuses_what_it_refuses(self):
+        one = self.patch("L1", {"c.c": C_C + "// x\n"})
+        result, code, _ = self.land([one])
+        self.assertEqual(code, 0)
+        self.assertIn(("audit", "--against", self.base), self.unbake)
+        self.assertTrue(self.gates(result)["audit"])
+        git(self.tree, "checkout", "-q", "HEAD", "--", ".")
+        self.unbake.clear()
+        self.sync_ok = lambda args: args[0] != "audit"
+        result, code, findings = self.land([one])
+        self.assertEqual((code, findings[0]["key"]), (1, "land.audit"))
+        self.assertFalse(self.gates(result)["audit"])
+        self.assertIsNone(self.gates(result)["markers"])
 
     def test_unbake_refusal_and_check_failure_stop_the_run_with_a_named_finding(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})

@@ -2,8 +2,9 @@
 
 Hard differences (any one makes a case `differs`): the returned value the prototype says is meaningful, the net
 change to memory (stack frame excluded), the ordered calls with the arguments their prototypes say are read, and
-callee-saved registers the candidate leaves changed. Soft notes (never a verdict): reads outside the seeded
-memory that only one side makes, calls whose callee has no prototype, stores that moved across a call.
+callee-saved registers the candidate leaves changed. Calls to opaque hand-written callees are left out of the
+call order. Soft notes (never a verdict): reads outside the seeded memory that only one side makes, calls whose
+callee has no prototype, stores that moved across a call.
 """
 
 from __future__ import annotations
@@ -21,10 +22,12 @@ def _name(name: str) -> str:
     return name.removeprefix(PREFIX)
 
 
-def _calls(case: dict[str, Any]) -> list[dict[str, Any]]:
-    """Call and stub events after the entry of the function under test."""
+def _calls(case: dict[str, Any], opaque: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+    """Call and stub events after the entry of the function under test, without calls to opaque callees (hand-written
+    routines whose convention C cannot reach: a candidate may call them, inline them or leave them out; what they do
+    shows in the memory effect and the return value)."""
     events = [e for e in case["events"] if e["k"] in ("call", "stub")]
-    return events[1:]
+    return [e for e in events[1:] if _name(e["name"]) not in opaque]
 
 
 def _hex(value: int, width: int = 8) -> str:
@@ -87,9 +90,10 @@ def compare_case(
     callees: dict[str, Prototype],
     stack: tuple[int, int],
     own: tuple[int, int] | None = None,
+    opaque: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """The verdict of one case. `stack` is the [low, high) frame range excluded from the memory effect; `own` the
-    candidate image range (its own statics, never comparable)."""
+    candidate image range (its own statics, never comparable); `opaque` the callees whose calls are not compared."""
     result: dict[str, Any] = {
         "name": original["name"],
         "verdict": SAME,
@@ -114,7 +118,7 @@ def compare_case(
 
     if extra := [r for r in candidate.get("saved", []) if r not in original.get("saved", [])]:
         return differ("clobber", f"candidate leaves callee-saved {', '.join(extra)} changed", registers=extra)
-    calls_a, calls_b = _calls(original), _calls(candidate)
+    calls_a, calls_b = _calls(original, opaque), _calls(candidate, opaque)
     for index in range(max(len(calls_a), len(calls_b))):
         a = calls_a[index] if index < len(calls_a) else None
         b = calls_b[index] if index < len(calls_b) else None

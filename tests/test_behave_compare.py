@@ -31,6 +31,29 @@ def verdict(orig, cand, proto=PROTO, callees=None):
     return c.compare_case(orig, cand, proto, {"g": CALLEE} if callees is None else callees, STACK)
 
 
+def verdict_opaque(orig, cand, opaque):
+    return c.compare_case(orig, cand, PROTO, {"g": CALLEE}, STACK, None, frozenset(opaque))
+
+
+class OpaqueCalleeTests(unittest.TestCase):
+    def test_a_candidate_that_inlines_an_opaque_callee_is_same_when_the_effects_match(self):
+        orig = case(events=[call("f"), call("rnc"), call("g", 0, 1, 0x3F800000)])
+        cand = case(events=[call("f"), call("g", 0, 1, 0x3F800000)])
+        self.assertEqual(verdict_opaque(orig, cand, {"rnc"})["verdict"], c.SAME)
+        self.assertEqual(verdict(orig, cand)["verdict"], c.DIFFERS)
+
+    def test_opaque_callees_still_leave_memory_and_return_compared(self):
+        orig = case(events=[call("f"), call("rnc")], net=[[0x80A00010, 7]])
+        cand = case(events=[call("f")], net=[[0x80A00010, 8]])
+        self.assertEqual(verdict_opaque(orig, cand, {"rnc"})["difference"]["kind"], "store")
+        self.assertEqual(verdict_opaque(case(ret=1), case(ret=2), {"rnc"})["difference"]["kind"], "return")
+
+    def test_other_calls_keep_their_order_and_arguments(self):
+        orig = case(events=[call("f"), call("rnc"), call("g", 0, 1, 5)])
+        cand = case(events=[call("f"), call("g", 0, 2, 5)])
+        self.assertEqual(verdict_opaque(orig, cand, {"rnc"})["difference"]["kind"], "call-args")
+
+
 class CompareTests(unittest.TestCase):
     def test_identical_runs_are_same(self):
         self.assertEqual(verdict(case(), case())["verdict"], c.SAME)

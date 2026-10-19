@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError, narrate
+from abu_decomp.behave import abi, compare, describe, inputs, prototype
 from abu_decomp.behave import candidate as build_candidate
-from abu_decomp.behave import compare, describe, inputs, prototype
 from abu_decomp.config import Profile
 from abu_decomp.tools import drain_cache, invoke, settings
 
@@ -400,12 +400,16 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
     lap("candidate_run", mark)
     callees = {}
     own = (image.vram, image.vram + image.size)
-    for name in {e["name"] for c in original["cases"] for e in c["events"] if e["k"] in ("call", "stub")}:
+    called = {e["name"] for c in original["cases"] for e in c["events"] if e["k"] in ("call", "stub")}
+    # hand-written callees, and the candidate's own helpers (inlining a callee is not a different call order)
+    helpers = {f["name"] for f in image.functions if f["name"] != options.function}
+    opaque = frozenset(abi.opaque(chosen.project, version, {n.removeprefix(compare.PREFIX) for n in called}) | helpers)
+    for name in called:
         callee = prototype.find(chosen.project, name, tuple(config["headers"]), None)
         if callee:
             callees[name] = callee
     rows = [
-        compare.compare_case(a, b, proto, callees, stack, own)
+        compare.compare_case(a, b, proto, callees, stack, own, opaque)
         for a, b in zip(original["cases"], changed["cases"], strict=True)
     ]
     labels = [c["labels"] for c in cases]
@@ -425,6 +429,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
             "closure": changed["record"]["closure"],
         },
         "notes": notes[:20],
+        **({"opaque_callees": sorted(opaque)} if opaque else {}),
         "cases_detail": shown,
         "timing": timing(stages, started, cache),
         "cache": cache,

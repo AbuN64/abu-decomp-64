@@ -36,6 +36,10 @@ class LinkTests(unittest.TestCase):
         self.assertIn(". = 0x80800000;", text)
         self.assertIn("*(.rdata)", text)  # the assembler's name for read-only data
 
+    def test_auto_data_labels_take_their_address_from_the_name(self):
+        got = cand.named_addresses(["D_auto_800D7068", "D_auto_1B2FC", "D_x", "func_80290A70_us_rev1"])
+        self.assertEqual(got, {"D_auto_800D7068": 0x800D7068})
+
     def test_a_symbol_without_an_address_is_not_provided(self):
         text = cand.linker_script(0x80800000, {"Z": [None, None, 4, "d"]})
         self.assertNotIn("PROVIDE(Z", text)
