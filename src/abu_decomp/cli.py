@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError
+from abu_decomp import DecompError, runslice
 from abu_decomp.config import Profile, load_profile
 
 
@@ -563,6 +563,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         sys.stdout.write(version_text())
         return 0
+    if argv is None:  # a real start, not a call from a test or from `decomp mcp`'s own dispatch
+        runslice.start(args)
     started = time.monotonic()
     invocation = uuid.uuid4().hex
     result: dict[str, Any] | None = None

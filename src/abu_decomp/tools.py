@@ -155,7 +155,7 @@ class TasteSettings:
     taste_profile: Path | None
 
 
-_TOOLS_KEYS = frozenset({"project", "host", "timeout_seconds", "taste_profile", "pin_file", "checkouts"})
+_TOOLS_KEYS = frozenset({"project", "host", "timeout_seconds", "taste_profile", "pin_file", "checkouts", "run_slice"})
 
 
 def _table(profile: Profile, *needed: str) -> dict[str, Any]:
