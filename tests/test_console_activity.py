@@ -5,7 +5,7 @@ from pathlib import Path
 
 from abu_decomp.console.dashboard_sources import Sources
 from abu_decomp.console.feed import append_event
-from abu_decomp.console.human import block, sentence
+from abu_decomp.console.human import block, collapse_probes, sentence
 
 FIXTURES = Path(__file__).parent / "fixtures" / "panes"
 SUGGEST = [
@@ -169,6 +169,22 @@ class HumanTests(unittest.TestCase):
         ]
         for event, expected in cases:
             self.assertEqual(sentence(event), expected)
+
+    def test_probe_start_rows_fold_into_the_probes_result(self):
+        def probe(status, name, **payload):
+            return {"kind": "PROBE", "status": status, "message": name, "payload": {"function": name, **payload}}
+
+        events = [
+            probe("started", "f1"),
+            probe("started", "f2"),
+            probe("passed", "f1", checks=2, differences=0),
+            probe("started", "f1"),
+            probe("started", "f1"),
+        ]
+        kept = collapse_probes(events)
+        self.assertEqual(len(kept), 3)
+        self.assertEqual(kept[-1]["status"], "started")
+        self.assertEqual(kept[0]["message"], "f2")
 
     def test_build_reads_the_receipts_test_count(self):
         with tempfile.TemporaryDirectory() as directory:

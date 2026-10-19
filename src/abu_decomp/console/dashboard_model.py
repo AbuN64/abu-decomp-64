@@ -273,7 +273,7 @@ def mission_model(
         ((probes[-1].get("payload") or {}).get("question") or probes[-1].get("message")) if probes else "none yet"
     )
     rows = [Row("raw-log", "Raw host log", raw_log or "No host output recorded.", "raw")]
-    for event in events:
+    for event in human.collapse_probes(events):
         label = human.sentence(event)
         key = hashlib.sha256(json.dumps(event, sort_keys=True).encode()).hexdigest()
         rows.append(

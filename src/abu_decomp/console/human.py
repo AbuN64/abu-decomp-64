@@ -72,6 +72,24 @@ def words(payload: dict[str, Any]) -> str:
     return f"{w['matched']} of {w.get('target', '?')} words" if "matched" in w else "no score"
 
 
+def probe_name(event: dict[str, Any]) -> str:
+    return str(payload_of(event).get("function") or str(event.get("message", "")).rsplit(" ", 1)[-1])
+
+
+def collapse_probes(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop a 'probe started' event once the same function has a later probe event (its result row says it all)."""
+    later: set[str] = set()
+    kept = []
+    for event in reversed(events):
+        if canonical_kind(event) == "PROBE":
+            name = probe_name(event)
+            if event.get("status") == "started" and name in later:
+                continue
+            later.add(name)
+        kept.append(event)
+    return kept[::-1]
+
+
 def sentence(event: dict[str, Any]) -> str:
     payload, kind, actor = payload_of(event), canonical_kind(event), str(event.get("actor", ""))
     message, op = str(event.get("message", "")), payload.get("op")
