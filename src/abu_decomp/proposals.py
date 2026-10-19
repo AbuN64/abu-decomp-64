@@ -25,7 +25,7 @@ from abu_decomp.config import Profile
 
 PROPOSING = {"structure": None, "style": None, "flags": None, "look": None, "status": None, "name": {"next", "banners"}}
 SUFFIXES = (".c", ".h", ".cpp")
-HEAD = 3
+HEAD = 12
 
 
 def check_steps(file: Path, key: str, value: Any) -> list[dict[str, Any]]:

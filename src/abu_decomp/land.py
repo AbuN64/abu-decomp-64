@@ -681,6 +681,10 @@ class Landing:
             "kind": "LAND",
             "subject": {"repo": str(self.tree), "ref": str(result["head"] or "")},
             "payload": {
+                "op": "landed",
+                "functions": sorted(
+                    {n for row in self.lanes if row["status"] == "applied" for n in row["functions"]["names"]}
+                ),
                 "base": result["base"],
                 "gates": {row["gate"]: row["pass"] for row in self.gates},
                 "lanes": {row["lane"]: {"status": row["status"], **(row.get("functions") or {})} for row in self.lanes},
