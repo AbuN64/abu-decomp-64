@@ -155,7 +155,7 @@ class TasteSettings:
     taste_profile: Path | None
 
 
-_TOOLS_KEYS = frozenset({"project", "host", "timeout_seconds", "taste_profile", "pin_file"})
+_TOOLS_KEYS = frozenset({"project", "host", "timeout_seconds", "taste_profile", "pin_file", "checkouts"})
 
 
 def _table(profile: Profile, *needed: str) -> dict[str, Any]:
@@ -212,6 +212,62 @@ def settings(profile: Profile, project: Path | None = None, host: Path | None = 
     return Settings(
         project_dir(profile, project), host_file(profile, host), timeout_of(profile), taste_profile_of(profile)
     )
+
+
+def checkouts_of(profile: Profile) -> dict[str, Path]:
+    """Tool command -> the git checkout the seat runs that tool's code from (`tools.checkouts`, optional).
+
+    A checkout is pinned the same way as the installed package: it must sit at the commit decomp pins."""
+    table = _table(profile)
+    given = table.get("checkouts", {})
+    if not isinstance(given, dict) or set(given) - set(TOOLS):
+        raise DependencyError(
+            "config.schema", f"{profile.source_file}:tools.checkouts: expected an object keyed by {sorted(TOOLS)}"
+        )
+    return {
+        command: profile.path(f"tools.checkouts.{command}", given[command]) for command in TOOLS if command in given
+    }
+
+
+def _git(path: Path, *args: str) -> str:
+    done = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, check=False)
+    if done.returncode:
+        raise DependencyError("tools.checkout", f"{path}: git {' '.join(args)} failed: {done.stderr.strip()[-300:]}")
+    return done.stdout.strip()
+
+
+def checkout_head(path: Path) -> str:
+    return _git(path, "rev-parse", "HEAD")
+
+
+def checkout_dirty(path: Path) -> list[str]:
+    """The checkout's uncommitted changes (porcelain rows); aligning it would discard or carry them."""
+    return [row for row in _git(path, "status", "--porcelain").splitlines() if row]
+
+
+def checkout_drift(profile: Profile, commands: Sequence[str] | None = None) -> list[str]:
+    """Why a checkout the seat runs tool code from is not at decomp's pin; empty when every one agrees."""
+    wanted = pins()
+    found = []
+    for command, path in checkouts_of(profile).items():
+        if commands is not None and command not in commands:
+            continue
+        if not path.is_dir():
+            found.append(f"{command} checkout {path} is not a directory")
+            continue
+        head = checkout_head(path)
+        if head != wanted[command].commit:
+            found.append(
+                f"{command} checkout {path} is at {head} but decomp pins {wanted[command].commit}; "
+                "run `decomp tools deploy` to align it"
+            )
+    return found
+
+
+def require_checkouts(profile: Profile, commands: Sequence[str]) -> None:
+    """Fail fast, before the tool runs, when a checkout of `commands` differs from decomp's pin."""
+    if found := checkout_drift(profile, commands):
+        raise DependencyError("tools.checkout_drift", "; ".join(found))
 
 
 @dataclass(frozen=True)
@@ -358,6 +414,7 @@ def invoke(
     if not given or any("\0" in arg for arg in given):
         raise DependencyError("dependency.arguments", "provide a public command followed by its arguments")
     chosen: Settings | TasteSettings = taste_settings(profile) if tool == "taste" else settings(profile, project, host)
+    require_checkouts(profile, [tool])
     if isinstance(chosen, Settings) and project:
         ready(profile, chosen.project)
     command = _command(tool, chosen, given)
@@ -452,6 +509,7 @@ def api_call(
     if function not in API_CALLS:
         raise DependencyError("dependency.arguments", f"unbake api call {function} is not allowed")
     chosen = settings(profile, project, host)
+    require_checkouts(profile, ["unbake"])
     if project and (refused := pin_findings(profile, chosen.project)):
         raise DependencyError("dependency.project_pin", "; ".join(refused))
     verify_dependencies()

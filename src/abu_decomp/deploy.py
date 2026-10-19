@@ -9,8 +9,10 @@ installed the pins that must agree are compared and the ones that would have to 
   the project's pin file (`tools.pin_file`, default ci/run) against the version each commit declares.
 
 Any mismatch refuses the deploy and names the file, the pin, what it says now and what it must say. When they agree,
-each venv gets the four requirements (the old ones uninstalled first, so pip cannot keep a stale commit), then a
-smoke test: `decomp dependencies` (provenance) and `unbake symbols --version V` on the project.
+each checkout the seat names in `tools.checkouts` (a tool's code run from a git checkout) is brought to the pinned
+commit (fetch, detached checkout) and refused, untouched, when it has local changes. Each venv then gets the four
+requirements (the old ones uninstalled first, so pip cannot keep a stale commit), then a smoke test:
+`decomp dependencies` (provenance) and `unbake symbols --version V` on the project.
 """
 
 from __future__ import annotations
@@ -209,6 +211,54 @@ def smoke(venv: Path, project: Path | None, host: Path, run: Run) -> list[dict[s
     return results
 
 
+def checkout_steps(
+    profile: Profile, requirements: Sequence[dict[str, str]]
+) -> tuple[dict[str, tuple[Path, str]], list[dict[str, Any]]]:
+    """The checkouts the seat runs tool code from (`tools.checkouts`) with the commit each must sit at, and a
+    blocking finding for every one that has local changes (aligning would discard or carry them; never done)."""
+    commit = {tools._normal(r["name"]): r["commit"] for r in requirements}
+    wanted = {
+        command: (path, commit[tools._normal(tools.TOOLS[command].distribution)])
+        for command, path in tools.checkouts_of(profile).items()
+    }
+    findings = []
+    for command, (path, _) in wanted.items():
+        if not path.is_dir():
+            findings.append(
+                {"key": "deploy.checkout", "blocking": True, "message": f"{command} checkout {path} is not a directory"}
+            )
+        elif dirty := tools.checkout_dirty(path):
+            findings.append(
+                {
+                    "key": "deploy.checkout_dirty",
+                    "blocking": True,
+                    "message": f"{command} checkout {path} has local changes and is left as it is: "
+                    f"{'; '.join(dirty[:5])}",
+                }
+            )
+    return wanted, findings
+
+
+def align_checkouts(wanted: dict[str, tuple[Path, str]], run: Run) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Fetch each checkout, then a detached checkout of its pinned commit. (rows done, findings)"""
+    done: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    for command, (path, sha) in wanted.items():
+        code, output = run(["git", "-C", str(path), "fetch", "-q", "origin"], None)
+        if code == 0:
+            code, output = run(["git", "-C", str(path), "checkout", "-q", "--detach", sha], None)
+        done.append({"checkout": command, "path": str(path), "commit": sha, "ok": code == 0})
+        if code:
+            findings.append(
+                {
+                    "key": "deploy.checkout",
+                    "blocking": True,
+                    "message": f"{command} checkout {path} cannot reach {sha}: {output[-300:]}",
+                }
+            )
+    return done, findings
+
+
 def deploy(
     profile: Profile,
     decomp: str,
@@ -243,6 +293,12 @@ def deploy(
         "venvs": [],
     }
     if moves:
+        return result, 1, findings
+    wanted, refused = checkout_steps(profile, requirements)
+    if refused:
+        return result, 1, refused
+    result["checkouts"], findings = align_checkouts(wanted, run)
+    if findings:
         return result, 1, findings
     for venv in venvs:
         steps = install(venv, requirements, run)
