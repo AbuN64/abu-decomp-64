@@ -83,7 +83,7 @@ def settings(profile: Profile) -> dict[str, Any]:
     propose = (
         proposals.check_steps(profile.source_file, "cycle.propose", table["propose"]) if "propose" in table else []
     )
-    project = tools.settings(profile).project if sources or report or table.get("recipe") or propose else None
+    project = tools.project_dir(profile) if sources or report or table.get("recipe") or propose else None
     return {
         "sources": [project / value for value in sources] if project else [],
         "suffixes": tuple(table.get("suffixes", ())),
@@ -181,7 +181,7 @@ class Cycle:
 
     def propose(self, landed: list[str] | None) -> dict[str, Any] | None:
         """Recipe's proposals for the landed files (else the changed sources of the burst); one LAND event."""
-        project = tools.settings(self.profile).project
+        project = tools.project_dir(self.profile)
         files = proposals.source_files(project, landed or [])
         summary = proposals.run(self.profile, None, self.config["propose"], files, invoke=self.invoke)
         self.append(

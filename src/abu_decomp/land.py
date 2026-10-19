@@ -566,7 +566,7 @@ class Landing:
             jobs = int(text)
             command += [f"-j{jobs}"]
         env = dict(os.environ)
-        env["UNBAKE_HOST"] = str(tools.settings(self.profile).host)
+        env["UNBAKE_HOST"] = str(tools.host_file(self.profile))
         env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
         code, out, err = self.build(command, self.tree, env, self.config["timeout"])
         if code:

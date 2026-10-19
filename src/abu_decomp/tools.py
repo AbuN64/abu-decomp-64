@@ -147,33 +147,71 @@ class Settings:
     taste_profile: Path | None
 
 
-def settings(profile: Profile, project: Path | None = None, host: Path | None = None) -> Settings:
-    """The `tools` section: the decomp project, the unbake host file, one timeout, and the Taste profile.
+@dataclass(frozen=True)
+class TasteSettings:
+    """What a Cake Taste call needs: it takes neither the decomp project nor the unbake host file."""
 
-    `project` and `host` (a lane's own tree and host file) replace the section's values for one call.
-    """
-    file = profile.source_file
+    timeout_seconds: float
+    taste_profile: Path | None
+
+
+_TOOLS_KEYS = frozenset({"project", "host", "timeout_seconds", "taste_profile", "pin_file"})
+
+
+def _table(profile: Profile, *needed: str) -> dict[str, Any]:
+    """The `tools` section, checked for unknown keys and for the keys the caller is about to use."""
     table = profile.section("tools")
-    check_keys(
-        file,
-        "tools",
-        table,
-        frozenset({"project", "host", "timeout_seconds"}),
-        frozenset({"project", "host", "timeout_seconds", "taste_profile", "pin_file"}),
-    )
-    project = project.expanduser().resolve() if project else profile.path("tools.project", table["project"])
-    host = host.expanduser().resolve() if host else profile.path("tools.host", table["host"])
-    timeout = table["timeout_seconds"]
+    check_keys(profile.source_file, "tools", table, frozenset(needed), _TOOLS_KEYS)
+    return table
+
+
+def project_dir(profile: Profile, project: Path | None = None) -> Path:
+    """The decomp project: `project` when given, else `tools.project`. Only the value used is checked."""
+    table = _table(profile, *(() if project else ("project",)))
+    path = project.expanduser().resolve() if project else profile.path("tools.project", table["project"])
+    if not path.is_dir():
+        raise DependencyError("config.schema", f"{profile.source_file}:tools.project: not a directory: {path}")
+    return path
+
+
+def host_file(profile: Profile, host: Path | None = None) -> Path:
+    """The unbake host file: `host` when given, else `tools.host`. Only the value used is checked."""
+    table = _table(profile, *(() if host else ("host",)))
+    path = host.expanduser().resolve() if host else profile.path("tools.host", table["host"])
+    if not path.is_file():
+        raise DependencyError("config.schema", f"{profile.source_file}:tools.host: not a file: {path}")
+    return path
+
+
+def timeout_of(profile: Profile) -> float:
+    """The one timeout every tool call runs under."""
+    timeout = _table(profile, "timeout_seconds")["timeout_seconds"]
     try:
         finite = type(timeout) in (int, float) and math.isfinite(timeout) and timeout > 0
     except OverflowError:
         finite = False
     if not finite:
-        raise DependencyError("config.schema", f"{file}:tools.timeout_seconds: expected a finite positive number")
-    if not project.is_dir() or not host.is_file():
-        raise DependencyError("config.schema", f"{file}:tools: project directory and host file must exist")
-    taste = profile.path("tools.taste_profile", table["taste_profile"]) if "taste_profile" in table else None
-    return Settings(project, host, float(timeout), taste)
+        raise DependencyError(
+            "config.schema", f"{profile.source_file}:tools.timeout_seconds: expected a finite positive number"
+        )
+    return float(timeout)
+
+
+def taste_profile_of(profile: Profile) -> Path | None:
+    table = _table(profile)
+    return profile.path("tools.taste_profile", table["taste_profile"]) if "taste_profile" in table else None
+
+
+def taste_settings(profile: Profile) -> TasteSettings:
+    return TasteSettings(timeout_of(profile), taste_profile_of(profile))
+
+
+def settings(profile: Profile, project: Path | None = None, host: Path | None = None) -> Settings:
+    """The `tools` section for a call that runs in a project with a host file; `project` and `host` (a lane's own
+    tree and host file) replace the section's values for one call, and the replaced values are never read."""
+    return Settings(
+        project_dir(profile, project), host_file(profile, host), timeout_of(profile), taste_profile_of(profile)
+    )
 
 
 @dataclass(frozen=True)
@@ -211,7 +249,7 @@ def is_text_call(given: Sequence[str]) -> bool:
     return bool(given) and (given[0].startswith("-") or any(arg in TEXT_FLAGS for arg in given))
 
 
-def _command(tool: str, chosen: Settings, given: tuple[str, ...]) -> list[str]:
+def _command(tool: str, chosen: Settings | TasteSettings, given: tuple[str, ...]) -> list[str]:
     owned = ("--profile",) if tool == "taste" else ("--host", "--project")
     if any(arg in owned or arg.startswith(tuple(f"{flag}=" for flag in owned)) for arg in given):
         raise DependencyError("dependency.arguments", f"{tool} {'/'.join(owned)} come only from the seat profile")
@@ -223,6 +261,7 @@ def _command(tool: str, chosen: Settings, given: tuple[str, ...]) -> list[str]:
                 "cake-taste project JSON profile that `taste --profile` takes",
             )
         return ["--profile", str(chosen.taste_profile), *given]
+    assert isinstance(chosen, Settings)
     if is_text_call(given):
         return ["--project", str(chosen.project), *given]  # the tool's own text, arguments untouched
     command = ["--project", str(chosen.project), given[0]]
@@ -253,20 +292,28 @@ def invoke(
         given = given[1:]
     if not given or any("\0" in arg for arg in given):
         raise DependencyError("dependency.arguments", "provide a public command followed by its arguments")
-    chosen = settings(profile, project, host)
-    if project and (refused := pin_findings(profile, chosen.project)):
+    chosen: Settings | TasteSettings = taste_settings(profile) if tool == "taste" else settings(profile, project, host)
+    if isinstance(chosen, Settings) and project and (refused := pin_findings(profile, chosen.project)):
         raise DependencyError("dependency.project_pin", "; ".join(refused))
     command = _command(tool, chosen, given)
     provenance = verify_dependencies()
+    where = {"profile_sha256": profile.digest}
+    if isinstance(chosen, TasteSettings):
+        assert chosen.taste_profile is not None  # _command refused a missing one
+        cwd = chosen.taste_profile.parent
+    else:
+        cwd = chosen.project
+        where = {"project": str(chosen.project), "host": str(chosen.host), **where}
     bootstrap = f"from {TOOLS[tool].module} import main; raise SystemExit(main())"
     environment = dict(os.environ)
     # unbake and Recipe Maker read UNBAKE_HOST; the seat profile is its only source.
-    environment["UNBAKE_HOST"] = str(chosen.host)
+    if isinstance(chosen, Settings):
+        environment["UNBAKE_HOST"] = str(chosen.host)
     environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + environment.get("PATH", "")
     try:
         completed = subprocess.run(
             [str(Path(sys.executable).absolute()), "-I", "-c", bootstrap, *command],
-            cwd=chosen.project,
+            cwd=cwd,
             input=stdin,
             stdout=subprocess.PIPE,  # one JSON document; the tool's stages stream live to our stderr, never buffered
             timeout=chosen.timeout_seconds,
@@ -284,7 +331,7 @@ def invoke(
             completed.returncode,
             {},
             provenance,
-            {"project": str(chosen.project), "host": str(chosen.host), "profile_sha256": profile.digest},
+            where,
             completed.stdout,
         )
     try:
@@ -305,7 +352,7 @@ def invoke(
         completed.returncode,
         document,
         provenance,
-        {"project": str(chosen.project), "host": str(chosen.host), "profile_sha256": profile.digest},
+        where,
     )
 
 

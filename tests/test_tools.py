@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -6,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from abu_decomp import tools
-from abu_decomp.config import load_profile
+from abu_decomp.config import ConfigError, load_profile
 
 UNBAKE = "unbake @ git+https://github.com/AbuN64/cake-unbake-64@" + "a" * 40
 RECIPE = "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@" + "b" * 40
@@ -110,6 +111,65 @@ class ToolTests(unittest.TestCase):
             self.assertEqual(call.call_args.args[0][4:], ["--project", str(self.root / "project"), "status", "--json"])
             tools.invoke("taste", self.profile, ["profile"])
             self.assertEqual(call.call_args.args[0][4:], ["--profile", str(self.root / "taste.json"), "profile"])
+
+    def seat_with_missing_defaults(self):
+        """A seat whose tools.project and tools.host name things that do not exist, next to real ones."""
+        root = self.root
+        (root / "real").mkdir()
+        (root / "real.toml").write_text("")
+        section = {"project": "gone", "host": "gone.toml", "timeout_seconds": 5, "taste_profile": "taste.json"}
+        (root / "bad.json").write_text(json.dumps({"schema_version": 1, "name": "seat", "tools": section}))
+        return load_profile(root / "bad.json")
+
+    def test_explicit_project_and_host_win_over_defaults_that_do_not_exist(self):
+        profile = self.seat_with_missing_defaults()
+        chosen = tools.settings(profile, self.root / "real", self.root / "real.toml")
+        self.assertEqual((chosen.project, chosen.host), (self.root / "real", self.root / "real.toml"))
+        with self.assertRaises(tools.DependencyError) as caught:
+            tools.settings(profile, self.root / "real")  # the host default is the value used, and it is missing
+        self.assertIn("tools.host", caught.exception.detail)
+        with self.assertRaises(tools.DependencyError) as caught:
+            tools.settings(profile)
+        self.assertIn("tools.project", caught.exception.detail)
+
+    def test_only_the_value_a_caller_uses_is_validated(self):
+        profile = self.seat_with_missing_defaults()
+        self.assertEqual(tools.project_dir(profile, self.root / "real"), self.root / "real")
+        self.assertEqual(tools.host_file(profile, self.root / "real.toml"), self.root / "real.toml")
+        with self.assertRaises(tools.DependencyError):
+            tools.project_dir(profile)
+        with self.assertRaises(tools.DependencyError):
+            tools.host_file(profile)
+
+    def test_a_seat_may_leave_project_and_host_out_when_every_call_names_them(self):
+        (self.root / "real").mkdir()
+        (self.root / "real.toml").write_text("")
+        section = {"timeout_seconds": 5}
+        (self.root / "bare.json").write_text(json.dumps({"schema_version": 1, "name": "seat", "tools": section}))
+        profile = load_profile(self.root / "bare.json")
+        self.assertEqual(tools.settings(profile, self.root / "real", self.root / "real.toml").timeout_seconds, 5.0)
+        with self.assertRaises(ConfigError) as caught:
+            tools.settings(profile, self.root / "real")
+        self.assertIn("missing keys: host", caught.exception.detail)
+
+    def test_taste_runs_without_the_project_and_host_defaults_existing(self):
+        profile = self.seat_with_missing_defaults()
+        envelope = {"ok": True, "result": {}, "findings": [], "stages": [], "invocation": "x"}
+        done = subprocess.CompletedProcess([], 0, json.dumps(envelope).encode(), b"")
+        with (
+            installed(),
+            mock.patch.dict("os.environ"),
+            mock.patch("abu_decomp.tools.subprocess.run", return_value=done) as call,
+        ):
+            os.environ.pop("UNBAKE_HOST", None)
+            result = tools.invoke("taste", profile, ["profile"])
+            self.assertTrue(result.ok)
+            self.assertEqual(call.call_args.kwargs["cwd"], self.root)  # the Taste profile's directory
+            self.assertNotIn("UNBAKE_HOST", call.call_args.kwargs["env"])
+            self.assertEqual(set(result.context), {"profile_sha256"})
+            tools.invoke("taste", profile, ["--help"])
+            with self.assertRaises(tools.DependencyError):
+                tools.invoke("unbake", profile, ["report"])  # an unbake call still needs a real project and host
 
     def test_version_and_help_pass_through_as_text(self):
         done = subprocess.CompletedProcess([], 0, b"unbake 0.5.11\n", b"")

@@ -172,7 +172,7 @@ def emit(profile: Profile, tool: str, args: list[str], document: dict[str, Any],
         return
     try:
         feed = events.events_path(profile)
-        lane, body = lane_of(project or tools.settings(profile).project), document.get("result") or {}
+        lane, body = lane_of(project or tools.project_dir(profile)), document.get("result") or {}
         if verb == "score":
             payload = attempt_payload(body, feed, lane)
             if payload:
