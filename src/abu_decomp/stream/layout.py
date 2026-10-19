@@ -1,4 +1,4 @@
-"""Headless compositor config and a fixed 2x2 tiling tree built from profile tiles."""
+"""Headless compositor config and a column tiling tree built from profile tiles (2x2, 3x2, a tall tile, ...)."""
 
 from __future__ import annotations
 
@@ -11,18 +11,29 @@ class LayoutError(ValueError):
     pass
 
 
-def validate(up: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """Return (column_one, column_two) role ids: tiles are [[TL, TR], [BL, BR]]."""
+def validate(up: dict[str, Any]) -> tuple[list[str], ...]:
+    """Return the role ids of each column, top to bottom, from a grid of at least two rows and two columns.
+
+    A role id repeated in consecutive rows of one column is one tile spanning those rows (a tall tile); any other
+    repeat is refused, as is an undefined role or a ragged row.
+    """
     rows = up["tiles"]
-    if len(rows) != 2 or any(len(row) != 2 for row in rows):
-        raise LayoutError("tiles must be two rows of two role ids")
-    flat = [rows[0][0], rows[1][0], rows[0][1], rows[1][1]]
-    if len(set(flat)) != 4:
-        raise LayoutError("four tile roles must be distinct")
+    if len(rows) < 2 or len(rows[0]) < 2 or any(len(row) != len(rows[0]) for row in rows):
+        raise LayoutError("tiles must be a grid of at least two rows and two columns of role ids")
+    columns: list[list[str]] = []
+    for column in range(len(rows[0])):
+        stack: list[str] = []
+        for row in rows:
+            if not stack or stack[-1] != row[column]:
+                stack.append(row[column])
+        columns.append(stack)
+    flat = [role for stack in columns for role in stack]
+    if len(set(flat)) != len(flat):
+        raise LayoutError("tile roles must be distinct; only consecutive rows of one column may repeat a role")
     missing = [role for role in flat if role not in up["roles"]]
     if missing:
         raise LayoutError("tiles name undefined roles: " + ", ".join(missing))
-    return [rows[0][0], rows[1][0]], [rows[0][1], rows[1][1]]
+    return tuple(columns)
 
 
 def app_id(role: str, prefix: str = "tile-") -> str:
@@ -80,9 +91,11 @@ def overlays(
     area is the workspace rectangle (x, y, w, h); without it the whole output is used.
     """
     ox, oy, aw, ah = area or (0, 0, int(up["output"]["width"]), int(up["output"]["height"]))
-    tile_w, tile_h = aw // 2, ah // 2
+    columns = validate(up)
+    tile_w = aw // len(columns)
     found = []
-    for col, ids in enumerate(validate(up)):
+    for col, ids in enumerate(columns):
+        tile_h = ah // len(ids)
         for row, role in enumerate(ids):
             overlay = up["roles"][role].get("overlay_app_id")
             if overlay:
@@ -138,23 +151,22 @@ def focus_command(change: dict[str, Any], up: dict[str, Any]) -> str | None:
 
 
 def build_tree(ipc: Any, up: dict[str, Any], spawn: Any, wait_window: Any) -> None:
-    """Create the 2x2 tree deterministically: TL, TR beside it, BL under TL, BR under TR.
+    """Create the column tree deterministically: each column's top tile side by side, then the rest of each column
+    split under its top tile, left to right.
 
     spawn(role) starts the role's terminal; wait_window(app_id) blocks until its window exists.
     """
-    left, right = validate(up)
-    top_left, bottom_left = left
-    top_right, bottom_right = right
+    columns = validate(up)
     prefix = up.get("app_id_prefix", "tile-")
-    for role in (top_left, top_right):
-        spawn(role)
-        wait_window(app_id(role, prefix))
-    ipc.command(f"[app_id={exact(app_id(top_left, prefix))}] focus; splitv")
-    spawn(bottom_left)
-    wait_window(app_id(bottom_left, prefix))
-    ipc.command(f"[app_id={exact(app_id(top_right, prefix))}] focus; splitv")
-    spawn(bottom_right)
-    wait_window(app_id(bottom_right, prefix))
+    for stack in columns:
+        spawn(stack[0])
+        wait_window(app_id(stack[0], prefix))
+    for stack in columns:
+        if len(stack) > 1:
+            ipc.command(f"[app_id={exact(app_id(stack[0], prefix))}] focus; splitv")
+        for role in stack[1:]:
+            spawn(role)
+            wait_window(app_id(role, prefix))
     focus = up.get("focus_role")
     if focus:
         ipc.command(f"[app_id={exact(app_id(focus, prefix))}] focus")

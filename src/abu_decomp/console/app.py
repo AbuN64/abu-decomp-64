@@ -52,7 +52,7 @@ class EvidenceRow(Collapsible):
         super().__init__(
             self.body,
             title=self.label(row),
-            collapsed=True,
+            collapsed=not row.open,
             id="row-" + hashlib.sha256(row.key.encode()).hexdigest()[:16],
             classes=row.state,
         )
@@ -81,6 +81,7 @@ class ConsoleApp(App):
                color: #ffffff; text-style: bold; padding: 0 1; }
     #summary { height: auto; max-height: 3; color: #b6d6e6; padding: 0 1; }
     #rows { padding: 0 1; }
+    #foot { height: auto; max-height: 2; background: #213346; color: #b6d6e6; padding: 0 1; }
     EvidenceRow { border: none; padding: 0; margin: 0; height: auto; }
     CollapsibleTitle { height: 1; padding: 0; text-wrap: nowrap; text-overflow: ellipsis; }
     CollapsibleTitle:focus { background: #304a5d; text-style: bold; }
@@ -117,6 +118,7 @@ class ConsoleApp(App):
             yield Static("Loading evidence…", id="heading")
             yield Static("", id="summary")
         yield VerticalScroll(id="rows")
+        yield Static("", id="foot")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -141,6 +143,7 @@ class ConsoleApp(App):
         self.model = model
         self.query_one("#heading", Static).update(Text(model.heading))
         self.query_one("#summary", Static).update(Text(model.summary))
+        self.query_one("#foot", Static).update(Text(model.footer))
         container = self.query_one("#rows", VerticalScroll)
         keys = [row.key for row in model.rows]
         for key in list(self.widgets):

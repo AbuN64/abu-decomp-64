@@ -1,7 +1,7 @@
 """The seat profile's one `tiles` table: the grid, the focused tile and every tile's role.
 
 It replaces the old `panes.roles` and `stream.up.roles` pair. `stream.up` keeps compositor, output, services,
-audio and bar settings; the moved stream code still reads the 2x2 grid, the roles and the focus role from one
+audio and bar settings; the moved stream code still reads the tile grid, the roles and the focus role from one
 config object, so `up_config` merges the table into the `up` section and refuses a second copy of any of it.
 
     "tiles": {

@@ -21,6 +21,7 @@ class Row:
     title: str
     details: str
     state: str = "event"
+    open: bool = False
 
 
 @dataclass
@@ -29,6 +30,7 @@ class Dashboard:
     summary: str
     rows: list[Row] = field(default_factory=list)
     focus_key: str | None = None
+    footer: str = ""
 
 
 def addresses(text: str) -> list[str]:

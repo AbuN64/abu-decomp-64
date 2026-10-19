@@ -1,4 +1,4 @@
-"""`decomp stream up`: headless compositor, 2x2 role tiles and Moonlight browser endpoint, all from the profile."""
+"""`decomp stream up`: headless compositor, role tiles in columns and the Moonlight browser endpoint."""
 
 from __future__ import annotations
 

@@ -62,6 +62,35 @@ class LayoutTests(unittest.TestCase):
         ]
 
 
+WIDE = {
+    **UP,
+    "tiles": [["a", "b", "e"], ["c", "d", "e"]],
+    "roles": {**UP["roles"], "e": {"overlay_app_id": "wide"}},
+}
+
+
+class GridTests(unittest.TestCase):
+    def test_a_role_repeated_down_one_column_is_one_tall_tile(self):
+        assert layout.validate(WIDE) == (["a", "c"], ["b", "d"], ["e"])
+        for bad in ([["a", "b", "a"], ["c", "d", "e"]], [["a", "b"], ["b", "d"]], [["a", "b", "e"], ["c", "d"]]):
+            with self.assertRaises(layout.LayoutError):
+                layout.validate({**WIDE, "tiles": bad})
+
+    def test_three_columns_split_the_output_and_the_tall_tile_takes_the_full_height(self):
+        assert [o for o in layout.overlays(WIDE) if o[0] == "e"] == [("e", "wide", 1280, 0, 640, 1080)]
+        up = {**WIDE, "roles": {**WIDE["roles"], "d": {"overlay_app_id": "game"}}}
+        assert [o[2:] for o in layout.overlays(up) if o[0] in "de"] == [(640, 540, 640, 540), (1280, 0, 640, 1080)]
+        assert 'for_window [app_id="^wide$"] floating enable, border none, move absolute position 1280 0' in (
+            layout.sway_config(WIDE)
+        )
+
+    def test_tree_puts_each_columns_top_tile_side_by_side_then_splits_the_columns_with_two_tiles(self):
+        ipc, spawned = FakeIpc(), []
+        layout.build_tree(ipc, WIDE, spawned.append, lambda wanted: spawned.append("wait " + wanted))
+        assert [s for s in spawned if not s.startswith("wait")] == ["a", "b", "e", "c", "d"]
+        assert ipc.commands == ['[app_id="^tile\\-a$"] focus; splitv', '[app_id="^tile\\-b$"] focus; splitv']
+
+
 class OverlayTests(unittest.TestCase):
     def test_window_off_its_tile_gets_one_fix_and_a_placed_one_none(self):
         def tree(rect):
