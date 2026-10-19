@@ -26,7 +26,7 @@ from abu_decomp.narrate import display_name
 
 from .dashboard_model import Row, event_epoch
 from .feed import canonical_kind
-from .human import block, payload_of, recipe_text, sentence, suggested_names
+from .human import block, payload_of, sentence
 
 LANDED = re.compile(r"\bFix (\d+) \S+ stand-ins?\b")
 OPS = ("attempt", "submit", "behave")
@@ -47,33 +47,14 @@ def stamp(event: dict[str, Any]) -> str:
 
 
 def history_line(event: dict[str, Any]) -> str:
+    """One compact line of an earlier trial of the same function."""
     payload = payload_of(event)
     op = payload.get("op")
     if op == "attempt":
-        diff = payload.get("first_difference") or {}
-        tail = f" · first difference {diff.get('built', '?')} vs original {diff.get('target', '?')}" if diff else ""
-        found = (
-            f"exact match ✓ ({payload.get('variants')} variants)"
-            if payload.get("exact")
-            else (
-                f"{payload.get('words', {}).get('matched', '?')} of {payload.get('words', {}).get('target', '?')} words"
-                f" matched, best of {payload.get('variants')}"
-            )
-        )
-        text = f"attempt {payload.get('attempt')}: {found}{tail}"
-        if payload.get("refusals"):
-            text += "\n            refused: " + "; ".join(payload["refusals"][:2])
-        return text
+        return f"attempt {payload.get('attempt')}: {sentence(event).partition(': ')[2]}"
     if op == "submit":
-        outcome = "refused" if payload.get("refused") else "exact, stored" if payload.get("exact") else "not exact"
-        return f"submitted: {outcome}" + (f" ({payload['refusals'][0]})" if payload.get("refusals") else "")
-    if op == "behave":
-        return (
-            f"logic check vs original: {payload.get('verdict')} · {payload.get('checks', '?')} checks, "
-            f"{payload.get('differences', '?')} differences · input {payload.get('inputs')} · "
-            f"expected {payload.get('expected')} · actual {payload.get('actual')}"
-        )
-    return f"original-game probe: {payload.get('result') or sentence(event)}"
+        return f"submit: {sentence(event).partition(': ')[2]}"
+    return sentence(event).partition(": ")[2] or sentence(event)
 
 
 class ActivityPane:
@@ -95,58 +76,29 @@ class ActivityPane:
         when, key = event_epoch(event), f"act-{event.get('time')}-{event.get('actor')}-{event.get('message')}"
         lane = str(payload.get("lane") or "")
         if function:
-            version = payload.get("version") or next(
+            op = payload.get("op")
+            version = next(
                 (payload_of(e).get("version") for e in history[function] if payload_of(e).get("version")), None
             )
-            name = display_name(function, version)
-            op = payload.get("op")
-            if op == "attempt":
-                size = f" ({payload['size_bytes']:,} B)" if payload.get("size_bytes") else ""
-                words = payload.get("words") or {}
-                result = (
-                    "exact ✓"
-                    if payload.get("exact")
-                    else f"{words.get('matched', '?')}/{words.get('target', '?')} words"
-                )
-                title = f"{name}{size} · attempt {payload.get('attempt')} · {result}"
-            elif op == "submit":
-                title = f"{name} · " + (
-                    "refused" if payload.get("refused") else "stored, exact ✓" if payload.get("exact") else "not exact"
-                )
-            elif op == "behave":
-                title = f"{name} · logic check vs original: {payload.get('verdict')}"
-            else:
-                checks, differences = payload.get("checks"), payload.get("differences")
-                title = f"{name} · probed the original: {checks} checks, {differences} differences"
-            trial = "\n".join(f"{stamp(e)}  {history_line(e)}" for e in history[function])
-            details = f"Trial history of {name}, oldest first\n{trial}\n\n{block(event)}"
+            title = sentence(event).replace(function, display_name(function, version), 1)
+            earlier = [history_line(e) for e in history[function] if e is not event and payload_of(e).get("op") == op][
+                -6:
+            ]
+            trail = ("\ntrail      " + " | ".join(earlier)) if earlier else ""
+            details = block(event) + trail
             state = (
-                "passed"
+                "cracked"
+                if op == "attempt" and payload.get("exact")
+                else "passed"
                 if payload.get("exact") or payload.get("verdict") == "same"
                 else "stop"
-                if payload.get("refused")
+                if payload.get("refused") or payload.get("verdict") in ("differs", "error")
                 else "event"
             )
             return Row(key, title, details, state, when=when, tag=lane)
         if payload.get("op") == "landed":
-            names = suggested_names(payload.get("recipe") or {})
-            count = len(payload.get("functions") or [])
-            if not names:
-                tail = "Recipe Maker made no suggestion"
-            else:
-                module, source = names[0]
-                tail = (
-                    f"Recipe suggests name {module}"
-                    + (f" in {source}" if source else "")
-                    + (f" (+{len(names) - 1} more)" if len(names) > 1 else "")
-                )
-            title = f"Landed {count} functions → {tail}" if event.get("status") == "passed" else sentence(event)
-            proposal = recipe_text(payload.get("recipe") or {})
-            functions = ", ".join(payload.get("functions") or [])
-            details = (
-                "Went through Recipe Maker after the landing gates passed.\n"
-                f"Functions: {functions}\n{proposal}\n\n{block(event)}"
-            )
+            title = sentence(event)
+            details = block(event)
             applied = ", ".join(n for n, row in (payload.get("lanes") or {}).items() if row.get("status") == "applied")
             state = "passed" if event.get("status") == "passed" else "stop"
             return Row(key, title, details, state, when=when, tag=applied)

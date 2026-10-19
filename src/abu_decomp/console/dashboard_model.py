@@ -136,7 +136,7 @@ def _verdict(step: dict | None) -> str:
 
 def plain_reason(reason: str) -> str:
     if "has no native implementation" in reason:
-        return "the port has no native code for this original function yet"
+        return "no native code"
     tail = reason.rsplit(": ", 1)[-1].strip()
     return tail[:90] if tail else "no reason recorded"
 
@@ -149,11 +149,9 @@ def boot_status(rows: list[Row], passed: int, total: int, stop_index: int | None
         (r for r in planned if r.key.startswith("gate-")), None
     )
     return [
-        f"Passing: {passed} of {total} boot steps ✓",
-        f"Stopped at: {stopped.title} — {plain_reason(reason)}"
-        if stopped
-        else "Stopped at: nowhere, the boot finished",
-        f"Next: {nxt.title}" if nxt else "Next: nothing planned",
+        f"pass {passed}/{total} ✓",
+        f"stop {stopped.title}: {plain_reason(reason)}" if stopped else "stop none, boot finished",
+        f"next {nxt.title}" if nxt else "next none",
     ]
 
 

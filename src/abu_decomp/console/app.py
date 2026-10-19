@@ -63,7 +63,7 @@ class EvidenceRow(Collapsible):
     @staticmethod
     def label(row: Row, now: float | None = None) -> str:
         """Dim fixed-width age column, then the state marker and the title (Collapsible titles take markup)."""
-        marker = {"passed": "✓", "stop": "!", "planned": "○", "raw": "≡"}.get(row.state, "•")
+        marker = {"passed": "✓", "cracked": "★", "stop": "!", "planned": "○", "raw": "≡"}.get(row.state, "•")
         stamp = ago((now or time.time()) - row.when) if row.when else ""
         tag = f"  [dim]{escape(row.tag)}[/dim]" if row.tag else ""
         return f"[dim]{stamp:>4}[/dim] " + escape(f"{marker} {row.title}") + tag
@@ -120,6 +120,7 @@ class ConsoleApp(App):
     CollapsibleTitle { height: 1; padding: 0; text-wrap: nowrap; text-overflow: ellipsis; color: #c3d0db; }
     CollapsibleTitle:focus { background: #25384a; text-style: none; }
     .passed > CollapsibleTitle { color: #88d5a0; }
+    .cracked > CollapsibleTitle { color: #5fe08a; text-style: bold; }
     .stop > CollapsibleTitle { color: #ffcd82; }
     .planned > CollapsibleTitle { color: #6f7d8a; }
     .raw > CollapsibleTitle { color: #8a9eb0; }
@@ -165,7 +166,7 @@ class ConsoleApp(App):
     def show_heading(self) -> None:
         """One title line; `checked Ns ago` shows the console is alive between source changes."""
         line = Text(self.heading_text)
-        line.append(f"  · checked {ago(time.time() - self.checked)} ago", style="dim")
+        line.append(f"  · {ago(time.time() - self.checked)}", style="dim")
         with suppress(NoMatches):  # a tick can land while the app is starting or closing
             self.query_one("#heading", Static).update(line)
 

@@ -70,9 +70,9 @@ class ConsoleModelTests(unittest.TestCase):
         )
         model = boot(runtime=runtime)
         passing, stopped, nxt = model.pinned
-        self.assertRegex(passing, r"^Passing: \d+ of \d+ boot steps ✓$")
-        self.assertRegex(stopped, r"^Stopped at: .+ — the port has no native code for this original function yet$")
-        self.assertTrue(nxt.startswith("Next: ") and "nothing planned" not in nxt)
+        self.assertRegex(passing, r"^pass \d+/\d+ ✓$")
+        self.assertRegex(stopped, r"^stop .+: no native code$")
+        self.assertTrue(nxt.startswith("next ") and "none" not in nxt)
         self.assertLessEqual(len(nxt), 86)  # one line, never the raw log fragment in full
         dated = [row for row in model.rows if row.state in ("passed", "stop")]
         self.assertTrue(dated and all(row.when for row in dated))
@@ -206,7 +206,7 @@ class ConsoleFollowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#pinned").region.height, 3)
             app.checked -= 12
             app.show_heading()
-            self.assertIn("checked 12s ago", str(app.query_one("#heading").render()))
+            self.assertIn("12s", str(app.query_one("#heading").render()))
 
     async def test_every_row_has_a_live_dim_age_column(self):
         rows = [Row("a", "first", "d", when=1000.0), Row("b", "undated", "d")]

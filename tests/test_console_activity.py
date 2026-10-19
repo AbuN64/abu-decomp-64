@@ -81,21 +81,20 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(
             titles,
             [
-                "func_802BD430 (1,348 B) · attempt 1 · 200/337 words",
-                "func_802BD430 (1,348 B) · attempt 2 · 315/337 words",
-                "func_802BD430 · probed the original: 3 checks, 0 differences",
-                "func_802BD430 (1,348 B) · attempt 3 · exact ✓",
+                "func_802BD430: 59.3% match",
+                "func_802BD430: 93.4% match",
+                "func_802BD430: same (3/3)",
+                "func_802BD430: CRACKED!",
             ],
         )
         self.assertEqual([r.tag for r in model.rows][:2], ["RW-SOL-A", "RW-SOL-B"])  # a tag, not a pane
         self.assertTrue(all(r.when for r in model.rows))
         details = model.rows[0].details
-        self.assertIn("Trial history of func_802BD430", details)
-        self.assertIn("attempt 2: 315 of 337 words matched", details)  # later trials are in every row's history
-        self.assertIn("original-game probe: 3 checks, 0 differences", details)
-        self.assertIn("first difference addiu $v1 vs original addiu $v0", details)
-        self.assertIn("refused: a.CPP:12 score.compile: bad", details)
-        self.assertIn("Expected: original: 337 words", details.replace("  ", " ").replace("Expected:  ", "Expected: "))
+        self.assertIn("trail      attempt 2: 93.4% match", details)  # later trials are in the row's trail
+        self.assertIn("built addiu $v1 ≠ original addiu $v0", details)
+        self.assertIn("refused    a.CPP:12 score.compile: bad", details)
+        self.assertIn("expected   337 words", details)
+        self.assertEqual(model.rows[3].state, "cracked")
         self.assertTrue(model.footer.startswith("landed today"))
 
     def test_a_landing_says_it_went_through_recipe_maker_with_the_suggested_name(self):
@@ -112,11 +111,8 @@ class ActivityTests(unittest.TestCase):
             recipe=recipe,
         )
         row = self.model().rows[0]
-        self.assertEqual(
-            row.title, "Landed 2 functions → Recipe suggests name code_802AB940 in src/GFX/CODE_802AB940.CPP"
-        )
+        self.assertEqual(row.title, "landed 2 fn → src/GFX/CODE_802AB940.CPP")
         self.assertEqual(row.tag, "RW-SOL-B")
-        self.assertIn("Went through Recipe Maker", row.details)
         self.assertIn("module: src/GFX/A.CPP -> code_802AB940", row.details)
 
     def test_old_failures_and_unrelated_events_are_not_rows(self):
@@ -124,7 +120,7 @@ class ActivityTests(unittest.TestCase):
         self.add("cycle", "failed", "cycle build failed", "RUN-FAIL")
         rows = self.model().rows
         self.assertEqual([r.state for r in rows], ["stop"])
-        self.assertIn("cycle stopped: cycle build failed", rows[0].title)
+        self.assertIn("cycle: cycle build failed", rows[0].title)
 
 
 STAMP = "2026-10-18T12:00:00+00:00"
@@ -139,7 +135,7 @@ class HumanTests(unittest.TestCase):
                     "actor": "git",
                     "message": "ragewars-decomp e341f61 Fix 10 INCLUDE_ASM stand-ins in A by matching x as C",
                 },
-                "Landed 10 matched functions into ragewars-decomp (commit e341f61)",
+                "landed 10 fn → ragewars-decomp e341f61",
             ),
             (
                 {
@@ -149,13 +145,13 @@ class HumanTests(unittest.TestCase):
                     "message": "m",
                     "payload": {"function": "func_8044ADC0", "checks": 111, "differences": 0},
                 },
-                "Probed func_8044ADC0 on the original game: 111 checks, 0 differences",
+                "func_8044ADC0: same (111/111)",
             ),
             (
                 {"kind": "LAND", "actor": "git", "message": "rage-ports abc1234 Select original background"},
-                "Committed to rage-ports (abc1234): Select original background",
+                "rage-ports abc1234: Select original background",
             ),
-            ({"kind": "RUN-FAIL", "actor": "cycle", "message": "build failed"}, "cycle stopped: build failed"),
+            ({"kind": "RUN-FAIL", "actor": "cycle", "message": "build failed"}, "cycle: build failed"),
             (
                 {
                     "kind": "PROBE",
@@ -164,7 +160,7 @@ class HumanTests(unittest.TestCase):
                     "message": "Observe the original behavior of func_9",
                     "payload": {"function": "func_9"},
                 },
-                "Probing func_9 on the original game",
+                "func_9: probing",
             ),
         ]
         for event, expected in cases:
@@ -210,9 +206,8 @@ class HumanTests(unittest.TestCase):
                 "message": "Committed build promoted",
                 "evidence": str(receipt),
             }
-            self.assertEqual(sentence(event), "Build passed: 150 of 150 tests")
-            self.assertIn("Result:   PASS", block(event))
-            self.assertIn("ctest ok", block(event))
+            self.assertEqual(sentence(event), "build ✓ 150/150")
+            self.assertIn("ctest=ok", block(event))
 
     def test_blocks_read_like_a_test_with_expected_and_actual(self):
         event = {
@@ -225,6 +220,6 @@ class HumanTests(unittest.TestCase):
             "payload": attempt(2, 315),
         }
         text = block(event)
-        for label in ("Ran:", "Input:", "Expected:", "Actual:", "Result:", "Raw event:"):
+        for label in ("expected", "actual", "first diff", "variants"):
             self.assertIn(label, text)
-        self.assertIn("FAIL, not exact yet", text)
+        self.assertNotIn("Ran", text)  # values only, no prose
