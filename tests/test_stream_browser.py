@@ -27,6 +27,13 @@ class BrowserTests(unittest.TestCase):
             self.assertNotIn("old()", result)
             self.assertEqual(player.read_text(), AUDIO_TRACK_NEW)
             self.assertIn("await audio.play()", result)
+            # fitted always, no controls, audio unlocked by the first gesture
+            self.assertNotIn("stream-controls", result)
+            self.assertNotIn("Start audio", result)
+            self.assertNotIn("Native size", result)
+            self.assertIn("overflow:hidden!important", result)
+            self.assertIn("addEventListener('resize', sizeVideo)", result)
+            self.assertIn("'keydown'", result)
             self.assertIn('"width": 1920', result)
             self.assertIn('"bitrate": 40000', result)
 

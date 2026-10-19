@@ -1,7 +1,7 @@
 """Install the browser controls at the configured Moonlight Web boundary."""
 
 # Embedded browser code has its own string/layout conventions.
-# ruff: noqa: E501, RUF001
+# ruff: noqa: E501
 
 from __future__ import annotations
 
@@ -27,71 +27,47 @@ Object.assign(saved, {videoSize:'custom', videoSizeCustom:facts.size,
   bitrate:facts.bitrate, fps:facts.fps, videoCodec:'h264', dataTransport:'webrtc',
   playAudioLocal:true, forceVideoElementRenderer:true, mouseMode:'follow'});
 localStorage.setItem('mlSettings', JSON.stringify(saved));
-const bar = document.createElement('div');
-bar.id = 'stream-controls';
-bar.innerHTML = '<button id="stream-audio">Start audio</button> <button id="stream-size">Fit view</button> <span id="stream-state">Connecting…</span> <span>Click a tile to focus it, then use keyboard or controller.</span>';
-bar.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10000;background:#17191d;color:#fff;font:14px sans-serif;padding:8px;min-height:28px;display:flex;gap:12px;align-items:center';
-for (const type of ['mousedown','mouseup','mousemove','keydown','keyup','wheel','touchstart','touchend'])
-  bar.addEventListener(type, event => event.stopPropagation());
-for (const b of bar.querySelectorAll('button')) b.style.cssText='padding:5px 10px;margin:0;font:14px sans-serif;min-height:0';
-document.body.appendChild(bar);
-const button = document.getElementById('stream-audio');
-const status = document.getElementById('stream-state');
-let native = true;
+// No chrome: the page is the stream, always fitted to the window, with sound as soon as the browser allows it.
+const style = document.createElement('style');
+style.textContent = 'html,body{margin:0!important;padding:0!important;overflow:hidden!important;background:#000!important}'
+  + '#root{position:fixed!important;inset:0!important;overflow:hidden!important;background:#000}';
+document.head.appendChild(style);
 let audio;
-let requestedAudio = false;
-let playbackError = false;
+let blocked = false;
 async function startAudio() {
-  if (!requestedAudio || !audio?.srcObject?.getAudioTracks().length) return;
-  try { playbackError=false; audio.muted=false; await audio.play(); describe(); }
-  catch (_) { playbackError=true; audio.muted=true; describe(); }
+  if (!audio?.srcObject?.getAudioTracks().length) return;
+  try { audio.muted = false; await audio.play(); blocked = false; }
+  catch (_) {
+    // Unmuted autoplay needs a gesture: play muted now, unmute on the first click or key anywhere.
+    blocked = true; audio.muted = true;
+    try { await audio.play(); } catch (_) {}
+  }
 }
-function describe() {
-  const video = document.querySelector('video');
-  const playing = audio && !audio.paused && !audio.muted && audio.readyState >= 2;
-  button.textContent = playing ? 'Mute audio' : 'Start audio';
-  if (playbackError) { status.textContent='Playback blocked. Click Start audio to retry.'; return; }
-  status.textContent = `${video?.videoWidth || facts.size.width} × ${video?.videoHeight || facts.size.height} · ${native ? 'Native size' : 'Fit view'} · ${playing ? 'Audio on' : 'Audio off'}`;
-}
+function unlock() { if (blocked) startAudio(); }
+for (const type of ['pointerdown', 'mousedown', 'keydown', 'touchstart'])
+  document.addEventListener(type, unlock, {capture: true, passive: true});
 function sizeVideo() {
   const video = document.querySelector('video');
   if (!video) return;
-  const width = native ? facts.size.width : Math.min(innerWidth, (innerHeight-48)*facts.size.width/facts.size.height);
-  const height = width*facts.size.height/facts.size.width;
-  video.style.cssText=`position:absolute!important;top:48px!important;left:0!important;width:${width}px!important;height:${height}px!important;max-width:none!important;max-height:none!important;min-width:0!important;min-height:0!important;object-fit:fill!important;transform:none!important`;
-  document.body.style.cssText='margin:0;overflow:auto!important';
-  document.documentElement.style.overflow='auto';
-  document.getElementById('root').style.cssText=`position:relative;width:${width}px;height:${height+48}px;overflow:visible`;
-  describe();
+  const ratio = facts.size.width / facts.size.height;
+  const width = Math.min(innerWidth, innerHeight * ratio);
+  const height = width / ratio;
+  video.style.cssText = `position:fixed!important;left:${(innerWidth - width) / 2}px!important;top:${(innerHeight - height) / 2}px!important;width:${width}px!important;height:${height}px!important;max-width:none!important;max-height:none!important;min-width:0!important;min-height:0!important;object-fit:fill!important;transform:none!important`;
 }
 function attach() {
   const next = document.querySelector('audio');
   if (next && next !== audio) {
     audio = next;
-    for (const name of ['playing','pause','volumechange','loadeddata','emptied']) audio.addEventListener(name, describe);
     audio.addEventListener('stream-track-ready', startAudio);
     audio.addEventListener('canplay', startAudio);
     audio.srcObject?.addEventListener('addtrack', startAudio);
     startAudio();
-    describe();
   }
   sizeVideo();
 }
-button.addEventListener('click', async () => {
-  if (audio && !audio.paused && !audio.muted) {
-    requestedAudio=false; audio.muted=true; describe(); return;
-  }
-  requestedAudio=true;
-  status.textContent='Starting audio…';
-  await startAudio();
-  document.getElementById('input')?.focus();
-});
-document.getElementById('stream-size').onclick = function () {
-  native=!native; this.textContent=native?'Fit view':'Native size'; sizeVideo();
-};
-new MutationObserver(attach).observe(document.getElementById('root'), {childList:true,subtree:true});
-window.addEventListener('resize',sizeVideo);
-document.addEventListener('loadedmetadata',attach,true);
+new MutationObserver(attach).observe(document.getElementById('root'), {childList: true, subtree: true});
+window.addEventListener('resize', sizeVideo);
+document.addEventListener('loadedmetadata', attach, true);
 attach();
 """
 
