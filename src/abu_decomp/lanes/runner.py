@@ -903,6 +903,7 @@ if os.path.exists(a.socket):
 terminal_path = os.path.join(a.dir, "LIFECYCLE-STATE.json")
 if os.path.exists(terminal_path):
     os.replace(terminal_path, terminal_path + ".previous-%d" % time.time_ns())
+STARTED = time.time()  # this link's start: commits after it count as its progress
 log = open(os.path.join(a.dir, "transcript.jsonl"), "a", buffering=1)
 
 
@@ -1006,13 +1007,16 @@ def continue_lane(terminal):
     from abu_decomp.lanes import control, relaunch
 
     directory = Path(a.dir)
+    said = relaunch.result_text(directory)
+    progressed = relaunch.progress(said, a.owns or [], STARTED)
     action, why = relaunch.plan(
         a.done_when or "result",
         a.continues or 0,
-        relaunch.result_text(directory),
+        said,
         terminal["handoff"],
         terminal["context_requested"],
         terminal["status"] == "cancelled",
+        progressed,
     )
     if action == "none":
         return
@@ -1027,7 +1031,7 @@ def continue_lane(terminal):
             control.announce(profile, row, "blocked", "%s not continued: %s" % (a.name, why))
             return
         successor = relaunch.next_name(a.name)
-        unit = relaunch.spawn(Path(a.profile), directory, successor, (a.continues or 0) - 1)
+        unit = relaunch.spawn(Path(a.profile), directory, successor, relaunch.next_budget(a.continues or 0, progressed))
         control.announce(profile, row, "info", "%s continues as %s (%s) via %s" % (a.name, successor, why, unit))
     except Exception as error:  # the lane is closing; a failed continuation must not hide how it closed
         print("ContinuationFailed: %s" % error, file=sys.stderr, flush=True)

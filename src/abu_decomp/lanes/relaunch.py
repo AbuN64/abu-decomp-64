@@ -42,8 +42,46 @@ def explicit_done(done_when: str, said: str) -> bool:
     return any(DONE.match(line) for line in said.splitlines())
 
 
-def plan(done_when: str, continues: int, said: str, handoff: bool, context: bool, cancelled: bool) -> tuple[str, str]:
-    """(action, why): `none` (not a closing we continue), `end` (done), `blocked` (no budget) or `continue`."""
+COMMIT_WORD = re.compile(r"\b(?:pushed|committed|landed)\b", re.IGNORECASE)
+COMMIT_ID = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b")
+
+
+def reported_commit(said: str) -> bool:
+    """RESULT names a commit it pushed, committed or landed: one line with a 7-40 hex id and one of those words."""
+    return any(COMMIT_WORD.search(line) and COMMIT_ID.search(line) for line in said.splitlines())
+
+
+def gained_commits(owns: list[str], since: float) -> bool:
+    """An owned path inside a git work tree has a commit newer than `since` (epoch seconds) touching that path."""
+    for owned in owns:
+        if not Path(owned).is_dir():
+            continue
+        called = subprocess.run(
+            ["git", "-C", owned, "log", f"--since=@{int(since)}", "-1", "--format=%H", "--", "."],
+            capture_output=True, text=True, check=False,
+        )  # fmt: skip
+        if called.returncode == 0 and called.stdout.strip():
+            return True
+    return False
+
+
+def progress(said: str, owns: list[str], since: float) -> str:
+    """The evidence this link progressed (RESULT reports a commit, an owned tree gained one), or "" for none."""
+    if reported_commit(said):
+        return "RESULT reports a commit"
+    if gained_commits(owns, since):
+        return "an owned git tree gained a commit"
+    return ""
+
+
+def plan(
+    done_when: str, continues: int, said: str, handoff: bool, context: bool, cancelled: bool, progressed: str = ""
+) -> tuple[str, str]:
+    """(action, why): `none` (not a closing we continue), `end` (done), `blocked` (no budget) or `continue`.
+
+    A link that progressed (`progressed` names the evidence) spends no budget and continues; a link without progress
+    spends one, and at 0 the chain stops: "budget spent".
+    """
     if cancelled:
         return "none", "cancelled"
     if explicit_done(done_when, said):
@@ -51,9 +89,16 @@ def plan(done_when: str, continues: int, said: str, handoff: bool, context: bool
     if not said.strip() and not (context and handoff):
         return "none", "no RESULT and no context handoff"
     what = "context handoff" if context and handoff else "unfinished RESULT"
+    if progressed:
+        return "continue", f"{what}; progressed ({progressed}), budget kept at {continues}"
     if continues <= 0:
-        return "blocked", f"{what}; the --continues budget is spent"
-    return "continue", what
+        return "blocked", f"{what}; blocked: budget spent (no progress, --continues is 0)"
+    return "continue", f"{what}; no progress, spent one (budget {continues} to {continues - 1})"
+
+
+def next_budget(continues: int, progressed: str) -> int:
+    """The successor's --continues: unchanged after a link that progressed, one less after one that did not."""
+    return continues if progressed else continues - 1
 
 
 def spawn(profile: Path, directory: Path, name: str, continues: int, wait: int = 600) -> str:

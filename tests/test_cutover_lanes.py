@@ -1,6 +1,7 @@
 import json
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -37,6 +38,41 @@ class RelaunchRuleTests(unittest.TestCase):
         self.assertEqual(plan("result", 5, "", False, False, False)[0], "none")
         self.assertEqual(plan("result", 5, "", False, True, False)[0], "none")  # cap requested, no HANDOFF.md
         self.assertEqual(plan("result", 5, "partial", True, True, True)[0], "none")  # cancelled
+
+    def test_progress_keeps_the_budget_and_no_progress_spends_it(self):
+        plan = relaunch.plan
+        action, why = plan("result", 0, "partial", False, False, False, "RESULT reports a commit")
+        self.assertEqual(action, "continue")
+        self.assertIn("progressed", why)
+        action, why = plan("result", 2, "partial", False, False, False)
+        self.assertEqual(action, "continue")
+        self.assertIn("spent one", why)
+        action, why = plan("result", 0, "partial", False, False, False)
+        self.assertEqual(action, "blocked")
+        self.assertIn("budget spent", why)
+        self.assertEqual(relaunch.next_budget(3, "x"), 3)
+        self.assertEqual(relaunch.next_budget(3, ""), 2)
+
+    def test_progress_evidence_is_a_reported_commit_or_a_new_commit_in_an_owned_tree(self):
+        self.assertTrue(relaunch.reported_commit("done: 3a6b1752d99e8b33de36634040bf614e543a5c3d pushed"))
+        self.assertTrue(relaunch.reported_commit("x\ncommitted abc1234 on main"))
+        self.assertFalse(relaunch.reported_commit("pushed nothing yet"))
+        self.assertFalse(relaunch.reported_commit("see 3a6b1752 for context"))
+        with tempfile.TemporaryDirectory() as temp:
+            tree = Path(temp) / "tree"
+            tree.mkdir()
+            git = ["git", "-C", str(tree), "-c", "user.name=t", "-c", "user.email=t@t"]
+            subprocess.run([*git, "init", "-q"], check=True)
+            (tree / "f").write_text("1")
+            subprocess.run([*git, "add", "f"], check=True)
+            subprocess.run([*git, "commit", "-q", "-m", "m"], check=True)
+            now = time.time()
+            self.assertEqual(
+                relaunch.progress("partial", [str(tree), "/no/such"], now - 60), "an owned git tree gained a commit"
+            )
+            self.assertEqual(relaunch.progress("partial", [str(tree)], now + 3600), "")
+            self.assertEqual(relaunch.progress("partial", [temp], now + 3600), "")
+            self.assertEqual(relaunch.progress("pushed 3a6b1752d99e", [], now), "RESULT reports a commit")
 
     def test_result_md_is_read_when_there_is_no_result_file(self):
         with tempfile.TemporaryDirectory() as temp:
