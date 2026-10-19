@@ -100,3 +100,16 @@ class BehaveTests(unittest.TestCase):
         self.assertEqual((record["kind"], record["status"], record["payload"]["op"]), ("PROBE", "passed", "behave"))
         self.assertIn("same behaviour", record["message"])
         json.dumps(record)
+
+
+class LaneOfTests(unittest.TestCase):
+    def test_behave_without_a_project_names_the_lane_directory_it_runs_in(self):
+        with tempfile.TemporaryDirectory() as directory:
+            deep = Path(directory) / "lanes" / "PORT-SOL" / "cache"
+            deep.mkdir(parents=True)
+            with mock.patch.dict("os.environ", {}, clear=False) as env:
+                env.pop("DECOMP_LANE", None)
+                with mock.patch("pathlib.Path.cwd", return_value=deep):
+                    self.assertEqual(narrate.lane_of(None), "PORT-SOL")
+                with mock.patch("pathlib.Path.cwd", return_value=Path(directory)):
+                    self.assertEqual(narrate.lane_of(None), "unknown")

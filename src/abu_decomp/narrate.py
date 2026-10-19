@@ -31,7 +31,12 @@ VERBS = ("score", "submit", "land")
 
 
 def lane_of(project: Path | None) -> str:
-    return os.environ.get("DECOMP_LANE") or (project.resolve().parent.name if project else "unknown")
+    if os.environ.get("DECOMP_LANE"):
+        return os.environ["DECOMP_LANE"]
+    if project:
+        return project.resolve().parent.name
+    here = Path.cwd().resolve()  # no project (decomp behave): the lane directory the command runs in, if any
+    return next((p.name for p in (here, *here.parents) if p.parent.name == "lanes"), "unknown")
 
 
 def display_name(function: str, version: str | None) -> str:
