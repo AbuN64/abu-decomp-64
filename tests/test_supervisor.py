@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from abu_decomp.cli import main as public_main
 from abu_decomp.supervisor.artifact import current, show
@@ -66,6 +67,36 @@ class PanesTests(unittest.TestCase):
             assert env["XDG_DATA_HOME"] == str(run_dir / "data")
             debug = supervisor._debug_command(argv, run_dir)
             assert "--breakpoint" in debug and debug[debug.index("--breakpoint") + 1] == "Failure"
+
+    def test_a_windowed_role_gets_its_video_and_audio_environment_on_top_of_the_streams_display(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Profile(Path(temporary))
+            release = profile.runtime_root / "releases/any/commit"
+            release.mkdir(parents=True)
+            (release / "game").write_text("#!/bin/sh\nexit 1\n")
+            (release / "game").chmod(0o755)
+            (release.parent / "current").symlink_to("commit")
+            config = {
+                "kind": "supervised",
+                "release_current": str(release.parent / "current"),
+                "command": ["{release}/game", "--data-dir", "{release}/data"],
+                "env": {"SDL_VIDEODRIVER": "wayland", "SDL_AUDIODRIVER": "pulse", "PULSE_SINK": "stream_sink"},
+                "status_path": "status.json",
+                "runs_root": "runs",
+                "retry_delay_seconds": 30,
+                "watchdog_seconds": 90,
+            }
+            run_dir = profile.root / "runs/one"
+            run_dir.mkdir(parents=True)
+            with mock.patch.dict("os.environ", {"WAYLAND_DISPLAY": "wayland-1", "XDG_RUNTIME_DIR": "/run/stream"}):
+                argv, env, _ = Supervisor(profile, "subject", config, Screen())._command(run_dir)
+            assert "--headless" not in argv
+            assert (env["SDL_VIDEODRIVER"], env["SDL_AUDIODRIVER"], env["PULSE_SINK"]) == (
+                "wayland",
+                "pulse",
+                "stream_sink",
+            )
+            assert (env["WAYLAND_DISPLAY"], env["XDG_RUNTIME_DIR"]) == ("wayland-1", "/run/stream")
 
     def test_without_auto_retry_a_failure_is_held_until_restart_is_requested(self):
         async def scenario(supervisor):
