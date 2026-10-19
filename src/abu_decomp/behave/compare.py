@@ -134,7 +134,8 @@ def compare_case(
                 result["notes"].append(f"call {index + 1} {_name(a['name'])} has no prototype; a0-a3 differ")
             continue
         for (label, x), (_, y) in zip(values_a, values_b or [], strict=False):
-            if x != y:
+            in_frame = stack[0] <= x < stack[1] and stack[0] <= y < stack[1]  # a local's address: frame layout
+            if x != y and not in_frame:
                 return differ(
                     "call-args",
                     f"call {index + 1} {_name(a['name'])}: {label} is {_hex(x)} in the "

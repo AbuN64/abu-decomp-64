@@ -16,7 +16,7 @@ dependencies = [
   "textual==8.2.8",
   "unbake @ git+https://github.com/AbuN64/cake-unbake-64@9062fad1139e8701f2d3849bd1bcb109aae15e17",
   "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@8dbbf8b5a62a1684ce38a0927840a3d722b823e9",
-  "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@3340b39c650c158c3d58605be06441854f2b55dc",
+  "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@0fa2acd9a9bdd778628c1da6bc9e185c5aab12c7",
 ]
 
 [project.optional-dependencies]

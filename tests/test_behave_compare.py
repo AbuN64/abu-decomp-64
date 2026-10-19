@@ -84,6 +84,11 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(float_arg["difference"]["argument"], "y(f12)")
         self.assertEqual(float_arg["verdict"], c.DIFFERS)
 
+    def test_the_address_of_a_local_passed_to_a_callee_is_not_compared(self):
+        local = lambda a: case(events=[call("f"), call("g", 0, a, 0x3F800000)])  # noqa: E731
+        self.assertEqual(verdict(local(0x803F1F70), local(0x803F1F78))["verdict"], c.SAME)
+        self.assertEqual(verdict(local(0x803F1F70), local(0x80A00010))["verdict"], c.DIFFERS)  # one left the frame
+
     def test_a_register_the_callee_does_not_take_does_not_matter(self):
         self.assertEqual(verdict(case(), case(events=[call("f"), call("g", 99, 1, 0x3F800000)]))["verdict"], c.SAME)
 

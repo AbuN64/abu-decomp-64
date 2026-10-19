@@ -15,6 +15,7 @@ SYMBOLS = {
     "f": [ROOT_VRAM, 0, 0x40, "func"],
     "g": [0x80002000, 0, 0x20, "func"],
     "D_state": [0x80100000, None, 4, "data"],
+    "h": [0x80003000, 0, 0x20, "func"],
 }
 
 
@@ -54,7 +55,9 @@ class RunTests(unittest.TestCase):
         project = self.root / "project"
         (project / "include").mkdir(parents=True)
         (project / "config.toml").write_text('names_from = "v1"\n')
-        (project / "include" / "f.h").write_text("extern s32 f(Actor *a, s32 n);\nextern void g(s32 x);\n")
+        (project / "include" / "f.h").write_text(
+            "extern s32 f(Actor *a, s32 n);\nextern void g(s32 x);\nextern void h(void);\n"
+        )
         (self.root / "host.toml").write_text("")
         self.candidate = self.root / "f.c"
         self.candidate.write_text("s32 f(Actor *a, s32 n) { a->field = n; g(n); return n + 1; }\n")
@@ -84,6 +87,7 @@ class RunTests(unittest.TestCase):
             "statuses": {"ok": 1},
             "wall_seconds": 0.1,
             "cached": name == "original",
+            "lock_wait_seconds": 0.25,
         }
         return {"record": record, "cases": fake_cases(request, delta)}
 
@@ -120,6 +124,66 @@ class RunTests(unittest.TestCase):
         self.assertEqual([n for n, _ in self.probes], ["learn", "original", "candidate"])
         self.assertIn("candidate", self.probes[-1][1])
         self.assertEqual(self.probes[-1][1]["cases"], self.probes[1][1]["cases"])  # one input set for both
+
+    def test_the_time_spent_queued_behind_another_isolated_repro_is_in_the_timing(self):
+        _, envelope = self.invoke("--candidate", str(self.candidate), "--cases", "8")
+        self.assertEqual([n for n, _ in self.probes], ["learn", "original", "candidate"])
+        self.assertEqual(envelope["result"]["timing"]["lock_wait"], 0.75)
+
+    def test_a_function_without_arguments_is_still_probed_for_what_it_reads(self):
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(run, "probe", self.fake_probe),
+            mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
+            contextlib.redirect_stdout(stdout),
+        ):
+            main(["--profile", str(self.seat), "behave", "--function", "h"])
+        self.assertEqual(self.probes[0][0], "learn")
+
+    def test_a_stub_whose_return_value_the_original_dereferenced_answers_with_a_region(self):
+        def probe(profile, work, name, request, function):
+            self.probes.append((name, request))
+            rows = []
+            for case in request["cases"]:
+                tag = case.get("stub_v0", {}).get("get", 0)
+                faults = tag >= 0x60000000 and tag < 0x80000000
+                rows.append(
+                    {
+                        "name": case["name"],
+                        "status": "unmapped" if faults else "ok",
+                        "detail": f"unmapped {tag + 0x10:08X} 4 last 0" if faults else "",
+                        "events": [],
+                        "reads": [],
+                        "unseeded": [],
+                        "net": [],
+                        "ret": {"v0": 0, "v1": 0, "f0": 0, "f2": 0},
+                        "saved": [],
+                        "inputs": {k: case[k] for k in ("registers", "stack", "memory") if k in case},
+                    }
+                )
+            record = {
+                "sp": 0x80400000,
+                "stack_window": 0x4000,
+                "stubs": {"get": "boundary", "osX": "no generated body"},
+            }
+            return {"record": record, "cases": rows}
+
+        seat = json.loads(self.seat.read_text())
+        seat["behave"]["learn_rounds"] = 4
+        self.seat.write_text(json.dumps(seat))
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(run, "probe", probe),
+            mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
+            contextlib.redirect_stdout(stdout),
+        ):
+            main(["--profile", str(self.seat), "behave", "--function", "h", "--cases", "6"])
+        names = [n for n, _ in self.probes]
+        self.assertEqual(names[-1], "original")
+        self.assertGreaterEqual(names.count("learn"), 2)  # the stub is named in the first round, tagged in the second
+        asked = self.probes[-1][1]["cases"]
+        self.assertEqual({c["stub_v0"]["get"] for c in asked} - {0}, {0x80A00000 + 0x1000 * 8})  # one region of its own
+        self.assertNotIn("osX", asked[0]["stub_v0"])  # stubs with no body are not tagged
 
     def test_a_candidate_that_stores_a_different_value_differs_with_the_first_difference_named(self):
         self.delta = 1

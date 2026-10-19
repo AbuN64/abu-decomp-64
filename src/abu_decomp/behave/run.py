@@ -148,6 +148,16 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         stages[name] = round(time.monotonic() - since, 3)
         return time.monotonic()
 
+    waited = 0.0
+
+    def ask(name: str, request: dict[str, Any]) -> dict[str, Any]:
+        """One probe; the seconds it queued behind another isolated repro are added to the timing."""
+        nonlocal waited
+        done = probe(profile, work, name, request, options.function)
+        waited += done["record"].get("lock_wait_seconds", 0.0)
+        stages["lock_wait"] = round(waited, 3)
+        return done
+
     config = configuration(profile)
     chosen = settings(profile, options.project, options.host)
     version = options.version or _project_version(chosen.project)
@@ -190,13 +200,11 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
     # 1. short probes of the original show which offsets of each pointed-to region it touches, and which
     #    fields it dereferences (those get a region of their own); repeated while it finds new ones
     learned = inputs.Learned()
-    for _ in range(config["learn_rounds"] if proto.params else 0):
+    for _ in range(config["learn_rounds"]):
         first, regions = inputs.seeded_cases(
             proto, min(config["learn_cases"], count), options.seed, layout, learned, learn=True
         )
-        result = probe(
-            profile,
-            work,
+        result = ask(
             "learn",
             _request(
                 version=version,
@@ -204,27 +212,29 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
                 cases=first,
                 config=config,
                 depth=depth,
-                memory_end=layout.end(len(regions)),
+                memory_end=layout.reach(regions),
                 question=question + " (reads)",
             ),
-            options.function,
         )
         stack = _stack(result["record"])
         hot = describe.learn(result["cases"], regions)
-        new = describe.pointer_fields(result["cases"], regions, learned.pointers, learned.globals)
+        new, answers = describe.pointer_fields(result["cases"], inputs.Tags.of(learned), learned)
         seen, bss = describe.read_globals(result["cases"], regions, stack)
+        cut = [name for name, why in result["record"].get("stubs", {}).items() if why == "boundary"]
         before = learned
         learned = inputs.Learned(
             tuple((i, tuple(v)) for i, v in sorted(hot.items())),
             (*learned.pointers, *new),
             tuple(dict.fromkeys((*learned.globals, *seen)))[:16],
             tuple(dict.fromkeys((*learned.state, *bss)))[:8],
+            tuple(dict.fromkeys((*learned.stubs, *sorted(cut))))[:16],
+            (*learned.returns, *answers),
         )
         if learned == before:
             break
     mark = lap("learn", mark)
     cases, regions = inputs.seeded_cases(proto, count, options.seed, layout, learned)
-    memory_end = layout.end(len(regions))
+    memory_end = layout.reach(regions)
     image = None
     if candidate_file:
         try:
@@ -242,9 +252,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
             return _refused(profile, options, version, address, proto, exc, stages, started, findings)
         memory_end = max(memory_end, config["candidate_base"] + image.size + 0x1000)
     mark = lap("candidate", mark)
-    original = probe(
-        profile,
-        work,
+    original = ask(
         "original",
         _request(
             version=version,
@@ -255,7 +263,6 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
             memory_end=memory_end,
             question=question,
         ),
-        options.function,
     )
     mark = lap("original", mark)
     record = original["record"]
@@ -276,7 +283,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
             "mode": "describe",
             "verdict": "described",
             **common,
-            **describe.describe(original["cases"], regions, proto, names, stack, learned.pointers),
+            **describe.describe(original["cases"], regions, proto, names, stack, learned.pointers, learned.returns),
             "timing": {**stages, "total": round(time.monotonic() - started, 3)},
         }
         if not result["testable_cases"]:
@@ -289,9 +296,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
             findings.append({"key": "behave.untestable", "blocking": False, "message": result["reason"]})
         return result, 0, findings
     try:
-        changed = probe(
-            profile,
-            work,
+        changed = ask(
             "candidate",
             _request(
                 version=version,
@@ -303,7 +308,6 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
                 question=question + " (candidate)",
                 candidate=image.spec(options.function),
             ),
-            options.function,
         )
     except BehaveError as exc:
         return _refused(profile, options, version, address, proto, exc, stages, started, findings)

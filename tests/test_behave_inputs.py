@@ -81,16 +81,33 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(len({c["memory"][0]["hex"] for c in cases}), 8)
 
     def test_learning_tags_decode_to_the_word_that_held_them(self):
-        self.assertEqual(i.decode_tag(i.field_tag(2, 0x38) + 0x14), ("field", 2, 0x38))
-        self.assertEqual(i.decode_tag(i.global_tag(5) + 4), ("global", 5, 0))
-        self.assertIsNone(i.decode_tag(0x80A00000))
-        cases, _ = i.seeded_cases(
-            PROTO, 6, 1, LAYOUT, i.Learned(hot=((0, ((0x20, 4),)),), globals=(0x80103000,)), learn=True
-        )
+        learned = i.Learned(hot=((0, ((0x20, 4),)),), globals=(0x80103000,), stubs=("get",))
+        tags = i.Tags.of(learned)
+        self.assertEqual(tags.decode(tags.value("field", (0, 0x20)) + 0x14), ("field", (0, 0x20)))
+        self.assertEqual(tags.decode(tags.value("global", 0x80103000) - 4), ("global", 0x80103000))
+        self.assertEqual(tags.decode(tags.value("stub", "get")), ("stub", "get"))
+        self.assertIsNone(tags.decode(0x80A00000))
+        cases, _ = i.seeded_cases(PROTO, 6, 1, LAYOUT, learned, learn=True)
         self.assertEqual(
-            int.from_bytes(bytes.fromhex(cases[0]["memory"][0]["hex"])[0x20:0x24], "big"), i.field_tag(0, 0x20)
+            int.from_bytes(bytes.fromhex(cases[0]["memory"][0]["hex"])[0x20:0x24], "big"),
+            tags.value("field", (0, 0x20)),
         )
         self.assertTrue(any(m["addr"] == 0x80103000 for m in cases[0]["memory"]))
+        self.assertEqual(cases[0]["stub_v0"], {"get": tags.value("stub", "get")})
+
+    def test_a_stub_that_returned_a_dereferenced_pointer_answers_with_a_region_of_its_own(self):
+        learned = i.Learned(hot=((2, ((0, 4),)),), pointers=((0, 0x10),), stubs=("get", "other"), returns=("get",))
+        for learn in (False, True):
+            cases, regions = i.seeded_cases(PROTO, 10, 3, LAYOUT, learned, learn=learn)
+            answer = LAYOUT.region(1 + i.LIMIT).base  # after the argument region and the child room
+            self.assertIn(answer, [r.base for r in regions])
+            self.assertEqual(cases[0]["stub_v0"]["get"], answer)
+            self.assertEqual(cases[4]["stub_v0"]["get"], 0)  # null every fifth case
+            self.assertEqual(LAYOUT.reach(regions), LAYOUT.end(i.LIMIT + 2))
+        tags = i.Tags.of(learned)
+        self.assertEqual(cases[0]["stub_v0"].get("other"), tags.value("stub", "other"))  # still being asked about
+        plain, _ = i.seeded_cases(PROTO, 3, 3, LAYOUT, learned)
+        self.assertNotIn("other", plain[0]["stub_v0"])
 
 
 if __name__ == "__main__":

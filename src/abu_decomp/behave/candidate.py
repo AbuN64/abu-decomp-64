@@ -126,6 +126,23 @@ def sections(objdump: str, elf: Path) -> dict[str, tuple[int, int]]:
     return found
 
 
+_SITE = re.compile(r"\S+\.i:(\d+)")
+
+
+def real_sites(message: str, lines: list[list[Any]]) -> str:
+    """Compiler diagnostics name lines of the preprocessed unit (`candidate.o.i:172`); `lines` (build context) maps
+    each of its lines to the [file, line] it was written on, so both sites of a conflict can be opened."""
+
+    def site(match: re.Match[str]) -> str:
+        number = int(match[1])
+        if not 1 <= number <= len(lines):
+            return match[0]
+        path, line = lines[number - 1]
+        return f"{path}:{line}"
+
+    return _SITE.sub(site, message)
+
+
 def build(
     profile: Profile,
     *,
@@ -162,7 +179,8 @@ def build(
     )
     if done.returncode != 0 or not obj.is_file():
         tail = [ln for ln in (done.stderr + done.stdout).splitlines() if ln.strip()][-3:]
-        raise CandidateError("behave.compile", f"the candidate does not compile: {' | '.join(tail)}")
+        shown = real_sites(" | ".join(tail), context.get("lines", []))
+        raise CandidateError("behave.compile", f"the candidate does not compile: {shown}")
     symbols = symbol_table(profile, version, project, host)
     # Sibling functions of the file that have an original address stay the original code: calls to them leave
     # the candidate. Only the function under test (and helpers with no original symbol) run from the image.

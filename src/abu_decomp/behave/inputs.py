@@ -78,33 +78,48 @@ class Learned:
     hot: tuple[tuple[int, tuple[tuple[int, int], ...]], ...] = ()
     pointers: tuple[tuple[int, int], ...] = ()
     globals: tuple[int, ...] = ()  # global words the original read; tagged in learning runs to find pointers
-    state: tuple[int, ...] = ()  # of those, the ones in memory the image does not fill (zeroed state): swept
+    state: tuple[int, ...] = ()  # of those, the ones in memory the image does not fill: swept
+    stubs: tuple[str, ...] = ()  # callees cut off at the boundary: their return values are tagged to find pointers
+    returns: tuple[str, ...] = ()  # of those, the stubs whose return value the original dereferenced
 
     def offsets(self, region: int) -> list[tuple[int, int]]:
         return list(dict(self.hot).get(region, ()))
 
 
-TAG_FIELD = 0x7E000000  # unmapped on purpose: a tagged word that is dereferenced faults at tag + displacement
-TAG_GLOBAL = 0x7F000000
-TAG_SPAN = 0x200
+LIMIT = 8  # pointer words found (fields and globals), and stub return values found, per function
+
+# Learning puts a fault tag into each word whose use is in question: a global, a field of a region, the return
+# value of a stub. A tag is an address nothing maps, in the middle of a span as wide as a load/store
+# displacement, so the faulting address (tag plus displacement) names the word it came from.
+TAG_BASE = 0x60000000
+TAG_SPAN = 0x10000
+TAG_END = 0x80000000
 
 
-def field_tag(region: int, offset: int) -> int:
-    return TAG_FIELD + (region << 17) + (offset // 4) * TAG_SPAN
+@dataclass(frozen=True)
+class Tags:
+    """The numbered words of one learning round: ("field", (region, offset)), ("global", address), ("stub", name)."""
 
+    order: tuple[tuple[str, Any], ...] = ()
 
-def global_tag(index: int) -> int:
-    return TAG_GLOBAL + index * TAG_SPAN
+    @staticmethod
+    def of(learned: Learned) -> Tags:
+        fields = sorted({(region, offset & ~3) for region, offsets in learned.hot for offset, _ in offsets})
+        known = {a for p, a in learned.pointers if p == -1}
+        rows: list[tuple[str, Any]] = [("field", f) for f in fields]
+        rows += [("global", a) for a in learned.globals if a not in known]
+        rows += [("stub", n) for n in learned.stubs if n not in learned.returns]
+        return Tags(tuple(rows[: (TAG_END - TAG_BASE) // TAG_SPAN]))
 
+    def value(self, kind: str, key: Any) -> int:
+        return TAG_BASE + self.order.index((kind, key)) * TAG_SPAN + TAG_SPAN // 2
 
-def decode_tag(address: int) -> tuple[str, int, int] | None:
-    """('field', region, offset) or ('global', index, 0) for a faulting address within a tag's span, else None."""
-    if TAG_FIELD <= address < TAG_GLOBAL:
-        delta = address - TAG_FIELD
-        return "field", delta >> 17, ((delta & 0x1FFFF) // TAG_SPAN) * 4
-    if TAG_GLOBAL <= address < 0x80000000:
-        return "global", (address - TAG_GLOBAL) // TAG_SPAN, 0
-    return None
+    def decode(self, address: int) -> tuple[str, Any] | None:
+        """The word a faulting address came from, or None when it is no tag's span."""
+        if not TAG_BASE <= address < TAG_END:
+            return None
+        number = (address - TAG_BASE) // TAG_SPAN
+        return self.order[number] if number < len(self.order) else None
 
 
 @dataclass(frozen=True)
@@ -118,6 +133,10 @@ class Layout:
 
     def end(self, count: int) -> int:
         return self.arena + (count + 1) * self.spacing
+
+    def reach(self, regions: list[Region]) -> int:
+        """The end of memory that holds every one of `regions` (their indexes need not be consecutive)."""
+        return self.end(max((r.index + 1 for r in regions), default=0))
 
 
 def _domain(slot: Slot, regions: dict[str, Region]) -> list[Any]:
@@ -289,16 +308,19 @@ def seeded_cases(
     With `learn` about half of the hot words (and read globals) hold fault tags instead, to find the pointers."""
     cases, regions = plan(proto, count, seed, layout)
     learned = learned or Learned()
-    if not learn and cases and (learned.hot or learned.state):
-        # fewer argument rows than asked: the memory the rows point at and the state globals carry the variety
+    if cases and (learn or learned.hot or learned.state):
+        # fewer argument rows than asked: the memory the rows point at and the state globals carry the variety;
+        # a learning round repeats them too, so that every global and stub is tagged in some cases and not others
         pointers = [p.name for p in proto.params if p.kind in ("pointer", "word", "struct")]
         valid = [c for c in cases if all(c["labels"][n].startswith("region") for n in pointers)] or cases
         if len(cases) < count:
             cases += [dict(valid[i % len(valid)], name=f"c{len(cases) + i}") for i in range(count - len(cases))]
     arguments = len(regions)
     children = [layout.region(arguments + i) for i in range(len(learned.pointers))]
-    regions = [*regions, *children]
+    answers = [layout.region(arguments + LIMIT + i) for i in range(len(learned.returns))]  # after the room for children
+    regions = [*regions, *children, *answers]
     bases = [r.base for r in regions]
+    tags = Tags.of(learned)
     for number, case in enumerate(cases):
         memory = []
         for region in regions:
@@ -308,17 +330,26 @@ def seeded_cases(
                 for i, (parent, offset) in enumerate(learned.pointers)
                 if parent == region.index
             }
-            tags = {o & ~3: field_tag(region.index, o) for o, _ in learned.offsets(region.index)} if learn else None
-            data = fill(rng, region.size, learned.offsets(region.index), number, bases, aimed, tags, number == 0)
+            marks = (
+                {o & ~3: tags.value("field", (region.index, o & ~3)) for o, _ in learned.offsets(region.index)}
+                if learn
+                else None
+            )
+            data = fill(rng, region.size, learned.offsets(region.index), number, bases, aimed, marks, number == 0)
             memory.append({"addr": region.base, "hex": data.hex()})
         if learn:
             rng = random.Random(f"{seed}:{proto.name}:{number}:globals")
             known = {a for p, a in learned.pointers if p == -1}
             memory += [
-                {"addr": address, "hex": struct.pack(">I", global_tag(i)).hex()}
-                for i, address in enumerate(learned.globals)
+                {"addr": address, "hex": struct.pack(">I", tags.value("global", address)).hex()}
+                for address in learned.globals
                 if address not in known and (number == 0 or rng.random() < 0.5)
             ]
+            case["stub_v0"] = {
+                name: tags.value("stub", name)
+                for name in learned.stubs
+                if name not in learned.returns and (number == 0 or rng.random() < 0.5)
+            }
         if not learn:
             known = {a for p, a in learned.pointers if p == -1}
             for i, address in enumerate(a for a in learned.state if a not in known):
@@ -330,4 +361,9 @@ def seeded_cases(
                 word = 0 if number % 5 == 4 else children[i].base
                 memory.append({"addr": address, "hex": struct.pack(">I", word).hex()})
         case["memory"] = memory
+        if learned.returns:  # a stub the original dereferenced answers with a region (null every fifth case)
+            case["stub_v0"] = {
+                **case.get("stub_v0", {}),
+                **{name: 0 if number % 5 == 4 else answers[i].base for i, name in enumerate(learned.returns)},
+            }
     return cases, regions

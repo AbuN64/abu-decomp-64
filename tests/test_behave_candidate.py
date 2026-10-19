@@ -118,6 +118,20 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(caught.exception.key, "behave.host")
 
 
+class SiteTests(unittest.TestCase):
+    def test_diagnostics_naming_the_preprocessed_unit_name_the_real_file_and_line_instead(self):
+        lines = [["a.CPP", 1], ["include/X.H", 40], ["a.CPP", 3]]
+        message = (
+            "/w/candidate.o.i:3: conflicting types for `f' | /w/candidate.o.i:2: previous declaration of `f' | "
+            "/w/candidate.o.i:99: odd"
+        )
+        self.assertEqual(
+            cand.real_sites(message, lines),
+            "a.CPP:3: conflicting types for `f' | include/X.H:40: previous declaration of `f' "
+            "| /w/candidate.o.i:99: odd",
+        )
+
+
 class DescribeTests(unittest.TestCase):
     def case(self, status, detail="", memory=None):
         return {
@@ -131,13 +145,25 @@ class DescribeTests(unittest.TestCase):
         }
 
     def test_a_fault_at_a_tag_names_the_word_that_held_it(self):
-        regions = [inputs.Layout().region(0), inputs.Layout().region(1)]
-        tag = inputs.field_tag(1, 0x24) + 0x10
+        learned = inputs.Learned(hot=((1, ((0x24, 4),)),), globals=(0x80101000, 0x80102000), stubs=("get",))
+        tags = inputs.Tags.of(learned)
+        tag = tags.value("field", (1, 0x24)) + 0x10
         faults = [self.case("unmapped", f"unmapped {tag:08X} 4 last 0"), self.case("ok")]
-        self.assertEqual(describe.pointer_fields(faults, regions, (), ()), [(1, 0x24)])
-        self.assertEqual(describe.pointer_fields(faults, regions, ((1, 0x24),), ()), [])  # already known
-        g = [self.case("mmio", f"mmio {inputs.global_tag(1):08X} 4 last 0")]
-        self.assertEqual(describe.pointer_fields(g, regions, (), (0x80101000, 0x80102000)), [(-1, 0x80102000)])
+        self.assertEqual(describe.pointer_fields(faults, tags, inputs.Learned()), ([(1, 0x24)], []))
+        known = inputs.Learned(pointers=((1, 0x24),))
+        self.assertEqual(describe.pointer_fields(faults, tags, known), ([], []))  # already known
+        g = [self.case("mmio", f"mmio {tags.value('global', 0x80102000):08X} 4 last 0")]
+        self.assertEqual(describe.pointer_fields(g, tags, inputs.Learned()), ([(-1, 0x80102000)], []))
+        s = [self.case("unmapped", f"unmapped {tags.value('stub', 'get') + 0x14:08X} 4 last 0")]
+        self.assertEqual(describe.pointer_fields(s, tags, inputs.Learned()), ([], ["get"]))
+        self.assertEqual(describe.pointer_fields(s, tags, inputs.Learned(returns=("get",))), ([], []))
+
+    def test_a_displacement_of_a_whole_struct_still_names_the_word_that_held_the_tag(self):
+        tags = inputs.Tags.of(inputs.Learned(hot=((0, ((0xB0, 4), (0x104, 4))),)))
+        for field in (0xB0, 0x104):
+            for displacement in (0x2B98, -0x8000, 0x7FFF, 0):
+                at = tags.value("field", (0, field)) + displacement
+                self.assertEqual(tags.decode(at), ("field", (0, field)))
 
     def test_globals_split_into_state_and_initialised_data(self):
         case = self.case("ok")

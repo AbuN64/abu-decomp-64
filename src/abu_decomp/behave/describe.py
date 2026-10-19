@@ -37,14 +37,14 @@ def _field(fields: dict[int, dict[str, Any]], offset: int) -> dict[str, Any]:
 
 def pointer_fields(
     cases: list[dict[str, Any]],
-    regions: list[Region],
-    known: tuple[tuple[int, int], ...],
-    tagged: tuple[int, ...],
-    limit: int = 8,
-) -> list[tuple[int, int]]:
-    """Fields (region, offset) and globals (-1, address) the original dereferenced: a learning case that ended
-    unmapped at a fault tag plus a displacement names the word that held the tag."""
+    tags: inputs.Tags,
+    learned: inputs.Learned,
+    limit: int = inputs.LIMIT,
+) -> tuple[list[tuple[int, int]], list[str]]:
+    """Fields (region, offset), globals (-1, address) and stub return values the original dereferenced: a
+    learning case that ended unmapped at a fault tag plus a displacement names the word that held the tag."""
     found: list[tuple[int, int]] = []
+    answers: list[str] = []
     for case in cases:
         if case["status"] not in ("unmapped", "mmio"):
             continue
@@ -52,19 +52,18 @@ def pointer_fields(
             bad = int(case["detail"].split()[1], 16)
         except (IndexError, ValueError):
             continue
-        tag = inputs.decode_tag(bad)
+        tag = tags.decode(bad)
         if tag is None:
             continue
-        kind, first, offset = tag
-        if kind == "field" and first < len(regions):
-            key = (first, offset)
-        elif kind == "global" and first < len(tagged):
-            key = (-1, tagged[first])
-        else:
+        kind, key = tag
+        if kind == "stub":
+            if key not in learned.returns and key not in answers and len(learned.returns) + len(answers) < limit:
+                answers.append(key)
             continue
-        if key not in known and key not in found and len(known) + len(found) < limit:
-            found.append(key)
-    return found
+        pointer = key if kind == "field" else (-1, key)
+        if pointer not in learned.pointers and pointer not in found and len(learned.pointers) + len(found) < limit:
+            found.append(pointer)
+    return found, answers
 
 
 def read_globals(
@@ -107,6 +106,7 @@ def describe(
     symbols: list[tuple[int, str]],
     stack: tuple[int, int],
     pointers: tuple[tuple[int, int], ...] = (),
+    returns: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """A struct-typing summary of the original over its testable cases."""
     ok = [c for c in cases if c["status"] == "ok"]
@@ -118,6 +118,8 @@ def describe(
     for number, (parent, offset) in enumerate(pointers):
         child = len(owner) + number
         names[child] = f"{names.get(parent, f'region{parent}')}+0x{offset:X}->" if parent >= 0 else f"*0x{offset:08X}->"
+    for number, name in enumerate(returns):
+        names[len(owner) + inputs.LIMIT + number] = f"return of {name}"
     args = []
     for region in regions:
         fields: dict[int, dict[str, Any]] = {}
