@@ -30,10 +30,15 @@ class RelaunchRuleTests(unittest.TestCase):
         self.assertEqual(plan("identical", 2, "still 3 words off", False, False, False)[0], "continue")
         self.assertEqual(plan("result", 0, "partial", False, False, False)[0], "blocked")
 
+    def test_prose_without_the_first_line_marker_continues(self):
+        plan = relaunch.plan
+        for said in ("Status: COMPLETE\nall finished", "RESULT: DONE", "summary\nDONE", "All work is done", "DONEx"):
+            self.assertEqual(plan("result", 5, said, False, False, False)[0], "continue", said)
+
     def test_plan_ends_on_explicit_done_and_ignores_other_closings(self):
         plan = relaunch.plan
         self.assertEqual(plan("result", 5, "DONE\nlanded abc", False, False, False)[0], "end")
-        self.assertEqual(plan("result", 5, "RESULT: DONE", True, True, False)[0], "end")
+        self.assertEqual(plan("result", 5, "\nDONE: landed abc", True, True, False)[0], "end")
         self.assertEqual(plan("identical", 5, "function is identical to base", False, False, False)[0], "end")
         self.assertEqual(plan("result", 5, "UNDONE", False, False, False)[0], "continue")
         self.assertEqual(plan("result", 5, "", False, False, False)[0], "none")

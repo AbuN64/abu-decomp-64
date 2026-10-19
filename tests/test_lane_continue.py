@@ -216,6 +216,10 @@ class ContinueTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertFalse((self.root / "A-2").exists())
 
+    def test_the_continuation_brief_teaches_the_done_marker(self):
+        brief = continuation.continuation_brief("TASK\n", RULES, "A-1", Path("/l/A-1"), Path("/l/A-2"))
+        self.assertIn("FIRST line is exactly `DONE`", brief)
+
     def test_a_nonempty_new_directory_is_refused(self):
         old = self.launch_a()
         self.units.clear()

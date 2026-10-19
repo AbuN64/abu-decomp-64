@@ -15,7 +15,15 @@ from pathlib import Path
 import abu_decomp
 from abu_decomp import DecompError
 
-DONE = re.compile(r"\s*(?:RESULT:\s*)?DONE\b")
+# The one done marker: RESULT's (or RESULT.md's) first non-blank line is the word DONE, then end of line, a space or a
+# colon. Nothing else counts: "Status: COMPLETE", "RESULT: DONE" and a DONE on a later line are unfinished.
+DONE = re.compile(r"DONE(?:$|[\s:])")
+DONE_MARKER = "DONE"
+DONE_RULE = (
+    "Finished-lane contract: a lane that finished its whole task writes RESULT (or RESULT.md) whose FIRST line is "
+    f"exactly `{DONE_MARKER}`, the summary after it. No other wording ends a lane, so any RESULT without that first "
+    "line is continued; an unfinished lane must not write it."
+)
 TRAILING = re.compile(r"(\d+)$")
 
 
@@ -37,10 +45,11 @@ def result_text(directory: Path) -> str:
 
 
 def explicit_done(done_when: str, said: str) -> bool:
-    """RESULT ends the chain: `identical` lanes by their ` identical ` word, `result` lanes by an explicit DONE line."""
+    """RESULT ends the chain: `identical` lanes by ` identical `, `result` lanes by the first-line DONE marker."""
     if done_when == "identical":
         return " identical " in said
-    return any(DONE.match(line) for line in said.splitlines())
+    first = next((line for line in said.splitlines() if line.strip()), "")
+    return DONE.match(first) is not None
 
 
 COMMIT_WORD = re.compile(r"\b(?:pushed|committed|landed)\b", re.IGNORECASE)

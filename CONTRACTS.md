@@ -66,6 +66,7 @@ This is the one rule that keeps experiment work from interfering with the offici
 ## Lane launch and the done marker
 
 - `decomp lane launch|continue` validate every argument, the ladder, the tool pin and the overlap guard before writing anything. A refusal writes nothing: `continue` creates its new directory and `brief.md` only after every check passed, and removes them if the unit fails to start.
+- A finished lane is declared by one marker: the first non-blank line of `RESULT` (or `RESULT.md`) is `DONE` (then end of line, a space or a colon). `RESULT: DONE`, `Status: COMPLETE`, a later `DONE` line or any other prose never ends a lane; the runner continues it. The text is printed into every continuation brief (`relaunch.DONE_RULE`).
 
 ## Port boilerplate
 

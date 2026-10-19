@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError
+from abu_decomp.lanes.relaunch import DONE_RULE
 
 HEADING = "## Continuation"
 # Launch-spec keys a continuation inherits, and the runner flags old-launched units spell them with.
@@ -59,7 +60,8 @@ def continuation_brief(brief: str, rules: str, old_name: str, old_dir: Path, new
         f"{HEADING}\n\n"
         f"This lane continues {old_name}, which has closed. Before anything else read {handoff} and {status}, "
         "then continue from where STATUS says. Do not redo finished steps or rerun finished checks. "
-        "Keep your own STATUS.md and HANDOFF.md in this lane's directory."
+        "Keep your own STATUS.md and HANDOFF.md in this lane's directory. "
+        f"{DONE_RULE}"
     )
     return f"{task_text(brief)}\n\n{section}\n\n{rules.rstrip()}\n"
 
