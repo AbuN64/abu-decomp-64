@@ -132,6 +132,22 @@ class SiteTests(unittest.TestCase):
         )
 
 
+class ErrorLineTests(unittest.TestCase):
+    def test_errors_come_before_the_warnings_that_end_a_failed_compile(self):
+        text = (
+            "/w/c.i: In function `f':\n/w/c.i:3: warning: passing arg 1 of `g' from incompatible pointer type\n"
+            "/w/c.i: At top level:\n/w/c.i:9: conflicting types for `h'\n/w/c.i:2: previous declaration of `h'\n"
+            "/w/c.i:12: warning: array `d' assumed to have one element\n"
+        )
+        self.assertEqual(
+            cand.error_lines(text), ["/w/c.i:9: conflicting types for `h'", "/w/c.i:2: previous declaration of `h'"]
+        )
+
+    def test_a_log_of_only_warnings_shows_its_last_lines(self):
+        text = "".join(f"c.i:{n}: warning: w{n}\n" for n in range(1, 6))
+        self.assertEqual(cand.error_lines(text), ["c.i:3: warning: w3", "c.i:4: warning: w4", "c.i:5: warning: w5"])
+
+
 class DescribeTests(unittest.TestCase):
     def case(self, status, detail="", memory=None):
         return {

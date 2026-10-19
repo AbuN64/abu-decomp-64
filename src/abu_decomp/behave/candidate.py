@@ -143,6 +143,17 @@ def real_sites(message: str, lines: list[list[Any]]) -> str:
     return _SITE.sub(site, message)
 
 
+_HEADING = re.compile(r": (In function `[^`]*'|At top level):\s*$|^\s*In file included from")
+
+
+def error_lines(text: str, count: int = 4) -> list[str]:
+    """The first `count` compiler errors of `text`. The causes come first and warnings follow them, so the last
+    lines of a failed compile are mostly warnings; with no error line left, the last lines stand in."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    errors = [ln for ln in lines if "warning:" not in ln and not _HEADING.search(ln)]
+    return errors[:count] or lines[-3:]
+
+
 def build(
     profile: Profile,
     *,
@@ -178,8 +189,7 @@ def build(
         check=False,
     )
     if done.returncode != 0 or not obj.is_file():
-        tail = [ln for ln in (done.stderr + done.stdout).splitlines() if ln.strip()][-3:]
-        shown = real_sites(" | ".join(tail), context.get("lines", []))
+        shown = real_sites(" | ".join(error_lines(done.stderr + done.stdout)), context.get("lines", []))
         raise CandidateError("behave.compile", f"the candidate does not compile: {shown}")
     symbols = symbol_table(profile, version, project, host)
     # Sibling functions of the file that have an original address stay the original code: calls to them leave
