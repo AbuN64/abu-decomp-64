@@ -64,6 +64,19 @@ class ConsoleModelTests(unittest.TestCase):
         self.assertIn("gate 0/", model.heading)
         self.assertFalse(any(row.state == "passed" for row in model.rows))
 
+    def test_boot_status_is_three_plain_lines_and_rows_carry_an_age(self):
+        runtime = dict(
+            sample("runtime"), started_at="2026-10-18T17:00:00+00:00", updated_at="2026-10-18T17:02:00+00:00"
+        )
+        model = boot(runtime=runtime)
+        passing, stopped, nxt = model.pinned
+        self.assertRegex(passing, r"^Passing: \d+ of \d+ boot steps ✓$")
+        self.assertRegex(stopped, r"^Stopped at: .+ — the port has no native code for this original function yet$")
+        self.assertTrue(nxt.startswith("Next: ") and "nothing planned" not in nxt)
+        dated = [row for row in model.rows if row.state in ("passed", "stop")]
+        self.assertTrue(dated and all(row.when for row in dated))
+        self.assertGreater(next(r.when for r in model.rows if r.state == "stop"), dated[0].when)
+
     def test_real_mission_payload_preserves_question_source_and_evidence(self):
         events = sample("events")
         model = mission_model(events, title="ORACLE", frames="123", graphics="45", run_id="run-7", raw_log="raw")
@@ -168,6 +181,22 @@ class ConsoleFollowTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(box.following)
             self.assertEqual(box.scroll_y, box.max_scroll_y)
             self.assertFalse(app.query_one("#latest").display)
+
+    async def test_pinned_status_and_the_checked_heartbeat_show_in_the_title(self):
+        class Source:
+            def read(self):
+                return Dashboard("T", "", [Row("a", "x", "d")], None, pinned=["Passing: 1 of 2 boot steps ✓", "b", "c"])
+
+            def directories(self):
+                return set()
+
+        app = ConsoleApp(Source())
+        async with app.run_test(size=(80, 12)) as pilot:
+            await pilot.pause()
+            self.assertEqual(app.query_one("#pinned").region.height, 3)
+            app.checked -= 12
+            app.show_heading()
+            self.assertIn("checked 12s ago", str(app.query_one("#heading").render()))
 
     async def test_every_row_has_a_live_dim_age_column(self):
         rows = [Row("a", "first", "d", when=1000.0), Row("b", "undated", "d")]

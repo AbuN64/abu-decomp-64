@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from . import human
 from .feed import canonical_kind, format_event
 
 _ADDRESS = re.compile(r"(?<![0-9a-fA-F])(?:0x)?(80[0-9a-fA-F]{6})(?![0-9a-fA-F])")
@@ -24,6 +25,7 @@ class Row:
     state: str = "event"
     open: bool = False
     when: float | None = None  # epoch seconds of the entry; the console shows its age
+    tag: str = ""  # short dim tag at the end of the line (a lane)
 
 
 @dataclass
@@ -33,6 +35,7 @@ class Dashboard:
     rows: list[Row] = field(default_factory=list)
     focus_key: str | None = None
     footer: str = ""
+    pinned: list[str] = field(default_factory=list)  # status lines kept above the rows
 
 
 def ago(seconds: float) -> str:
@@ -131,6 +134,27 @@ def _verdict(step: dict | None) -> str:
     return "PASS" if code in step.get("expected_exit_codes", [0]) else f"FAIL ({code})"
 
 
+def plain_reason(reason: str) -> str:
+    if "has no native implementation" in reason:
+        return "the port has no native code for this original function yet"
+    tail = reason.rsplit(": ", 1)[-1].strip()
+    return tail[:90] if tail else "no reason recorded"
+
+
+def boot_status(rows: list[Row], passed: int, total: int, stop_index: int | None, reason: str) -> list[str]:
+    """The three plain status lines kept above the boot rows."""
+    stopped = next((r for r in rows if r.state == "stop"), None)
+    after = [r for r in rows if r.state == "planned" and r.key.startswith(("gate-", "plan-"))]
+    nxt = next(iter(after), None)
+    return [
+        f"Passing: {passed} of {total} boot steps ✓",
+        f"Stopped at: {stopped.title} — {plain_reason(reason)}"
+        if stopped
+        else "Stopped at: nowhere, the boot finished",
+        f"Next: {nxt.title}" if nxt else "Next: nothing planned",
+    ]
+
+
 def boot_model(
     profile: dict,
     status: dict,
@@ -170,6 +194,8 @@ def boot_model(
     stop_addresses = addresses(reason)
     stop_owner = stop_addresses[0] if stop_addresses else None
     rows, passed, stop_index = [], 0, None
+    started = event_epoch({"time": runtime.get("started_at") or status.get("started_at")})
+    stopped = event_epoch({"time": runtime.get("updated_at")}) or started
     actual_lines = gate_log.splitlines()
     for index, needle in enumerate(expected):
         owner = next(iter(addresses(needle)), None)
@@ -191,9 +217,18 @@ def boot_model(
             # Address casing in evidence is not significant.
             prefix = re.split(re.escape(owner), needle, maxsplit=1, flags=re.I)[0]
             label = owner + " " + re.sub(r"\bowner\b", "", prefix).strip()
-        rows.append(Row(f"gate-{index}", label, _evidence(events, owner, revision, actual), state))
+        when = stopped if is_stop else started if state == "passed" else None
+        rows.append(Row(f"gate-{index}", label, _evidence(events, owner, revision, actual), state, when=when))
     if reason and stop_index is None:
-        rows.append(Row("current-stop", stop_label(reason), _evidence(events, stop_owner, revision, reason), "stop"))
+        rows.append(
+            Row(
+                "current-stop",
+                stop_label(reason),
+                _evidence(events, stop_owner, revision, reason),
+                "stop",
+                when=stopped,
+            )
+        )
     seen = {owner for needle in expected for owner in addresses(needle)}
     markers = [plan_after] if isinstance(plan_after, str) else plan_after
     planned_text = next((plan.partition(marker)[2] for marker in markers if marker and marker in plan), plan)
@@ -217,9 +252,9 @@ def boot_model(
     )
     if not reason:
         summary = f"Boot {passed}/{len(expected)} observed · release {release_revision}"
-    rows.append(Row("raw-log", "Raw supervisor log", raw_log or "No supervisor output recorded.", "raw"))
+    rows.append(Row("raw-log", "Raw supervisor log", raw_log or "No supervisor output recorded.", "raw", when=stopped))
     focus = f"gate-{stop_index}" if stop_index is not None else "current-stop" if reason else None
-    return Dashboard(heading, summary, rows, focus)
+    return Dashboard(heading, summary, rows, focus, pinned=boot_status(rows, passed, len(expected), stop_index, reason))
 
 
 def mission_model(
@@ -237,16 +272,13 @@ def mission_model(
     )
     rows = [Row("raw-log", "Raw host log", raw_log or "No host output recorded.", "raw")]
     for event in events:
-        payload = event.get("payload") or {}
-        message = str(payload.get("question") or event.get("message", ""))
-        kind = event.get("kind", event.get("actor", "event"))
-        label = f"{kind} · {message}"
+        label = human.sentence(event)
         key = hashlib.sha256(json.dumps(event, sort_keys=True).encode()).hexdigest()
         rows.append(
             Row(
                 key,
                 label,
-                "\n".join(format_event(event)),
+                human.block(event),
                 "stop" if event.get("status") in {"failed", "blocked"} else "event",
                 when=event_epoch(event),
             )

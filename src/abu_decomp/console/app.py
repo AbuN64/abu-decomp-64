@@ -17,6 +17,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import Collapsible, Static
 
 from .dashboard_model import Dashboard, Row, ago
@@ -64,7 +65,8 @@ class EvidenceRow(Collapsible):
         """Dim fixed-width age column, then the state marker and the title (Collapsible titles take markup)."""
         marker = {"passed": "✓", "stop": "!", "planned": "○", "raw": "≡"}.get(row.state, "•")
         stamp = ago((now or time.time()) - row.when) if row.when else ""
-        return f"[dim]{stamp:>4}[/dim] " + escape(f"{marker} {row.title}")
+        tag = f"  [dim]{escape(row.tag)}[/dim]" if row.tag else ""
+        return f"[dim]{stamp:>4}[/dim] " + escape(f"{marker} {row.title}") + tag
 
     def update_record(self, row: Row) -> None:
         if row != self.record:
@@ -106,6 +108,7 @@ class ConsoleApp(App):
     Screen { background: #101820; color: #d8e2eb; layers: base above; }
     #heading { height: 1; background: #1b2a3a; color: #9fb4c4; padding: 0 1; text-wrap: nowrap;
                text-overflow: ellipsis; }
+    #pinned { height: auto; background: #162330; color: #c3d0db; padding: 0 1; }
     #rows { padding: 0 1; }
     #foot { height: 1; background: #1b2a3a; color: #7f93a4; padding: 0 1; text-wrap: nowrap;
             text-overflow: ellipsis; }
@@ -139,10 +142,13 @@ class ConsoleApp(App):
         self.watchers: dict[Path, int] = {}
         self.refresh_pending = False
         self.manage_task = None
+        self.checked = time.time()
+        self.heading_text = ""
         self.model: Dashboard | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("", id="heading")
+        yield Static("", id="pinned")
         yield FollowScroll(id="rows")
         yield Static("", id="foot")
         yield LatestControl("↓ latest", id="latest")
@@ -150,12 +156,21 @@ class ConsoleApp(App):
     async def on_mount(self) -> None:
         await self.refresh_sources()
         self.set_interval(1.0, self.tick)
+        self.set_interval(10.0, self.source_changed)  # slow heartbeat: re-read even when no file event arrives
         if self.supervisor:
             self.supervisor.on_change = self.source_changed
             self.manage_task = asyncio.create_task(self.supervisor.manage())
 
+    def show_heading(self) -> None:
+        """One title line; `checked Ns ago` shows the console is alive between source changes."""
+        line = Text(self.heading_text)
+        line.append(f"  · checked {ago(time.time() - self.checked)} ago", style="dim")
+        with suppress(NoMatches):  # a tick can land while the app is starting or closing
+            self.query_one("#heading", Static).update(line)
+
     def tick(self) -> None:
         now = time.time()
+        self.show_heading()
         for widget in self.widgets.values():
             widget.tick(now)
 
@@ -173,10 +188,12 @@ class ConsoleApp(App):
         self.refresh_pending = False
         model = self.sources.read()
         self.model = model
-        line = Text(model.heading)
-        if model.summary:
-            line.append("  " + model.summary, style="dim")
-        self.query_one("#heading", Static).update(line)
+        self.checked = time.time()
+        self.heading_text = model.heading + (("  " + model.summary) if model.summary else "")
+        self.show_heading()
+        pinned = self.query_one("#pinned", Static)
+        pinned.update(Text("\n".join(model.pinned)))
+        pinned.display = bool(model.pinned)
         foot = self.query_one("#foot", Static)
         foot.update(Text(model.footer))
         foot.display = bool(model.footer)
@@ -287,6 +304,7 @@ def run_console(
     kinds: set[str] | None = None,
     host_log: Path | None = None,
     sources: dict | None = None,
+    actors: tuple[str, ...] = (),
 ) -> None:
     status = (sources or {}).get("supervisor_status")
     signals = None
@@ -295,6 +313,8 @@ def run_console(
 
         signals = SupervisorSignals(pidfile(Path(status)))
     ConsoleApp(
-        Sources(path, title=title, config=sources, kinds=kinds, host_log=host_log, limit=min(max_lines, 200)),
+        Sources(
+            path, title=title, config=sources, kinds=kinds, host_log=host_log, limit=min(max_lines, 200), actors=actors
+        ),
         signals=signals,
     ).run()

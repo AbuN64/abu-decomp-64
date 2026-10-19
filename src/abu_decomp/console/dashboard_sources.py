@@ -22,8 +22,10 @@ class Sources:
         kinds: set[str] | None = None,
         host_log: Path | None = None,
         limit: int = 200,
+        actors: tuple[str, ...] = (),
     ):
         self.title, self.config, self.kinds, self.limit = title, config or {}, kinds, limit
+        self.actors = frozenset(actors)
         paths = [events, *(Path(path) for path in self.config.get("events", []))]
         self.readers = [EventReader(path) for path in dict.fromkeys(paths)]
         self.records: dict[Path, list[dict]] = {reader.path: [] for reader in self.readers}
@@ -35,6 +37,13 @@ class Sources:
         self.ordered: tuple[EventLog, EventLog] | None = None
         self.last_receipt = None
         self.panes = {name: PANES[name](options) for name, options in self.config.get("panes", {}).items()}
+
+    def shown(self, event: dict) -> bool:
+        """Kind filter; kindless events of the tile's `actors` (e.g. build) are shown too."""
+        kind = canonical_kind(event)
+        if self.kinds is None or kind in self.kinds:
+            return True
+        return kind is None and event.get("actor") in self.actors
 
     def text(self, path: str | Path | None, *, limit: int = 262144) -> str:
         if not path:
@@ -104,7 +113,7 @@ class Sources:
             )
             self.ordered = (
                 all_events,
-                EventLog(event for event in all_events if self.kinds is None or canonical_kind(event) in self.kinds),
+                EventLog(event for event in all_events if self.shown(event)),
             )
         all_events, events = self.ordered
         if self.host:

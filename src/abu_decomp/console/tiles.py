@@ -23,7 +23,7 @@ from abu_decomp import DecompError
 from .feed import events_path, parse_kinds
 
 PATH_KEYS = ("build_profile", "supervisor_status", "release_current", "run_status", "host_log", "boot_plan")
-CONSOLE_KEYS = frozenset({"title", "feed", "kinds", "host_log", "sources", "panes"})
+CONSOLE_KEYS = frozenset({"title", "feed", "kinds", "actors", "host_log", "sources", "panes"})
 SECTION_KEYS = frozenset({"max_lines", "git_refs"})
 
 
@@ -72,6 +72,7 @@ def tile_sources(profile: Any, tile: str) -> dict[str, Any]:
         "kinds": parse_kinds(",".join(kinds)) if kinds is not None else None,
         "sources": sources,
         "host_log": Path(_path(profile, host_log)) if host_log else None,
+        "actors": tuple(console.get("actors", ())),
     }
 
 

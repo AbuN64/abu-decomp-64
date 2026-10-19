@@ -312,14 +312,14 @@ class ExperimentsPane:
         return rows
 
 
-def _matching(config: dict[str, Any]) -> Any:
-    from .matching import MatchingPane
+def _activity(config: dict[str, Any]) -> Any:
+    from .activity import ActivityPane
 
-    return MatchingPane(config)
+    return ActivityPane(config)
 
 
 PANES: dict[str, Callable[[dict[str, Any]], Any]] = {
-    "matching": _matching,
+    "activity": _activity,
     "experiments": ExperimentsPane,
     "progress": ProgressPane,
     "landings": LandingsPane,
@@ -343,13 +343,8 @@ def lifecycle_model(panes: dict[str, Any], sources: Any, events: list[dict[str, 
         first = next((row.title for row in rows if row.key.startswith("probe-")), "no PROBE yet")
         heading = f"{title} · {waiting} open probe requests"
     footer = ""
-    if "matching" in panes:
-        active = sum(
-            1
-            for row in rows
-            if row.key.startswith("match-") and not row.key.startswith(("match-idle", "match-none", "match-fail"))
-        )
-        heading = f"{title} · {active} active lanes"
+    if "activity" in panes:
+        heading = f"{title} · {sum(1 for row in rows if row.key != 'act-none')} events"
         first = ""
-        footer = panes["matching"].footer(sources)
+        footer = panes["activity"].footer(sources)
     return Dashboard(heading, first, rows, rows[0].key if rows else None, footer)
