@@ -112,7 +112,7 @@ class ToolTests(unittest.TestCase):
             self.assertEqual(call.call_args.args[0][4:], ["--profile", str(self.root / "taste.json"), "profile"])
 
     def test_version_and_help_pass_through_as_text(self):
-        done = subprocess.CompletedProcess([], 0, b"unbake 0.5.10\n", b"")
+        done = subprocess.CompletedProcess([], 0, b"unbake 0.5.11\n", b"")
         with installed(), mock.patch("abu_decomp.tools.subprocess.run", return_value=done) as call:
             for args, tail in (
                 (["--version"], ["--version"]),
@@ -121,7 +121,7 @@ class ToolTests(unittest.TestCase):
             ):
                 result = tools.invoke("unbake", self.profile, args)
                 self.assertEqual(call.call_args.args[0][4:], ["--project", str(self.root / "project"), *tail])
-                self.assertEqual((result.ok, result.text), (True, b"unbake 0.5.10\n"))
+                self.assertEqual((result.ok, result.text), (True, b"unbake 0.5.11\n"))
             tools.invoke("recipe", self.profile, ["status", "--help"])
             self.assertNotIn("--json", call.call_args.args[0])
             failed = subprocess.CompletedProcess([], 2, b"usage: x\n", b"")
