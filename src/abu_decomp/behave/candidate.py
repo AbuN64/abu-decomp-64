@@ -149,9 +149,13 @@ def build(
     script = work / "compile.sh"
     script.write_text(context["script"])
     obj = work / "candidate.o"
+    # INCLUDE_ASM stand-ins in the file name assembly relative to the version's assembly directory (the parent of
+    # `nonmatchings` in the build context's asm_path), as the build's own include path does.
+    parts = Path(context.get("asm_path", "")).parts
+    home = chosen.project.joinpath(*parts[: parts.index("nonmatchings")]) if "nonmatchings" in parts else chosen.project
     done = subprocess.run(
         ["sh", str(script), str(unit), str(work / "candidate.i"), str(obj)],
-        cwd=chosen.project,
+        cwd=home if home.is_dir() else chosen.project,
         capture_output=True,
         text=True,
         check=False,
