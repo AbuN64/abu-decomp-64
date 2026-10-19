@@ -2,7 +2,8 @@
 
     "panes": {"activity": {
         "limit": 200,                          newest rows kept (the tile tails the bottom)
-        "fail_seconds": 3600,                  RUN-FAIL events this recent are rows too
+        "fail_seconds": 1800,                  RUN-FAIL events and refused landings this recent are rows; a later
+                                               successful landing also retires an earlier refused one
         "progress": {"path": ".../progress.json", "version": "us-rev1", "label": "RW"}   footer figures
     }}
 
@@ -63,8 +64,9 @@ class ActivityPane:
 
     def __init__(self, config: dict[str, Any]):
         self.limit = int(config.get("limit", 200))
-        self.fail_seconds = float(config.get("fail_seconds", 3600))
+        self.fail_seconds = float(config.get("fail_seconds", 1800))
         self.progress = config.get("progress")
+        self.last_landed = 0.0
 
     def events(self, sources: Any) -> list[dict[str, Any]]:
         held = [event for records in sources.records.values() for event in records]
@@ -77,6 +79,7 @@ class ActivityPane:
         function = function_of(event)
         when, key = event_epoch(event), f"act-{event.get('time')}-{event.get('actor')}-{event.get('message')}"
         lane = str(payload.get("lane") or "")
+        lane = "" if lane == "unknown" else lane
         if function:
             op = payload.get("op")
             version = next(
@@ -103,6 +106,8 @@ class ActivityPane:
             details = block(event)
             applied = ", ".join(n for n, row in (payload.get("lanes") or {}).items() if row.get("status") == "applied")
             state = "passed" if event.get("status") == "passed" else "stop"
+            if state == "stop" and when and (now - when > self.fail_seconds or when < self.last_landed):
+                return None  # an old refusal, or one a later landing already answered, is not news
             return Row(key, title, details, state, when=when, tag=applied)
         if kind == "RUN-FAIL" and when and now - when <= self.fail_seconds:
             return Row(key, sentence(event), block(event), "stop", when=when)
@@ -116,6 +121,14 @@ class ActivityPane:
         for event in held:
             if function := function_of(event):
                 history.setdefault(function, []).append(event)
+        self.last_landed = max(
+            (
+                event_epoch(e) or 0.0
+                for e in held
+                if payload_of(e).get("op") == "landed" and e.get("status") == "passed"
+            ),
+            default=0.0,
+        )
         rows = [row for event in held if (row := self.row(event, history, now))]
         rows = rows[-self.limit :]
         return rows or [
