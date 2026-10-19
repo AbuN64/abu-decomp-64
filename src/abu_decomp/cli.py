@@ -509,8 +509,8 @@ def describe() -> dict[str, Any]:
 
 
 def _tool_call(args: list[str]) -> argparse.Namespace | None:
-    """`[--profile P] unbake|recipe|taste [--project D] [--host F] ARGS...`, with ARGS untouched (argparse would eat
-    --help and --version); None when the line is anything else."""
+    """`[--profile P] unbake|recipe|taste [--] [--project D] [--host F] ARGS...`, with ARGS untouched (argparse would
+    eat --help and --version); None when the line is anything else."""
     from abu_decomp.tools import TOOLS
 
     rest, profile = list(args), None
@@ -522,6 +522,10 @@ def _tool_call(args: list[str]) -> argparse.Namespace | None:
         return None
     found: dict[str, Path | None] = {"project": None, "host": None}
     command, rest = rest[0], rest[1:]
+    if rest[:1] == [
+        "--"
+    ]:  # `unbake -- --project T cmd` is `unbake --project T cmd`: the separator only ends decomp's flags
+        rest = rest[1:]
     while rest:
         flag, eq, value = rest[0].partition("=")
         if flag not in ("--project", "--host"):

@@ -58,3 +58,10 @@ class ProofTests(unittest.TestCase):
         self.assertIn("make", cli.COMMANDS)
         parsed = cli._tool_call(["--profile", "p.json", "make", "--project", "t", "-j3", "check"])
         self.assertEqual((parsed.command, str(parsed.project), parsed.args), ("make", "t", ["-j3", "check"]))
+
+    def test_a_separator_before_the_owned_flags_changes_nothing(self):
+        plain = cli._tool_call(["--profile", "p.json", "unbake", "--project", "t", "types", "--functions", "f"])
+        split = cli._tool_call(["--profile", "p.json", "unbake", "--", "--project", "t", "types", "--functions", "f"])
+        self.assertEqual((split.command, split.project, split.args), (plain.command, plain.project, plain.args))
+        bare = cli._tool_call(["unbake", "--", "sync"])
+        self.assertEqual((bare.project, bare.args), (None, ["sync"]))
