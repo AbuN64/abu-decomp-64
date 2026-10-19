@@ -72,22 +72,9 @@ def words(payload: dict[str, Any]) -> str:
     return f"{w['matched']} of {w.get('target', '?')} words" if "matched" in w else "no score"
 
 
-def probe_name(event: dict[str, Any]) -> str:
-    return str(payload_of(event).get("function") or str(event.get("message", "")).rsplit(" ", 1)[-1])
-
-
-def collapse_probes(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop a 'probe started' event once the same function has a later probe event (its result row says it all)."""
-    later: set[str] = set()
-    kept = []
-    for event in reversed(events):
-        if canonical_kind(event) == "PROBE":
-            name = probe_name(event)
-            if event.get("status") == "started" and name in later:
-                continue
-            later.add(name)
-        kept.append(event)
-    return kept[::-1]
+def results_only(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop every 'started' event: a console shows results, never that something began."""
+    return [event for event in events if event.get("status") != "started"]
 
 
 def percent_matched(payload: dict[str, Any]) -> str | None:
@@ -123,8 +110,6 @@ def sentence(event: dict[str, Any]) -> str:
         names = suggested_names(payload.get("recipe") or {})
         where = names[0][1] or names[0][0] if names else "no name proposed"
         return f"landed {count} fn \u2192 {where}" + (f" (+{payload['bytes']} B)" if payload.get("bytes") else "")
-    if kind == "PROBE" and event.get("status") == "started":
-        return f"{probe_name(event)}: probing"
     if kind == "PROBE" and payload.get("checks") is not None:
         checks, differences = payload["checks"], payload.get("differences") or 0
         head = f"{name or message}: {'same' if not differences else 'differs'} ({checks - differences}/{checks})"
@@ -138,7 +123,7 @@ def sentence(event: dict[str, Any]) -> str:
         state = str(event.get("status"))
         if state == "failed":
             return f"build \u2717{failed_step(receipt_of(event)).replace(' at the ', ' ').replace(' step', '')}"
-        mark = "\u2713" if state == "passed" else "started"
+        mark = "\u2713" if state == "passed" else state
         return f"build {mark}" + (f" {counts[0]}/{counts[1]}" if counts else "")
     if kind == "RUN-FAIL":
         return f"{actor}: {message}"

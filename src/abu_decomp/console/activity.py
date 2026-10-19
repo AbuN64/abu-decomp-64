@@ -72,6 +72,8 @@ class ActivityPane:
 
     def row(self, event: dict[str, Any], history: dict[str, list[dict[str, Any]]], now: float) -> Row | None:
         payload, kind = payload_of(event), canonical_kind(event)
+        if event.get("status") == "started":
+            return None
         function = function_of(event)
         when, key = event_epoch(event), f"act-{event.get('time')}-{event.get('actor')}-{event.get('message')}"
         lane = str(payload.get("lane") or "")

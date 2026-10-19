@@ -2,10 +2,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
+from abu_decomp.console.activity import ActivityPane
 from abu_decomp.console.dashboard_sources import Sources
 from abu_decomp.console.feed import append_event
-from abu_decomp.console.human import block, collapse_probes, sentence
+from abu_decomp.console.human import block, results_only, sentence
 
 FIXTURES = Path(__file__).parent / "fixtures" / "panes"
 SUGGEST = [
@@ -152,16 +154,6 @@ class HumanTests(unittest.TestCase):
                 "rage-ports abc1234: Select original background",
             ),
             ({"kind": "RUN-FAIL", "actor": "cycle", "message": "build failed"}, "cycle: build failed"),
-            (
-                {
-                    "kind": "PROBE",
-                    "actor": "repro",
-                    "status": "started",
-                    "message": "Observe the original behavior of func_9",
-                    "payload": {"function": "func_9"},
-                },
-                "func_9: probing",
-            ),
         ]
         for event, expected in cases:
             self.assertEqual(sentence(event), expected)
@@ -175,21 +167,15 @@ class HumanTests(unittest.TestCase):
         }
         self.assertEqual(sentence(event), "answered")
 
-    def test_probe_start_rows_fold_into_the_probes_result(self):
+    def test_started_events_are_never_rows(self):
         def probe(status, name, **payload):
             return {"kind": "PROBE", "status": status, "message": name, "payload": {"function": name, **payload}}
 
-        events = [
-            probe("started", "f1"),
-            probe("started", "f2"),
-            probe("passed", "f1", checks=2, differences=0),
-            probe("started", "f1"),
-            probe("started", "f1"),
-        ]
-        kept = collapse_probes(events)
-        self.assertEqual(len(kept), 3)
-        self.assertEqual(kept[-1]["status"], "started")
-        self.assertEqual(kept[0]["message"], "f2")
+        events = [probe("started", "f1"), probe("passed", "f1", checks=2, differences=0), probe("started", "f2")]
+        self.assertEqual([e["status"] for e in results_only(events)], ["passed"])
+        pane = ActivityPane({})
+        held = SimpleNamespace(records={"x": events})
+        self.assertEqual([r.title for r in pane.rows(held, [])], ["f1: same (2/2)"])
 
     def test_build_reads_the_receipts_test_count(self):
         with tempfile.TemporaryDirectory() as directory:
