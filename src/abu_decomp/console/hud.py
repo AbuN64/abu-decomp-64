@@ -8,7 +8,8 @@ on the terminal's last row sits at the video's bottom edge; with no video window
 covering window could not be raised without taking the keyboard focus, hence the uncovered strip.
 
 The line is the newest scored function as `func: 87.3% match`, bold green `func: CRACKED!` at 100%, then the
-pinned status lines of the console tile named by `hud.console` (a port's boot status) when there is one. Sources
+pinned status lines of the console tile named by `hud.console` (a port's lane step and stop, an oracle's frame
+counters). A hud naming a console shows only that tile's lines, so two huds never repeat one attempt. Sources
 come from the profile like any console tile; the line prints again whenever a source changes.
 """
 
@@ -62,10 +63,10 @@ def newest_attempt(sources: Sources) -> dict[str, Any] | None:
     return max(attempts, key=lambda event: str(event.get("time", "")), default=None)
 
 
-def hud_line(sources: Sources, pinned: list[str]) -> str:
+def hud_line(sources: Sources, pinned: list[str], attempts: bool = True) -> str:
     """The strip's text with ANSI styling; CRACKED! is bold green."""
     parts = []
-    event = newest_attempt(sources)
+    event = newest_attempt(sources) if attempts else None
     if event:
         text = sentence(event)
         parts.append(text.replace("CRACKED!", f"{BOLD_GREEN}CRACKED!{RESET}") if "CRACKED!" in text else text)
@@ -89,9 +90,9 @@ def visible(text: str) -> str:
     return "".join(out) + RESET
 
 
-def render(sources: Sources) -> str:
+def render(sources: Sources, attempts: bool = True) -> str:
     model = sources.read()
-    return visible(hud_line(sources, model.pinned))
+    return visible(hud_line(sources, model.pinned, attempts))
 
 
 def run_hud(profile: Any, role: str, out: Any = None, iterations: int | None = None) -> dict[str, Any]:
@@ -107,7 +108,7 @@ def run_hud(profile: Any, role: str, out: Any = None, iterations: int | None = N
     watches[Path("<resize>")] = wake_read
     try:
         while iterations is None or done < iterations:
-            line = render(sources)
+            line = render(sources, not spec.get("console"))
             shown = (line, shutil.get_terminal_size((80, 24)))
             if shown != previous:
                 # clear, hide the cursor, and print on the last row, where the video window leaves the tile uncovered
