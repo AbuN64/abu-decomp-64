@@ -236,7 +236,60 @@ class ToolResult:
             "document": self.document,
             "provenance": self.provenance,
             "context": self.context,
+            "cache": cache_summary(cache_report(self.document.get("stages"))),
         }
+
+
+def cache_report(stages: Any) -> dict[str, dict[str, list[int]]]:
+    """Stage path -> {cache kind: [hits, misses]} for every stage of an unbake stage tree that looked a cache up.
+
+    unbake already counts these per stage (`stages` of its result envelope, field `cache`); this only reads them."""
+    found: dict[str, dict[str, list[int]]] = {}
+
+    def walk(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        cache = {
+            kind: [int(pair[0]), int(pair[1])]
+            for kind, pair in (node.get("cache") or {}).items()
+            if isinstance(pair, list | tuple) and len(pair) == 2 and (pair[0] or pair[1])
+        }
+        if cache:
+            found[" > ".join(map(str, node.get("path") or ["?"]))] = cache
+        for child in node.get("children") or []:
+            walk(child)
+
+    walk(stages)
+    return found
+
+
+def cache_summary(report: dict[str, dict[str, list[int]]]) -> dict[str, Any]:
+    """The hits and misses of a cache report in total and per stage; a cold cache shows as misses with no hits."""
+    pairs = [pair for kinds in report.values() for pair in kinds.values()]
+    return {
+        "hits": sum(pair[0] for pair in pairs),
+        "misses": sum(pair[1] for pair in pairs),
+        "stages": {
+            path: {kind: {"hits": h, "misses": m} for kind, (h, m) in kinds.items()} for path, kinds in report.items()
+        },
+    }
+
+
+# What each unbake call of this process reported about its caches, for the command that wants one timing line.
+CACHE_LOG: list[dict[str, Any]] = []
+
+
+def drain_cache() -> dict[str, Any]:
+    """The cache hits and misses of every unbake call since the last drain: totals, per call, and the calls whose
+    telemetry unbake does not expose (`unexposed`)."""
+    calls, CACHE_LOG[:] = list(CACHE_LOG), []
+    rows = [{"call": c["call"], **cache_summary(c["report"])} for c in calls if c["report"] is not None]
+    return {
+        "hits": sum(r["hits"] for r in rows),
+        "misses": sum(r["misses"] for r in rows),
+        "calls": [{k: r[k] for k in ("call", "hits", "misses")} for r in rows],
+        "unexposed": [c["call"] for c in calls if c["report"] is None],
+    }
 
 
 TEXT_FLAGS = frozenset({"--help", "-h"})
@@ -346,6 +399,8 @@ def invoke(
         raise DependencyError("dependency.output", f"{tool} JSON findings must be a list")
     if TOOLS[tool].envelope and not document.keys() >= ENVELOPE:
         raise DependencyError("dependency.output", f"{tool} omitted fields of its public result envelope")
+    if tool == "unbake":
+        CACHE_LOG.append({"call": f"unbake {given[0]}", "report": cache_report(document.get("stages"))})
     return ToolResult(
         tool,
         (tool, *command),
@@ -367,7 +422,13 @@ config = api.load(Path(request["project"]), Path(request["host"]))
 args = request["args"]
 if request["function"] == "build_context" and len(args) > 2 and args[2] is not None:
     args[2] = args[2].encode()
-json.dump(getattr(api, request["function"])(config, *args), sys.stdout)
+value = getattr(api, request["function"])(config, *args)
+try:  # unbake's own per-kind cache counters, when this pin exposes them
+    from unbake import effort
+    cache = {kind: list(pair) for kind, pair in effort.counters().items()}
+except (ImportError, AttributeError):
+    cache = None
+json.dump({"value": value, "cache": cache}, sys.stdout)
 """
 
 
@@ -403,9 +464,15 @@ def api_call(
         tail = completed.stderr.decode("utf-8", "replace").strip().splitlines()[-3:]
         raise DependencyError("dependency.api", f"unbake api {function} failed: {' | '.join(tail)}")
     try:
-        return json.loads(completed.stdout.decode("utf-8"))
-    except (ValueError, UnicodeError) as exc:
+        answer = json.loads(completed.stdout.decode("utf-8"))
+        value, cache = answer["value"], answer["cache"]
+    except (ValueError, UnicodeError, KeyError, TypeError) as exc:
         raise DependencyError("dependency.output", f"unbake api {function} printed no JSON document") from exc
+    seen = None if cache is None else {k: v for k, v in cache.items() if v[0] or v[1]}
+    CACHE_LOG.append(
+        {"call": f"api {function}", "report": None if seen is None else ({f"api {function}": seen} if seen else {})}
+    )
+    return value
 
 
 # The wheel a project installs, named in its pin file: .../download/v0.5.7/unbake-0.5.7-py3-none-any.whl

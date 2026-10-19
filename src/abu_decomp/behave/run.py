@@ -16,7 +16,7 @@ from abu_decomp import DecompError, narrate
 from abu_decomp.behave import candidate as build_candidate
 from abu_decomp.behave import compare, describe, inputs, prototype
 from abu_decomp.config import Profile
-from abu_decomp.tools import invoke, settings
+from abu_decomp.tools import drain_cache, invoke, settings
 
 DEFAULTS: dict[str, Any] = {
     "cases": 48,
@@ -139,8 +139,20 @@ def _name_index(symbols: dict[str, list[Any]]) -> list[tuple[int, str]]:
     return sorted((row[0], name) for name, row in symbols.items() if row[0] is not None)
 
 
+def timing(stages: dict[str, float], started: float, cache: dict[str, Any]) -> dict[str, float]:
+    """The stage seconds, the total, and the unbake cache lookups this command made: misses with no hits is a cold
+    cache (the cost of a score or a build context is then the whole build, not a lookup)."""
+    return {
+        **stages,
+        "total": round(time.monotonic() - started, 3),
+        "cache_hits": cache["hits"],
+        "cache_misses": cache["misses"],
+    }
+
+
 def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     started = time.monotonic()
+    drain_cache()  # the lookups of earlier commands in this process are not this one's
     stages: dict[str, float] = {}
     findings: list[dict[str, Any]] = []
 
@@ -277,6 +289,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         "depth": depth,
         "probe": {k: record[k] for k in ("closure", "stubs", "statuses", "wall_seconds", "cached") if k in record},
     }
+    cache = drain_cache()
     if image is None:
         names = _name_index(symbols)
         result = {
@@ -284,7 +297,8 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
             "verdict": "described",
             **common,
             **describe.describe(original["cases"], regions, proto, names, stack, learned.pointers, learned.returns),
-            "timing": {**stages, "total": round(time.monotonic() - started, 3)},
+            "timing": timing(stages, started, cache),
+            "cache": cache,
         }
         if not result["testable_cases"]:
             reasons = {}
@@ -340,7 +354,8 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         },
         "notes": notes[:20],
         "cases_detail": shown,
-        "timing": {**stages, "total": round(time.monotonic() - started, 3)},
+        "timing": timing(stages, started, cache),
+        "cache": cache,
     }
     announce(profile, result)
     return result, 0, findings
@@ -402,6 +417,6 @@ def _untestable(
         "version": version,
         "address": f"0x{address:08X}",
         "prototype": proto.describe(),
-        "timing": {**stages, "total": round(time.monotonic() - started, 3)},
+        "timing": timing(stages, started, drain_cache()),
     }
     return result, 0, [*findings, {"key": key, "blocking": False, "message": reason}]

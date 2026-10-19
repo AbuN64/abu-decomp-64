@@ -253,6 +253,24 @@ def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     return control.end(profile, args.name, args.reason, args.stop), 0, []
 
 
+def _tools_arguments(parser: argparse.ArgumentParser) -> None:
+    actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
+    deploy = actions.add_parser(
+        "deploy", help="install a decomp commit and its tools into venvs from git commits, after the pins agree"
+    )
+    deploy.add_argument("--sha", required=True, help="the decomp commit (40 hex)")
+    for tool in ("unbake", "recipe", "taste"):
+        deploy.add_argument(f"--{tool}", help=f"the {tool} commit to deploy (default: the one decomp pins)")
+    deploy.add_argument("--venv", type=Path, required=True, nargs="+", help="venvs to install into")
+
+
+def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import deploy
+
+    commits = {tool: getattr(args, tool) for tool in ("unbake", "recipe", "taste")}
+    return deploy.deploy(_profile(args.profile), args.sha, [path.resolve() for path in args.venv], commits)
+
+
 def _probe_arguments(parser: argparse.ArgumentParser) -> None:
     actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
     request = actions.add_parser("request", help="queue one oracle probe request and announce it as HANDOFF")
@@ -420,6 +438,7 @@ COMMANDS: dict[str, Command] = {
     "recipe": Command("run Recipe Maker on the profile's project (or --project)", _tool_arguments, _run_tool),
     "taste": Command("run Cake Taste with the profile's Taste profile", _tool_arguments, _run_tool),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
+    "tools": Command("deploy the pinned tools into venvs", _tools_arguments, _run_tools),
     "lane": Command("launch, register, steer and end AI lanes", _lane_arguments, _run_lane),
     "supervisor": Command("supervise a role headless, or stage an artifact", _supervisor_arguments, _run_supervisor),
     "build": Command("build committed sources and promote verified releases", _build_arguments, _run_build),

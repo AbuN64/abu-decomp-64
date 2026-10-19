@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from abu_decomp import tools
 from abu_decomp.behave import candidate as cand
 from abu_decomp.behave import run
 from abu_decomp.cli import describe, main
@@ -129,6 +130,23 @@ class RunTests(unittest.TestCase):
         _, envelope = self.invoke("--candidate", str(self.candidate), "--cases", "8")
         self.assertEqual([n for n, _ in self.probes], ["learn", "original", "candidate"])
         self.assertEqual(envelope["result"]["timing"]["lock_wait"], 0.75)
+
+    def test_unbake_cache_hits_and_misses_ride_the_timing(self):
+        image = cand.Image(
+            self.root / "c.bin", 0x80800000, ({"name": "f", "offset": 0, "size": 0x40},), 0x40, "ab" * 32
+        )
+
+        def build(*a, **k):
+            tools.CACHE_LOG.append({"call": "api build_context", "report": {"api build_context": {"build": [0, 3]}}})
+            tools.CACHE_LOG.append({"call": "unbake symbols", "report": {"symbols": {"view": [2, 0]}}})
+            return image
+
+        _, envelope = self.invoke("--candidate", str(self.candidate), "--cases", "8", build=build)
+        result = envelope["result"]
+        self.assertEqual((result["timing"]["cache_hits"], result["timing"]["cache_misses"]), (2, 3))
+        self.assertEqual([c["call"] for c in result["cache"]["calls"]], ["api build_context", "unbake symbols"])
+        self.assertEqual(result["cache"]["unexposed"], [])
+        self.assertEqual(tools.CACHE_LOG, [])  # drained: the next command starts from zero
 
     def test_a_function_without_arguments_is_still_probed_for_what_it_reads(self):
         stdout = io.StringIO()
