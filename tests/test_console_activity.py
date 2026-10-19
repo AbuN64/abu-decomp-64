@@ -170,6 +170,15 @@ class HumanTests(unittest.TestCase):
         for event, expected in cases:
             self.assertEqual(sentence(event), expected)
 
+    def test_probe_without_counts_is_not_read_as_none_checks(self):
+        event = {
+            "kind": "PROBE",
+            "status": "passed",
+            "message": "answered",
+            "payload": {"function": "f", "checks": None},
+        }
+        self.assertEqual(sentence(event), "answered")
+
     def test_probe_start_rows_fold_into_the_probes_result(self):
         def probe(status, name, **payload):
             return {"kind": "PROBE", "status": status, "message": name, "payload": {"function": name, **payload}}

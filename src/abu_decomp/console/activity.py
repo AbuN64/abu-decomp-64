@@ -36,7 +36,7 @@ def function_of(event: dict[str, Any]) -> str | None:
     payload = payload_of(event)
     if payload.get("op") in OPS:
         return str(payload.get("function"))
-    if canonical_kind(event) == "PROBE" and payload.get("function") and "checks" in payload:
+    if canonical_kind(event) == "PROBE" and payload.get("function") and payload.get("checks") is not None:
         return str(payload["function"])
     return None
 

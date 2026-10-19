@@ -112,7 +112,7 @@ def sentence(event: dict[str, Any]) -> str:
     if kind == "PROBE" and event.get("status") == "started":
         name = payload.get("function") or message.rsplit(" ", 1)[-1]
         return f"Probing {name} on the original game"
-    if kind == "PROBE" and "checks" in payload:
+    if kind == "PROBE" and payload.get("checks") is not None:
         name = payload.get("function") or message
         checks, differences = payload["checks"], payload.get("differences", "?")
         head = f"Probed {name} on the original game: {checks} checks, {differences} differences"
@@ -208,7 +208,7 @@ def block(event: dict[str, Any]) -> str:
             ),
             ("Result", "PASS" if payload.get("verdict") == "same" else "FAIL"),
         )
-    elif kind == "PROBE" and "checks" in payload:
+    elif kind == "PROBE" and payload.get("checks") is not None:
         body = lines(
             ("Ran", "observe the original game running this function"),
             ("Input", str(payload.get("question") or payload.get("function") or "")),
