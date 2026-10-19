@@ -21,6 +21,7 @@ from abu_decomp.land import (
     conflict_steps,
     diff_lines,
     function_name,
+    parse_credit_falls,
     parse_messages,
     parse_patches,
     run_process,
@@ -787,6 +788,97 @@ class LandTests(unittest.TestCase):
         _, code, findings = self.land([one])
         self.assertEqual((code, findings[0]["key"]), (1, "land.readme"))
         self.assertEqual(findings[0]["lower"], [{"index": 1, "base": 60.0, "now": 59.99}])
+
+    def credit_readme(self):
+        """A README whose matched bytes follow the tree: +10 per converted a.c function, -50 once b.c is merged away."""
+
+        def write():
+            gained = (self.tree / "a.c").read_text().count("int func_")
+            lost = 50 * ("merged" in (self.tree / "b.c").read_text())
+            matched = 1000 + 10 * gained - lost
+            rows = f"| code [###] {matched / 20:.2f}% (~80%) {matched:,} of 2,000 |\n"
+            (self.tree / "README.md").write_text(rows + "| code [###] 60.00% (~80%) 1,200 of 2,000 |\n")
+
+        return write
+
+    def credit_patches(self):
+        one = self.patch(
+            "L1", {"a.c": A_C.replace('INCLUDE_ASM(const s32, "a", func_1);\n', "int func_1(void) { return 1; }\n")}
+        )
+        return one, self.patch("L2", {"b.c": "// merged\n"})
+
+    def land_credit(self, falls):
+        patches = list(self.credit_patches())
+        self.on_check = self.credit_readme()
+        (self.tree / "README.md").write_text(
+            "| code [###] 50.00% (~80%) 1,000 of 2,000 |\n| code [###] 60.00% (~80%) 1,200 of 2,000 |\n"
+        )
+        git(self.tree, "commit", "-q", "-am", "readme with bytes")
+        base = git(self.tree, "rev-parse", "HEAD").strip()
+        append = lambda path, record: self.events.append(record) or {"ok": True}  # noqa: E731
+        landing = Landing(
+            self.profile, self.tree, base, patches, invoke=self.invoke, run=self.runner, build=self.runner,
+            append=append, pin=lambda: "u1", credit_falls=parse_credit_falls(falls),
+        )  # fmt: skip
+        return landing.execute()
+
+    def test_a_declared_credit_fall_passes_and_shows_in_the_finding_the_event_and_the_commit_body(self):
+        result, code, findings = self.land_credit(["L2=0:50:merged sibling symbols were never real functions"])
+        self.assertEqual(code, 0)
+        self.assertTrue(self.gates(result)["readme"])
+        fall = {"lane": "L2", "version": "0", "index": 0, "fell": 50, "declared": 50}
+        self.assertEqual({k: result["credit_falls"][0][k] for k in fall}, fall)
+        self.assertEqual([f["key"] for f in findings], ["land.credit_fall"])
+        self.assertFalse(findings[0]["blocking"])
+        self.assertIn("CREDIT FALL L2 0 -50B", self.events[0]["message"])
+        self.assertEqual(self.events[0]["payload"]["credit_falls"][0]["lane"], "L2")
+        bodies = {c["lane"]: c["body"] for c in result["commits"]}
+        self.assertIn("Credit correction: 0 matched code -50 bytes (declared 50): merged sibling", bodies["L2"])
+        self.assertIsNone(bodies["L1"])
+        self.assertIn("960 of 2,000", (self.tree / "README.md").read_text())
+        self.assertIn("int func_1", (self.tree / "a.c").read_text())  # every input is back in the tree
+        self.assertIn("merged", (self.tree / "b.c").read_text())
+
+    def test_an_undeclared_credit_fall_refuses_naming_the_input_and_the_version(self):
+        result, code, findings = self.land_credit([])
+        self.assertEqual((code, findings[0]["key"]), (1, "land.readme"))
+        self.assertIn("L2 lowers 0 matched code by 50 bytes, and declared none", findings[0]["message"])
+        self.assertEqual(
+            findings[0]["refused"], [{"lane": "L2", "version": "0", "index": 0, "fell": 50, "declared": None}]
+        )
+        self.assertEqual([r["status"] for r in result["lanes"]], ["applied", "applied"])
+        self.assertEqual(git(self.tree, "status", "--porcelain", "--untracked-files=all"), "")
+
+    def test_a_fall_bigger_than_declared_refuses(self):
+        _, code, findings = self.land_credit(["L2=0:49:too little"])
+        self.assertEqual(code, 1)
+        self.assertIn("more than the 49 it declared", findings[0]["message"])
+
+    def test_a_fall_declared_by_another_input_refuses(self):
+        _, code, findings = self.land_credit(["L1=0:500:wrong input"])
+        self.assertEqual(code, 1)
+        self.assertIn("L2 lowers 0", findings[0]["message"])
+
+    def test_a_declaration_for_a_gain_changes_nothing(self):
+        one = self.patch("L1", {"c.c": C_C + "// x\n"})
+        self.on_check = lambda: (self.tree / "README.md").write_text(README.format(a="51.00", b="60.00"))
+        append = lambda path, record: self.events.append(record) or {"ok": True}  # noqa: E731
+        landing = Landing(
+            self.profile, self.tree, self.base, [one], invoke=self.invoke, run=self.runner, build=self.runner,
+            append=append, pin=lambda: "u1", credit_falls=parse_credit_falls(["L1=0:10:unused"]),
+        )  # fmt: skip
+        result, code, findings = landing.execute()
+        self.assertEqual((code, [f["key"] for f in findings], result["credit_falls"]), (0, ["land.commit_message"], []))
+        self.assertEqual(len([c for c in self.commands if c[0][0] == "make"]), 1)  # no measuring builds
+
+    def test_credit_fall_arguments_are_checked(self):
+        with self.assertRaises(LandError):
+            parse_credit_falls(["L1=0:fifty:why"])
+        with self.assertRaises(LandError):
+            parse_credit_falls(["L1=0:50"])
+        self.assertEqual(parse_credit_falls(["L1=de:5:a: b"])[0]["reason"], "a: b")
+        with self.assertRaises(LandError):
+            Landing(self.profile, self.tree, self.base, [], credit_falls=parse_credit_falls(["L9=0:5:x"]))
 
     def test_a_refused_land_leaves_the_tree_exactly_as_it_found_it(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})

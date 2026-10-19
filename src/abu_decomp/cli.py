@@ -399,13 +399,25 @@ def _land_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="LANE=PATH[:MESSAGE]",
         help="a lane's patch, in order (repeatable); MESSAGE is that lane's commit message when it matches no function",
     )
+    parser.add_argument(
+        "--credit-fall",
+        action="append",
+        default=[],
+        metavar="LANE=VERSION:BYTES:REASON",
+        help="allow that lane to lower the matched code bytes of README version VERSION by at most BYTES (repeatable)",
+    )
 
 
 def _run_land(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    from abu_decomp.land import land, parse_messages, parse_patches
+    from abu_decomp.land import land, parse_credit_falls, parse_messages, parse_patches
 
     return land(
-        _profile(args.profile), args.tree, args.base, parse_patches(args.patch), messages=parse_messages(args.patch)
+        _profile(args.profile),
+        args.tree,
+        args.base,
+        parse_patches(args.patch),
+        messages=parse_messages(args.patch),
+        credit_falls=parse_credit_falls(args.credit_fall),
     )
 
 

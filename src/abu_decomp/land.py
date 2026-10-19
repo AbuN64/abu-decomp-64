@@ -45,7 +45,13 @@ Gates, in order; the first failure stops the run and the rest are reported as sk
   reason; the result's `refused_inputs`) and the rest are built again. `attempts` lists every build.
   markers      no marker line (INCLUDE_ASM, NON_MATCHING, ...) added in a file no applied patch touched
   untracked_s  no untracked assembly file (every one a patch or sync produced is tracked or staged)
-  readme       no code percentage in the README lower than at the base
+  readme       no code percentage in the README lower than at the base, unless an input declares the fall:
+               `--credit-fall LANE=VERSION:BYTES:REASON` lets that lane lower the matched code bytes of README
+               version VERSION (its label, or its zero-based index) by at most BYTES. When a percentage fell, the gate
+               builds the inputs one prefix at a time to measure each input's own change in matched bytes; an input
+               that lowers a fallen version by more than it declared (or declared nothing) fails the gate, naming the
+               input and the rows. An allowed fall is a non-blocking `land.credit_fall` finding, shows in the LAND
+               event and in the lane's commit body.
 
 `--patch LANE=PATH[:MESSAGE]`; the result's `commits` is the ready commit plan (never run here; the orchestrator
 runs each of `commit_commands`; the `-- files` pathspec keeps the other lanes' staged files out of each commit).
@@ -518,6 +524,46 @@ def function_name(line: str) -> str | None:
     return found[1] if found else None
 
 
+_ROW = re.compile(r"\bcode\s+\[[^\]\n]*\]\s*(\d+(?:\.\d+)?)%(?:[^<\n]*?([\d,]+)\s+of\s+([\d,]+))?")
+_HEADER = re.compile(r"^\|\s*([A-Za-z0-9][\w.-]*)\s*\(")
+
+
+def code_rows(text: str) -> list[dict[str, Any]]:
+    """The `code [bar] NN.NN% (~M%) X of Y` rows of a README, in order: index, version label (the word that opens the
+    table heading above the row, else the index), percent and matched/total bytes (None when the row has none)."""
+    rows: list[dict[str, Any]] = []
+    label = ""
+    for line in text.splitlines():
+        header = _HEADER.match(line)
+        if header:
+            label = header[1]
+        for found in _ROW.finditer(line):
+            number = lambda g: int(g.replace(",", "")) if g else None  # noqa: E731
+            rows.append(
+                {
+                    "index": len(rows),
+                    "label": label or str(len(rows)),
+                    "percent": float(found[1]),
+                    "matched": number(found[2]),
+                    "total": number(found[3]),
+                }
+            )
+    return rows
+
+
+def parse_credit_falls(rows: Sequence[str]) -> list[dict[str, Any]]:
+    """`LANE=VERSION:BYTES:REASON` rows -> {lane, version, bytes, reason}: the credit corrections an input declares."""
+    falls = []
+    for row in rows:
+        lane, sep, rest = row.partition("=")
+        version, _, rest = rest.partition(":")
+        amount, _, reason = rest.partition(":")
+        if not sep or not lane.strip() or not version.strip() or not amount.strip().isdigit() or not reason.strip():
+            raise LandError("land.arguments", f"--credit-fall expects LANE=VERSION:BYTES:REASON, got {row!r}")
+        falls.append({"lane": lane.strip(), "version": version.strip(), "bytes": int(amount), "reason": reason.strip()})
+    return falls
+
+
 def code_percentages(text: str) -> list[float]:
     """Every `code [bar] NN.NN%` row of a README, in order (one per version). The data, functions and blobs rows sit on
     the same line inside `<code>` tags and are not code: a split adds functions to the count of all and lowers
@@ -543,6 +589,7 @@ class Landing:
         splat_check: Callable[[Sequence[str]], dict[str, str] | None] | None = None,
         splat_file_check: Callable[[Sequence[str]], dict[str, str] | None] | None = None,
         ready: Callable[[], None] | None = None,
+        credit_falls: Sequence[dict[str, Any]] | None = None,
     ) -> None:
         self.config = settings(profile)
         self.tree = tree.expanduser().resolve()
@@ -552,6 +599,11 @@ class Landing:
         self.base, self.patches = base, list(patches)
         self.invoke, self.run, self.build, self.append, self.clock = invoke, run, build, append, clock
         self.messages = dict(messages or {})
+        self.declared = list(credit_falls or [])
+        self.credit_falls: list[dict[str, Any]] = []  # the declared falls the readme gate allowed
+        unknown = sorted({d["lane"] for d in self.declared} - {lane for lane, _ in self.patches})
+        if unknown:
+            raise LandError("land.arguments", f"--credit-fall names no --patch lane: {', '.join(unknown)}")
         self.pin = pin or (lambda: tools.pins()["unbake"].commit)
         self.gates: list[dict[str, Any]] = []
         self.findings: list[dict[str, Any]] = []
@@ -1125,14 +1177,113 @@ class Landing:
         if code or not path.is_file():
             self.fail("land.readme", f"cannot compare {name}: missing at the base or in the tree")
             return self.gate("readme", False, started)
-        old, new = code_percentages(before), code_percentages(path.read_text(errors="replace"))
+        text = path.read_text(errors="replace")
+        old, new = code_percentages(before), code_percentages(text)
         lower = [{"index": i, "base": a, "now": b} for i, (a, b) in enumerate(zip(old, new, strict=False)) if b < a]
         if not old or len(old) != len(new):
             self.fail("land.readme", f"{name} code percentages changed shape: base {len(old)}, tree {len(new)}")
         elif lower:
-            self.fail("land.readme", f"{name} code percentage fell in {len(lower)} place(s)", lower=lower)
+            self.credit(name, before, text, [row["index"] for row in lower], lower)
         return self.gate(
             "readme", not any(f["key"] == "land.readme" for f in self.findings), started, base=old, now=new
+        )
+
+    def readme_rows(self, name: str) -> list[dict[str, Any]]:
+        path = self.tree / name
+        return code_rows(path.read_text(errors="replace")) if path.is_file() else []
+
+    def measure(self, keep: Sequence[int]) -> list[dict[str, Any]] | None:
+        """The README code rows with only the inputs `keep` in the tree (None when that tree does not build)."""
+        skip = {i: "left out of a credit measurement" for i in self.applied() if i not in keep}
+        if not self.replay(skip):
+            return None
+        mark = len(self.findings)
+        ok = self.run_build()
+        del self.findings[mark:]
+        return self.readme_rows(self.config["readme"]) if ok else None
+
+    def credit(self, name: str, before: str, text: str, fallen: Sequence[int], lower: list[dict[str, Any]]) -> None:
+        """A code percentage fell: measure what each input did to the matched bytes of the fallen versions (the inputs
+        built one prefix at a time), and let the fall stand only where its input declared it and by no more."""
+        base, final = code_rows(before), code_rows(text)
+        inputs = self.applied()
+        saved = list(self.findings)
+        steps: list[list[dict[str, Any]]] = [base]
+        for count in range(1, len(inputs)):
+            rows = self.measure(inputs[:count])
+            if rows is None or len(rows) != len(base):
+                break
+            steps.append(rows)
+        steps.append(final)
+        measured = len(steps) == len(inputs) + 1 and all(r["matched"] is not None for rows in steps for r in rows)
+        if len(inputs) > 1:  # the measurements left a prefix in the tree: every input back, as the build gates saw it
+            self.replay({})
+            self.findings[:] = saved
+        if not measured:
+            self.fail(
+                "land.readme",
+                f"{name} code percentage fell in {len(lower)} place(s); its matched bytes cannot be traced to an input",
+                lower=lower,
+            )
+            return
+        refused: list[dict[str, Any]] = []
+        allowed: list[dict[str, Any]] = []
+        for index in fallen:
+            culprits = 0
+            for number, which in enumerate(inputs, start=1):
+                drop = steps[number - 1][index]["matched"] - steps[number][index]["matched"]
+                if drop <= 0:
+                    continue
+                culprits += 1
+                lane, label = self.lanes[which]["lane"], base[index]["label"]
+                row = {"lane": lane, "version": label, "index": index, "fell": drop}
+                given = [
+                    d
+                    for d in self.declared
+                    if d["lane"] == lane and d["version"].casefold() in (label.casefold(), str(index))
+                ]
+                if given and drop <= given[0]["bytes"]:
+                    allowed.append({**row, "declared": given[0]["bytes"], "reason": given[0]["reason"]})
+                else:
+                    refused.append({**row, "declared": given[0]["bytes"] if given else None})
+            if not culprits:
+                refused.append({"lane": None, "version": base[index]["label"], "index": index, "fell": 0})
+        if refused:
+            parts = [
+                f"{r['lane']} lowers {r['version']} matched code by {r['fell']:,} bytes, "
+                + (f"more than the {r['declared']:,} it declared" if r["declared"] is not None else "and declared none")
+                if r["lane"]
+                else f"{r['version']} fell with no input lowering its matched bytes"
+                for r in refused
+            ]
+            self.fail(
+                "land.readme",
+                f"{name} code percentage fell in {len(lower)} place(s): " + "; ".join(parts),
+                lower=lower,
+                refused=refused,
+            )
+        elif len(inputs) > 1 and not self.run_build():
+            self.fail("land.readme", "the tree does not rebuild with every input after the credit measurement")
+        for row in allowed:
+            self.credit_falls.append(row)
+            self.findings.append(
+                {
+                    "key": "land.credit_fall",
+                    "message": f"lane {row['lane']} lowers {row['version']} matched code by {row['fell']:,} bytes "
+                    f"(declared up to {row['declared']:,}): {row['reason']}",
+                    "blocking": False,
+                    **row,
+                }
+            )
+
+    def credit_trailer(self, lane: str) -> str | None:
+        rows = [r for r in self.credit_falls if r["lane"] == lane]
+        if not rows:
+            return None
+        return "\n".join(
+            f"Credit correction: {r['version']} matched code -{r['fell']:,} bytes (declared {r['declared']:,}): "
+            f"{r['reason']}"
+            for r in rows
         )
 
     def recipe(self) -> bool:
@@ -1187,6 +1338,9 @@ class Landing:
             row = by_lane[group["lane"]]
             names = row["functions"]["names"]
             message, body = self.input_message(row, group["files"])
+            trailer = self.credit_trailer(row["lane"])
+            if trailer:
+                body = f"{body}\n\n{trailer}" if body else trailer
             if message is None:
                 self.findings.append(
                     {
@@ -1397,6 +1551,7 @@ class Landing:
             **self.groups(),
             "refused_inputs": self.refused_inputs,
             "attempts": self.attempts,
+            "credit_falls": self.credit_falls,
         }
         if self.recipe_summary is not None:
             result["recipe"] = self.recipe_summary
@@ -1431,6 +1586,10 @@ class Landing:
             if result["pass"]
             else f"land failed: {blocking['key'] if blocking else 'unknown'}"
         ) + (lost if refused else "")
+        if self.credit_falls:
+            message += "; CREDIT FALL " + ", ".join(
+                f"{r['lane']} {r['version']} -{r['fell']:,}B ({r['reason'][:60]})" for r in self.credit_falls
+            )
         record = {
             "actor": self.config["actor"],
             "status": "passed" if result["pass"] else "failed",
@@ -1449,6 +1608,7 @@ class Landing:
                     for f in row.get("refused", [])
                 ],
                 "gates": {row["gate"]: row["pass"] for row in self.gates},
+                **({"credit_falls": self.credit_falls} if self.credit_falls else {}),
                 "lanes": {row["lane"]: {"status": row["status"], **(row.get("functions") or {})} for row in self.lanes},
                 **({"recipe": result["recipe"]} if result.get("recipe") else {}),
             },
