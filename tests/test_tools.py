@@ -211,6 +211,16 @@ class ToolTests(unittest.TestCase):
         ):
             tools.invoke("unbake", self.profile, ["report"])
 
+    def test_cache_totals_are_the_outermost_stage_not_the_sum_over_the_nesting(self):
+        stages = {
+            "path": ["score"],
+            "cache": {"build": [1, 2]},
+            "children": [{"path": ["score", "context"], "cache": {"build": [1, 2]}, "children": []}],
+        }
+        summary = tools.cache_summary(tools.cache_report(stages))
+        self.assertEqual((summary["hits"], summary["misses"]), (1, 2))  # the child's lookups are already the parent's
+        self.assertEqual(set(summary["stages"]), {"score", "score > context"})
+
 
 if __name__ == "__main__":
     unittest.main()

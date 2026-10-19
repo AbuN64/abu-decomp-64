@@ -409,6 +409,7 @@ def _untestable(
     findings: list[dict[str, Any]],
     key: str,
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    cache = drain_cache()
     result = {
         "mode": "compare",
         "verdict": compare.UNTESTABLE,
@@ -417,6 +418,7 @@ def _untestable(
         "version": version,
         "address": f"0x{address:08X}",
         "prototype": proto.describe(),
-        "timing": timing(stages, started, drain_cache()),
+        "timing": timing(stages, started, cache),
+        "cache": cache,
     }
     return result, 0, [*findings, {"key": key, "blocking": False, "message": reason}]

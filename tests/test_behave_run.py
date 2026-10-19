@@ -226,6 +226,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual((code, envelope["result"]["verdict"]), (0, "untestable"))
         self.assertIn("syntax error", envelope["result"]["reason"])
         self.assertEqual(envelope["findings"][0]["key"], "behave.compile")
+        self.assertEqual(set(envelope["result"]["cache"]), {"hits", "misses", "calls", "unexposed"})  # refused too
 
     def test_the_same_seed_gives_the_same_inputs_and_another_seed_other_memory(self):
         self.invoke("--cases", "6", "--seed", "3")

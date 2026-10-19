@@ -264,11 +264,14 @@ def cache_report(stages: Any) -> dict[str, dict[str, list[int]]]:
 
 
 def cache_summary(report: dict[str, dict[str, list[int]]]) -> dict[str, Any]:
-    """The hits and misses of a cache report in total and per stage; a cold cache shows as misses with no hits."""
-    pairs = [pair for kinds in report.values() for pair in kinds.values()]
+    """The hits and misses of a cache report in total and per stage; a cold cache shows as misses with no hits.
+
+    A stage's counts include its children's (unbake counts the lookups made during the stage), so the total is the
+    outermost stage's own, the first the report names, and never the sum over the nesting."""
+    top = next(iter(report.values()), {})
     return {
-        "hits": sum(pair[0] for pair in pairs),
-        "misses": sum(pair[1] for pair in pairs),
+        "hits": sum(pair[0] for pair in top.values()),
+        "misses": sum(pair[1] for pair in top.values()),
         "stages": {
             path: {kind: {"hits": h, "misses": m} for kind, (h, m) in kinds.items()} for path, kinds in report.items()
         },
