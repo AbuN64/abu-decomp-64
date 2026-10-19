@@ -25,7 +25,7 @@ class Tools:
     def __call__(self, tool, profile, args):
         self.calls.append((tool, tuple(args)))
         if tool == "recipe" and args[0] == "structure":
-            document = {"ok": True, "result": {"moves": 2, "files": ["src/game/a.c"]}}
+            document = {"ok": True, "moves": 2, "files": ["src/game/a.c"]}
             return SimpleNamespace(ok=True, returncode=0, document=document)
         if tool == "recipe":
             return SimpleNamespace(ok=self.recipe_ok, returncode=0 if self.recipe_ok else 2, document={"ok": True})

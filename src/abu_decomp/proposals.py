@@ -106,7 +106,11 @@ def run(
             first = (document.get("findings") or [{}])[0]
             found[step["name"]] = {"ok": False, "error": str(first.get("message", f"exit {called.returncode}"))[:300]}
             continue
-        found[step["name"]] = {"ok": True, **summarize(document.get("result") or {})}
+        # Recipe's --json is one flat object {"ok": true, ...fields}; an enveloped tool keeps them under "result"
+        body = document.get("result")
+        if not isinstance(body, dict):
+            body = {k: v for k, v in document.items() if k not in ("ok", "findings", "invocation", "stages")}
+        found[step["name"]] = {"ok": True, **summarize(body)}
     return found
 
 

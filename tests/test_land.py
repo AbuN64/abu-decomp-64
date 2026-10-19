@@ -84,7 +84,7 @@ class LandTests(unittest.TestCase):
             self.recipes.append(tuple(args))
             ok = args[0] != "name"
             result = {"moves": 2, "files": ["a.c", "x.c"], "suggestions": [{"to": "a/b.c"}]}
-            document = {"ok": ok, "result": result if ok else None, "findings": [] if ok else [{"message": "no map"}]}
+            document = {"ok": ok, **(result if ok else {}), "findings": [] if ok else [{"message": "no map"}]}
             return SimpleNamespace(ok=ok, returncode=0 if ok else 1, document=document)
         self.unbake.append(tuple(args))
         if args[0] == "sync" and "--check" not in args:

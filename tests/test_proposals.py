@@ -21,7 +21,7 @@ class Recipe:
         if isinstance(result, DecompError):
             raise result
         ok = result is not None
-        document = {"ok": ok, "result": result, "findings": [] if ok else [{"message": "map is stale"}]}
+        document = {"ok": ok, **(result or {}), "findings": [] if ok else [{"message": "map is stale"}]}
         return SimpleNamespace(ok=ok, returncode=0 if ok else 1, document=document)
 
 
