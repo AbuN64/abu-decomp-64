@@ -17,6 +17,7 @@ TILES = {
         "ov": {"title": "oracle video", "command": ["sleep", "1"]},
         "pc": {"title": "port console", "console": {"title": "PORT"}},
         "oc": {"title": "oracle console", "command": ["true"], "console": {"title": "ORACLE"}},
+        "hv": {"title": "hud video", "overlay_app_id": "g2", "hud": {"console": "pc"}},
         "port": {"title": "port", "headless": True, "command": ["true"]},
     },
 }
@@ -35,6 +36,10 @@ class TilesTests(unittest.TestCase):
         self.assertEqual(layout.validate(config), (["pv", "pc"], ["ov", "oc"]))
         self.assertEqual(config["focus_role"], "ov")
         self.assertEqual(layout.overlays(config)[0][:2], ("pv", "game"))
+
+    def test_hud_tile_without_a_command_runs_decomp_console_hud_for_its_own_id(self):
+        roles = up_config(self.profile())["roles"]
+        self.assertEqual(roles["hv"]["command"][-3:], ["console", "hud", "hv"])
 
     def test_console_tile_without_a_command_runs_decomp_console_for_its_own_id(self):
         config = up_config(self.profile())

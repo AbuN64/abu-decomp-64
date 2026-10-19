@@ -11,6 +11,9 @@ class LayoutError(ValueError):
     pass
 
 
+HUD_HEIGHT = 50
+
+
 def validate(up: dict[str, Any]) -> tuple[list[str], ...]:
     """Return the role ids of each column, top to bottom, from a grid of at least two rows and two columns.
 
@@ -91,7 +94,9 @@ def overlays(
 ) -> list[tuple[str, str, int, int, int, int]]:
     """(role, app_id, x, y, width, height) of every role window that must sit exactly over its tile.
 
-    area is the workspace rectangle (x, y, w, h); without it the whole output is used.
+    area is the workspace rectangle (x, y, w, h); without it the whole output is used. A role with a `hud` object
+    leaves the bottom `hud.height` pixels (default HUD_HEIGHT, two terminal rows) of its tile uncovered: the tile's own
+    terminal prints its overlay text there (see abu_decomp.console.hud).
     """
     ox, oy, aw, ah = area or (0, 0, int(up["output"]["width"]), int(up["output"]["height"]))
     columns = validate(up)
@@ -102,7 +107,8 @@ def overlays(
         for row, role in enumerate(ids):
             overlay = up["roles"][role].get("overlay_app_id")
             if overlay:
-                found.append((role, overlay, ox + col * tile_w, oy + row * tile_h, tile_w, tile_h))
+                reserve = int(up["roles"][role]["hud"].get("height", HUD_HEIGHT)) if "hud" in up["roles"][role] else 0
+                found.append((role, overlay, ox + col * tile_w, oy + row * tile_h, tile_w, tile_h - reserve))
     return found
 
 

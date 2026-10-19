@@ -12,6 +12,9 @@ config object, so `up_config` merges the table into the `up` section and refuses
 
 A role with a `console` object is a console tile: `decomp console tile ID` reads its sources (see
 abu_decomp.console.tiles). `command` may then be omitted and the tile runs `decomp console` itself.
+A role with a `hud` object ({"console": "<console tile id>", "height": px}) and an `overlay_app_id` prints a one-line
+overlay in the bottom rows its window leaves uncovered (abu_decomp.console.hud); with no `command`, the tile runs
+`decomp console hud ID` for it.
 """
 
 from __future__ import annotations
@@ -35,8 +38,8 @@ def table(profile: Any) -> dict[str, Any]:
     return tiles
 
 
-def console_command(profile: Any, role: str) -> list[str]:
-    return [sys.executable, "-m", "abu_decomp", "--profile", str(profile.source_file), "console", "tile", role]
+def console_command(profile: Any, role: str, action: str = "tile") -> list[str]:
+    return [sys.executable, "-m", "abu_decomp", "--profile", str(profile.source_file), "console", action, role]
 
 
 def up_config(profile: Any) -> dict[str, Any]:
@@ -51,6 +54,8 @@ def up_config(profile: Any) -> dict[str, Any]:
         spec = dict(spec)
         if "command" not in spec and "console" in spec:
             spec["command"] = console_command(profile, role)
+        elif "command" not in spec and "hud" in spec:
+            spec["command"] = console_command(profile, role, "hud")
         roles[role] = spec
     merged = {**up, "tiles": tiles["layout"], "roles": roles}
     if "focus" in tiles:

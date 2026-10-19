@@ -292,6 +292,8 @@ def _console_arguments(parser: argparse.ArgumentParser) -> None:
     actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
     tile = actions.add_parser("tile", help="run the console for one tile of the profile's tiles table")
     tile.add_argument("tile", help="tile id")
+    hud = actions.add_parser("hud", help="print the one-line overlay text of a video tile (its `hud` object)")
+    hud.add_argument("tile", help="tile id")
     actions.add_parser("refs", help="follow the configured git refs and append LAND events")
     actions.add_parser("status-line", help="print the newest event for the compositor bar")
 
@@ -302,6 +304,10 @@ def _run_console(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
         from abu_decomp.console.tiles import run_tile
 
         return run_tile(profile, args.tile), 0, []
+    if args.action == "hud":
+        from abu_decomp.console.hud import run_hud
+
+        return run_hud(profile, args.tile), 0, []
     from abu_decomp.console.tiles import run_follower
 
     return run_follower(profile, args.action), 0, []

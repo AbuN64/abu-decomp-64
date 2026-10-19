@@ -39,6 +39,13 @@ class LayoutTests(unittest.TestCase):
         assert 'for_window [app_id="^game$"]' in text
         assert "floating enable, border none, move absolute position 0 0" in text
 
+    def test_hud_role_leaves_its_bottom_rows_uncovered(self):
+        up = {**UP, "roles": {**UP["roles"], "a": {"overlay_app_id": "game", "hud": {}}}}
+        assert layout.overlays(up) == [("a", "game", 0, 0, 960, 490)]
+        up["roles"]["a"]["hud"] = {"height": 30}
+        assert layout.overlays(up)[0][5] == 510
+        assert layout.overlays(UP)[0][5] == 540
+
     def test_overlay_of_bottom_right_tile_is_offset(self):
         up = {**UP, "roles": {**UP["roles"], "d": {"overlay_app_id": "x"}}}
         assert "position 960 540" in layout.sway_config(up)
