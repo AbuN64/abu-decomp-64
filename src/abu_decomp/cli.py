@@ -364,6 +364,26 @@ def _run_land(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     )
 
 
+def _behave_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project", type=Path, help="the project tree to act on (default: the profile's project)")
+    parser.add_argument("--host", type=Path, help="the unbake host file for that tree (default: the profile's host)")
+    parser.add_argument("--function", required=True, help="the function symbol, as the project names it")
+    parser.add_argument("--candidate", type=Path, help="candidate C file; without it the original is described")
+    parser.add_argument("--version", help="ROM version (default: the project's names_from)")
+    parser.add_argument("--cases", type=int, help="input combinations to run, capped (default: profile behave.cases)")
+    parser.add_argument("--seed", type=int, default=1, help="seed of the deterministic input set (default 1)")
+    parser.add_argument("--depth", type=int, help="calls deep the original callees run; deeper ones are stubs")
+
+
+def _run_behave(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp.behave.run import Options, run
+
+    options = Options(
+        args.function, args.candidate, args.version, args.cases, args.seed, args.project, args.host, args.depth
+    )
+    return run(_profile(args.profile), options)
+
+
 def _served_elsewhere(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     raise DecompError("internal.dispatch", f"{args.command} is served by main, not by a command handler")
 
@@ -390,6 +410,11 @@ COMMANDS: dict[str, Command] = {
     "stream": Command("serve, supervise, control and capture the headless tile stream", _passthrough, _run_stream),
     "port": Command("generate a native port repository skeleton", _port_arguments, _run_port),
     "land": Command("apply lane patches to a proof tree and run the landing gates", _land_arguments, _run_land),
+    "behave": Command(
+        "run the original and a candidate on the same inputs and compare their behaviour",
+        _behave_arguments,
+        _run_behave,
+    ),
     "describe": Command("list every command and its arguments as JSON", _none, _run_describe),
     "mcp": Command("serve the commands as MCP tools over stdio", _none, _served_elsewhere),
 }

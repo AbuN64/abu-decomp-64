@@ -15,7 +15,20 @@ from abu_decomp import DecompError
 
 # One section per component boundary (see CONTRACTS.md). Project facts live only in these values.
 SECTIONS = frozenset(
-    {"tools", "events", "tiles", "stream", "console", "lanes", "supervisor", "build", "cycle", "probe", "land"}
+    {
+        "tools",
+        "events",
+        "tiles",
+        "stream",
+        "console",
+        "lanes",
+        "supervisor",
+        "build",
+        "cycle",
+        "probe",
+        "land",
+        "behave",
+    }
 )
 _REQUIRED = frozenset({"schema_version", "name"})
 _ALLOWED = _REQUIRED | SECTIONS

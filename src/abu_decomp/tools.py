@@ -309,6 +309,58 @@ def invoke(
     )
 
 
+# unbake's read-only API (the surface Recipe Maker imports): the calls decomp may make in the pinned interpreter.
+API_CALLS = frozenset({"build_context"})
+_API_BOOTSTRAP = """
+import json, sys
+from pathlib import Path
+from unbake import api
+request = json.loads(sys.stdin.read())
+config = api.load(Path(request["project"]), Path(request["host"]))
+args = request["args"]
+if request["function"] == "build_context" and len(args) > 2 and args[2] is not None:
+    args[2] = args[2].encode()
+json.dump(getattr(api, request["function"])(config, *args), sys.stdout)
+"""
+
+
+def api_call(
+    profile: Profile, function: str, args: Sequence[Any], *, project: Path | None = None, host: Path | None = None
+) -> Any:
+    """Call one function of the pinned unbake's read-only API (`unbake.api`) in a clean interpreter and return its
+    JSON result. The same pin checks as the CLI wrappers apply; only the names in API_CALLS are allowed."""
+    if function not in API_CALLS:
+        raise DependencyError("dependency.arguments", f"unbake api call {function} is not allowed")
+    chosen = settings(profile, project, host)
+    if project and (refused := pin_findings(profile, chosen.project)):
+        raise DependencyError("dependency.project_pin", "; ".join(refused))
+    verify_dependencies()
+    environment = dict(os.environ)
+    environment["UNBAKE_HOST"] = str(chosen.host)
+    request = {"project": str(chosen.project), "host": str(chosen.host), "function": function, "args": list(args)}
+    try:
+        completed = subprocess.run(
+            [str(Path(sys.executable).absolute()), "-I", "-c", _API_BOOTSTRAP],
+            cwd=chosen.project,
+            input=json.dumps(request).encode(),
+            capture_output=True,
+            timeout=chosen.timeout_seconds,
+            check=False,
+            env=environment,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DependencyError(
+            "dependency.timeout", f"unbake api {function} exceeded {chosen.timeout_seconds:g}s"
+        ) from exc
+    if completed.returncode != 0:
+        tail = completed.stderr.decode("utf-8", "replace").strip().splitlines()[-3:]
+        raise DependencyError("dependency.api", f"unbake api {function} failed: {' | '.join(tail)}")
+    try:
+        return json.loads(completed.stdout.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise DependencyError("dependency.output", f"unbake api {function} printed no JSON document") from exc
+
+
 # The wheel a project installs, named in its pin file: .../download/v0.5.7/unbake-0.5.7-py3-none-any.whl
 _WHEEL = re.compile(
     r"/(?P<name>[A-Za-z0-9_.]+)-(?P<version>[0-9][A-Za-z0-9.]*)-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+\.whl"
