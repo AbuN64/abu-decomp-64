@@ -78,10 +78,15 @@ class JobsTests(unittest.TestCase):
         log = owned / "job.log"
         output = log.open("w")
         self.addCleanup(output.close)
+        unlinked = owned / "unlinked.err"  # stderr of a job started through a since-deleted temp file
+        error = unlinked.open("w")
+        self.addCleanup(error.close)
+        unlinked.unlink()
         child = subprocess.Popen(
             [sys.executable, "-c", f"import time; print('x', flush=True); time.sleep(30)  # {owned}"],
             cwd=owned,
             stdout=output,
+            stderr=error,
             start_new_session=True,
         )
         elsewhere = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
@@ -96,7 +101,7 @@ class JobsTests(unittest.TestCase):
         )
         groups = json.loads(done.stdout)
         self.assertEqual([g["pgid"] for g in groups], [child.pid])
-        self.assertEqual(groups[0]["outputs"], [str(log)])
+        self.assertEqual(groups[0]["outputs"], [str(log)])  # the deleted stderr file is not an output
         self.assertEqual(groups[0]["cwd"], str(owned))
 
     def test_closing_records_the_jobs_in_json_and_handoff_and_the_successor_adopts_them(self):

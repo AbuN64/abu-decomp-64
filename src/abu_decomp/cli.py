@@ -82,7 +82,7 @@ def _run_tool(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
         raise _Text(called.returncode)
     from abu_decomp import narrate
 
-    narrate.emit(_profile(args.profile), args.command, args.args, called.document, args.project)
+    narrate.emit(_profile(args.profile), args.command, args.args, called.document, args.project, called.seconds)
     if called.ok:
         return called.describe(), 0, []
     findings = called.document.get("findings") or [

@@ -60,25 +60,59 @@ class EmitTests(unittest.TestCase):
             mock.patch("abu_decomp.events.events_path", return_value=feed),
             mock.patch("abu_decomp.events.append", side_effect=lambda path, record: written.append(record)),
         ):
-            narrate.emit(object(), tool, args, document, Path("/lanes/RW-SOL-A/rw"))
+            narrate.emit(object(), tool, args, document, Path("/lanes/RW-SOL-A/rw"), 1.23456)
         return written
 
-    def test_score_and_submit_emit_one_event_each_and_other_calls_none(self):
+    def test_score_and_submit_emit_their_rich_events(self):
         with tempfile.TemporaryDirectory() as directory:
-            score = self.emit("unbake", ["score", "x.c"], {"result": {"variants": [variant("a", 5)]}}, directory)
+            score = self.emit(
+                "unbake", ["score", "x.c"], {"ok": True, "result": {"variants": [variant("a", 5)]}}, directory
+            )
             self.assertEqual(
                 [(e["kind"], e["actor"], e["payload"]["op"]) for e in score], [("MATCH", "RW-SOL-A", "attempt")]
             )
             sub = self.emit(
                 "unbake",
                 ["--x", "submit", "f.c"],
-                {"result": {"submissions": [{"member": "f", "exact": True}]}},
+                {"ok": True, "result": {"submissions": [{"member": "f", "exact": True}]}},
                 directory,
             )
             self.assertEqual((sub[0]["status"], sub[0]["payload"]["op"]), ("passed", "submit"))
-            self.assertEqual(self.emit("unbake", ["report"], {"result": {}}, directory), [])
-            self.assertEqual(self.emit("recipe", ["score"], {"result": {}}, directory), [])
-            self.assertEqual(self.emit("taste", ["score"], {"result": {}}, directory), [])
+
+    def test_every_other_json_call_writes_the_default_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for tool, args in (
+                ("unbake", ["report"]),  # a verb with no rich payload
+                ("unbake", ["verify"]),  # a former gate verb
+                ("recipe", ["status"]),
+                ("recipe", ["score"]),  # not a recipe verb with a rich payload
+                ("taste", ["repro", "probe"]),
+            ):
+                event = self.emit(tool, args, {"ok": True, "result": {}}, directory)
+                self.assertEqual(len(event), 1, (tool, args))
+                self.assertEqual(
+                    (event[0]["kind"], event[0]["status"], event[0]["actor"]), ("MATCH", "passed", "RW-SOL-A")
+                )
+                self.assertEqual(
+                    event[0]["payload"],
+                    {"op": tool, "verb": args[0], "ok": True, "seconds": 1.235, "findings": 0, "lane": "RW-SOL-A"},
+                )
+                self.assertEqual(event[0]["message"], f"{tool} {args[0]}: ok")
+            failed = self.emit(
+                "unbake", ["compare", "F"], {"ok": False, "findings": [{"key": "rom", "message": "sha"}]}, directory
+            )
+            self.assertEqual(
+                (failed[0]["kind"], failed[0]["status"], failed[0]["payload"]["findings"]), ("RUN-FAIL", "failed", 1)
+            )
+            self.assertEqual(failed[0]["message"], "unbake compare: failed, rom: sha")
+            # a score with nothing to attempt still shows as a plain call
+            plain = self.emit("unbake", ["score", "x.c"], {"ok": True, "result": {"variants": []}}, directory)
+            self.assertEqual((plain[0]["payload"]["op"], plain[0]["payload"]["verb"]), ("unbake", "score"))
+
+    def test_text_and_empty_calls_write_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(self.emit("unbake", ["names", "--help"], {}, directory), [])
+            self.assertEqual(self.emit("unbake", ["--version"], {}, directory), [])
 
     def test_recipe_verbs_and_unbake_gates_are_on_the_stream(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -100,11 +134,13 @@ class EmitTests(unittest.TestCase):
                 "unbake", ["verify"], {"ok": False, "findings": [{"key": "rom", "message": "sha"}]}, directory
             )
             self.assertEqual((verify[0]["kind"], verify[0]["payload"]["verb"]), ("RUN-FAIL", "verify"))
-            self.assertEqual(self.emit("recipe", ["status"], {"ok": True}, directory), [])
 
     def test_a_failing_writer_never_breaks_the_call(self):
         with mock.patch("abu_decomp.events.events_path", side_effect=DecompError("config.schema", "no events")):
-            narrate.emit(object(), "unbake", ["score"], {"result": {"variants": [variant("a", 1)]}}, None)
+            narrate.emit(
+                object(), "unbake", ["score"], {"ok": True, "result": {"variants": [variant("a", 1)]}}, Path("/p")
+            )
+            narrate.emit(object(), "unbake", ["compare"], {"ok": True}, Path("/p"))
 
 
 class BehaveTests(unittest.TestCase):

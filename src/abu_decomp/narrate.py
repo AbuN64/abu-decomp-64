@@ -12,8 +12,10 @@ are the closed schema 2 set; an `op` in the payload says which operation, and th
   PROBE  (Cake Taste's own)      checks, differences, function, result, run_id; written by `taste repro probe` itself
   MATCH  payload.op = "recipe"   one `decomp recipe` verb (next work try skip structure name apply flags style): verb,
                                  sub, ok, counts (moves accepted refused targets files), item, next, lane; apply is LAND
-  MATCH  payload.op = "unbake"   one `decomp unbake verify|check|audit|sync|setup`: verb, ok, findings, lane (RUN-FAIL
-                                 when it fails); `decomp make` writes op "build" the same way (proof.py)
+  MATCH  payload.op = <tool>     every other tool call that returns a JSON document (`decomp unbake verify`, `decomp
+                                 recipe status`, `decomp taste ...`): verb, ok, seconds, findings, lane (RUN-FAIL
+                                 when it fails); `decomp make` writes op "build" the same way (proof.py). Text
+                                 calls (--help, --version) write nothing.
   LAND   payload.op = "landed"   `decomp land`: lanes, functions [names], recipe (proposals, see proposals.py)
 
 `lane` is DECOMP_LANE when set, else the name of the directory that holds the project tree, else the lane
@@ -32,8 +34,7 @@ from typing import Any
 from abu_decomp import DecompError, events, tools
 from abu_decomp.config import Profile
 
-VERBS = ("score", "submit", "land")
-GATE_VERBS = ("verify", "check", "audit", "sync", "setup")
+VERBS = ("score", "submit", "land")  # unbake verbs with a richer payload than the default event
 
 
 def lane_of(project: Path | None) -> str:
@@ -233,11 +234,9 @@ def recipe_message(payload: dict[str, Any]) -> str:
     return f"Recipe {verb}{item}: " + (", ".join(facts) if facts else "done" if payload["ok"] else "refused")
 
 
-def emit_recipe(profile: Profile, args: list[str], document: dict[str, Any], project: Path | None) -> None:
-    verb = next((a for a in args if not a.startswith("-")), None)
-    if verb not in RECIPE_VERBS:
-        return
-    ok, lane = bool(document.get("ok")), lane_of(project or tools.project_dir(profile))
+def emit_recipe(profile: Profile, args: list[str], document: dict[str, Any], lane: str) -> None:
+    verb = next(a for a in args if not a.startswith("-"))
+    ok = bool(document.get("ok"))
     payload = recipe_payload(args, document, ok, lane)
     kind = "LAND" if verb == "apply" and ok else "MATCH" if ok else "RUN-FAIL"
     append(
@@ -250,42 +249,62 @@ def emit_recipe(profile: Profile, args: list[str], document: dict[str, Any], pro
     )
 
 
-def emit(profile: Profile, tool: str, args: list[str], document: dict[str, Any], project: Path | None) -> None:
-    """After `decomp unbake score|submit|land`: one event per attempt or submission. Never raises."""
+def emit_default(profile: Profile, tool: str, verb: str, document: dict[str, Any], lane: str, seconds: float) -> None:
+    """The event every tool call without a richer payload writes: MATCH when ok, else RUN-FAIL."""
+    ok = bool(document.get("ok"))
+    found = [f for f in document.get("findings") or () if isinstance(f, dict)]
+    payload = {
+        "op": tool,
+        "verb": verb,
+        "ok": ok,
+        "seconds": round(seconds, 3),
+        "findings": len(found),
+        "lane": lane,
+    }
+    line = f"{tool} {verb}: " + ("ok" if ok else f"failed, {refusal(found[0])}" if found else "failed")
+    append(profile, lane, "passed" if ok else "failed", line[:240], "MATCH" if ok else "RUN-FAIL", payload)
+
+
+def emit_unbake(profile: Profile, verb: str, document: dict[str, Any], lane: str) -> bool:
+    """The richer events of `unbake score|submit|land`; False when the call has none to write."""
+    feed = events.events_path(profile)
+    body = document.get("result") or {}
+    if verb == "score":
+        payload = attempt_payload(body, feed, lane)
+        if not payload:
+            return False
+        append(profile, lane, "passed" if payload["exact"] else "info", attempt_message(payload), "MATCH", payload)
+    elif verb == "submit":
+        payloads = submit_payloads(body, lane)
+        for payload in payloads:
+            status = "failed" if payload["refused"] else "passed" if payload["exact"] else "info"
+            append(profile, lane, status, submit_message(payload), "MATCH", payload)
+        return bool(payloads)
+    else:
+        landed = (body.get("landed") or []) if isinstance(body, dict) else []
+        payload = {"op": "inbox-land", "count": len(landed), "lane": lane}
+        append(profile, lane, "passed", f"Stored {len(landed)} submitted functions in the tree", "MATCH", payload)
+    return True
+
+
+def emit(
+    profile: Profile, tool: str, args: list[str], document: dict[str, Any], project: Path | None, seconds: float = 0.0
+) -> None:
+    """After every `decomp <tool>` call that returned a JSON document: one event, rich for the verbs in VERBS and
+    RECIPE_VERBS, the default (op = tool, verb, ok, seconds, findings, lane) for the rest. Never raises."""
     verb = next((a for a in args if not a.startswith("-")), None)
-    if tool == "recipe" and isinstance(document, dict):
-        try:
-            emit_recipe(profile, args, document, project)
-        except (DecompError, OSError, KeyError, TypeError, ValueError) as error:
-            print(f"decomp: no operation event written: {error}", file=sys.stderr)
-        return
-    if tool == "unbake" and verb in GATE_VERBS and isinstance(document, dict):
-        try:
-            lane, ok = lane_of(project or tools.project_dir(profile)), bool(document.get("ok"))
-            found = [f for f in document.get("findings") or () if isinstance(f, dict)]
-            payload = {"op": "unbake", "verb": verb, "ok": ok, "findings": len(found), "lane": lane}
-            line = f"unbake {verb}: " + ("ok" if ok else f"failed, {refusal(found[0])}" if found else "failed")
-            append(profile, lane, "passed" if ok else "failed", line[:240], "MATCH" if ok else "RUN-FAIL", payload)
-        except (DecompError, OSError, KeyError, TypeError, ValueError) as error:
-            print(f"decomp: no operation event written: {error}", file=sys.stderr)
-        return
-    if tool != "unbake" or verb not in VERBS or not isinstance(document, dict):
-        return
+    if not verb or not isinstance(document, dict) or type(document.get("ok")) is not bool:
+        return  # a text call (--help, --version) has no JSON document
     try:
-        feed = events.events_path(profile)
-        lane, body = lane_of(project or tools.project_dir(profile)), document.get("result") or {}
-        if verb == "score":
-            payload = attempt_payload(body, feed, lane)
-            if payload:
-                status = "passed" if payload["exact"] else "info"
-                append(profile, lane, status, attempt_message(payload), "MATCH", payload)
-        elif verb == "submit":
-            for payload in submit_payloads(body, lane):
-                status = "failed" if payload["refused"] else "passed" if payload["exact"] else "info"
-                append(profile, lane, status, submit_message(payload), "MATCH", payload)
-        else:
-            landed = (body.get("landed") or []) if isinstance(body, dict) else []
-            payload = {"op": "inbox-land", "count": len(landed), "lane": lane}
-            append(profile, lane, "passed", f"Stored {len(landed)} submitted functions in the tree", "MATCH", payload)
+        try:
+            chosen = project or tools.project_dir(profile)
+        except DecompError:
+            chosen = None  # taste has no project; the lane comes from where the call runs
+        lane = lane_of(chosen)
+        if tool == "recipe" and verb in RECIPE_VERBS:
+            emit_recipe(profile, args, document, lane)
+            return
+        if not (tool == "unbake" and verb in VERBS and emit_unbake(profile, verb, document, lane)):
+            emit_default(profile, tool, verb, document, lane, seconds)
     except (DecompError, OSError, KeyError, TypeError, ValueError) as error:
         print(f"decomp: no operation event written: {error}", file=sys.stderr)

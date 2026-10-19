@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import metadata
@@ -279,6 +280,7 @@ class ToolResult:
     provenance: dict[str, dict[str, str]]
     context: dict[str, str]
     text: bytes | None = None  # the tool's own stdout when it printed text (--version, --help), not a JSON document
+    seconds: float = 0.0  # wall time of the tool's process (monotonic clock), reported on the call's event
 
     @property
     def ok(self) -> bool:
@@ -432,6 +434,7 @@ def invoke(
     if isinstance(chosen, Settings):
         environment["UNBAKE_HOST"] = str(chosen.host)
     environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + environment.get("PATH", "")
+    started = time.monotonic()
     try:
         completed = subprocess.run(
             [str(Path(sys.executable).absolute()), "-I", "-c", bootstrap, *command],
@@ -446,6 +449,7 @@ def invoke(
         raise DependencyError("dependency.timeout", f"{tool} exceeded {chosen.timeout_seconds:g}s") from exc
     except OSError as exc:
         raise DependencyError("dependency.process", f"cannot execute {tool}: {exc}") from exc
+    seconds = time.monotonic() - started
     if is_text_call(given):
         return ToolResult(
             tool,
@@ -455,6 +459,7 @@ def invoke(
             provenance,
             where,
             completed.stdout,
+            seconds,
         )
     try:
         document = json.loads(completed.stdout.decode("utf-8"))
@@ -477,6 +482,7 @@ def invoke(
         document,
         provenance,
         where,
+        seconds=seconds,
     )
 
 

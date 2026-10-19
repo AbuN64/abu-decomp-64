@@ -61,7 +61,8 @@ for name in os.listdir("/proc"):
             target = os.readlink("/proc/%%d/fd/%%d" %% (pid, fd))
         except OSError:
             continue
-        if target.startswith("/") and not target.startswith(("/dev/", "/proc/")) and target not in outs:
+        gone = target.endswith(" (deleted)")  # an unlinked file (a temp stream) can no longer be read by path
+        if target.startswith("/") and not gone and not target.startswith(("/dev/", "/proc/")) and target not in outs:
             outs.append(target)
     row = groups.setdefault(int(fields[2]), {"pgid": int(fields[2]), "pids": [], "command": " ".join(argv)[:400],
                                               "cwd": cwd, "age": 0, "outputs": []})
