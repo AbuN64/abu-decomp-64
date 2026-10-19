@@ -21,12 +21,26 @@ Gates, in order; the first failure stops the run and the rest are reported as sk
                and the same name at another address is not added and gets a `land.symbol_conflict` finding that
                carries both addresses. A symbol line splat itself rejects (the host's splat parses it alone) is not
                added either: a blocking `land.symbol_invalid` finding carries its reason, so a symbol line never
-               fails `unbake setup`
-  setup        `unbake setup` when the pinned unbake commit differs from the tree's last setup (a marker in the git dir)
+               fails `unbake setup`. A symbol line a patch removes (a move or a rename) and the tree still holds
+               exactly is retracted before the patch's lines are added; other removed lines in a union file stay.
+               Each input is checked against the state the earlier inputs left, before any build, and is refused
+               alone (the tree goes back to before it; `land.patch_excluded` plus the reason's own finding) when
+               - a symbol fact of it conflicts (`land.symbol_conflict`) or splat rejects it (`land.symbol_invalid`),
+               - a fact file it changed no longer reads whole in splat, e.g. two symbols at one address
+                 (`land.symbol_clash`, splat's reason names both), or
+               - its commit message breaks the subject limit or the tree's commit-msg hook (`land.commit_subject`,
+                 `land.commit_hook`)
+  setup        `unbake setup`, every round: it answers at once when nothing it reads moved and otherwise re-extracts
+               exactly the versions whose symbol facts, yaml or ROM changed (unbake stamps each version's extraction
+               in the tree), then builds
   sync         `unbake sync`
   check        the configured check command with jobs from the configured admit command
   sync_after   `unbake sync` again, after check
   sync_check   `unbake sync --check`
+  If setup, sync, check, sync_after or sync_check fails with more than one input landed, the failure is bisected by
+  input: the tree is rebuilt with growing prefixes of the inputs (warm caches, ceil(log2 n) builds) until the first
+  input whose presence breaks the build is found; that input is refused alone (`land.input_build_failed`, the build's
+  reason; the result's `refused_inputs`) and the rest are built again. `attempts` lists every build.
   markers      no marker line (INCLUDE_ASM, NON_MATCHING, ...) added in a file no applied patch touched
   untracked_s  no untracked assembly file (every one a patch or sync produced is tracked or staged)
   readme       no code percentage in the README lower than at the base
@@ -87,8 +101,14 @@ Run = Callable[[Sequence[str], Path, "dict[str, str] | None", "float | None"], "
 
 GATES = ("base", "apply", "setup", "sync", "check", "sync_after", "sync_check", "markers", "untracked_s", "readme")
 OPTIONAL_GATES = ("recipe",)
+# A failed build gate that can be the fault of one input (not the admit command or the tree's own state).
+BISECTABLE = frozenset({"land.setup", "land.sync", "land.check", "land.sync_after", "land.sync_check"})
 DEFAULT_SUBJECT_LIMIT = 72
 DEFAULT_MARKERS = ("INCLUDE_ASM", "NON_MATCHING", "GLOBAL_ASM")
+# The findings that say why an input was refused: they stay when the input's other findings go with its changes.
+REFUSAL_KEYS = frozenset(
+    {"land.symbol_conflict", "land.symbol_invalid", "land.symbol_clash", "land.commit_subject", "land.commit_hook"}
+)
 _PERCENT = re.compile(r"\bcode\b[^%\n]*?(\d+(?:\.\d+)?)%")
 _NAME = re.compile(r"([A-Za-z_]\w*)\s*\)\s*;?\s*$")
 _PATH_NAME = re.compile(r"([A-Za-z_]\w*)\.\w+\"")
@@ -125,6 +145,33 @@ for line in json.load(sys.stdin):
         text = [t.strip() for t in out.getvalue().replace("\r", "\n").splitlines()]
         text = [t for t in text if t and "it/s" not in t and not t.startswith(("Loading symbols", "error reading"))]
         bad[line] = " | ".join(text[:4]) or type(error).__name__
+print(json.dumps(bad))
+"""
+
+
+# The same interpreter on whole fact files: splat's reader on every line of the merged file, which finds what no line
+# shows alone (two symbols at one address with no segment or rom to tell them apart). stdin: a JSON list of paths
+# below the tree; stdout: {path: reason} for the files it rejects.
+SPLAT_FILE_CHECK = r"""
+import contextlib, io, json, sys, types
+from pathlib import Path
+import spimdisasm
+from splat.util import symbols
+class Known:
+    def known_types(self):
+        return spimdisasm.common.gKnownTypes
+symbols.disassembler_instance = types.SimpleNamespace(get_instance=lambda: Known())
+bad = {}
+for name in json.load(sys.stdin):
+    lines = [x for x in Path(name).read_text(errors="replace").splitlines() if "segment:" not in x]
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            symbols.handle_sym_addrs(Path(name), lines, [])
+    except BaseException as error:
+        text = [t.strip() for t in out.getvalue().replace("\r", "\n").splitlines()]
+        text = [t for t in text if t and "it/s" not in t and not t.startswith("Loading symbols")]
+        bad[name] = " | ".join(text[:4]) or type(error).__name__
 print(json.dumps(bad))
 """
 
@@ -334,17 +381,31 @@ def section_additions(section: str) -> list[str]:
     return found
 
 
+def section_removals(section: str) -> list[str]:
+    """The removed lines of a patch section (hunk bodies only)."""
+    found, inside = [], False
+    for line in section.splitlines():
+        if line.startswith("@@"):
+            inside = True
+        elif inside and line.startswith("-") and not line.startswith("--- "):
+            found.append(line[1:])
+    return found
+
+
 def symbol_line(line: str) -> tuple[str, int] | None:
     """(name, address) of a `name = 0xADDR;` symbol line, else None."""
     found = _SYMBOL.match(line)
     return (found[1], int(found[2], 0)) if found else None
 
 
-def union_merge(existing: str, added: Sequence[str]) -> tuple[str, list[dict[str, Any]]]:
-    """`existing` plus the added lines it lacks, appended in patch order; nothing is reordered or removed. A symbol
-    line whose name is already there at the same address is the same line (attributes aside); at another address it is
-    left out and returned as a conflict {name, kept, refused, line}."""
-    lines = existing.splitlines()
+def union_merge(existing: str, added: Sequence[str], removed: Sequence[str] = ()) -> tuple[str, list[dict[str, Any]]]:
+    """`existing` plus the added lines it lacks, appended in patch order; nothing is reordered. A symbol line the
+    patch removed (a move or a rename) and the tree still holds exactly is retracted first, so the line that replaces it
+    does not meet it; every other removed line stays. A symbol line whose name is already there at the same address is
+    the same line (attributes aside); at another address it is left out and returned as a conflict
+    {name, kept, refused, line}."""
+    retract = {x for x in removed if symbol_line(x)}
+    lines = [x for x in existing.splitlines() if x not in retract]
     seen = set(lines)
     names: dict[str, int] = {}
     for line in lines:
@@ -453,6 +514,7 @@ class Landing:
         messages: dict[str, str] | None = None,
         clock: Callable[[], float] = time.monotonic,
         splat_check: Callable[[Sequence[str]], dict[str, str] | None] | None = None,
+        splat_file_check: Callable[[Sequence[str]], dict[str, str] | None] | None = None,
     ) -> None:
         self.config = settings(profile)
         self.tree = tree.expanduser().resolve()
@@ -469,6 +531,15 @@ class Landing:
         self.extra: dict[str, Any] = {}
         self.recipe_summary: dict[str, Any] | None = None
         self.splat_check = splat_check or self.run_splat_check
+        self.splat_file_check = splat_file_check or self.run_splat_file_check
+        self.base_tree = ""  # the tree of the base commit: what a replay starts from
+        self.start_untracked: set[str] = set()
+        self.apply_mark: int | None = None  # findings from here on are the apply gate's, made again by each replay
+        self.dropped: dict[int, str] = {}  # patch index -> why the build refused that input
+        self.refused_inputs: list[dict[str, Any]] = []
+        self.refusal_findings: list[dict[str, Any]] = []  # the inputs the build refused: they outlive each replay
+        self.attempts: list[dict[str, Any]] = []
+        self._hook: Path | bool | None = False
         self.owner: dict[str, str] = {}  # function -> the first lane of this round that converted it
         self.lane_now = ""
         self.duplicates: list[dict[str, Any]] = []
@@ -485,6 +556,7 @@ class Landing:
 
     # gates -----------------------------------------------------------------------------------------------------
     def gate(self, name: str, passed: bool, started: float, **detail: Any) -> bool:
+        self.gates[:] = [g for g in self.gates if g["gate"] != name]  # a replay or a retry replaces the gate's row
         self.gates.append({"gate": name, "pass": passed, "seconds": round(self.clock() - started, 3), **detail})
         return passed
 
@@ -498,6 +570,8 @@ class Landing:
         wanted = out.strip() if code == 0 else ""
         dirty = self.git("status", "--porcelain", "--untracked-files=no").splitlines()
         self.extra.update(head=head, base=wanted or self.base)
+        self.base_tree = self.snapshot()
+        self.start_untracked = set(self.git("ls-files", "--others", "--exclude-standard").splitlines())
         if not wanted:
             self.fail("land.base", f"base ref {self.base} does not exist in {self.tree}")
         elif head != wanted:
@@ -506,18 +580,30 @@ class Landing:
             self.fail("land.dirty", f"tree has {len(dirty)} tracked changes before landing", files=dirty[:20])
         return self.gate("base", not self.findings, started, head=head)
 
-    def run_splat_check(self, lines: Sequence[str]) -> dict[str, str] | None:
-        """{line: reason} for the symbol lines the host's splat rejects; None when the host names no splat."""
+    def splat_python(self) -> Path | None:
+        """The host's splat interpreter, None when the host config names no splat."""
         try:
             splat = tomllib.loads(tools.host_file(self.profile).read_text()).get("tools", {}).get("splat")
         except (DecompError, OSError, ValueError):
             splat = None
         python = Path(splat).parent / "python" if splat else None
-        if python is None or not python.is_file() or not lines:
-            return None if python is None or not python.is_file() else {}
+        return python if python is not None and python.is_file() else None
+
+    def run_splat_check(self, lines: Sequence[str]) -> dict[str, str] | None:
+        """{line: reason} for the symbol lines the host's splat rejects; None when the host names no splat."""
+        return self.run_splat(SPLAT_CHECK, lines)
+
+    def run_splat_file_check(self, paths: Sequence[str]) -> dict[str, str] | None:
+        """{path: reason} for the fact files the host's splat rejects whole; None when the host names no splat."""
+        return self.run_splat(SPLAT_FILE_CHECK, paths)
+
+    def run_splat(self, script: str, items: Sequence[str]) -> dict[str, str] | None:
+        python = self.splat_python()
+        if python is None or not items:
+            return None if python is None else {}
         done = subprocess.run(
-            [str(python), "-I", "-c", SPLAT_CHECK],
-            input=json.dumps(list(lines)),
+            [str(python), "-I", "-c", script],
+            input=json.dumps(list(items)),
             cwd=self.tree,
             capture_output=True,
             text=True,
@@ -599,7 +685,9 @@ class Landing:
                         "reason": why,
                     }
                 )
-            merged, conflicts = union_merge(old, [x for x in added if x not in (rejected or {})])
+            merged, conflicts = union_merge(
+                old, [x for x in added if x not in (rejected or {})], section_removals(text)
+            )
             target.write_text(merged)
             self.git("add", "--", name)
             for conflict in conflicts:
@@ -736,17 +824,30 @@ class Landing:
                 }
             )
 
-    def apply_patches(self) -> bool:
+    def apply_patches(self, skip: dict[int, str] | None = None) -> bool:
+        """Apply the inputs in order, each against the state the earlier ones left. An input whose symbol facts, files
+        or commit message cannot land is refused alone (the tree goes back to before it) with its reason; the rest
+        land. `skip` holds the inputs a replay leaves out (patch index -> reason), beyond those the build refused."""
         started = self.clock()
-        for lane, path in self.patches:
+        if self.apply_mark is None:
+            self.apply_mark = len(self.findings)
+        del self.findings[self.apply_mark :]  # a replay makes the apply gate's findings again
+        self.findings.extend(self.refusal_findings)
+        self.lanes, self.owner, self.duplicates = [], {}, []
+        left_out = {**self.dropped, **(skip or {})}
+        for index, (lane, path) in enumerate(self.patches):
             row: dict[str, Any] = {"lane": lane, "patch": str(path), "status": "applied", "files": []}
             self.lanes.append(row)
             self.lane_now = lane
             self.duplicates = []
+            if index in left_out:
+                row.update(status="excluded", reason=left_out[index])
+                continue
             if not path.is_file():
                 row.update(status="excluded", reason=f"patch file {path} does not exist")
                 continue
             before = self.snapshot()
+            mark = len(self.findings)
             refused = self.apply_file_parts(path)
             after = self.snapshot()
             if after == before and refused:
@@ -773,6 +874,13 @@ class Landing:
                 "net": len(removed) - len(added_lines),
                 "names": sorted({n for n in map(function_name, removed) if n}),
             }
+            why = self.input_refusal(row, changed, mark)
+            if why is not None:
+                self.git("read-tree", "-u", "--reset", before)
+                self.findings[mark:] = [f for f in self.findings[mark:] if f["key"] in REFUSAL_KEYS]
+                row.update(status="excluded", reason=why, files=[], refused=[])
+                row.pop("functions", None)
+                continue
             for n in row["functions"]["names"]:
                 self.owner.setdefault(n, lane)
             if split:
@@ -822,6 +930,38 @@ class Landing:
             refused=[{"lane": r["lane"], **f} for r in self.lanes for f in r.get("refused", [])],
         )
 
+    def input_refusal(self, row: dict[str, Any], changed: dict[str, Any], mark: int) -> str | None:
+        """Why this input cannot land, None when it can: checked against the state the earlier inputs left, before any
+        build. Its symbol facts must merge (a name at another address, a line splat rejects) and the fact files it
+        changed must still read whole in splat (no two symbols at one address); its commit message must pass the
+        subject limit and the tree's commit-msg hook."""
+        lane = row["lane"]
+        symbol = [f for f in self.findings[mark:] if f["key"] in ("land.symbol_conflict", "land.symbol_invalid")]
+        if symbol:
+            return f"{symbol[0]['message']}" + (
+                f" (and {len(symbol) - 1} more symbol facts)" if len(symbol) > 1 else ""
+            )
+        facts = sorted(n for n, (added, _) in changed.items() if self.is_union(n) and any(map(symbol_line, added)))
+        bad = (self.splat_file_check(facts) or {}) if facts else {}
+        for name, why in sorted(bad.items()):
+            message = f"lane {lane}: {name} is not a valid symbol file with this input: {why}"
+            self.findings.append(
+                {
+                    "key": "land.symbol_clash",
+                    "message": message,
+                    "blocking": True,
+                    "lane": lane,
+                    "file": name,
+                    "reason": why,
+                }
+            )
+            return message
+        message, body = self.input_message(row, row["files"])
+        for key, text in self.message_problems(lane, message, body):
+            self.fail(key, text, lane=lane)
+            return text
+        return None
+
     def unbake(self, name: str, gate: str, *args: str) -> bool:
         started = self.clock()
         called = self.invoke("unbake", self.profile, list(args), project=self.tree)
@@ -838,20 +978,10 @@ class Landing:
         return self.gate(name, called.ok, started)
 
     def setup(self) -> bool:
-        started = self.clock()
-        pinned = self.pin()
-        marker = Path(self.git("rev-parse", "--absolute-git-dir").strip()) / "abu-decomp-land.json"
-        try:
-            last = json.loads(marker.read_text()).get("unbake")
-        except (OSError, ValueError, AttributeError):
-            last = None
-        if last == pinned:
-            return self.gate("setup", True, started, skipped=True, unbake=pinned)
-        if not self.unbake("setup", "setup", "setup"):
-            return False
-        marker.write_text(json.dumps({"unbake": pinned}) + "\n")
-        self.gates[-1].update(skipped=False, unbake=pinned, previous=last)
-        return True
+        """`unbake setup` every time: it answers at once when nothing it reads moved (its own state stamp), and
+        re-extracts exactly the versions whose symbol facts, yaml or ROM did, so no extracted assembly outlives the
+        facts it was made from."""
+        return self.unbake("setup", "setup", "setup")
 
     def check(self) -> bool:
         started = self.clock()
@@ -981,12 +1111,8 @@ class Landing:
         for group in groups:
             row = by_lane[group["lane"]]
             names = row["functions"]["names"]
-            body = None
-            message = self.messages.get(row["lane"])
-            if message is None and names:
-                dirs = top_dirs(row["files"]) or top_dirs(group["files"])
-                message, body = commit_message(self.config["markers"][0], names, dirs, self.config["subject_limit"])
-            elif message is None:
+            message, body = self.input_message(row, group["files"])
+            if message is None:
                 self.findings.append(
                     {
                         "key": "land.commit_message",
@@ -1003,33 +1129,50 @@ class Landing:
 
     def hook_path(self) -> Path | None:
         """The tree's commit-msg hook (git's own hooks path), when it exists and is executable."""
-        found = self.git("rev-parse", "--git-path", "hooks/commit-msg", ok=False).strip()
-        path = (self.tree / found) if found else None
-        return path if path and path.is_file() and os.access(path, os.X_OK) else None
+        if self._hook is False:
+            found = self.git("rev-parse", "--git-path", "hooks/commit-msg", ok=False).strip()
+            path = (self.tree / found) if found else None
+            self._hook = path if path and path.is_file() and os.access(path, os.X_OK) else None
+        return self._hook  # type: ignore[return-value]
+
+    def input_message(self, row: dict[str, Any], group_files: Sequence[str]) -> tuple[str | None, str | None]:
+        """The commit message an input will carry: its explicit one, else the project convention for the functions it
+        converted (None when it converted none and was given no message)."""
+        message = self.messages.get(row["lane"])
+        names = row["functions"]["names"] if row.get("functions") else []
+        if message is None and names:
+            dirs = top_dirs(row["files"]) or top_dirs(group_files)
+            return commit_message(self.config["markers"][0], names, dirs, self.config["subject_limit"])
+        return message, None
+
+    def message_problems(self, lane: str, message: str | None, body: str | None) -> list[tuple[str, str]]:
+        """[(finding key, text)] for a message that breaks the subject limit or the tree's commit-msg hook."""
+        if not message:
+            return []
+        limit, hook, found = self.config["subject_limit"], self.hook_path(), []
+        subject = message.splitlines()[0]
+        if len(subject) > limit:
+            found.append(
+                (
+                    "land.commit_subject",
+                    f"lane {lane}: commit subject is {len(subject)} characters, the limit is {limit}; "
+                    "shorten --patch LANE=PATH:MESSAGE",
+                )
+            )
+        if hook:
+            git_dir = self.tree / self.git("rev-parse", "--git-dir", ok=False).strip()
+            code, output = self.run_hook(hook, git_dir, message + (f"\n\n{body}" if body else "") + "\n")
+            if code:
+                found.append(
+                    ("land.commit_hook", f"lane {lane}: the commit-msg hook refuses {message!r}: {output[-300:]}")
+                )
+        return found
 
     def check_messages(self, plan: Sequence[dict[str, Any]]) -> None:
-        """Every planned message passes the subject limit and the tree's commit-msg hook before any commit."""
-        limit, hook = self.config["subject_limit"], self.hook_path()
-        git_dir = (self.tree / self.git("rev-parse", "--git-dir", ok=False).strip()) if hook else None
+        """Every planned message passes again as grouped for the commit (the inputs passed one by one as applied)."""
         for entry in plan:
-            if not entry["message"]:
-                continue
-            if len(entry["message"].splitlines()[0]) > limit:
-                self.fail(
-                    "land.commit_subject",
-                    f"lane {entry['lane']}: commit subject is {len(entry['message'].splitlines()[0])} characters, "
-                    f"the limit is {limit}; shorten --patch LANE=PATH:MESSAGE",
-                    lane=entry["lane"],
-                )
-            if hook and git_dir:
-                text = entry["message"] + (f"\n\n{entry['body']}" if entry["body"] else "") + "\n"
-                code, output = self.run_hook(hook, git_dir, text)
-                if code:
-                    self.fail(
-                        "land.commit_hook",
-                        f"lane {entry['lane']}: the commit-msg hook refuses {entry['message']!r}: {output[-300:]}",
-                        lane=entry["lane"],
-                    )
+            for key, text in self.message_problems(entry["lane"], entry["message"], entry["body"]):
+                self.fail(key, text, lane=entry["lane"])
 
     def run_hook(self, hook: Path, git_dir: Path, text: str) -> tuple[int, str]:
         """Run the hook on a message file kept in the git dir (never /tmp), as `git commit` does."""
@@ -1045,28 +1188,108 @@ class Landing:
             os.unlink(name)
 
     # run --------------------------------------------------------------------------------------------------------
-    def stages(self) -> list[Callable[[], bool]]:
+    def build_stages(self) -> list[Callable[[], bool]]:
         unbake = self.unbake
         return [
-            self.check_base,
-            self.apply_patches,
             self.setup,
             lambda: unbake("sync", "sync", "sync"),
             self.check,
             lambda: unbake("sync_after", "sync_after", "sync"),
             lambda: unbake("sync_check", "sync_check", "sync", "--check"),
-            self.markers,
-            self.untracked,
-            self.readme,
-            *([self.recipe] if self.config["recipe"] else []),
         ]
 
+    def after_stages(self) -> list[Callable[[], bool]]:
+        return [self.markers, self.untracked, self.readme, *([self.recipe] if self.config["recipe"] else [])]
+
+    def run_build(self) -> bool:
+        return all(stage() for stage in self.build_stages())
+
+    def applied(self) -> list[int]:
+        return [i for i, row in enumerate(self.lanes) if row["status"] == "applied"]
+
+    def replay(self, skip: dict[int, str]) -> bool:
+        """The tree back to the base, then the inputs not in `skip` (and not refused before) applied again in order.
+        Files the earlier builds left that are not ignored go too; ignored build output stays, so the build is warm."""
+        self.git("read-tree", "-u", "--reset", self.base_tree)
+        for name in sorted(
+            set(self.git("ls-files", "--others", "--exclude-standard").splitlines()) - self.start_untracked
+        ):
+            (self.tree / name).unlink(missing_ok=True)
+        return self.apply_patches(skip)
+
+    def probe(self, everyone: Sequence[int], keep: int) -> tuple[bool, list[dict[str, Any]]]:
+        """Build with only the first `keep` of `everyone` (the inputs that landed) in the tree; (passed, the blocking
+        findings a failure made)."""
+        inputs = list(everyone[:keep])
+        skip = {i: "left out of a bisect build" for i in everyone[keep:]}
+        if not self.replay(skip):
+            return False, []
+        mark = len(self.findings)
+        ok = self.run_build()
+        failure = self.findings[mark:]
+        del self.findings[mark:]
+        self.attempts.append(
+            {"inputs": [self.lanes[i]["lane"] for i in inputs], "pass": ok, "gates": [dict(g) for g in self.gates]}
+        )
+        return ok, [f for f in failure if f["blocking"]]
+
+    def build_round(self) -> bool:
+        """Build and verify the landed inputs. When the build fails and more than one input landed, the failure is
+        bisected by input: builds of growing prefixes find the first input whose presence breaks the build, that input
+        is refused alone with the build's reason and the rest are built again, so one bad input costs ceil(log2 n)
+        extra builds and not the round."""
+        while True:
+            mark = len(self.findings)
+            if self.run_build():
+                return True
+            failure = [f for f in self.findings[mark:] if f["blocking"]]
+            del self.findings[mark:]
+            self.attempts.append(
+                {
+                    "inputs": [self.lanes[i]["lane"] for i in self.applied()],
+                    "pass": False,
+                    "gates": [dict(g) for g in self.gates],
+                }
+            )
+            inputs = self.applied()
+            if len(inputs) < 2 or not any(f["key"] in BISECTABLE for f in failure):
+                self.findings.extend(failure)
+                return False
+            low, high = 0, len(inputs)  # the empty prefix builds; the whole list fails
+            while high - low > 1:
+                middle = (low + high) // 2
+                ok, found = self.probe(inputs, middle)
+                if ok:
+                    low = middle
+                else:
+                    high, failure = middle, found or failure
+            culprit = inputs[high - 1]
+            lane = self.lanes[culprit]["lane"]
+            first = failure[0]
+            last = (first.get("tail") or "").strip().splitlines()[-1:]
+            reason = f"{first['key']}: {first['message']}" + (f" ({last[0].strip()[:200]})" if last else "")
+            self.dropped[culprit] = f"the round does not build with it: {reason}"
+            self.refused_inputs.append({"lane": lane, "reason": reason, "builds": len(self.attempts)})
+            self.refusal_findings.append(
+                {
+                    "key": "land.input_build_failed",
+                    "message": f"lane {lane} refused alone: the round builds without it and not with it ({reason})",
+                    "blocking": True,
+                    "lane": lane,
+                    "reason": reason,
+                    "failure": [f.get("tail") or f.get("unbake_findings") for f in failure][:1],
+                }
+            )
+            if not self.replay({}):
+                return False
+
     def execute(self) -> Result:
-        failed = False
-        for stage in self.stages():
-            if not stage():
-                failed = True
-                break
+        failed = not (self.check_base() and self.apply_patches() and self.build_round())
+        if not failed:
+            for stage in self.after_stages():
+                if not stage():
+                    failed = True
+                    break
         done = {row["gate"] for row in self.gates}
         for name in (*GATES, *(g for g in OPTIONAL_GATES if self.config["recipe"])):
             if name not in done:
@@ -1081,12 +1304,15 @@ class Landing:
             "untracked_other": self.extra.get("untracked_other", []),
             **({"symbol_check": self.extra["symbol_check"]} if "symbol_check" in self.extra else {}),
             **self.groups(),
+            "refused_inputs": self.refused_inputs,
+            "attempts": self.attempts,
         }
         if self.recipe_summary is not None:
             result["recipe"] = self.recipe_summary
+        planned = len(self.findings)
         result["commits"] = self.commits(result["groups"])
-        if any(f["blocking"] and f["key"].startswith("land.commit_") for f in self.findings):
-            result["pass"] = False
+        if any(f["blocking"] and f["key"].startswith("land.commit_") for f in self.findings[planned:]):
+            result["pass"] = False  # a message that passed as one input breaks as grouped for its commit
         result["commit_commands"] = [
             f"git add -- {(files := ' '.join(shlex.quote(f) for f in c['files']))} "
             f"&& git commit -m {shlex.quote(c['message'])}"
@@ -1094,6 +1320,7 @@ class Landing:
             for c in result["commits"]
             if c["files"] and c["message"]
         ]
+        result["cache"] = tools.drain_cache()
         result["functions"] = {
             "converted": sum(r["functions"]["converted"] for r in self.lanes if r["status"] == "applied"),
             "added": sum(r["functions"]["added"] for r in self.lanes if r["status"] == "applied"),

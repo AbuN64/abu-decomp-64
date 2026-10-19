@@ -24,6 +24,7 @@ from abu_decomp.land import (
     run_process,
     sentence_list,
     top_dirs,
+    union_merge,
 )
 
 README = "| code [###] {a}% (~80%) 10 of 20 |\n| code [###] {b}% (~80%) 10 of 20 |\n"
@@ -68,6 +69,7 @@ class LandTests(unittest.TestCase):
         self.unbake, self.commands, self.events, self.recipes = [], [], [], []
         self.on_sync = lambda: None
         self.on_check = lambda: None
+        self.check_result = lambda: (0, "built\n", "")
 
     def patch(self, lane, edits):
         """A lane patch made against the base: edits {file: new text}; the tree is restored afterwards."""
@@ -102,7 +104,7 @@ class LandTests(unittest.TestCase):
         if argv[0] == "admit":
             return 0, "6\n", ""
         self.on_check()
-        return 0, "built\n", ""
+        return self.check_result()
 
     def land(self, patches, *, pin="u1", base=None):
         append = lambda path, record: self.events.append(record) or {"ok": True}  # noqa: E731
@@ -271,12 +273,16 @@ class LandTests(unittest.TestCase):
         one = self.patch("L1", {"c.c": "int untouched(void) { return 1; }\n"})
         two = self.patch("L2", {"b.c": "int func_3(void) { return 3; }\n"})
         result, code, findings = self.landing([one, two], {"L1": "Fix the pin: a long subject"}).execute()
+        # L1's explicit message breaks the hook: that input alone is refused before any build, L2 (whose generated
+        # message is 'Fix 1 INCLUDE_ASM stand-in ...', also over this hook's 21) is refused for the same reason.
         self.assertEqual(code, 1)
         self.assertFalse(result["pass"])
         self.assertEqual(
-            [(f["key"], f["lane"]) for f in findings], [("land.commit_hook", "L1"), ("land.commit_hook", "L2")]
+            [(f["key"], f.get("lane")) for f in findings if f["key"].startswith("land.commit_")],
+            [("land.commit_hook", "L1"), ("land.commit_hook", "L2")],
         )
         self.assertIn("subject too long", findings[0]["message"])
+        self.assertEqual(self.unbake, [])  # nothing was built: both inputs were refused up front
         self.assertEqual(git(self.tree, "rev-parse", "HEAD").strip(), self.base)
         self.assertEqual(list((self.tree / ".git").glob("LAND_MSG_*")), [])
 
@@ -284,7 +290,24 @@ class LandTests(unittest.TestCase):
         self.hook("#!/bin/sh\nexit 0\n")
         one = self.patch("L1", {"c.c": "int untouched(void) { return 1; }\n"})
         _, code, findings = self.landing([one], {"L1": "x" * 73}).execute()
-        self.assertEqual((code, [f["key"] for f in findings]), (1, ["land.commit_subject"]))
+        self.assertEqual(code, 1)
+        self.assertEqual([f["key"] for f in findings][:1], ["land.commit_subject"])
+        self.assertEqual(self.unbake, [])
+
+    def test_a_refused_message_refuses_that_input_alone_before_the_build(self):
+        self.hook('#!/bin/sh\nif [ "$(head -n1 "$1" | wc -c)" -gt 31 ]; then echo \'subject too long\'; exit 1; fi\n')
+        seen = []
+        self.on_sync = lambda: seen.append((self.tree / "c.c").read_text())
+        bad = self.patch("bad", {"c.c": "int untouched(void) { return 1; }\n"})
+        good = self.patch("good", {"b.c": "int func_3(void) { return 3; }\n"})
+        long = "Fix a subject that is 75 characters long, and so the hook refuses it......"
+        result, code, findings = self.landing([bad, good], {"bad": long, "good": "Fix func_3"}).execute()
+        self.assertEqual(code, 0)
+        self.assertEqual([r["status"] for r in result["lanes"]], ["excluded", "applied"])
+        self.assertEqual([f["key"] for f in findings if f["blocking"]], ["land.commit_subject"])
+        self.assertEqual(seen, [C_C, C_C])  # the syncs that ran had not seen the refused input's change
+        self.assertEqual([c["lane"] for c in result["commits"]], ["good"])
+        self.assertTrue(result["pass"])
 
     def test_explicit_patch_message_names_a_repin_only_commit(self):
         three = self.patch("L3", {"c.c": "int untouched(void) { return 1; }\n"})
@@ -316,19 +339,17 @@ class LandTests(unittest.TestCase):
         self.assertEqual(sentence_list(["a", "b", "c"]), "a, b and c")
         self.assertEqual(sentence_list(["a"]), "a")
 
-    def test_setup_is_skipped_when_the_tree_was_set_up_with_the_same_pin(self):
+    def test_setup_runs_every_round_so_changed_facts_are_extracted_again(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})
         self.land([one])
         git(self.tree, "checkout", "-q", "HEAD", "--", ".")
         self.unbake.clear()
-        result, code, _ = self.land([one])
+        result, code, _ = self.land([one])  # the same pin: unbake setup itself answers at once when nothing moved
         self.assertEqual(code, 0)
-        self.assertNotIn(("setup",), self.unbake)
-        self.assertTrue(result["gates"][2]["skipped"])
-        self.unbake.clear()
-        git(self.tree, "checkout", "-q", "HEAD", "--", ".")
-        self.land([one], pin="u2")
         self.assertIn(("setup",), self.unbake)
+        self.assertEqual([g["gate"] for g in result["gates"]][:3], ["base", "apply", "setup"])
+        self.assertFalse(result["gates"][2].get("skipped"))
+        self.assertFalse((self.tree / ".git" / "abu-decomp-land.json").exists())
 
     def test_conflicting_patch_is_excluded_with_its_reason_and_the_tree_is_restored(self):
         good = self.patch("good", {"b.c": "int func_3(void) { return 3; }\n"})
@@ -486,7 +507,7 @@ class LandTests(unittest.TestCase):
             [f["key"] for f in findings if f["key"] == "land.duplicate_function"], ["land.duplicate_function"]
         )
 
-    def test_symbol_lines_merge_by_name_and_a_conflicting_address_is_refused_with_both(self):
+    def test_symbol_lines_merge_by_name_and_an_input_with_a_conflicting_address_is_refused_alone(self):
         addrs = "versions/us/symbol_addrs.txt"
         self.seed({addrs: "base = 0x1; // type:func\n"})
         head = "base = 0x1; // type:func\n"
@@ -495,21 +516,22 @@ class LandTests(unittest.TestCase):
         three = self.patch("three", {addrs: head + "bar = 0x30; // type:func\nbaz = 0x40;\n"})
         result, code, findings = self.land([one, two, three])
         self.assertEqual(code, 0)
-        self.assertEqual(
-            (self.tree / addrs).read_text(), head + "foo = 0x10; // type:func\nbar = 0x20; // type:func\nbaz = 0x40;\n"
-        )
-        self.assertEqual([r["status"] for r in result["lanes"]], ["applied"] * 3)
+        self.assertEqual((self.tree / addrs).read_text(), head + "foo = 0x10; // type:func\nbar = 0x20; // type:func\n")
+        self.assertEqual([r["status"] for r in result["lanes"]], ["applied", "applied", "excluded"])
         conflict = [f for f in findings if f["key"] == "land.symbol_conflict"]
         self.assertEqual(len(conflict), 1)
         self.assertEqual((conflict[0]["name"], conflict[0]["kept"], conflict[0]["refused"]), ("bar", "0x20", "0x30"))
         self.assertEqual(conflict[0]["lane"], "three")
         self.assertIn("0x20", conflict[0]["message"])
         self.assertIn("0x30", conflict[0]["message"])
+        self.assertIn("0x30", result["lanes"][2]["reason"])  # the refusal names the conflict
+        self.assertEqual(result["gates"][1]["excluded"][0]["lane"], "three")
 
-    def test_a_symbol_line_splat_rejects_is_refused_with_its_reason_and_the_rest_merge(self):
+    def test_an_input_with_a_line_splat_rejects_is_refused_alone_with_its_reason(self):
         addrs = "versions/us/symbol_addrs.txt"
         self.seed({addrs: "base = 0x1;\n"})
         one = self.patch("one", {addrs: "base = 0x1;\nok = 0x2; // type:func\nbad = 0x3; // type:data\n"})
+        two = self.patch("two", {addrs: "base = 0x1;\nfine = 0x5;\n"})
         seen = []
 
         def check(lines):
@@ -518,19 +540,130 @@ class LandTests(unittest.TestCase):
 
         append = lambda path, record: {"ok": True}  # noqa: E731
         landing = Landing(
-            self.profile, self.tree, self.base, [one], invoke=self.invoke, run=self.runner, build=self.runner,
+            self.profile, self.tree, self.base, [one, two], invoke=self.invoke, run=self.runner, build=self.runner,
             append=append, pin=lambda: "u1", splat_check=check,
         )  # fmt: skip
         result, code, findings = landing.execute()
         self.assertEqual(code, 0)
-        self.assertEqual((self.tree / addrs).read_text(), "base = 0x1;\nok = 0x2; // type:func\n")
-        self.assertEqual(seen, [["ok = 0x2; // type:func", "bad = 0x3; // type:data"]])
+        self.assertEqual((self.tree / addrs).read_text(), "base = 0x1;\nfine = 0x5;\n")  # nothing of input one landed
+        self.assertEqual(seen[0], ["ok = 0x2; // type:func", "bad = 0x3; // type:data"])
+        self.assertEqual([r["status"] for r in result["lanes"]], ["excluded", "applied"])
         invalid = [f for f in findings if f["key"] == "land.symbol_invalid"]
         self.assertEqual(len(invalid), 1)
         self.assertTrue(invalid[0]["blocking"])
         self.assertEqual(invalid[0]["line"], "bad = 0x3; // type:data")
         self.assertIn("type:data", invalid[0]["message"])
         self.assertNotIn("symbol_check", result)
+
+    def landing_with(self, patches, **hooks):
+        return Landing(
+            self.profile, self.tree, self.base, patches, invoke=self.invoke, run=self.runner, build=self.runner,
+            append=lambda path, record: {"ok": True}, pin=lambda: "u1", **hooks,
+        )  # fmt: skip
+
+    def test_a_move_retracts_the_old_line_and_a_clash_in_the_merged_file_refuses_only_that_input(self):
+        addrs = "versions/de/symbol_addrs.txt"
+        old = "func_8043DADC_de = 0x8043DADC; // type:func rom:0x1A3ADC\n"
+        moved = (
+            "func_8043DADC_de_padding_1A3ADC = 0x8043DADC; // rom:0x1A3ADC size:0x4\nfunc_8043DADC_de = 0x8043DAE0;\n"
+        )
+        self.seed({addrs: "base = 0x1;\n" + old})
+        move = self.patch("move", {addrs: "base = 0x1;\n" + moved})
+        add = self.patch("add", {addrs: "base = 0x1;\n" + old + "other = 0x8043DADC;\n"})  # a second symbol there
+        calls = []
+
+        def whole(paths):
+            calls.append([(p, (self.tree / p).read_text()) for p in paths])
+            text = (self.tree / addrs).read_text()
+            if text.count("= 0x8043DADC;") > 1:
+                return {addrs: "Duplicate symbol detected! b clashes with a defined at vram 0x8043DADC."}
+            return {}
+
+        result, code, findings = self.landing_with([move, add], splat_file_check=whole).execute()
+        self.assertEqual(code, 0)
+        self.assertEqual([r["status"] for r in result["lanes"]], ["applied", "excluded"])
+        text = (self.tree / addrs).read_text()
+        self.assertIn("func_8043DADC_de = 0x8043DAE0;", text)
+        self.assertNotIn("func_8043DADC_de = 0x8043DADC", text)
+        self.assertNotIn("other", text)  # nothing of the refused input landed
+        clash = [f for f in findings if f["key"] == "land.symbol_clash"]
+        self.assertEqual(len(clash), 1)
+        self.assertEqual(clash[0]["lane"], "add")
+        self.assertIn("clashes with", clash[0]["message"])
+        self.assertEqual([[p for p, _ in call] for call in calls], [[addrs], [addrs]])
+
+    def test_union_merge_retracts_only_symbol_lines_the_tree_holds_exactly(self):
+        merged, conflicts = union_merge(
+            "a = 0x1;\nb = 0x2;\n# note\n", ["b = 0x3;", "c = 0x4;"], ["a = 0x1;", "# note", "z = 0x9;", "b = 0x7;"]
+        )
+        self.assertEqual(merged, "b = 0x2;\n# note\nc = 0x4;\n")  # a retracted; b's stale removal is not exact
+        self.assertEqual([c["name"] for c in conflicts], ["b"])
+
+    def build_rounds(self, bad, count=5):
+        """count inputs d1..dN each touching its own file; check fails while a file holds BAD."""
+        self.seed({f"d{i}.c": f"int d{i}(void) {{ return 0; }}\n" for i in range(1, count + 1)})
+        patches = [
+            self.patch(f"L{i}", {f"d{i}.c": "BAD\n" if i in bad else f"int d{i}(void) {{ return {i}; }}\n"})
+            for i in range(1, count + 1)
+        ]
+        builds = []
+
+        def result():
+            builds.append(
+                sorted(
+                    p.name
+                    for p in self.tree.glob("d*.c")
+                    if p.read_text().startswith("int d") and "return 0" not in p.read_text()
+                )
+            )
+            broken = [p.name for p in self.tree.glob("d*.c") if "BAD" in p.read_text()]
+            return (1, "", f"ld: {broken[0]}: BAD") if broken else (0, "built\n", "")
+
+        self.check_result = result
+        return patches, builds
+
+    def test_a_build_failure_is_bisected_by_input_and_only_the_bad_input_is_dropped(self):
+        patches, builds = self.build_rounds({3})
+        result, code, findings = self.landing_with(patches).execute()
+        self.assertEqual((code, result["pass"]), (0, True))
+        self.assertEqual(
+            [r["status"] for r in result["lanes"]], ["applied", "applied", "excluded", "applied", "applied"]
+        )
+        self.assertNotIn("BAD", "".join(p.read_text() for p in self.tree.glob("d*.c")))
+        self.assertEqual(sorted(p.name for p in self.tree.glob("d*.c")), [f"d{i}.c" for i in range(1, 6)])
+        self.assertEqual([r["lane"] for r in result["refused_inputs"]], ["L3"])
+        failed = [f for f in findings if f["key"] == "land.input_build_failed"]
+        self.assertEqual((len(failed), failed[0]["lane"]), (1, "L3"))
+        self.assertIn("BAD", failed[0]["message"])
+        self.assertEqual(len(builds), 1 + 2 + 1)  # prefixes of 2 (passes) and 3 (fails) find the third input
+        self.assertLessEqual(len(builds) - 2, 3)  # never more than ceil(log2 5) probes
+        self.assertEqual(len(result["attempts"]), len(builds) - 1)  # the last build is the result's own gates
+        self.assertTrue(all(g["pass"] for g in result["gates"] if g["pass"] is not None))
+        self.assertEqual([c["lane"] for c in result["commits"]], ["L1", "L2", "L4", "L5"])
+
+    def test_two_bad_inputs_are_both_dropped_and_a_failing_lone_input_is_not_bisected(self):
+        patches, _ = self.build_rounds({2, 5})
+        result, code, _ = self.landing_with(patches).execute()
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            [r["status"] for r in result["lanes"]], ["applied", "excluded", "applied", "applied", "excluded"]
+        )
+        self.assertEqual([r["lane"] for r in result["refused_inputs"]], ["L2", "L5"])
+
+    def test_a_round_that_fails_with_one_input_left_reports_the_failure_and_drops_nothing(self):
+        patches, builds = self.build_rounds({1}, count=1)
+        result, code, findings = self.landing_with(patches).execute()
+        self.assertEqual((code, result["pass"], len(builds)), (1, False, 1))
+        self.assertIn("land.check", [f["key"] for f in findings])
+        self.assertEqual(result["refused_inputs"], [])
+
+    def test_a_replay_removes_files_a_failed_build_left_and_keeps_the_rest(self):
+        patches, _ = self.build_rounds({2}, count=3)
+        self.on_check = lambda: (self.tree / "stray.s").write_text("x\n")
+        result, code, _ = self.landing_with(patches).execute()
+        self.assertEqual(code, 1)  # the stray assembly of the last build is the untracked_s gate's finding
+        self.assertEqual([r["lane"] for r in result["refused_inputs"]], ["L2"])
+        self.assertEqual(result["untracked_other"], [])
 
     def test_union_paths_must_be_a_list_of_globs(self):
         seat = json.loads((self.root / "seat.json").read_text())
