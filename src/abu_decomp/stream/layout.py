@@ -45,13 +45,14 @@ def exact(value: str) -> str:
     return '"^' + re.escape(value) + '$"'
 
 
-def sway_config(up: dict[str, Any], bar_command: list[str] | None = None) -> str:
+def sway_config(up: dict[str, Any], bar_command: list[str] | None = None, cursor_theme: str | None = None) -> str:
     """Sway config: one fixed-size virtual output, no decoration, overlay rules for role windows.
 
     Criteria are regular expressions, so each is anchored: a role named like its tile's app_id must not match it.
     An overlay is a window a role opens itself (a game); it floats exactly over its role's tile, so the tile's
     terminal shows through (black, for a placeholder role) whenever the window is absent.
-    A bar, when the profile declares one, runs bar_command as its status line.
+    A bar, when the profile declares one, runs bar_command as its status line. cursor_theme names the XCursor theme the
+    compositor's own cursor uses (the transparent one when the profile hides it).
     """
     out = up["output"]
     width, height = int(out["width"]), int(out["height"])
@@ -62,6 +63,8 @@ def sway_config(up: dict[str, Any], bar_command: list[str] | None = None) -> str
         "focus_follows_mouse no",
         f"output {out['name']} mode {width}x{height} position 0 0 bg #000000 solid_color",
     ]
+    if cursor_theme:
+        lines.append(f"seat * xcursor_theme {cursor_theme} 24")
     for _role, overlay, x, y, _w, _h in overlays(up):
         lines.append(
             f"for_window [app_id={exact(overlay)}] floating enable, border none, move absolute position {x} {y}"

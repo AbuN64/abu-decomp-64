@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import audio, layout, transport
+from . import audio, cursor, layout, transport
 from .control import pidfile
 from .inotify import wait_for_path
 from .supervise import FatalUnitExit, Group, RoleRunner, Unit
@@ -90,10 +90,19 @@ def up(profile: Any) -> dict[str, Any]:
         stale.unlink(missing_ok=True)
     base_mapping = substitutions(profile, config, run_dir)
     base_env = {"XDG_RUNTIME_DIR": str(run_dir), **format_env(config.get("env", {}), base_mapping)}
+    hidden = config.get("cursor") == "hidden"
+    if hidden:
+        base_env.update(
+            XCURSOR_PATH=str(cursor.write_theme(run_dir / "cursors")), XCURSOR_THEME=cursor.THEME, XCURSOR_SIZE="24"
+        )
     if "audio" in config:
         audio.ensure_sink(config["audio"]["sink"], {**os.environ, **base_env})
     bar = config.get("bar")
-    conf.write_text(layout.sway_config(config, format_command(bar["command"], base_mapping) if bar else None))
+    conf.write_text(
+        layout.sway_config(
+            config, format_command(bar["command"], base_mapping) if bar else None, cursor.THEME if hidden else None
+        )
+    )
     group = Group()
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:

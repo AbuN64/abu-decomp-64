@@ -91,6 +91,25 @@ class GridTests(unittest.TestCase):
         assert ipc.commands == ['[app_id="^tile\\-a$"] focus; splitv', '[app_id="^tile\\-b$"] focus; splitv']
 
 
+class CursorTests(unittest.TestCase):
+    def test_hidden_cursor_is_a_transparent_theme_the_compositor_uses(self):
+        import struct
+
+        from abu_decomp.stream import cursor
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = cursor.write_theme(Path(directory) / "cursors")
+            for name in ("left_ptr", "text", "xterm", "pointer", "default"):
+                data = (root / "blank/cursors" / name).read_bytes()
+                magic, _, _, count = struct.unpack_from("<4sIII", data)
+                _, _, position = struct.unpack_from("<III", data, 16)
+                _, _, _, _, width, height, _, _, _ = struct.unpack_from("<IIIIIIIII", data, position)
+                (pixel,) = struct.unpack_from("<I", data, position + 36)
+                assert (magic, count, width, height, pixel) == (b"Xcur", 1, 1, 1, 0), name
+        assert "seat * xcursor_theme blank 24" in layout.sway_config(UP, None, "blank")
+        assert "xcursor_theme" not in layout.sway_config(UP)
+
+
 class OverlayTests(unittest.TestCase):
     def test_window_off_its_tile_gets_one_fix_and_a_placed_one_none(self):
         def tree(rect):
