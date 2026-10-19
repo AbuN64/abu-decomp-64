@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -97,6 +98,69 @@ class Enter(unittest.TestCase):
             warn=warned.append,
         )  # fmt: skip
         self.assertTrue(result is False and len(warned) == 1)
+
+
+class _Exec(Exception):
+    pass
+
+
+class Pin(unittest.TestCase):
+    def setUp(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k not in (runslice.ENTERED, runslice.PINNED)}
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "venv.abc123").mkdir()
+        (root / "venv").symlink_to(root / "venv.abc123")
+        self.real = str((root / "venv.abc123").resolve())
+        self.link = str(root / "venv")
+        self.profile = root / "seat.json"
+        self.profile.write_text(json.dumps({"schema_version": 1, "name": "s", "tools": {"run_slice": "decomp.slice"}}))
+
+    def _start(self, prefix: str, args: list[str], cgroup: str = IN) -> tuple[list[Any], list[Any]]:
+        direct: list[Any] = []
+        wrapped: list[Any] = []
+
+        def exec_wrapped(*call: Any) -> None:
+            wrapped.append(call)
+            raise _Exec  # a real exec never returns
+
+        with contextlib.suppress(_Exec):
+            runslice.start(
+            args, prefix=prefix, orig_argv=["python", "-m", "abu_decomp", *args], execve=lambda *c: direct.append(c),
+            cgroup=lambda: cgroup, which=lambda n: "/usr/bin/systemd-run", probe=lambda n: _done(0),
+            execvpe=exec_wrapped, warn=lambda t: None,
+            )  # fmt: skip
+        return direct, wrapped
+
+    def test_a_symlinked_prefix_execs_the_resolved_python_once(self) -> None:
+        [(program, argv, env)], wrapped = self._start(self.link, ["make"])
+        self.assertEqual(
+            (wrapped, program, argv), ([], f"{self.real}/bin/python", [program, "-m", "abu_decomp", "make"])
+        )
+        self.assertEqual(env[runslice.PINNED], "1")
+
+    def test_the_guard_stops_a_second_exec(self) -> None:
+        os.environ[runslice.PINNED] = "1"
+        self.assertEqual(self._start(self.link, ["make"]), ([], []))
+
+    def test_a_real_prefix_does_not_exec(self) -> None:
+        self.assertEqual(self._start(self.real, ["make"]), ([], []))
+
+    def test_pin_and_slice_wrap_exec_exactly_once_through_systemd_run(self) -> None:
+        args = ["--profile", str(self.profile), "make"]
+        direct, [(program, command, env)] = self._start(self.link, args, cgroup=OUT)
+        self.assertEqual((direct, program), ([], "systemd-run"))
+        self.assertEqual(command[command.index("--") + 1 :][:3], [f"{self.real}/bin/python", "-m", "abu_decomp"])
+        self.assertEqual((env[runslice.ENTERED], env[runslice.PINNED]), ("decomp.slice", "1"))
+
+    def test_a_pin_in_a_process_already_in_the_slice_execs_directly(self) -> None:
+        args = ["--profile", str(self.profile), "make"]
+        [(program, _, _)], wrapped = self._start(self.link, args, cgroup=IN)
+        self.assertEqual((wrapped, program), ([], f"{self.real}/bin/python"))
 
 
 class Names(unittest.TestCase):

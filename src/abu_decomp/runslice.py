@@ -14,8 +14,10 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 ENTERED = "ABU_RUN_SLICE_ENTERED"  # the slice a parent already tried, so a refusal can never loop
+PINNED = "ABU_VERSION_PINNED"  # set by the exec into the resolved venv, so the pin can never loop
 
 
 def in_slice(slice_name: str, cgroup: str) -> bool:
@@ -48,11 +50,24 @@ def _probe(slice_name: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _clean(slice_name: str | None) -> dict[str, str]:
+def _clean(slice_name: str | None, pinned: bool = False) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k != ENTERED}
     if slice_name:
         env[ENTERED] = slice_name
+    if pinned:
+        env[PINNED] = "1"
     return env
+
+
+def pinned_python(prefix: str | None = None) -> str | None:
+    """The resolved venv's python when this process runs through a symlinked venv path (a deploy swaps that link, so
+    a later import would load the next version's modules); None when the prefix is a real directory or the pin was
+    already done."""
+    if os.environ.get(PINNED):
+        return None
+    path = Path(sys.prefix if prefix is None else prefix)
+    resolved = path.resolve()
+    return str(resolved / "bin" / "python") if resolved != path else None
 
 
 def enter(
@@ -64,6 +79,7 @@ def enter(
     probe: Callable[[str], subprocess.CompletedProcess[str]] = _probe,
     execvpe: Callable[..., None] = os.execvpe,
     warn: Callable[[str], None] = lambda text: sys.stderr.write(text + "\n"),
+    pinned: bool = False,
 ) -> bool:
     """Re-execs `argv` inside `slice_name` and does not return when it does. Returns False when the command should
     run in place: no slice named, already in it, already tried by a parent, running as a service, or the host cannot
@@ -88,7 +104,7 @@ def enter(
         return False
     command = _systemd_run(slice_name, argv)
     try:
-        execvpe(command[0], command, _clean(slice_name))
+        execvpe(command[0], command, _clean(slice_name, pinned))
     except OSError as exc:
         warn(f"decomp: run slice {slice_name} not entered: {exc}; running in place")
     return False
@@ -112,8 +128,24 @@ def slice_named(args: Sequence[str]) -> str | None:
     return value if isinstance(value, str) and value.endswith(".slice") else None
 
 
-def start(args: Sequence[str]) -> None:
-    """The one call at the top of `decomp`'s main: enter the seat's run slice for this very command line."""
+def start(
+    args: Sequence[str],
+    *,
+    prefix: str | None = None,
+    orig_argv: Sequence[str] | None = None,
+    execve: Callable[..., None] = os.execve,
+    **hooks: Any,
+) -> None:
+    """The one call at the top of `decomp`'s main. It builds the final command line first (the resolved venv's python,
+    wrapped in `systemd-run` when the seat's slice applies) and execs it once, so one command never execs twice."""
+    python = pinned_python(prefix)
+    rest = list(sys.orig_argv[1:] if orig_argv is None else orig_argv[1:])
+    argv = [python or sys.executable, *rest]
     name = slice_named(args)
     if name:
-        enter(name, [sys.executable, *sys.orig_argv[1:]])
+        enter(name, argv, pinned=python is not None, **hooks)  # does not return when it execs
+    if python:
+        try:
+            execve(python, argv, _clean(None, True))
+        except OSError as exc:
+            sys.stderr.write(f"decomp: venv pin not applied: {exc}; running in place\n")
