@@ -34,7 +34,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
-PROBE_KEYS = ("closure", "stubs", "statuses", "wall_seconds", "cached", "event_budget", "events_max")
+PROBE_KEYS = ("closure", "stubs", "spilled", "statuses", "wall_seconds", "cached", "event_budget", "events_max")
 
 
 class BehaveError(DecompError):
@@ -141,8 +141,7 @@ def _request(
     return request
 
 
-def out_of_budget(case: dict[str, Any]) -> bool:
-    return case["status"] == "fatal" and case["detail"].startswith("event-budget")
+out_of_budget = compare.out_of_budget
 
 
 def _stack(record: dict[str, Any]) -> tuple[int, int]:
@@ -335,7 +334,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
             again["probe"]["lenient"] = True
         return again, code, [*findings, *more]
     if (
-        not any(c["status"] == "ok" for c in original["cases"])
+        not any(c["status"] == "ok" or out_of_budget(c) for c in original["cases"])  # a loop cut by the budget ran
         and cut
         and depth < config["depth_cap"]
         and (options.depth is None or options.deepened)

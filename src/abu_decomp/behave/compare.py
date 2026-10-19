@@ -3,8 +3,10 @@
 Hard differences (any one makes a case `differs`): the returned value the prototype says is meaningful, the net
 change to memory (stack frame excluded), the ordered calls with the arguments their prototypes say are read, and
 callee-saved registers the candidate leaves changed. Calls to opaque hand-written callees are left out of the
-call order. Soft notes (never a verdict): reads outside the seeded memory that only one side makes, calls whose
-callee has no prototype, stores that moved across a call.
+call order. A routine that never returns (a main loop) ends in the per-case event budget on both sides: those cases
+compare the calls both made before the cut (including calls to boundary stubs) and say how many ran. Soft notes
+(never a verdict): reads outside the seeded memory that only one side makes, calls whose callee has no prototype,
+stores that moved across a call.
 """
 
 from __future__ import annotations
@@ -28,6 +30,11 @@ def _calls(case: dict[str, Any], opaque: frozenset[str] = frozenset()) -> list[d
     shows in the memory effect and the return value)."""
     events = [e for e in case["events"] if e["k"] in ("call", "stub")]
     return [e for e in events[1:] if _name(e["name"]) not in opaque]
+
+
+def out_of_budget(case: dict[str, Any]) -> bool:
+    """Whether the case was cut by the event budget (a run that does not return), not finished or crashed."""
+    return case["status"] == "fatal" and case["detail"].startswith("event-budget")
 
 
 def _hex(value: int, width: int = 8) -> str:
@@ -83,6 +90,60 @@ def _store_after(case: dict[str, Any], address: int) -> str:
     return where
 
 
+def _bounded(
+    original: dict[str, Any],
+    candidate: dict[str, Any],
+    callees: dict[str, Prototype],
+    stack: tuple[int, int],
+    opaque: frozenset[str],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """Both sides ran to the event budget: their stores and registers at the cut are not comparable (the budget
+    counts instructions' events, and the two bodies spend them differently), but the calls they made in order are.
+    The shorter side's calls are the prefix compared; a call the other side never reached is not a difference."""
+    calls_a, calls_b = _calls(original, opaque), _calls(candidate, opaque)
+    seen = min(len(calls_a), len(calls_b))
+    result["ran"] = {"calls_original": len(calls_a), "calls_candidate": len(calls_b), "compared": seen}
+    result["notes"].append(f"ran to the event budget on both sides; compared the first {seen} call(s)")
+    if seen == 0:
+        result.update(verdict=UNTESTABLE, reason="both ran to the event budget before any call")
+        return result
+    for index in range(seen):
+        a, b = calls_a[index], calls_b[index]
+        if _name(a["name"]) != _name(b["name"]):
+            result.update(
+                verdict=DIFFERS,
+                reason=f"call {index + 1}: original calls {_name(a['name'])}, candidate {_name(b['name'])}",
+                difference={
+                    "kind": "call",
+                    "index": index + 1,
+                    "expected": _name(a["name"]),
+                    "got": _name(b["name"]),
+                },
+            )
+            return result
+        values_a, values_b = _args(a, callees.get(_name(a["name"]))), _args(b, callees.get(_name(b["name"])))
+        if values_a is None:
+            continue
+        for (label, x), (_, y) in zip(values_a, values_b or [], strict=False):
+            if x != y and not (stack[0] <= x < stack[1] and stack[0] <= y < stack[1]):
+                result.update(
+                    verdict=DIFFERS,
+                    reason=f"call {index + 1} {_name(a['name'])}: {label} is {_hex(x)} in the original, "
+                    f"{_hex(y)} in the candidate",
+                    difference={
+                        "kind": "call-args",
+                        "index": index + 1,
+                        "callee": _name(a["name"]),
+                        "argument": label,
+                        "expected": x,
+                        "got": y,
+                    },
+                )
+                return result
+    return result
+
+
 def compare_case(
     original: dict[str, Any],
     candidate: dict[str, Any],
@@ -101,6 +162,8 @@ def compare_case(
         "difference": None,
         "notes": [],
     }
+    if out_of_budget(original) and out_of_budget(candidate):
+        return _bounded(original, candidate, callees, stack, opaque, result)
     if original["status"] != "ok":
         result.update(verdict=UNTESTABLE, reason=f"original {original['status']}: {original['detail']}")
         return result
@@ -219,6 +282,7 @@ def overall(cases: list[dict[str, Any]], inputs: list[dict[str, str]]) -> dict[s
         "reason": reason,
         "counts": counts,
         "untestable_reasons": reasons,
+        **({"bounded": bounded} if (bounded := sum("ran" in c for c in cases)) else {}),
         "first_difference": (
             {"case": first[0]["name"], "inputs": first[1], **first[0]["difference"]} if first else None
         ),

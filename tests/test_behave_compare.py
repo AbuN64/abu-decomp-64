@@ -54,6 +54,38 @@ class OpaqueCalleeTests(unittest.TestCase):
         self.assertEqual(verdict_opaque(orig, cand, {"rnc"})["difference"]["kind"], "call-args")
 
 
+def cut(events, status="fatal", detail="event-budget 2000 reached"):
+    return case(events=events, status=status, detail=detail, ret=0)
+
+
+class BoundedLoopTests(unittest.TestCase):
+    """A main loop never returns: both sides end in the event budget and the calls they made are compared."""
+
+    def test_the_common_prefix_of_calls_is_compared_and_reported(self):
+        orig = cut([call("f"), call("g", 0, 1, 5), call("g", 0, 2, 5), call("g", 0, 3, 5)])
+        cand = cut([call("f"), call("g", 0, 1, 5), call("g", 0, 2, 5)])
+        done = verdict(orig, cand)
+        self.assertEqual(done["verdict"], c.SAME)
+        self.assertEqual(done["ran"], {"calls_original": 3, "calls_candidate": 2, "compared": 2})
+        self.assertEqual(c.overall([done], [{}])["bounded"], 1)
+
+    def test_a_different_call_or_argument_before_the_cut_differs(self):
+        orig = cut([call("f"), call("g", 0, 1, 5), call("h")])
+        self.assertEqual(verdict(orig, cut([call("f"), call("h")]))["difference"]["kind"], "call")
+        self.assertEqual(verdict(orig, cut([call("f"), call("g", 0, 2, 5)]))["difference"]["kind"], "call-args")
+
+    def test_a_side_that_made_no_call_is_untestable_and_stores_at_the_cut_are_not_compared(self):
+        self.assertEqual(verdict(cut([call("f")]), cut([call("f")]))["verdict"], c.UNTESTABLE)
+        a, b = cut([call("f"), call("g")]), cut([call("f"), call("g")])
+        b["net"] = [[0x80A00010, 99]]
+        self.assertEqual(verdict(a, b)["verdict"], c.SAME)
+
+    def test_a_budget_cut_against_a_return_is_not_bounded(self):
+        done = verdict(cut([call("f"), call("g")]), case())
+        self.assertEqual(done["verdict"], c.UNTESTABLE)
+        self.assertEqual(verdict(case(), cut([call("f")]))["verdict"], c.DIFFERS)
+
+
 class CompareTests(unittest.TestCase):
     def test_identical_runs_are_same(self):
         self.assertEqual(verdict(case(), case())["verdict"], c.SAME)
