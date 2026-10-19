@@ -56,6 +56,16 @@ class ToolTests(unittest.TestCase):
         self.profile = load_profile(root / "seat.json")
         self.root = root
 
+    def test_taste_without_a_seat_profile_names_the_key_and_what_it_takes(self):
+        table = json.loads((self.root / "seat.json").read_text())
+        del table["tools"]["taste_profile"]
+        (self.root / "seat.json").write_text(json.dumps(table))
+        chosen = tools.settings(load_profile(self.root / "seat.json"))
+        with self.assertRaises(tools.DependencyError) as caught:
+            tools._command("taste", chosen, ("repro", "status"))
+        self.assertIn("tools.taste_profile", caught.exception.detail)
+        self.assertIn("absolute path", caught.exception.detail)
+
     def test_pins_come_from_own_metadata_and_match_installed_commits(self):
         with installed():
             report = tools.verify_dependencies()

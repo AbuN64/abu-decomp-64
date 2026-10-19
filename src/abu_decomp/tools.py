@@ -217,7 +217,11 @@ def _command(tool: str, chosen: Settings, given: tuple[str, ...]) -> list[str]:
         raise DependencyError("dependency.arguments", f"{tool} {'/'.join(owned)} come only from the seat profile")
     if tool == "taste":
         if chosen.taste_profile is None:
-            raise DependencyError("dependency.configuration", "tools.taste_profile is not set in the seat profile")
+            raise DependencyError(
+                "dependency.configuration",
+                "tools.taste_profile is not set in the seat profile; set it to the absolute path of the "
+                "cake-taste project JSON profile that `taste --profile` takes",
+            )
         return ["--profile", str(chosen.taste_profile), *given]
     if is_text_call(given):
         return ["--project", str(chosen.project), *given]  # the tool's own text, arguments untouched
