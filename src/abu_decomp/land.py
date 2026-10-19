@@ -398,14 +398,31 @@ def symbol_line(line: str) -> tuple[str, int] | None:
     return (found[1], int(found[2], 0)) if found else None
 
 
+def _hex(address: int | None) -> str | None:
+    return None if address is None else f"0x{address:X}"
+
+
+def conflict_steps(conflict: dict[str, Any]) -> str:
+    """What to do about a symbol line left out because the tree has the name at another address."""
+    base = conflict.get("base")
+    if base is not None and base != conflict["kept"]:
+        return f" (the patch moved it from {base}, the tree has moved it since: export the patch again from the tree)"
+    if base is not None:
+        return ""
+    return " (the patch adds a name the tree holds: remove its old line in the patch too, as a move does)"
+
+
 def union_merge(existing: str, added: Sequence[str], removed: Sequence[str] = ()) -> tuple[str, list[dict[str, Any]]]:
     """`existing` plus the added lines it lacks, appended in patch order; nothing is reordered. A symbol line the
     patch removed (a move or a rename) and the tree still holds exactly is retracted first, so the line that replaces it
-    does not meet it; every other removed line stays. A symbol line whose name is already there at the same address is
-    the same line (attributes aside); at another address it is left out and returned as a conflict
-    {name, kept, refused, line}."""
-    retract = {x for x in removed if symbol_line(x)}
-    lines = [x for x in existing.splitlines() if x not in retract]
+    does not meet it (the tree's line is the same symbol at the same address, whatever its attributes say); every other
+    removed line stays. A symbol line whose name is already there at the same address is the same line (attributes
+    aside); at another address it is left out and returned as a conflict {name, kept, refused, line, base}, `base`
+    being the address the patch itself removed that name from (None when it removed none), so a conflict whose base is
+    not the tree's address says the tree moved the symbol after the patch was made."""
+    retract = {s for x in removed if (s := symbol_line(x))}
+    lines = [x for x in existing.splitlines() if symbol_line(x) not in retract]
+    bases = {name: address for name, address in retract}
     seen = set(lines)
     names: dict[str, int] = {}
     for line in lines:
@@ -419,7 +436,13 @@ def union_merge(existing: str, added: Sequence[str], removed: Sequence[str] = ()
         if symbol and symbol[0] in names:
             if names[symbol[0]] != symbol[1]:
                 conflicts.append(
-                    {"name": symbol[0], "kept": f"0x{names[symbol[0]]:X}", "refused": f"0x{symbol[1]:X}", "line": line}
+                    {
+                        "name": symbol[0],
+                        "kept": f"0x{names[symbol[0]]:X}",
+                        "refused": f"0x{symbol[1]:X}",
+                        "line": line,
+                        "base": _hex(bases.get(symbol[0])),
+                    }
                 )
             continue
         seen.add(line)
@@ -704,7 +727,8 @@ class Landing:
                     {
                         "key": "land.symbol_conflict",
                         "message": f"lane {self.lane_now}: {conflict['name']} in {name} is {conflict['refused']} in "
-                        f"this patch but {conflict['kept']} in the tree; the line was not added",
+                        f"this patch but {conflict['kept']} in the tree; the line was not added"
+                        + conflict_steps(conflict),
                         "blocking": True,
                         "lane": self.lane_now,
                         "file": name,

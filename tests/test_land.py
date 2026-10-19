@@ -18,6 +18,7 @@ from abu_decomp.land import (
     build_process,
     code_percentages,
     commit_message,
+    conflict_steps,
     diff_lines,
     function_name,
     parse_messages,
@@ -621,6 +622,24 @@ class LandTests(unittest.TestCase):
             Landing(self.profile, self.tree, self.base, [], invoke=land_tools.invoke).ready()
             Landing(self.profile, self.tree, self.base, [], invoke=self.invoke).ready()
         ready.assert_called_once_with(self.profile, self.tree.resolve())
+
+    def test_a_move_retracts_the_tree_line_whatever_its_attributes_say(self):
+        merged, conflicts = union_merge(
+            "f = 0x10; // type:func rom:0x10 size:0x20\n",
+            ["pad = 0x10; // size:0x4", "f = 0x14;"],
+            ["f = 0x10; // type:func"],
+        )
+        self.assertEqual(merged, "pad = 0x10; // size:0x4\nf = 0x14;\n")
+        self.assertEqual(conflicts, [])
+
+    def test_a_conflict_after_the_tree_moved_the_symbol_says_to_export_the_patch_again(self):
+        merged, conflicts = union_merge("f = 0x30;\n", ["f = 0x14;"], ["f = 0x10;"])
+        self.assertEqual(merged, "f = 0x30;\n")
+        self.assertEqual((conflicts[0]["kept"], conflicts[0]["base"]), ("0x30", "0x10"))
+        self.assertIn("export the patch again", conflict_steps(conflicts[0]))
+        _, bare = union_merge("f = 0x30;\n", ["f = 0x14;"])
+        self.assertIsNone(bare[0]["base"])
+        self.assertIn("remove its old line", conflict_steps(bare[0]))
 
     def build_rounds(self, bad, count=5):
         """count inputs d1..dN each touching its own file; check fails while a file holds BAD."""
