@@ -78,6 +78,29 @@ class EmitTests(unittest.TestCase):
             self.assertEqual((sub[0]["status"], sub[0]["payload"]["op"]), ("passed", "submit"))
             self.assertEqual(self.emit("unbake", ["report"], {"result": {}}, directory), [])
             self.assertEqual(self.emit("recipe", ["score"], {"result": {}}, directory), [])
+            self.assertEqual(self.emit("taste", ["score"], {"result": {}}, directory), [])
+
+    def test_recipe_verbs_and_unbake_gates_are_on_the_stream(self):
+        with tempfile.TemporaryDirectory() as directory:
+            name = self.emit(
+                "recipe",
+                ["name", "submit", "n.jsonl"],
+                {"ok": True, "accepted": 3, "refused": 1, "moves": 5},
+                directory,
+            )
+            self.assertEqual(
+                (name[0]["kind"], name[0]["payload"]["op"], name[0]["actor"]), ("MATCH", "recipe", "RW-SOL-A")
+            )
+            self.assertEqual(name[0]["message"], "Recipe name submit: 5 moves, 3 accepted, 1 refused")
+            apply = self.emit("recipe", ["apply"], {"ok": True, "files": ["a", "b"]}, directory)
+            self.assertEqual((apply[0]["kind"], apply[0]["status"]), ("LAND", "passed"))
+            bad = self.emit("recipe", ["--json", "work", "f"], {"ok": False}, directory)
+            self.assertEqual((bad[0]["kind"], bad[0]["status"], bad[0]["payload"]["item"]), ("RUN-FAIL", "failed", "f"))
+            verify = self.emit(
+                "unbake", ["verify"], {"ok": False, "findings": [{"key": "rom", "message": "sha"}]}, directory
+            )
+            self.assertEqual((verify[0]["kind"], verify[0]["payload"]["verb"]), ("RUN-FAIL", "verify"))
+            self.assertEqual(self.emit("recipe", ["status"], {"ok": True}, directory), [])
 
     def test_a_failing_writer_never_breaks_the_call(self):
         with mock.patch("abu_decomp.events.events_path", side_effect=DecompError("config.schema", "no events")):

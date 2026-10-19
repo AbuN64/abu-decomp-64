@@ -4,6 +4,8 @@ unbake owns the objective rules (setup, sync, the sync check, source audit) and 
 submissions, which is a different job; this command only orders those public calls (through `decomp unbake`'s
 isolated invoke, so the pinned tool runs) around the project's own `check` build and adds the gates that need git.
 
+Before the apply gate each patch is carried across the renames main made since it was cut (retarget.py).
+
 Gates, in order; the first failure stops the run and the rest are reported as skipped:
   base         the tree is clean (tracked files) and HEAD is --base
   apply        each patch applies with `git apply --3way --index`, in order. A patch that conflicts lands per file:
@@ -93,7 +95,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, proposals, tools
+from abu_decomp import DecompError, events, proposals, retarget, tools
 from abu_decomp.config import Profile, check_keys
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
@@ -572,8 +574,10 @@ class Landing:
         self.duplicates: list[dict[str, Any]] = []
 
     # git -------------------------------------------------------------------------------------------------------
-    def git(self, *args: str, ok: bool = True) -> str:
-        code, out, err = self.run(["git", "-c", "core.quotepath=off", *args], self.tree, None, 600)
+    def git(self, *args: str, ok: bool = True, env: dict[str, str] | None = None) -> str:
+        code, out, err = self.run(
+            ["git", "-c", "core.quotepath=off", *args], self.tree, {**os.environ, **env} if env else None, 600
+        )
         if code and ok:
             raise LandError("land.git", f"git {' '.join(args[:3])}: {(err or out).strip()[-400:]}")
         return out if not code else ""
@@ -666,6 +670,35 @@ class Landing:
         with os.fdopen(handle, "w") as out:
             out.write(text)
         return Path(name)
+
+    def retarget(self, path: Path, row: dict[str, Any]) -> Path:
+        """The patch as main now names things: re-cut through the renames (files, symbols) main made since the patch
+        was cut (abu_decomp.retarget); the original path when no rename touches it or nothing can be told."""
+        try:
+            text, renames = retarget.translate(self.git, path.read_text(errors="replace"))
+        except (LandError, OSError, ValueError) as error:
+            self.findings.append(
+                {
+                    "key": "land.retarget_failed",
+                    "blocking": False,
+                    "lane": self.lane_now,
+                    "message": f"lane {self.lane_now}: not carried across renames: {error}",
+                }
+            )
+            return path
+        if text == path.read_text(errors="replace"):
+            return path
+        row["retargeted"] = {"base": renames.base, "files": len(renames.files), "symbols": len(renames.symbols)}
+        self.findings.append(
+            {
+                "key": "land.retargeted",
+                "blocking": False,
+                "lane": self.lane_now,
+                "message": f"lane {self.lane_now}: patch carried across {len(renames.symbols)} symbol and "
+                f"{len(renames.files)} file renames made since {renames.base[:9]}",
+            }
+        )
+        return self.write_part(text)
 
     def apply_file_parts(self, path: Path) -> list[dict[str, str]]:
         """Land a patch file by file: union files merge as a line union, the rest apply whole when they can and one
@@ -881,7 +914,12 @@ class Landing:
                 continue
             before = self.snapshot()
             mark = len(self.findings)
-            refused = self.apply_file_parts(path)
+            cut = self.retarget(path, row)
+            try:
+                refused = self.apply_file_parts(cut)
+            finally:
+                if cut != path:
+                    os.unlink(cut)
             after = self.snapshot()
             if after == before and refused:
                 row.update(status="excluded", reason="; ".join(f"{r['file']}: {r['reason']}" for r in refused))

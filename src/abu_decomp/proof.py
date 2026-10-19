@@ -1,0 +1,87 @@
+"""`decomp make`: a proof build of a tree, through the shared build pool, written to the event feed.
+
+A lane that needs the project's own make (a proof build of a patch, one target of the Makefile) runs it here instead of
+raw, so the stream shows it: the build runs in the project tree under the unbake slot pool (`unbake-run`, the pinned
+unbake's own wrapper), with the job count the seat's `land.jobs` admit command gives, and its output streams to stderr.
+One MATCH event (op "build", status passed) or RUN-FAIL event (op "build") says how it came out. Emitting never fails
+the command; project, host and lane come the same way as for `decomp unbake`."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import time
+from collections import deque
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+from abu_decomp import DecompError, land, narrate, tools
+from abu_decomp.config import Profile
+
+TAIL_LINES = 12
+
+
+def job_count(profile: Profile, project: Path) -> str | None:
+    """The `-j` value the seat's admit command gives right now; None when the seat names none (make's default)."""
+    jobs = land.settings(profile)["jobs"]
+    if not jobs:
+        return None
+    code, out, err = land.run_process(jobs, project, dict(os.environ), 60)
+    if code != 0 or not out.split():
+        raise DecompError("proof.admit", f"{jobs[0]} gave no job count (exit {code}): {err.strip()[:200]}")
+    return out.split()[0]
+
+
+def command(profile: Profile, project: Path, given: Sequence[str]) -> list[str]:
+    """unbake-run make [-jN] ARGS: the job flag is added unless the caller gave one (-j, --jobs)."""
+    own = any(a == "-j" or a.startswith(("-j", "--jobs")) for a in given)
+    jobs = None if own else job_count(profile, project)
+    return [str(Path(sys.executable).parent / "unbake-run"), "make", *([f"-j{jobs}"] if jobs else []), *given]
+
+
+def run(
+    profile: Profile, args: Sequence[str], *, project: Path | None = None, host: Path | None = None
+) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    chosen = tools.settings(profile, project, host)
+    argv = command(profile, chosen.project, list(args))
+    environment = dict(os.environ, UNBAKE_HOST=str(chosen.host))
+    started, tail = time.monotonic(), deque(maxlen=TAIL_LINES)
+    lane = narrate.lane_of(project or chosen.project)
+    try:
+        with subprocess.Popen(
+            argv,
+            cwd=chosen.project,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        ) as child:
+            assert child.stdout is not None
+            for line in child.stdout:
+                sys.stderr.write(line)
+                tail.append(line.rstrip())
+            code = child.wait()
+    except OSError as exc:
+        raise DecompError("proof.process", f"cannot execute {argv[0]}: {exc}") from exc
+    wall = round(time.monotonic() - started, 1)
+    target = " ".join(args)[:80] or "default target"
+    payload = {"op": "build", "args": list(args), "exit": code, "wall_seconds": wall, "lane": lane}
+    try:
+        if code == 0:
+            narrate.append(profile, lane, "passed", f"Built {target} in {wall:g}s", "MATCH", payload)
+        else:
+            payload["tail"] = list(tail)[-5:]
+            narrate.append(profile, lane, "failed", f"Build of {target} failed (exit {code})", "RUN-FAIL", payload)
+    except (DecompError, OSError) as error:
+        print(f"decomp: no build event written: {error}", file=sys.stderr)
+    result = {"exit": code, "wall_seconds": wall, "command": argv[1:], "lane": lane}
+    if code == 0:
+        return result, 0, []
+    return (
+        result,
+        1,
+        [{"key": "proof.failed", "blocking": True, "message": f"make exited {code}: {tail[-1] if tail else ''}"}],
+    )

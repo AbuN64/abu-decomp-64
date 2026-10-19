@@ -10,6 +10,10 @@ are the closed schema 2 set; an `op` in the payload says which operation, and th
   PROBE  payload.op = "behave"   one `decomp behave` verdict (BEHAVE emits it with `behave_event`): function, verdict
                                  same|differs|error, checks, differences, inputs, expected, actual, evidence, lane
   PROBE  (Cake Taste's own)      checks, differences, function, result, run_id; written by `taste repro probe` itself
+  MATCH  payload.op = "recipe"   one `decomp recipe` verb (next work try skip structure name apply flags style): verb,
+                                 sub, ok, counts (moves accepted refused targets files), item, next, lane; apply is LAND
+  MATCH  payload.op = "unbake"   one `decomp unbake verify|check|audit|sync|setup`: verb, ok, findings, lane (RUN-FAIL
+                                 when it fails); `decomp make` writes op "build" the same way (proof.py)
   LAND   payload.op = "landed"   `decomp land`: lanes, functions [names], recipe (proposals, see proposals.py)
 
 `lane` is DECOMP_LANE when set, else the name of the directory that holds the project tree, else the lane
@@ -29,6 +33,7 @@ from abu_decomp import DecompError, events, tools
 from abu_decomp.config import Profile
 
 VERBS = ("score", "submit", "land")
+GATE_VERBS = ("verify", "check", "audit", "sync", "setup")
 
 
 def lane_of(project: Path | None) -> str:
@@ -193,9 +198,77 @@ def behave_event(profile: Profile, **fields: Any) -> None:
     append(profile, lane, "passed" if verdict == "same" else "failed", message, "PROBE", {"op": "behave", **fields})
 
 
+RECIPE_VERBS = ("next", "work", "try", "skip", "structure", "name", "apply", "flags", "style")
+
+
+def recipe_payload(args: list[str], body: dict[str, Any], ok: bool, lane: str) -> dict[str, Any]:
+    """One `decomp recipe VERB` as an event payload. Recipe's documents are flat: counts (moves, accepted, refused,
+    targets), `files`, and `next`; anything absent is left out."""
+    words = [a for a in args if not a.startswith("-")]
+    verb, rest = words[0], words[1:]
+    payload: dict[str, Any] = {
+        "op": "recipe",
+        "verb": verb,
+        "sub": rest[0] if verb == "name" and rest else None,
+        "ok": ok,
+        "lane": lane,
+    }
+    for key in ("moves", "accepted", "refused", "targets", "rows"):
+        if isinstance(body.get(key), int):
+            payload[key] = body[key]
+    if isinstance(body.get("files"), list):
+        payload["files"] = len(body["files"])
+    item = next((w for w in rest if verb in ("work", "try", "skip")), None)
+    if item:
+        payload["item"] = item
+    if body.get("next"):
+        payload["next"] = str(body["next"])[:120]
+    return payload
+
+
+def recipe_message(payload: dict[str, Any]) -> str:
+    verb = payload["verb"] + (f" {payload['sub']}" if payload.get("sub") else "")
+    facts = [f"{payload[k]} {k}" for k in ("moves", "accepted", "refused", "targets", "files") if k in payload]
+    item = f" {payload['item']}" if payload.get("item") else ""
+    return f"Recipe {verb}{item}: " + (", ".join(facts) if facts else "done" if payload["ok"] else "refused")
+
+
+def emit_recipe(profile: Profile, args: list[str], document: dict[str, Any], project: Path | None) -> None:
+    verb = next((a for a in args if not a.startswith("-")), None)
+    if verb not in RECIPE_VERBS:
+        return
+    ok, lane = bool(document.get("ok")), lane_of(project or tools.project_dir(profile))
+    payload = recipe_payload(args, document, ok, lane)
+    kind = "LAND" if verb == "apply" and ok else "MATCH" if ok else "RUN-FAIL"
+    append(
+        profile,
+        lane,
+        "passed" if ok and verb == "apply" else "info" if ok else "failed",
+        recipe_message(payload),
+        kind,
+        payload,
+    )
+
+
 def emit(profile: Profile, tool: str, args: list[str], document: dict[str, Any], project: Path | None) -> None:
     """After `decomp unbake score|submit|land`: one event per attempt or submission. Never raises."""
     verb = next((a for a in args if not a.startswith("-")), None)
+    if tool == "recipe" and isinstance(document, dict):
+        try:
+            emit_recipe(profile, args, document, project)
+        except (DecompError, OSError, KeyError, TypeError, ValueError) as error:
+            print(f"decomp: no operation event written: {error}", file=sys.stderr)
+        return
+    if tool == "unbake" and verb in GATE_VERBS and isinstance(document, dict):
+        try:
+            lane, ok = lane_of(project or tools.project_dir(profile)), bool(document.get("ok"))
+            found = [f for f in document.get("findings") or () if isinstance(f, dict)]
+            payload = {"op": "unbake", "verb": verb, "ok": ok, "findings": len(found), "lane": lane}
+            line = f"unbake {verb}: " + ("ok" if ok else f"failed, {refusal(found[0])}" if found else "failed")
+            append(profile, lane, "passed" if ok else "failed", line[:240], "MATCH" if ok else "RUN-FAIL", payload)
+        except (DecompError, OSError, KeyError, TypeError, ValueError) as error:
+            print(f"decomp: no operation event written: {error}", file=sys.stderr)
+        return
     if tool != "unbake" or verb not in VERBS or not isinstance(document, dict):
         return
     try:

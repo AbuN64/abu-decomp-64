@@ -94,6 +94,12 @@ def _run_tool(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     return called.describe(), 1, findings
 
 
+def _run_make(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import proof
+
+    return proof.run(_profile(args.profile), args.args, project=args.project, host=args.host)
+
+
 def _port_arguments(parser: argparse.ArgumentParser) -> None:
     actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
     new = actions.add_parser("new", help="write the port boilerplate into an empty directory")
@@ -436,6 +442,9 @@ COMMANDS: dict[str, Command] = {
     "dependencies": Command("check every pinned tool is installed at its commit", _none, _run_dependencies),
     "unbake": Command("run unbake on the profile's project (or --project)", _tool_arguments, _run_tool),
     "recipe": Command("run Recipe Maker on the profile's project (or --project)", _tool_arguments, _run_tool),
+    "make": Command(
+        "proof-build the profile's project (or --project) through the build pool", _tool_arguments, _run_make
+    ),
     "taste": Command("run Cake Taste with the profile's Taste profile", _tool_arguments, _run_tool),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
     "tools": Command("deploy the pinned tools into venvs", _tools_arguments, _run_tools),
@@ -509,7 +518,7 @@ def _tool_call(args: list[str]) -> argparse.Namespace | None:
         profile, rest = Path(rest[1]), rest[2:]
     elif rest[:1] and rest[0].startswith("--profile="):
         profile, rest = Path(rest[0].partition("=")[2]), rest[1:]
-    if not rest or rest[0] not in TOOLS:
+    if not rest or (rest[0] not in TOOLS and rest[0] != "make"):
         return None
     found: dict[str, Path | None] = {"project": None, "host": None}
     command, rest = rest[0], rest[1:]
