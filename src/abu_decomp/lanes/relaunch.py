@@ -104,9 +104,19 @@ def progress(
 
 
 def plan(
-    done_when: str, continues: int, said: str, handoff: bool, context: bool, cancelled: bool, progressed: str = ""
+    done_when: str,
+    continues: int,
+    said: str,
+    handoff: bool,
+    context: bool,
+    cancelled: bool,
+    progressed: str = "",
+    waiting: int = 0,
 ) -> tuple[str, str]:
     """(action, why): `none` (not a closing we continue), `end` (done), `blocked` (no budget) or `continue`.
+
+    A link that closes while `waiting` rig jobs it started still run is not an ended one: it continues whatever RESULT
+    and HANDOFF say, and spends no budget (its successor adopts the jobs).
 
     A link that progressed (`progressed` names the evidence) spends no budget and continues; a link without progress
     spends one, and at 0 the chain stops: "budget spent".
@@ -115,6 +125,8 @@ def plan(
         return "none", "cancelled"
     if explicit_done(done_when, said):
         return "end", "RESULT is DONE"
+    if waiting:
+        return "continue", f"waiting on {waiting} rig job(s) it started; budget kept at {continues}"
     if not said.strip() and not (context and handoff):
         return "none", "no RESULT and no context handoff"
     what = "context handoff" if context and handoff else "unfinished RESULT"
@@ -125,9 +137,9 @@ def plan(
     return "continue", f"{what}; no progress, spent one (budget {continues} to {continues - 1})"
 
 
-def next_budget(continues: int, progressed: str) -> int:
-    """The successor's --continues: unchanged after a link that progressed, one less after one that did not."""
-    return continues if progressed else continues - 1
+def next_budget(continues: int, progressed: str, waiting: int = 0) -> int:
+    """The successor's --continues: unchanged after a link that progressed or waits on its jobs, else one less."""
+    return continues if progressed or waiting else continues - 1
 
 
 def spawn(profile: Path, directory: Path, name: str, continues: int, wait: int = 600) -> str:

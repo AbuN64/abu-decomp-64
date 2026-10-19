@@ -100,6 +100,7 @@ def continuation_brief(brief: str, rules: str, old_name: str, old_dir: Path, new
         standing = declared.read_text().strip("\n")
     section = (
         f"{HEADING}\n\n"
+        + (f"{adopt}\n\n" if adopt else "")
         + f"This lane continues {old_name}, which has closed. Before anything else read {handoff} and {status}, "
         "then continue from where STATUS says. Do not redo finished steps or rerun finished checks. "
         "Keep your own STATUS.md and HANDOFF.md in this lane's directory. "

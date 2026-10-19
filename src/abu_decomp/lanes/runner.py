@@ -989,6 +989,7 @@ def stop(code, why, cancelled=False):
     if code:
         print(why, file=sys.stderr, flush=True)
     record("end", {"exit": code, "why": why})
+    terminal["rig_jobs"] = record_rig_jobs()
     continue_lane(terminal)
     try:
         os.killpg(server.pid, signal.SIGTERM)
@@ -999,6 +1000,24 @@ def stop(code, why, cancelled=False):
     except FileNotFoundError:
         pass
     sys.exit(code)
+
+
+def record_rig_jobs():
+    """The ssh jobs this link started and that still run, written to JOBS.json and HANDOFF.md for the successor."""
+    if "native_jobs" not in globals():
+        return 0
+    from pathlib import Path
+
+    from abu_decomp.lanes import jobs as lane_jobs
+
+    try:
+        found = lane_jobs.record(Path(a.dir), native_jobs(), owns=a.owns or [])
+    except Exception as error:  # closing must not fail on the record
+        print("RigJobsNotRecorded: %s" % error, file=sys.stderr, flush=True)
+        return 0
+    if found:
+        record("lifecycle", {"state": "rig_jobs_recorded", "jobs": found, "at": time.time()})
+    return len(found)
 
 
 def continue_lane(terminal):
@@ -1021,6 +1040,7 @@ def continue_lane(terminal):
         terminal["context_requested"],
         terminal["status"] == "cancelled",
         progressed,
+        terminal.get("rig_jobs", 0),
     )
     if action == "none":
         return
@@ -1035,7 +1055,12 @@ def continue_lane(terminal):
             control.announce(profile, row, "blocked", "%s not continued: %s" % (a.name, why))
             return
         successor = relaunch.next_name(a.name)
-        unit = relaunch.spawn(Path(a.profile), directory, successor, relaunch.next_budget(a.continues or 0, progressed))
+        unit = relaunch.spawn(
+            Path(a.profile),
+            directory,
+            successor,
+            relaunch.next_budget(a.continues or 0, progressed, terminal.get("rig_jobs", 0)),
+        )
         control.announce(profile, row, "info", "%s continues as %s (%s) via %s" % (a.name, successor, why, unit))
     except Exception as error:  # the lane is closing; a failed continuation must not hide how it closed
         print("ContinuationFailed: %s" % error, file=sys.stderr, flush=True)

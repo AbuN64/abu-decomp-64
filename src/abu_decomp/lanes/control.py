@@ -19,7 +19,7 @@ from typing import Any
 import abu_decomp
 from abu_decomp import DecompError, config, tools
 from abu_decomp.config import Profile
-from abu_decomp.lanes import Ladder, Lane, continuation, overlap_findings, registry, steer
+from abu_decomp.lanes import Ladder, Lane, continuation, jobs, overlap_findings, registry, steer
 
 DONE_WHEN = ("identical", "result")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
@@ -330,7 +330,7 @@ def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, A
         raise DecompError("lanes.arguments", f"{new_dir} already exists and is not empty")
     old_cwd = Path(spec.get("cwd") or old_dir)
     brief = continuation.continuation_brief(
-        (old_dir / "brief.md").read_text(), seat.rules.read_text(), old_name, old_dir, new_dir
+        (old_dir / "brief.md").read_text(), seat.rules.read_text(), old_name, old_dir, new_dir, jobs.adopt_text(old_dir)
     )
     spec.update(
         name=name,
