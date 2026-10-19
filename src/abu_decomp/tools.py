@@ -481,7 +481,7 @@ def invoke(
 
 
 # unbake's read-only API (the surface Recipe Maker imports): the calls decomp may make in the pinned interpreter.
-API_CALLS = frozenset({"build_context"})
+API_CALLS = frozenset({"asm_path", "build_context"})
 _API_BOOTSTRAP = """
 import json, sys
 from pathlib import Path

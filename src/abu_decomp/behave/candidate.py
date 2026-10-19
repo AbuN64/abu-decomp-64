@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError
+from abu_decomp.behave import names
 from abu_decomp.config import Profile
 from abu_decomp.tools import api_call, invoke, settings
 
@@ -56,6 +57,14 @@ def symbol_table(profile: Profile, version: str, project: Path | None, host: Pat
     if not called.ok:
         raise CandidateError("behave.symbols", f"unbake symbols failed: {called.document.get('findings')}")
     return called.document["result"]["symbols"][version]
+
+
+def all_symbol_tables(profile: Profile, project: Path | None, host: Path | None) -> dict[str, dict[str, list[Any]]]:
+    """version -> name -> [vram, rom, size, type] for every version of the project."""
+    called = invoke("unbake", profile, ["symbols"], project=project, host=host)
+    if not called.ok:
+        raise CandidateError("behave.symbols", f"unbake symbols failed: {called.document.get('findings')}")
+    return called.document["result"]["symbols"]
 
 
 _ASSIGN = re.compile(r"^\s*([A-Za-z_.$][\w.$]*)\s*=\s*(0[xX][0-9a-fA-F]+)\s*;")
@@ -142,6 +151,46 @@ def text_symbols(objdump: str, obj: Path) -> list[str]:
     return names
 
 
+_UNDEFINED = re.compile(r"\*UND\*\s+[0-9a-f]{8}\s+(\S+)$")
+
+
+def undefined_symbols(objdump: str, obj: Path) -> list[str]:
+    """Names an object references without defining."""
+    out = subprocess.run([objdump, "-t", str(obj)], capture_output=True, text=True, check=True).stdout
+    matches = (_UNDEFINED.search(line.strip()) for line in out.splitlines())
+    return [m[1] for m in matches if m and not m[1].startswith(("$", "."))]
+
+
+def version_names(
+    profile: Profile,
+    *,
+    version: str,
+    function: str,
+    wanted: list[str],
+    symbols: dict[str, list[Any]],
+    project: Path,
+    host: Path | None,
+) -> dict[str, int]:
+    """The addresses, in `version`, of names this version's tables lack but another version's code spells: the
+    function's assembly in each version is read side by side (see names.counterparts)."""
+    tables = all_symbol_tables(profile, project, host)
+
+    def listing(v: str) -> str | None:
+        if function not in tables.get(v, {}):
+            return None
+        try:
+            path = api_call(profile, "asm_path", [v, function], project=project, host=host)
+            return (project / path).read_text(errors="replace")
+        except (DecompError, OSError):
+            return None
+
+    mine = listing(version)
+    if mine is None:
+        return {}
+    others = {v: text for v in tables if v != version and (text := listing(v)) is not None}
+    return names.counterparts(mine, others, wanted, symbols)
+
+
 def sections(objdump: str, elf: Path) -> dict[str, tuple[int, int]]:
     out = subprocess.run([objdump, "-h", str(elf)], capture_output=True, text=True, check=True).stdout
     found = {}
@@ -225,7 +274,26 @@ def build(
         for name in text_symbols(tools["mips_objdump"], obj)
         if name != function and name in symbols and symbols[name][0] is not None
     }
-    (work / "link.ld").write_text(linker_script(base, symbols, siblings, auto_symbols(chosen.project, version)))
+    auto = auto_symbols(chosen.project, version)
+    # Names of another version's vocabulary that this version's tables lack resolve through the function's own
+    # assembly in both versions, as the build learns them.
+    lacking = [
+        n for n in undefined_symbols(tools["mips_objdump"], obj) if n not in symbols and n not in auto and n != function
+    ]
+    if lacking:
+        auto = {
+            **auto,
+            **version_names(
+                profile,
+                version=version,
+                function=function,
+                wanted=lacking,
+                symbols=symbols,
+                project=chosen.project,
+                host=host,
+            ),
+        }
+    (work / "link.ld").write_text(linker_script(base, symbols, siblings, auto))
     elf = work / "candidate.elf"
     link = subprocess.run(
         [tools["mips_ld"], "-T", str(work / "link.ld"), "-o", str(elf), str(obj)],
