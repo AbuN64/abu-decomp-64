@@ -563,6 +563,7 @@ class Landing:
         self.splat_file_check = splat_file_check or self.run_splat_file_check
         self.base_tree = ""  # the tree of the base commit: what a replay starts from
         self.start_untracked: set[str] = set()
+        self.base_failed = True  # until check_base passes
         self.apply_mark: int | None = None  # findings from here on are the apply gate's, made again by each replay
         self.dropped: dict[int, str] = {}  # patch index -> why the build refused that input
         self.refused_inputs: list[dict[str, Any]] = []
@@ -614,6 +615,7 @@ class Landing:
                 self.ready()
             except DecompError as exc:
                 self.fail(exc.key, exc.detail)
+        self.base_failed = bool(self.findings)  # a tree that failed here is not the land's to restore
         return self.gate("base", not self.findings, started, head=head)
 
     def splat_python(self) -> Path | None:
@@ -1281,12 +1283,17 @@ class Landing:
     def replay(self, skip: dict[int, str]) -> bool:
         """The tree back to the base, then the inputs not in `skip` (and not refused before) applied again in order.
         Files the earlier builds left that are not ignored go too; ignored build output stays, so the build is warm."""
+        self.restore()
+        return self.apply_patches(skip)
+
+    def restore(self) -> None:
+        """The tree exactly as check_base found it: tracked files and index back to the base tree, and the files the
+        inputs and builds added (not ignored) removed."""
         self.git("read-tree", "-u", "--reset", self.base_tree)
         for name in sorted(
             set(self.git("ls-files", "--others", "--exclude-standard").splitlines()) - self.start_untracked
         ):
             (self.tree / name).unlink(missing_ok=True)
-        return self.apply_patches(skip)
 
     def probe(self, everyone: Sequence[int], keep: int) -> tuple[bool, list[dict[str, Any]]]:
         """Build with only the first `keep` of `everyone` (the inputs that landed) in the tree; (passed, the blocking
@@ -1355,6 +1362,17 @@ class Landing:
                 return False
 
     def execute(self) -> Result:
+        """Land the inputs. A land that refuses, or breaks, leaves the tree as it found it: the changes in it are the
+        land's own. Only a tree that passed the base gate is touched, so a tree the land found dirty keeps its work."""
+        outcome: Result | None = None
+        try:
+            outcome = self.run_all()
+            return outcome
+        finally:
+            if self.base_tree and not self.base_failed and not (outcome and outcome[0]["pass"]):
+                self.restore()
+
+    def run_all(self) -> Result:
         failed = not (self.check_base() and self.apply_patches() and self.build_round())
         if not failed:
             for stage in self.after_stages():

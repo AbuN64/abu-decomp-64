@@ -788,6 +788,42 @@ class LandTests(unittest.TestCase):
         self.assertEqual((code, findings[0]["key"]), (1, "land.readme"))
         self.assertEqual(findings[0]["lower"], [{"index": 1, "base": 60.0, "now": 59.99}])
 
+    def test_a_refused_land_leaves_the_tree_exactly_as_it_found_it(self):
+        one = self.patch("L1", {"c.c": C_C + "// x\n"})
+
+        def check():
+            (self.tree / "README.md").write_text(README.format(a="50.00", b="59.99"))
+            (self.tree / "made.txt").write_text("x")
+
+        self.on_check = check
+        _, code, findings = self.land([one])
+        self.assertEqual((code, findings[0]["key"]), (1, "land.readme"))
+        self.assertEqual(git(self.tree, "status", "--porcelain", "--untracked-files=all"), "")
+        self.assertEqual(git(self.tree, "rev-parse", "HEAD").strip(), self.base)
+        self.assertFalse((self.tree / "made.txt").exists())
+
+    def test_a_land_that_raises_leaves_the_tree_clean_too(self):
+        one = self.patch("L1", {"c.c": C_C + "// x\n"})
+        self.on_check = lambda: (_ for _ in ()).throw(LandError("land.git", "boom"))
+        with self.assertRaises(LandError):
+            self.land([one])
+        self.assertEqual(git(self.tree, "status", "--porcelain"), "")
+
+    def test_a_land_refused_for_a_dirty_tree_keeps_the_owners_changes(self):
+        one = self.patch("L1", {"c.c": C_C + "// x\n"})
+        (self.tree / "c.c").write_text("dirty\n")
+        _, code, findings = self.land([one])
+        self.assertEqual((code, findings[0]["key"]), (1, "land.dirty"))
+        self.assertEqual((self.tree / "c.c").read_text(), "dirty\n")
+
+    def test_a_successful_land_keeps_its_changes_in_the_tree(self):
+        one = self.patch("L1", {"c.c": C_C + "// x\n"})
+        self.on_check = lambda: (self.tree / "README.md").write_text(README.format(a="51.00", b="60.00"))
+        _, code, _ = self.land([one])
+        self.assertEqual(code, 0)
+        self.assertIn("c.c", git(self.tree, "status", "--porcelain"))
+        self.assertTrue((self.tree / "c.c").read_text().endswith("// x\n"))
+
     def test_unbake_refusal_and_check_failure_stop_the_run_with_a_named_finding(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})
         self.sync_ok = lambda args: args != ("sync", "--check") and "--check" not in args
