@@ -175,7 +175,7 @@ def install(venv: Path, requirements: Sequence[dict[str, str]], run: Run) -> lis
     return done
 
 
-def smoke(venv: Path, project: Path | None, run: Run) -> list[dict[str, Any]]:
+def smoke(venv: Path, project: Path | None, host: Path, run: Run) -> list[dict[str, Any]]:
     """`decomp dependencies` (every installed tool at its pinned commit) and `unbake symbols --version V` on the
     project, V being the first version directory of the project."""
     results = []
@@ -188,7 +188,16 @@ def smoke(venv: Path, project: Path | None, run: Run) -> list[dict[str, Any]]:
             {"check": "unbake symbols", "ok": False, "tail": "the project has no versions/ directory to ask"}
         )
         return results
-    argv = [str(venv / "bin" / "unbake"), "--project", str(project), "symbols", "--version", versions[0]]
+    argv = [
+        str(venv / "bin" / "unbake"),
+        "--host",
+        str(host),
+        "--project",
+        str(project),
+        "symbols",
+        "--version",
+        versions[0],
+    ]
     code, output = run(argv, project)
     results.append(
         {
@@ -239,7 +248,7 @@ def deploy(
         steps = install(venv, requirements, run)
         row: dict[str, Any] = {"venv": str(venv), "steps": steps}
         if all(step["ok"] for step in steps):
-            row["smoke"] = smoke(venv, project, run)
+            row["smoke"] = smoke(venv, project, tools.host_file(profile), run)
             for check in row["smoke"]:
                 if not check["ok"]:
                     findings.append(

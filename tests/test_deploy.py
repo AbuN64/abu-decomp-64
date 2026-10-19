@@ -96,6 +96,7 @@ class DeployTests(unittest.TestCase):
         symbols = [c for c in self.commands if c[0].endswith("unbake")]
         self.assertEqual(len(symbols), 2)
         self.assertEqual(symbols[0][-3:], ["symbols", "--version", "us-rev1"])
+        self.assertIn("--host", symbols[0])
         self.assertEqual(
             [row["venv"] for row in result["venvs"]], [str(self.root / "venv-a"), str(self.root / "venv-b")]
         )
