@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -80,10 +81,14 @@ def stop_unit(unit: str) -> None:
         raise DecompError("lanes.systemd", f"cannot stop {unit}: {called.stderr.strip()}")
 
 
-def launch(profile: Profile, spec: dict[str, Any], replaces: dict[str, Any] | None = None) -> dict[str, Any]:
+def launch(
+    profile: Profile, spec: dict[str, Any], replaces: dict[str, Any] | None = None, new_brief: str | None = None
+) -> dict[str, Any]:
     """Check the ladder and the overlap guard, record the lane in the registry, then start its unit.
 
     `replaces` ({"name", "dir"}) is the lane this one continues: its rows end in the same registry write.
+    `new_brief` is a continuation's brief: --dir does not exist yet, and it and brief.md are written only after every
+    check passed, so a refusal leaves nothing behind.
     """
     seat = settings(profile)
     name = spec["name"]
@@ -100,12 +105,18 @@ def launch(profile: Profile, spec: dict[str, Any], replaces: dict[str, Any] | No
         if not path.is_absolute() or not any(path.is_relative_to(Path(owned)) for owned in spec["owns"]):
             raise DecompError("lanes.arguments", f"--export must be an absolute path under an --owns path: {export}")
     directory, cwd = Path(spec["dir"]), Path(spec["cwd"])
-    for label, path in (("--dir", directory), ("--cwd", cwd)):
-        if not path.is_absolute() or not path.is_dir():
-            raise DecompError("lanes.arguments", f"{label} must be an existing absolute directory: {path}")
     brief = directory / "brief.md"
-    if not brief.is_file():
-        raise DecompError("lanes.arguments", f"{brief} is missing; write the brief first")
+    if new_brief is None:
+        for label, path in (("--dir", directory), ("--cwd", cwd)):
+            if not path.is_absolute() or not path.is_dir():
+                raise DecompError("lanes.arguments", f"{label} must be an existing absolute directory: {path}")
+        if not brief.is_file():
+            raise DecompError("lanes.arguments", f"{brief} is missing; write the brief first")
+    else:
+        if not directory.is_absolute() or (directory.exists() and any(directory.iterdir())):
+            raise DecompError("lanes.arguments", f"{directory} already exists and is not empty")
+        if not cwd.is_absolute() or not (cwd == directory or cwd.is_dir()):
+            raise DecompError("lanes.arguments", f"--cwd must be an existing absolute directory: {cwd}")
     ladder = Ladder.load(seat.ladder)
     rung = ladder.check(spec["kind"], spec["model"], spec.get("owner_override"))
     # The lane runs the tool installed with decomp, so it must be the version its project's own pin names.
@@ -134,6 +145,10 @@ def launch(profile: Profile, spec: dict[str, Any], replaces: dict[str, Any] | No
         findings = overlap_findings(lane, [registry.lane_of(row) for row in live], units)
         if findings:
             raise DecompError("lanes.overlap", "; ".join(findings))
+        created = new_brief is not None
+        if created:
+            directory.mkdir(parents=True, exist_ok=True)
+            brief.write_text(new_brief)
         text = brief.read_text()
         if not text.startswith("LANE RULES") and "\nLANE RULES" not in text:
             brief.write_text(text.rstrip("\n") + "\n\n" + seat.rules.read_text())
@@ -168,7 +183,12 @@ def launch(profile: Profile, spec: dict[str, Any], replaces: dict[str, Any] | No
         for path in spec.get("export") or []:
             command += ["--export", path]
         command += ["--track", spec["track"]]
-        start_unit(command, directory)
+        try:
+            start_unit(command, directory)
+        except DecompError:
+            if created:  # the failed start leaves the directory this call made, so the retry is not refused
+                shutil.rmtree(directory, ignore_errors=True)
+            raise
         rows.append(row)
     if seat.active_file:
         old_dir = Path(replaces["dir"]) if replaces else None
@@ -291,8 +311,6 @@ def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, A
     brief = continuation.continuation_brief(
         (old_dir / "brief.md").read_text(), seat.rules.read_text(), old_name, old_dir, new_dir
     )
-    new_dir.mkdir(exist_ok=True)
-    (new_dir / "brief.md").write_text(brief)
     spec.update(
         name=name,
         dir=str(new_dir),
@@ -300,5 +318,5 @@ def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, A
         owns=[str(path) for path in spec["owns"]],
         owner_override=spec.get("owner_override") or None,
     )
-    result = launch(profile, spec, replaces={"name": old_name, "dir": str(old_dir)})
+    result = launch(profile, spec, replaces={"name": old_name, "dir": str(old_dir)}, new_brief=brief)
     return {**result, "continued_from": {"name": old_name, "dir": str(old_dir), "unit": unit, "sources": sources}}

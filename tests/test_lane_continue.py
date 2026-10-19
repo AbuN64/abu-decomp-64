@@ -186,6 +186,36 @@ class ContinueTests(unittest.TestCase):
             (self.flag(self.started[-1], "--effort"), self.flag(self.started[-1], "--wall")), ("low", "99")
         )
 
+    def test_a_refused_continue_writes_nothing_and_the_corrected_retry_works(self):
+        old = self.launch_a()
+        self.units.clear()
+        argv = [*self.seat, "lane", "continue", "--from", str(old), "--name", "A-2"]
+        before = sorted(p.name for p in self.root.iterdir())
+        code, envelope = run([*argv, "--export", "relative/file"])
+        self.assertEqual((code, envelope["findings"][0]["key"]), (1, "lanes.arguments"))
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), before)
+        self.assertFalse((self.root / "A-2").exists())
+        code, envelope = run([*argv, "--export", "/work/a/out.txt"])
+        self.assertEqual(code, 0, envelope)
+        self.assertTrue((self.root / "A-2" / "brief.md").is_file())
+
+    def test_a_continue_refused_by_the_overlap_guard_or_a_failed_start_leaves_no_directory(self):
+        old = self.launch_a()
+        self.units.clear()
+        argv = [*self.seat, "lane", "continue", "--from", str(old), "--name", "A-2"]
+        with mock.patch.object(control, "overlap_findings", lambda *args: ["overlap"]):
+            code, _ = run(argv)
+        self.assertEqual(code, 1)
+        self.assertFalse((self.root / "A-2").exists())
+
+        def fail(command, directory):
+            raise DecompError("lanes.systemd", "boom")
+
+        with mock.patch.object(control, "start_unit", fail):
+            code, _ = run(argv)
+        self.assertEqual(code, 1)
+        self.assertFalse((self.root / "A-2").exists())
+
     def test_a_nonempty_new_directory_is_refused(self):
         old = self.launch_a()
         self.units.clear()

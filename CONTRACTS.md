@@ -63,6 +63,10 @@ Cake Taste owns the only implementation of the event format and its flock append
 
 This is the one rule that keeps experiment work from interfering with the official decomp. There is no per-track flag; `track` is data the Lanes pane shows. The model ladder is checked at the same point: a lane's model must lie in its kind's range, and the top rung or any rung outside the range needs an owner override reason.
 
+## Lane launch and the done marker
+
+- `decomp lane launch|continue` validate every argument, the ladder, the tool pin and the overlap guard before writing anything. A refusal writes nothing: `continue` creates its new directory and `brief.md` only after every check passed, and removes them if the unit fails to start.
+
 ## Port boilerplate
 
 `decomp port new --spec SPEC DEST` writes a port repository into an empty directory: README in the tool README shape, LICENSE, CMake presets with warnings as errors, `src/platform` (the host boundary, the only code that may include OS or device headers), `src/boot` (the original boot chain; the first owner stops with `<subsystem>: original <label> owner <address> has no native implementation`), `tests/boot_gate.txt` with `cmake/boot_gate.cmake` (the executable must print every gate line in order and exit 1 at the stop), `ci/check`, and `port.json` (the spec: the port's project facts). The skeleton fixes the shape; the platform and game internals are the port's own work.
