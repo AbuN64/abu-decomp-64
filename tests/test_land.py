@@ -346,6 +346,95 @@ class LandTests(unittest.TestCase):
         self.assertEqual(git(self.tree, "ls-files", "-u"), "")
         self.assertEqual(result["groups"], [{"lane": "good", "files": ["b.c"]}])
 
+    def seed(self, files, union=True):
+        """Commit more base files and re-load the profile with (or without) land.union_paths."""
+        for name, text in files.items():
+            (self.tree / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.tree / name).write_text(text)
+        git(self.tree, "add", ".")
+        git(self.tree, "commit", "-q", "-m", "seed")
+        self.base = git(self.tree, "rev-parse", "HEAD").strip()
+        seat = json.loads((self.root / "seat.json").read_text())
+        if union:
+            seat["land"]["union_paths"] = ["versions/*/symbol_addrs.txt"]
+        (self.root / "seat.json").write_text(json.dumps(seat))
+        self.profile = load_profile(self.root / "seat.json")
+
+    def test_two_lanes_appending_to_a_union_file_both_land(self):
+        addrs = "versions/us/symbol_addrs.txt"
+        self.seed({addrs: "base = 0x1;\n"})
+        one = self.patch("one", {addrs: "base = 0x1;\none = 0x2;\n", "b.c": "int func_3(void) { return 3; }\n"})
+        two = self.patch("two", {addrs: "base = 0x1;\ntwo = 0x3;\none = 0x2;\n"})
+        result, code, findings = self.land([one, two])
+        self.assertEqual(code, 0)
+        self.assertEqual([r["status"] for r in result["lanes"]], ["applied", "applied"])
+        self.assertEqual((self.tree / addrs).read_text(), "base = 0x1;\none = 0x2;\ntwo = 0x3;\n")
+        self.assertEqual([f["key"] for f in findings if f["key"] != "land.commit_message"], [])
+        self.assertEqual(result["lanes"][1]["files"], [addrs])
+
+    def test_without_union_paths_the_second_append_conflicts_and_is_refused(self):
+        addrs = "versions/us/symbol_addrs.txt"
+        self.seed({addrs: "base = 0x1;\n"}, union=False)
+        one = self.patch("one", {addrs: "base = 0x1;\none = 0x2;\n"})
+        two = self.patch("two", {addrs: "base = 0x1;\ntwo = 0x3;\n", "b.c": "int func_3(void) { return 3; }\n"})
+        result, code, _findings = self.land([one, two])
+        self.assertEqual(code, 0)
+        self.assertEqual(result["lanes"][1]["status"], "applied")
+        self.assertEqual([r["file"] for r in result["lanes"][1]["refused"]], [addrs])
+        self.assertEqual(result["lanes"][1]["files"], ["b.c"])
+        self.assertEqual(git(self.tree, "ls-files", "-u"), "")
+
+    def test_a_conflicting_file_is_refused_and_the_rest_of_the_patch_lands(self):
+        mixed = self.patch(
+            "mixed", {"a.c": "int func_1(void) { return 1; }\n", "b.c": "int func_3(void) { return 3; }\n"}
+        )
+        (self.tree / "a.c").write_text("totally different\n")
+        git(self.tree, "commit", "-qam", "moved")
+        moved = git(self.tree, "rev-parse", "HEAD").strip()
+        result, code, findings = self.land([mixed], base=moved)
+        self.assertEqual(code, 0)
+        row = result["lanes"][0]
+        self.assertEqual(row["status"], "applied")
+        self.assertEqual(row["files"], ["b.c"])
+        self.assertEqual([r["file"] for r in row["refused"]], ["a.c"])
+        self.assertEqual(row["functions"]["names"], ["func_3"])
+        refused = [f for f in findings if f["key"] == "land.file_refused"]
+        self.assertEqual([(f["file"], f["blocking"], f["lane"]) for f in refused], [("a.c", True, "mixed")])
+        self.assertEqual((self.tree / "a.c").read_text(), "totally different\n")
+        self.assertEqual(result["commits"][0]["files"], ["b.c"])
+        self.assertIn("REFUSED 1 file(s): mixed:a.c", self.events[-1]["message"])
+        self.assertEqual(self.events[-1]["payload"]["refused"][0]["file"], "a.c")
+
+    def test_a_function_split_across_a_refused_file_is_not_credited(self):
+        self.seed({"asm/func_1.s": "nop\n"})
+        split = self.patch(
+            "split",
+            {
+                "a.c": '#include "x.h"\nint func_1(void) { return 1; }\nINCLUDE_ASM(const s32, "a", func_2);\n',
+                "asm/func_1.s": "gone\n",
+                "b.c": "int func_3(void) { return 3; }\n",
+            },
+        )
+        (self.tree / "asm/func_1.s").write_text("moved\n")
+        git(self.tree, "commit", "-qam", "moved")
+        moved = git(self.tree, "rev-parse", "HEAD").strip()
+        result, _code, findings = self.land([split], base=moved)
+        row = result["lanes"][0]
+        self.assertEqual([r["file"] for r in row["refused"]], ["asm/func_1.s"])
+        self.assertEqual(row["files"], ["a.c", "b.c"])
+        self.assertEqual(row["functions"]["names"], ["func_3"])
+        self.assertEqual(row["functions"]["converted"], 1)
+        self.assertEqual(row["functions"]["split"], ["func_1"])
+        self.assertIn("land.function_split", [f["key"] for f in findings])
+
+    def test_union_paths_must_be_a_list_of_globs(self):
+        seat = json.loads((self.root / "seat.json").read_text())
+        seat["land"]["union_paths"] = "versions/*"
+        (self.root / "seat.json").write_text(json.dumps(seat))
+        self.profile = load_profile(self.root / "seat.json")
+        with self.assertRaises(DecompError):
+            self.land([])
+
     def test_no_patch_applying_fails_the_apply_gate_and_skips_the_rest(self):
         bad = self.patch("bad", {"a.c": "int func_1(void) { return 1; }\n"})
         (self.tree / "a.c").write_text("totally different\n")

@@ -6,8 +6,13 @@ isolated invoke, so the pinned tool runs) around the project's own `check` build
 
 Gates, in order; the first failure stops the run and the rest are reported as skipped:
   base         the tree is clean (tracked files) and HEAD is --base
-  apply        each patch applies with `git apply --3way --index`; one that fails is excluded (the tree is put back to
-               the state before it) and reported with git's reason; no patch applying at all fails the gate
+  apply        each patch applies with `git apply --3way --index`, in order. A patch that conflicts lands per file:
+               every file section that applies cleanly lands and each one that does not is refused with git's reason
+               (a blocking `land.file_refused` finding for that file, also in the LAND event text); a patch with no
+               file landing is excluded whole. Files matching `land.union_paths` never conflict: their added lines are
+               merged into the tree's file as a line union (deduplicated, tree order kept, new lines appended). A
+               function counts as converted only when every file of the patch that mentions it landed (otherwise a
+               `land.function_split` finding names it). No patch landing at all fails the gate
   setup        `unbake setup` when the pinned unbake commit differs from the tree's last setup (a marker in the git dir)
   sync         `unbake sync`
   check        the configured check command with jobs from the configured admit command
@@ -27,6 +32,7 @@ Section `land` of the seat profile:
       "jobs": ["/path/admit", "8"],                   prints the job count; omit for make's own default
       "markers": ["INCLUDE_ASM", "NON_MATCHING"],     substrings marking a stand-in line (default adds GLOBAL_ASM)
       "asm_suffix": ".s",
+      "union_paths": ["versions/*/symbol_addrs.txt"], append-only fact files merged as a line union (fnmatch globs)
       "readme": "README.md",
       "timeout_seconds": 7200,                        per check/jobs call
       "recipe": [{"name": "structure", "args": ["structure", "--json", "--paths", "{files}"]}],
@@ -49,6 +55,7 @@ Project facts (the markers, the README, the check command) come only from that s
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -160,6 +167,7 @@ def settings(profile: Profile) -> dict[str, Any]:
                 "check",
                 "jobs",
                 "markers",
+                "union_paths",
                 "asm_suffix",
                 "readme",
                 "timeout_seconds",
@@ -182,6 +190,9 @@ def settings(profile: Profile) -> dict[str, Any]:
     markers = table.get("markers", list(DEFAULT_MARKERS))
     if not isinstance(markers, list) or not markers or not all(isinstance(m, str) and m for m in markers):
         raise LandError("config.schema", f"{profile.source_file}:land.markers: expected a nonempty list of strings")
+    union = table.get("union_paths", [])
+    if not isinstance(union, list) or not all(isinstance(item, str) and item for item in union):
+        raise LandError("config.schema", f"{profile.source_file}:land.union_paths: expected a list of path globs")
     timeout = table.get("timeout_seconds", 7200)
     if type(timeout) not in (int, float) or timeout <= 0:
         raise LandError("config.schema", f"{profile.source_file}:land.timeout_seconds: expected a positive number")
@@ -193,6 +204,7 @@ def settings(profile: Profile) -> dict[str, Any]:
         "check": argv("check"),
         "jobs": argv("jobs"),
         "markers": tuple(markers),
+        "union_paths": tuple(union),
         "suffix": str(table.get("asm_suffix", ".s")),
         "readme": str(table.get("readme", "README.md")),
         "timeout": float(timeout),
@@ -257,6 +269,39 @@ def diff_lines(text: str) -> dict[str, tuple[list[str], list[str]]]:
         elif line.startswith("-"):
             current[1].append(line[1:])
     return files
+
+
+def split_sections(text: str) -> list[tuple[str, str]]:
+    """A git patch as (file, section text) pairs, one per `diff --git` header."""
+    sections: list[tuple[str, list[str]]] = []
+    for line in text.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            sections.append((line.rstrip("\n").rsplit(" b/", 1)[-1], []))
+        if sections:
+            sections[-1][1].append(line)
+    return [(name, "".join(lines)) for name, lines in sections]
+
+
+def section_additions(section: str) -> list[str]:
+    """The added lines of a patch section (hunk bodies only)."""
+    found, inside = [], False
+    for line in section.splitlines():
+        if line.startswith("@@"):
+            inside = True
+        elif inside and line.startswith("+") and not line.startswith("+++ "):
+            found.append(line[1:])
+    return found
+
+
+def union_merge(existing: str, added: Sequence[str]) -> str:
+    """`existing` plus the added lines it lacks, appended in patch order; nothing is reordered or removed."""
+    lines = existing.splitlines()
+    seen = set(lines)
+    for line in added:
+        if line not in seen:
+            seen.add(line)
+            lines.append(line)
+    return "\n".join(lines) + "\n" if lines else ""
 
 
 def marker_lines(lines: Sequence[str], markers: Sequence[str]) -> list[str]:
@@ -337,6 +382,63 @@ class Landing:
             self.fail("land.dirty", f"tree has {len(dirty)} tracked changes before landing", files=dirty[:20])
         return self.gate("base", not self.findings, started, head=head)
 
+    def is_union(self, name: str) -> bool:
+        return any(fnmatch.fnmatchcase(name, glob) for glob in self.config["union_paths"])
+
+    def try_apply(self, path: Path) -> str | None:
+        """Apply one patch file with a 3-way merge into the index; None on success, else git's reason (the tree is put
+        back to the state before it)."""
+        before = self.snapshot()
+        code, out, err = self.run(["git", "apply", "--3way", "--index", str(path)], self.tree, None, 600)
+        if not code:
+            return None
+        self.git("read-tree", "-u", "--reset", before)
+        return ((err or out).strip()[-600:]) or f"git apply exited {code}"
+
+    def write_part(self, text: str) -> Path:
+        """A patch part kept in the git dir (never /tmp)."""
+        git_dir = Path(self.git("rev-parse", "--absolute-git-dir").strip())
+        handle, name = tempfile.mkstemp(prefix="LAND_PART_", suffix=".patch", dir=git_dir)
+        with os.fdopen(handle, "w") as out:
+            out.write(text)
+        return Path(name)
+
+    def apply_file_parts(self, path: Path) -> list[dict[str, str]]:
+        """Land a patch file by file: union files merge as a line union, the rest apply whole when they can and one
+        section at a time when they cannot. Returns the refused sections as {file, reason, section}."""
+        sections = split_sections(path.read_text(errors="replace"))
+        refused: list[dict[str, str]] = []
+        if not sections:
+            reason = self.try_apply(path)
+            return [{"file": path.name, "reason": reason, "section": ""}] if reason is not None else []
+        union = [(n, t) for n, t in sections if self.is_union(n)]
+        plain = [(n, t) for n, t in sections if not self.is_union(n)]
+        if plain:
+            whole = path if not union else self.write_part("".join(t for _, t in plain))
+            try:
+                reason = self.try_apply(whole)
+                if reason is not None and len(plain) == 1:
+                    refused.append({"file": plain[0][0], "reason": reason, "section": plain[0][1]})
+                elif reason is not None:
+                    for name, text in plain:
+                        part = self.write_part(text)
+                        try:
+                            why = self.try_apply(part)
+                        finally:
+                            os.unlink(part)
+                        if why is not None:
+                            refused.append({"file": name, "reason": why, "section": text})
+            finally:
+                if whole != path:
+                    os.unlink(whole)
+        for name, text in union:
+            target = self.tree / name
+            old = target.read_text(errors="replace") if target.is_file() else ""
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(union_merge(old, section_additions(text)))
+            self.git("add", "--", name)
+        return refused
+
     def apply_patches(self) -> bool:
         started = self.clock()
         for lane, path in self.patches:
@@ -346,18 +448,24 @@ class Landing:
                 row.update(status="excluded", reason=f"patch file {path} does not exist")
                 continue
             before = self.snapshot()
-            code, out, err = self.run(["git", "apply", "--3way", "--index", str(path)], self.tree, None, 600)
-            if code:
-                reason = (err or out).strip()
-                # Put the index and tree back to the state before this patch; the tree is the landing's own.
-                self.git("read-tree", "-u", "--reset", before)
-                row.update(status="excluded", reason=reason[-600:] or f"git apply exited {code}")
-                continue
+            refused = self.apply_file_parts(path)
             after = self.snapshot()
+            if after == before and refused:
+                row.update(status="excluded", reason="; ".join(f"{r['file']}: {r['reason']}" for r in refused))
             changed = diff_lines(self.git("diff-tree", "-r", "-p", "-U0", "--no-renames", "--no-color", before, after))
             row["files"] = sorted(changed)
+            row["refused"] = [{"file": r["file"], "reason": r["reason"]} for r in refused]
+            if row["status"] == "excluded":
+                continue
             added = [(f, marker_lines(a, self.config["markers"])) for f, (a, _) in changed.items()]
             removed = [x for _, r in changed.values() for x in marker_lines(r, self.config["markers"])]
+            # A function split across a refused file is not converted: it needs every file of the patch that names it.
+            split = {
+                n
+                for n in {n for n in map(function_name, removed) if n}
+                if any(re.search(rf"\b{re.escape(n)}\b", r["section"]) for r in refused)
+            }
+            removed = [x for x in removed if function_name(x) not in split]
             added_lines = [x for _, rows in added for x in rows]
             row["functions"] = {
                 "converted": len(removed),
@@ -365,6 +473,18 @@ class Landing:
                 "net": len(removed) - len(added_lines),
                 "names": sorted({n for n in map(function_name, removed) if n}),
             }
+            if split:
+                row["functions"]["split"] = sorted(split)
+                self.findings.append(
+                    {
+                        "key": "land.function_split",
+                        "message": f"lane {lane}: {', '.join(sorted(split))} not credited, a file of "
+                        f"{'it' if len(split) == 1 else 'them'} was refused",
+                        "blocking": True,
+                        "lane": lane,
+                        "functions": sorted(split),
+                    }
+                )
         applied = [row for row in self.lanes if row["status"] == "applied"]
         for row in self.lanes:
             if row["status"] == "excluded":
@@ -376,6 +496,19 @@ class Landing:
                         "lane": row["lane"],
                     }
                 )
+            for refused in row.get("refused", []):
+                last = (refused["reason"].splitlines() or [""])[-1]
+                tail = "the rest of the patch landed" if row["status"] == "applied" else "nothing of the patch landed"
+                self.findings.append(
+                    {
+                        "key": "land.file_refused",
+                        "message": f"lane {row['lane']}: {refused['file']} refused ({tail}): {last}",
+                        "blocking": True,
+                        "lane": row["lane"],
+                        "file": refused["file"],
+                        "reason": refused["reason"],
+                    }
+                )
         if not applied:
             self.fail("land.no_patches", "no patch applied; nothing to land")
         return self.gate(
@@ -384,6 +517,7 @@ class Landing:
             started,
             applied=[r["lane"] for r in applied],
             excluded=[{"lane": r["lane"], "reason": r["reason"]} for r in self.lanes if r["status"] == "excluded"],
+            refused=[{"lane": r["lane"], **f} for r in self.lanes for f in r.get("refused", [])],
         )
 
     def unbake(self, name: str, gate: str, *args: str) -> bool:
@@ -666,14 +800,16 @@ class Landing:
 
     def write_event(self, result: dict[str, Any]) -> None:
         names = [row["lane"] for row in self.lanes if row["status"] == "applied"]
-        blocking = next((f for f in self.findings if f["blocking"]), None)
+        blocking = next((f for f in self.findings if f["blocking"] and f["key"] != "land.file_refused"), None)
+        refused = [f"{row['lane']}:{f['file']}" for row in self.lanes for f in row.get("refused", [])]
+        lost = f"; REFUSED {len(refused)} file(s): {', '.join(refused[:6])}{' ...' if len(refused) > 6 else ''}"
         message = (
             f"land {len(names)} lane(s) at {str(result['head'] or '')[:12]}: "
             f"{result['functions']['converted']} converted"
             + (f"; {proposals.line(result['recipe'])}" if result.get("recipe") else "")
             if result["pass"]
             else f"land failed: {blocking['key'] if blocking else 'unknown'}"
-        )
+        ) + (lost if refused else "")
         record = {
             "actor": self.config["actor"],
             "status": "passed" if result["pass"] else "failed",
@@ -686,6 +822,11 @@ class Landing:
                     {n for row in self.lanes if row["status"] == "applied" for n in row["functions"]["names"]}
                 ),
                 "base": result["base"],
+                "refused": [
+                    {"lane": row["lane"], "file": f["file"], "reason": f["reason"][-200:]}
+                    for row in self.lanes
+                    for f in row.get("refused", [])
+                ],
                 "gates": {row["gate"]: row["pass"] for row in self.gates},
                 "lanes": {row["lane"]: {"status": row["status"], **(row.get("functions") or {})} for row in self.lanes},
                 **({"recipe": result["recipe"]} if result.get("recipe") else {}),
