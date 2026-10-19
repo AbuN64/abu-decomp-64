@@ -24,6 +24,7 @@ from abu_decomp.land import (
     parse_credit_falls,
     parse_messages,
     parse_patches,
+    parse_reclasses,
     run_process,
     sentence_list,
     top_dirs,
@@ -884,6 +885,69 @@ class LandTests(unittest.TestCase):
         self.assertEqual(parse_credit_falls(["L1=de:5:a: b"])[0]["reason"], "a: b")
         with self.assertRaises(LandError):
             Landing(self.profile, self.tree, self.base, [], credit_falls=parse_credit_falls(["L9=0:5:x"]))
+
+    def land_reclass(self, reclasses, falls=()):
+        """Matched code stays 1,000; merging b.c moves 112 bytes into unmatched code (total up) out of matched data."""
+
+        def write():
+            moved = "merged" in (self.tree / "b.c").read_text()
+            total, data = (2112, 376) if moved else (2000, 500)
+            pct = 1000 / total * 100
+            (self.tree / "README.md").write_text(
+                f"| code [###] {pct:.2f}% (~80%) 1,000 of {total:,}<br>data [###] 50.00% {data:,} of 800 |\n"
+            )
+
+        (self.tree / "README.md").write_text(
+            "| code [###] 50.00% (~80%) 1,000 of 2,000<br>data [###] 62.50% 500 of 800 |\n"
+        )
+        git(self.tree, "commit", "-q", "--allow-empty", "-am", "readme with bytes")
+        base = git(self.tree, "rev-parse", "HEAD").strip()
+        self.on_check = write
+        append = lambda path, record: self.events.append(record) or {"ok": True}  # noqa: E731
+        landing = Landing(
+            self.profile, self.tree, base, [self.patch("L2", {"b.c": "// merged\n"})], invoke=self.invoke,
+            run=self.runner, build=self.runner, append=append, pin=lambda: "u1",
+            reclasses=parse_reclasses(reclasses), credit_falls=parse_credit_falls(falls),
+        )  # fmt: skip
+        return landing.execute()
+
+    def test_a_declared_reclassification_passes_when_the_measured_bytes_match(self):
+        result, code, findings = self.land_reclass(["L2=0:+112/-124"])
+        self.assertEqual(code, 0)
+        self.assertEqual([f["key"] for f in findings if f["key"] != "land.commit_message"], ["land.reclass"])
+        self.assertEqual((result["reclasses"][0]["code"], result["reclasses"][0]["data"]), (112, 124))
+        self.assertIn("RECLASS L2 0 +112B code/-124B data", self.events[0]["message"])
+        self.assertIn(
+            "Reclassification: 0 +112 bytes counted as code, -124 as matched data", result["commits"][0]["body"]
+        )
+
+    def test_an_undeclared_reclassification_refuses_with_the_measured_numbers(self):
+        _, code, findings = self.land_reclass([])
+        self.assertEqual((code, findings[0]["key"]), (1, "land.readme"))
+        self.assertIn(
+            "L2 reclassifies 0 (matched code unchanged): measured +112/-124 bytes, declared none",
+            findings[0]["message"],
+        )
+
+    def test_a_reclassification_must_match_the_measured_bytes_exactly(self):
+        for wrong in ("L2=0:+111/-124", "L2=0:+112/-123", "L2=0:+113/-124"):
+            _, code, findings = self.land_reclass([wrong])
+            self.assertEqual(code, 1, wrong)
+            self.assertIn("must match exactly", findings[0]["message"])
+
+    def test_a_reclassification_does_not_allow_a_matched_byte_fall(self):
+        # the credit-fall path still needs its own declaration: here matched bytes are unchanged, so nothing to credit
+        _, code, findings = self.land_reclass(["L2=0:+112/-124"], falls=["L2=0:50:unused"])
+        self.assertEqual(code, 0)
+        self.assertEqual(findings[0]["key"], "land.reclass")
+
+    def test_reclass_arguments_are_checked(self):
+        for bad in ("L1=0:112", "L1=0:+a/-b", "=0:+1/-1", "L1=:+1/-1"):
+            with self.assertRaises(LandError):
+                parse_reclasses([bad])
+        self.assertEqual(parse_reclasses(["L1=de:+1,112/-1,124"])[0]["code"], 1112)
+        with self.assertRaises(LandError):
+            Landing(self.profile, self.tree, self.base, [], reclasses=parse_reclasses(["L9=0:+1/-1"]))
 
     def test_a_refused_land_leaves_the_tree_exactly_as_it_found_it(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})

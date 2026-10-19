@@ -54,6 +54,13 @@ Gates, in order; the first failure stops the run and the rest are reported as sk
                that lowers a fallen version by more than it declared (or declared nothing) fails the gate, naming the
                input and the rows. An allowed fall is a non-blocking `land.credit_fall` finding, shows in the LAND
                event and in the lane's commit body.
+               The gate judges matched bytes per category, not percentages: a fall whose input leaves the matched
+               code bytes unchanged and only grows the code total (bytes reclassified from matched data or label
+               splits into unmatched code) passes when the lane declares it, `--reclass LANE=VERSION:+CODE/-DATA`
+               (CODE = the input's growth of the version's code total, DATA = its drop of the version's matched data
+               bytes); land measures both and refuses unless they equal the declaration exactly. A non-blocking
+               `land.reclass` finding, `reclasses` in the result, `RECLASS` in the LAND event and a
+               `Reclassification:` line in the lane's commit body record it.
 
 `--patch LANE=PATH[:MESSAGE]`; the result's `commits` is the ready commit plan (never run here; the orchestrator
 runs each of `commit_commands`; the `-- files` pathspec keeps the other lanes' staged files out of each commit).
@@ -573,6 +580,7 @@ def function_name(line: str) -> str | None:
 
 
 _ROW = re.compile(r"\bcode\s+\[[^\]\n]*\]\s*(\d+(?:\.\d+)?)%(?:[^<\n]*?([\d,]+)\s+of\s+([\d,]+))?")
+_DATA = re.compile(r"\bdata\s+\[[^\]\n]*\]\s*\d+(?:\.\d+)?%(?:[^<\n]*?([\d,]+)\s+of\s+[\d,]+)?")
 _HEADER = re.compile(r"^\|\s*([A-Za-z0-9][\w.-]*)\s*\(")
 
 
@@ -585,6 +593,7 @@ def code_rows(text: str) -> list[dict[str, Any]]:
         header = _HEADER.match(line)
         if header:
             label = header[1]
+        data = _DATA.search(line)
         for found in _ROW.finditer(line):
             number = lambda g: int(g.replace(",", "")) if g else None  # noqa: E731
             rows.append(
@@ -594,6 +603,7 @@ def code_rows(text: str) -> list[dict[str, Any]]:
                     "percent": float(found[1]),
                     "matched": number(found[2]),
                     "total": number(found[3]),
+                    "data": number(data[1]) if data else None,
                 }
             )
     return rows
@@ -610,6 +620,27 @@ def parse_credit_falls(rows: Sequence[str]) -> list[dict[str, Any]]:
             raise LandError("land.arguments", f"--credit-fall expects LANE=VERSION:BYTES:REASON, got {row!r}")
         falls.append({"lane": lane.strip(), "version": version.strip(), "bytes": int(amount), "reason": reason.strip()})
     return falls
+
+
+def parse_reclasses(rows: Sequence[str]) -> list[dict[str, Any]]:
+    """`LANE=VERSION:+CODE/-DATA` rows -> {lane, version, code, data}: the reclassification an input declares (its
+    matched bytes unchanged, CODE more bytes counted as code, DATA fewer matched bytes counted as data)."""
+    found = []
+    for row in rows:
+        lane, sep, rest = row.partition("=")
+        version, _, amount = rest.partition(":")
+        match = re.fullmatch(r"\+?([\d,]+)\s*/\s*-?([\d,]+)", amount.strip())
+        if not sep or not lane.strip() or not version.strip() or not match:
+            raise LandError("land.arguments", f"--reclass expects LANE=VERSION:+CODE/-DATA, got {row!r}")
+        found.append(
+            {
+                "lane": lane.strip(),
+                "version": version.strip(),
+                "code": int(match[1].replace(",", "")),
+                "data": int(match[2].replace(",", "")),
+            }
+        )
+    return found
 
 
 def code_percentages(text: str) -> list[float]:
@@ -638,6 +669,7 @@ class Landing:
         splat_file_check: Callable[[Sequence[str]], dict[str, str] | None] | None = None,
         ready: Callable[[], None] | None = None,
         credit_falls: Sequence[dict[str, Any]] | None = None,
+        reclasses: Sequence[dict[str, Any]] | None = None,
     ) -> None:
         self.config = settings(profile)
         self.tree = tree.expanduser().resolve()
@@ -649,9 +681,11 @@ class Landing:
         self.messages = dict(messages or {})
         self.declared = list(credit_falls or [])
         self.credit_falls: list[dict[str, Any]] = []  # the declared falls the readme gate allowed
-        unknown = sorted({d["lane"] for d in self.declared} - {lane for lane, _ in self.patches})
+        self.reclassed = list(reclasses or [])
+        self.reclasses: list[dict[str, Any]] = []  # the declared reclassifications the readme gate verified
+        unknown = sorted({d["lane"] for d in [*self.declared, *self.reclassed]} - {lane for lane, _ in self.patches})
         if unknown:
-            raise LandError("land.arguments", f"--credit-fall names no --patch lane: {', '.join(unknown)}")
+            raise LandError("land.arguments", f"--credit-fall/--reclass names no --patch lane: {', '.join(unknown)}")
         self.pin = pin or (lambda: tools.pins()["unbake"].commit)
         self.gates: list[dict[str, Any]] = []
         self.findings: list[dict[str, Any]] = []
@@ -1275,34 +1309,37 @@ class Landing:
             return
         refused: list[dict[str, Any]] = []
         allowed: list[dict[str, Any]] = []
+        allowed_reclass: list[dict[str, Any]] = []
         for index in fallen:
             culprits = 0
             for number, which in enumerate(inputs, start=1):
-                drop = steps[number - 1][index]["matched"] - steps[number][index]["matched"]
-                if drop <= 0:
-                    continue
-                culprits += 1
+                prev, now = steps[number - 1][index], steps[number][index]
+                drop = prev["matched"] - now["matched"]
                 lane, label = self.lanes[which]["lane"], base[index]["label"]
-                row = {"lane": lane, "version": label, "index": index, "fell": drop}
-                given = [
-                    d
-                    for d in self.declared
-                    if d["lane"] == lane and d["version"].casefold() in (label.casefold(), str(index))
-                ]
-                if given and drop <= given[0]["bytes"]:
-                    allowed.append({**row, "declared": given[0]["bytes"], "reason": given[0]["reason"]})
-                else:
-                    refused.append({**row, "declared": given[0]["bytes"] if given else None})
+                row = {"lane": lane, "version": label, "index": index}
+                if drop > 0:
+                    culprits += 1
+                    row["fell"] = drop
+                    given = self.declaration(self.declared, lane, label, index)
+                    if given and drop <= given["bytes"]:
+                        allowed.append({**row, "declared": given["bytes"], "reason": given["reason"]})
+                    else:
+                        refused.append({**row, "declared": given["bytes"] if given else None})
+                elif now["total"] is not None and prev["total"] is not None and now["total"] > prev["total"]:
+                    # matched bytes unchanged, the denominator grew: bytes moved into unmatched code
+                    culprits += 1
+                    code = now["total"] - prev["total"]
+                    data = None if now["data"] is None or prev["data"] is None else prev["data"] - now["data"]
+                    row.update(code=code, data=data)
+                    given = self.declaration(self.reclassed, lane, label, index)
+                    if given and (given["code"], given["data"]) == (code, data):
+                        allowed_reclass.append({**row, "declared": [given["code"], given["data"]]})
+                    else:
+                        refused.append({**row, "declared": [given["code"], given["data"]] if given else None})
             if not culprits:
                 refused.append({"lane": None, "version": base[index]["label"], "index": index, "fell": 0})
         if refused:
-            parts = [
-                f"{r['lane']} lowers {r['version']} matched code by {r['fell']:,} bytes, "
-                + (f"more than the {r['declared']:,} it declared" if r["declared"] is not None else "and declared none")
-                if r["lane"]
-                else f"{r['version']} fell with no input lowering its matched bytes"
-                for r in refused
-            ]
+            parts = [self.refusal(r) for r in refused]
             self.fail(
                 "land.readme",
                 f"{name} code percentage fell in {len(lower)} place(s): " + "; ".join(parts),
@@ -1311,6 +1348,17 @@ class Landing:
             )
         elif len(inputs) > 1 and not self.run_build():
             self.fail("land.readme", "the tree does not rebuild with every input after the credit measurement")
+        for row in allowed_reclass:
+            self.reclasses.append(row)
+            self.findings.append(
+                {
+                    "key": "land.reclass",
+                    "message": f"lane {row['lane']} reclassifies {row['version']}: +{row['code']:,} bytes counted as "
+                    f"code, -{row['data']:,} matched data bytes, matched code unchanged (declared exactly)",
+                    "blocking": False,
+                    **row,
+                }
+            )
         for row in allowed:
             self.credit_falls.append(row)
             self.findings.append(
@@ -1323,14 +1371,41 @@ class Landing:
                 }
             )
 
+    @staticmethod
+    def declaration(rows: Sequence[dict[str, Any]], lane: str, label: str, index: int) -> dict[str, Any] | None:
+        found = [d for d in rows if d["lane"] == lane and d["version"].casefold() in (label.casefold(), str(index))]
+        return found[0] if found else None
+
+    @staticmethod
+    def refusal(r: dict[str, Any]) -> str:
+        if not r["lane"]:
+            return f"{r['version']} fell with no input lowering its matched bytes"
+        if "code" in r:
+            data = "unmeasured" if r["data"] is None else f"-{r['data']:,}"
+            made = f"{r['lane']} reclassifies {r['version']} (matched code unchanged): measured +{r['code']:,}/{data}"
+            if r["declared"] is None:
+                return made + " bytes, declared none (--reclass LANE=VERSION:+CODE/-DATA)"
+            return made + f", declared +{r['declared'][0]:,}/-{r['declared'][1]:,} (must match exactly)"
+        return f"{r['lane']} lowers {r['version']} matched code by {r['fell']:,} bytes, " + (
+            f"more than the {r['declared']:,} it declared" if r["declared"] is not None else "and declared none"
+        )
+
     def credit_trailer(self, lane: str) -> str | None:
         rows = [r for r in self.credit_falls if r["lane"] == lane]
-        if not rows:
+        moved = [r for r in self.reclasses if r["lane"] == lane]
+        if not rows and not moved:
             return None
         return "\n".join(
-            f"Credit correction: {r['version']} matched code -{r['fell']:,} bytes (declared {r['declared']:,}): "
-            f"{r['reason']}"
-            for r in rows
+            [
+                f"Credit correction: {r['version']} matched code -{r['fell']:,} bytes (declared {r['declared']:,}): "
+                f"{r['reason']}"
+                for r in rows
+            ]
+            + [
+                f"Reclassification: {r['version']} +{r['code']:,} bytes counted as code, -{r['data']:,} as matched "
+                "data, matched code unchanged"
+                for r in moved
+            ]
         )
 
     def recipe(self) -> bool:
@@ -1600,6 +1675,7 @@ class Landing:
             "refused_inputs": self.refused_inputs,
             "attempts": self.attempts,
             "credit_falls": self.credit_falls,
+            "reclasses": self.reclasses,
         }
         if self.recipe_summary is not None:
             result["recipe"] = self.recipe_summary
@@ -1638,6 +1714,10 @@ class Landing:
             message += "; CREDIT FALL " + ", ".join(
                 f"{r['lane']} {r['version']} -{r['fell']:,}B ({r['reason'][:60]})" for r in self.credit_falls
             )
+        if self.reclasses:
+            message += "; RECLASS " + ", ".join(
+                f"{r['lane']} {r['version']} +{r['code']:,}B code/-{r['data']:,}B data" for r in self.reclasses
+            )
         record = {
             "actor": self.config["actor"],
             "status": "passed" if result["pass"] else "failed",
@@ -1657,6 +1737,7 @@ class Landing:
                 ],
                 "gates": {row["gate"]: row["pass"] for row in self.gates},
                 **({"credit_falls": self.credit_falls} if self.credit_falls else {}),
+                **({"reclasses": self.reclasses} if self.reclasses else {}),
                 "lanes": {row["lane"]: {"status": row["status"], **(row.get("functions") or {})} for row in self.lanes},
                 **({"recipe": result["recipe"]} if result.get("recipe") else {}),
             },
