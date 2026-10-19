@@ -12,7 +12,8 @@ are the closed schema 2 set; an `op` in the payload says which operation, and th
   PROBE  (Cake Taste's own)      checks, differences, function, result, run_id; written by `taste repro probe` itself
   LAND   payload.op = "landed"   `decomp land`: lanes, functions [names], recipe (proposals, see proposals.py)
 
-`lane` is DECOMP_LANE when set, else the name of the directory that holds the project tree. Emitting never fails
+`lane` is DECOMP_LANE when set, else the name of the directory that holds the project tree, else the lane
+directory (a `lanes/NAME` ancestor) of the cwd, the environment's paths or a parent process's cwd. Emitting never fails
 or changes a command: a missing events section or an unwritable feed only prints a note on stderr.
 """
 
@@ -35,8 +36,35 @@ def lane_of(project: Path | None) -> str:
         return os.environ["DECOMP_LANE"]
     if project:
         return project.resolve().parent.name
-    here = Path.cwd().resolve()  # no project (decomp behave): the lane directory the command runs in, if any
-    return next((p.name for p in (here, *here.parents) if p.parent.name == "lanes"), "unknown")
+    for place in lane_places():
+        lane = next((p.name for p in (place, *place.parents) if p.parent.name == "lanes"), None)
+        if lane:
+            return lane
+    return "unknown"
+
+
+def lane_places() -> list[Path]:
+    """Where a lane can be found when no project names it: the command's cwd, then the directories its environment
+    names (TMPDIR, PWD, OLDPWD, a lane's scratch), then the cwd of each parent process (the shell the lane cd'd in)."""
+    places = [Path.cwd()]
+    places += [Path(os.environ[name]) for name in ("PWD", "OLDPWD", "TMPDIR") if os.environ.get(name)]
+    pid = os.getppid()
+    for _ in range(8):
+        if pid <= 1:
+            break
+        try:
+            places.append(Path(os.readlink(f"/proc/{pid}/cwd")))
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            pid = int(fields[1])
+        except (OSError, ValueError, IndexError):
+            break
+    resolved = []
+    for place in places:
+        try:
+            resolved.append(place.resolve())
+        except OSError:
+            continue
+    return resolved
 
 
 def display_name(function: str, version: str | None) -> str:

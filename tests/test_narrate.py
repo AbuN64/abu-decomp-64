@@ -111,5 +111,8 @@ class LaneOfTests(unittest.TestCase):
                 env.pop("DECOMP_LANE", None)
                 with mock.patch("pathlib.Path.cwd", return_value=deep):
                     self.assertEqual(narrate.lane_of(None), "PORT-SOL")
-                with mock.patch("pathlib.Path.cwd", return_value=Path("/nonexistent/place")):
+                with (
+                    mock.patch("pathlib.Path.cwd", return_value=Path("/nonexistent/place")),
+                    mock.patch.object(narrate, "lane_places", return_value=[Path("/nonexistent/place")]),
+                ):
                     self.assertEqual(narrate.lane_of(None), "unknown")
