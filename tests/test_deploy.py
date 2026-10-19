@@ -42,7 +42,9 @@ class DeployTests(unittest.TestCase):
             (deploy.DECOMP_URL, D1): pyproject(
                 "abu-decomp-64", "0.1.0", **{"unbake": U1, "recipemaker": R1, "cake-taste-64": T1}
             ),
-            (URL["unbake"], U1): pyproject("unbake", "0.5.12"),
+            (URL["unbake"], U1): '[project]\nname = "unbake"\ndynamic = ["version"]\n'
+            '[tool.setuptools.dynamic]\nversion = { attr = "unbake.__version__" }\n',
+            (URL["unbake"], U1, "src/unbake/__init__.py"): '"""x"""\n__version__ = "0.5.12"\n',
             (URL["unbake"], U2): pyproject("unbake", "0.5.13"),
             (URL["recipemaker"], R1): pyproject("recipemaker", "0.1.1", unbake=U1),
             (URL["recipemaker"], R2): pyproject("recipemaker", "0.1.2", unbake=U2),
@@ -58,7 +60,11 @@ class DeployTests(unittest.TestCase):
         ]
         (self.project / "ci" / "run").write_text("\n".join(rows) + "\n")
 
-    def fetch(self, url, sha):
+    def fetch(self, url, sha, path):
+        if path != "pyproject.toml":
+            if (url, sha, path) not in self.documents:
+                raise deploy.DeployError("deploy.fetch", path)
+            return self.documents[(url, sha, path)]
         return self.documents[(url, sha)]
 
     def runner(self, argv, cwd=None):

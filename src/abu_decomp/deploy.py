@@ -30,7 +30,7 @@ DECOMP_URL = "https://github.com/AbuN64/abu-decomp-64"
 SHA = re.compile(r"[0-9a-f]{40}")
 _PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)\s*@\s*git\+(?P<url>https://[^@\s]+)@(?P<commit>[0-9a-f]{40})$")
 
-Fetch = Callable[[str, str], str]
+Fetch = Callable[[str, str, str], str]
 Run = Callable[[Sequence[str], Path | None], "tuple[int, str]"]
 
 
@@ -38,18 +38,18 @@ class DeployError(DecompError):
     pass
 
 
-def fetch_pyproject(url: str, sha: str) -> str:
-    """pyproject.toml of `url` at the commit `sha`, fetched shallow into a scratch directory."""
+def fetch_file(url: str, sha: str, path: str) -> str:
+    """File `path` of `url` at the commit `sha`, fetched shallow into a scratch directory."""
     with tempfile.TemporaryDirectory(prefix="deploy-") as scratch:
         for argv in (["git", "init", "-q", scratch], ["git", "-C", scratch, "fetch", "-q", "--depth=1", url, sha]):
             done = subprocess.run(argv, capture_output=True, text=True, check=False)
             if done.returncode:
                 raise DeployError("deploy.fetch", f"cannot fetch {url} at {sha}: {done.stderr.strip()[-300:]}")
         shown = subprocess.run(
-            ["git", "-C", scratch, "show", "FETCH_HEAD:pyproject.toml"], capture_output=True, text=True, check=False
+            ["git", "-C", scratch, "show", f"FETCH_HEAD:{path}"], capture_output=True, text=True, check=False
         )
         if shown.returncode:
-            raise DeployError("deploy.fetch", f"{url} at {sha} has no pyproject.toml")
+            raise DeployError("deploy.fetch", f"{url} at {sha} has no {path}")
         return shown.stdout
 
 
@@ -68,8 +68,24 @@ def pins_of(pyproject: str) -> dict[str, dict[str, str]]:
     return found
 
 
-def version_of(pyproject: str) -> str:
-    return str(tomllib.loads(pyproject).get("project", {}).get("version", ""))
+def version_of(pyproject: str, url: str, sha: str, fetch: Fetch) -> str:
+    """The version a pyproject declares: its `version`, or the `__version__` of the module a setuptools dynamic
+    version names (`attr = "pkg.__version__"`, read from the package's __init__.py at the same commit)."""
+    document = tomllib.loads(pyproject)
+    if version := document.get("project", {}).get("version"):
+        return str(version)
+    attr = document.get("tool", {}).get("setuptools", {}).get("dynamic", {}).get("version", {}).get("attr", "")
+    module = attr.rpartition(".")[0].replace(".", "/")
+    if not module:
+        return ""
+    for base in ("src/", ""):
+        try:
+            text = fetch(url, sha, f"{base}{module}/__init__.py")
+        except DeployError:
+            continue
+        if found := re.search(r"""^__version__\s*=\s*["']([^"']+)["']""", text, re.M):
+            return found[1]
+    return ""
 
 
 def check_sha(label: str, value: str) -> str:
@@ -84,7 +100,7 @@ def plan(
     decomp: str, wanted: dict[str, str], fetch: Fetch, pin_file: Path | None
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """(requirements to install, pins that must move). `wanted` maps tool command to the commit asked for."""
-    own = pins_of(fetch(DECOMP_URL, decomp))
+    own = pins_of(fetch(DECOMP_URL, decomp, "pyproject.toml"))
     moves: list[dict[str, str]] = []
     requirements = [{"name": tools.DISTRIBUTION, "url": DECOMP_URL, "commit": decomp}]
     versions: dict[str, str] = {}
@@ -105,8 +121,8 @@ def plan(
                 }
             )
         requirements.append({"name": pin["name"], "url": pin["url"], "commit": commit})
-        tool_pyprojects[command] = fetch(pin["url"], commit)
-        versions[command] = version_of(tool_pyprojects[command])
+        tool_pyprojects[command] = fetch(pin["url"], commit, "pyproject.toml")
+        versions[command] = version_of(tool_pyprojects[command], pin["url"], commit, fetch)
     unbake_commit = next(r["commit"] for r in requirements if tools._normal(r["name"]) == "unbake")
     recipe_pin = pins_of(tool_pyprojects["recipe"]).get("unbake")
     if recipe_pin is None or recipe_pin["commit"] != unbake_commit:
@@ -190,7 +206,7 @@ def deploy(
     venvs: Sequence[Path],
     commits: dict[str, str | None],
     *,
-    fetch: Fetch = fetch_pyproject,
+    fetch: Fetch = fetch_file,
     run: Run = run_command,
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     check_sha("--sha", decomp)
