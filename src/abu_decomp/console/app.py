@@ -7,17 +7,19 @@ import ctypes
 import hashlib
 import os
 import signal
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import ClassVar
 
+from rich.markup import escape
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
-from textual.widgets import Collapsible, Footer, Static
+from textual.containers import VerticalScroll
+from textual.widgets import Collapsible, Static
 
-from .dashboard_model import Dashboard, Row
+from .dashboard_model import Dashboard, Row, ago
 from .dashboard_sources import Sources
 from .feed import canonical_kind
 from .terminal_driver import ConsoleDriver
@@ -58,10 +60,11 @@ class EvidenceRow(Collapsible):
         )
 
     @staticmethod
-    def label(row: Row) -> str:
+    def label(row: Row, now: float | None = None) -> str:
+        """Dim fixed-width age column, then the state marker and the title (Collapsible titles take markup)."""
         marker = {"passed": "✓", "stop": "!", "planned": "○", "raw": "≡"}.get(row.state, "•")
-        # Collapsible titles accept markup, so escape untrusted evidence.
-        return Text(f"{marker} {row.title}").markup
+        stamp = ago((now or time.time()) - row.when) if row.when else ""
+        return f"[dim]{stamp:>4}[/dim] " + escape(f"{marker} {row.title}")
 
     def update_record(self, row: Row) -> None:
         if row != self.record:
@@ -71,34 +74,60 @@ class EvidenceRow(Collapsible):
             self.title = self.label(row)
             self.body.update(Text(row.details))
 
+    def tick(self, now: float) -> None:
+        if self.record.when:
+            self.title = self.label(self.record, now)
+
+
+class FollowScroll(VerticalScroll):
+    """Follows new content at the bottom until the user scrolls up; `follow()` (End, the latest control) resumes."""
+
+    following = True
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        self.following = new_value >= self.max_scroll_y - 1
+        self.app.query_one("#latest").display = not self.following
+
+    def follow(self) -> None:
+        self.following = True
+        self.scroll_end(animate=False)
+        self.app.query_one("#latest").display = False
+
+
+class LatestControl(Static):
+    def on_click(self) -> None:
+        self.app.query_one(FollowScroll).follow()
+
 
 class ConsoleApp(App):
     AUTO_FOCUS = None
     CSS = """
-    Screen { background: #101820; color: #d8e2eb; }
-    #banner { dock: top; height: auto; max-height: 5; }
-    #heading { height: auto; max-height: 2; background: #213346;
-               color: #ffffff; text-style: bold; padding: 0 1; }
-    #summary { height: auto; max-height: 3; color: #b6d6e6; padding: 0 1; }
+    Screen { background: #101820; color: #d8e2eb; layers: base above; }
+    #heading { height: 1; background: #1b2a3a; color: #9fb4c4; padding: 0 1; text-wrap: nowrap;
+               text-overflow: ellipsis; }
     #rows { padding: 0 1; }
-    #foot { height: auto; max-height: 2; background: #213346; color: #b6d6e6; padding: 0 1; }
+    #foot { height: 1; background: #1b2a3a; color: #7f93a4; padding: 0 1; text-wrap: nowrap;
+            text-overflow: ellipsis; }
+    #latest { layer: above; dock: bottom; display: none; width: 100%; height: 1; text-align: right;
+              color: #7f93a4; padding: 0 2; }
+    #latest:hover { color: #d8e2eb; }
     EvidenceRow { border: none; padding: 0; margin: 0; height: auto; }
-    CollapsibleTitle { height: 1; padding: 0; text-wrap: nowrap; text-overflow: ellipsis; }
-    CollapsibleTitle:focus { background: #304a5d; text-style: bold; }
+    CollapsibleTitle { height: 1; padding: 0; text-wrap: nowrap; text-overflow: ellipsis; color: #c3d0db; }
+    CollapsibleTitle:focus { background: #25384a; text-style: none; }
     .passed > CollapsibleTitle { color: #88d5a0; }
-    .stop > CollapsibleTitle { color: #ffcd82; background: #493527; text-style: bold; }
-    .planned > CollapsibleTitle { color: #7c8997; }
+    .stop > CollapsibleTitle { color: #ffcd82; }
+    .planned > CollapsibleTitle { color: #6f7d8a; }
     .raw > CollapsibleTitle { color: #8a9eb0; }
-    .details { height: auto; padding: 0 1 1 2; color: #c0d1de; background: #18242e; }
-    Footer { background: #213346; }
+    .details { height: auto; padding: 0 1 0 6; color: #9db0bf; }
     """
     BINDINGS: ClassVar = [
-        Binding("q", "quit", "Quit"),
+        Binding("q", "quit", "Quit", show=False),
         Binding("j,down", "next_row", "Next", show=False),
         Binding("k,up", "previous_row", "Previous", show=False),
-        Binding("space", "toggle_row", "Expand"),
-        Binding("home", "first_row", "First"),
-        Binding("end", "last_row", "Last"),
+        Binding("space", "toggle_row", "Expand", show=False),
+        Binding("home", "first_row", "First", show=False),
+        Binding("end", "last_row", "Latest", show=False),
         Binding("f5", "restart", "Restart", show=False),
         Binding("f7", "pause", "Pause retry", show=False),
     ]
@@ -109,23 +138,26 @@ class ConsoleApp(App):
         self.widgets: dict[str, EvidenceRow] = {}
         self.watchers: dict[Path, int] = {}
         self.refresh_pending = False
-        self.initial = True
         self.manage_task = None
         self.model: Dashboard | None = None
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="banner"):
-            yield Static("Loading evidence…", id="heading")
-            yield Static("", id="summary")
-        yield VerticalScroll(id="rows")
+        yield Static("", id="heading")
+        yield FollowScroll(id="rows")
         yield Static("", id="foot")
-        yield Footer()
+        yield LatestControl("↓ latest", id="latest")
 
     async def on_mount(self) -> None:
         await self.refresh_sources()
+        self.set_interval(1.0, self.tick)
         if self.supervisor:
             self.supervisor.on_change = self.source_changed
             self.manage_task = asyncio.create_task(self.supervisor.manage())
+
+    def tick(self) -> None:
+        now = time.time()
+        for widget in self.widgets.values():
+            widget.tick(now)
 
     def source_changed(self) -> None:
         if not self.refresh_pending:
@@ -141,10 +173,15 @@ class ConsoleApp(App):
         self.refresh_pending = False
         model = self.sources.read()
         self.model = model
-        self.query_one("#heading", Static).update(Text(model.heading))
-        self.query_one("#summary", Static).update(Text(model.summary))
-        self.query_one("#foot", Static).update(Text(model.footer))
-        container = self.query_one("#rows", VerticalScroll)
+        line = Text(model.heading)
+        if model.summary:
+            line.append("  " + model.summary, style="dim")
+        self.query_one("#heading", Static).update(line)
+        foot = self.query_one("#foot", Static)
+        foot.update(Text(model.footer))
+        foot.display = bool(model.footer)
+        container = self.query_one("#rows", FollowScroll)
+        was_following = container.following
         keys = [row.key for row in model.rows]
         for key in list(self.widgets):
             if key not in keys:
@@ -157,11 +194,10 @@ class ConsoleApp(App):
                 self.widgets[row.key] = widget
                 await container.mount(widget)
         container.sort_children(key=lambda widget: keys.index(widget.record.key))
-        if self.initial and model.focus_key in self.widgets:
-            widget = self.widgets[model.focus_key]
-            widget.query_one("CollapsibleTitle").focus()
-            self.call_after_refresh(container.scroll_to, y=max(0, keys.index(model.focus_key) - 7), animate=False)
-            self.initial = False
+        if was_following:
+            self.call_after_refresh(container.follow)
+        if self.focused is None and self.widgets:  # keyboard rows from the start, without scrolling to them
+            self._titles()[0].focus(scroll_visible=False)
         loop = asyncio.get_running_loop()
         directories = self.sources.directories()
         for directory in self.watchers.keys() - directories:
@@ -193,6 +229,7 @@ class ConsoleApp(App):
             titles[0].focus()
 
     def action_last_row(self) -> None:
+        self.query_one(FollowScroll).follow()
         if titles := self._titles():
             titles[-1].focus()
 

@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from .feed import canonical_kind, format_event
@@ -22,6 +23,7 @@ class Row:
     details: str
     state: str = "event"
     open: bool = False
+    when: float | None = None  # epoch seconds of the entry; the console shows its age
 
 
 @dataclass
@@ -31,6 +33,22 @@ class Dashboard:
     rows: list[Row] = field(default_factory=list)
     focus_key: str | None = None
     footer: str = ""
+
+
+def ago(seconds: float) -> str:
+    """The compact age of an entry: 12s, 4m, 2h, 3d."""
+    seconds = max(0, int(seconds))
+    for limit, unit, size in ((60, "s", 1), (3600, "m", 60), (86400, "h", 3600)):
+        if seconds < limit:
+            return f"{seconds // size}{unit}"
+    return f"{seconds // 86400}d"
+
+
+def event_epoch(event: dict) -> float | None:
+    try:
+        return datetime.fromisoformat(str(event.get("time"))).timestamp()
+    except ValueError:
+        return None
 
 
 def addresses(text: str) -> list[str]:
@@ -217,12 +235,12 @@ def mission_model(
     question = (
         ((probes[-1].get("payload") or {}).get("question") or probes[-1].get("message")) if probes else "none yet"
     )
-    rows = []
-    for event in reversed(events):
+    rows = [Row("raw-log", "Raw host log", raw_log or "No host output recorded.", "raw")]
+    for event in events:
         payload = event.get("payload") or {}
         message = str(payload.get("question") or event.get("message", ""))
         kind = event.get("kind", event.get("actor", "event"))
-        label = f"{str(event.get('time', ''))[11:19]} {kind} · {message}"
+        label = f"{kind} · {message}"
         key = hashlib.sha256(json.dumps(event, sort_keys=True).encode()).hexdigest()
         rows.append(
             Row(
@@ -230,12 +248,12 @@ def mission_model(
                 label,
                 "\n".join(format_event(event)),
                 "stop" if event.get("status") in {"failed", "blocked"} else "event",
+                when=event_epoch(event),
             )
         )
-    rows.append(Row("raw-log", "Raw host log", raw_log or "No host output recorded.", "raw"))
     return Dashboard(
         f"{title} · run {run_id} · frames {frames} · graphics {graphics}",
         "Last probe: " + str(question),
         rows,
-        rows[0].key if rows else None,
+        rows[-1].key,
     )

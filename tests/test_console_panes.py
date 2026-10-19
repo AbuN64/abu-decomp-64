@@ -131,7 +131,7 @@ class ProgressTests(unittest.TestCase):
 
 
 class LandingsAndLanesTests(unittest.TestCase):
-    def test_landings_show_land_events_newest_first(self):
+    def test_landings_show_land_events_oldest_first_with_their_age(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             profile = FeedProfile(root)
@@ -140,8 +140,9 @@ class LandingsAndLanesTests(unittest.TestCase):
             append_event(profile, "git", "info", "rage-ports def5678 second", kind="LAND")
             model = Sources(root / "events.jsonl", title="DECOMP", config={"panes": {"landings": {}}}).read()
             self.assertEqual(
-                [row.title[9:] for row in model.rows], ["rage-ports def5678 second", "rage-ports abc1234 first"]
+                [row.title for row in model.rows], ["rage-ports abc1234 first", "rage-ports def5678 second"]
             )
+            self.assertTrue(all(row.when for row in model.rows))
             self.assertIn("2 landings", model.heading)
 
     def test_lanes_show_live_rows_pulse_blocked_state_and_transcript_age(self):

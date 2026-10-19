@@ -5,8 +5,8 @@ from pathlib import Path
 
 from textual.widgets import Collapsible
 
-from abu_decomp.console.app import ConsoleApp, EvidenceRow
-from abu_decomp.console.dashboard_model import Dashboard, boot_model, mission_model
+from abu_decomp.console.app import ConsoleApp, EvidenceRow, FollowScroll
+from abu_decomp.console.dashboard_model import Dashboard, Row, ago, boot_model, mission_model
 
 FIXTURE = Path(__file__).parent / "fixtures" / "console"
 
@@ -74,14 +74,14 @@ class ConsoleModelTests(unittest.TestCase):
         matching = [row for row in model.rows if event["evidence"] in row.details]
         self.assertTrue(matching)
         self.assertIn(event["payload"]["decomp_path"], matching[0].details)
-        self.assertEqual(model.rows[-1].details, "raw")
+        self.assertEqual(model.rows[0].details, "raw")  # context first; the newest event is last, where the tail is
 
     def test_mission_row_identity_survives_new_events_and_bounded_history(self):
         events = sample("events")
         options = dict(title="Events", frames="0", graphics="0", run_id="r", raw_log="")
         before = mission_model(events, **options)
         after = mission_model(events[1:], **options)
-        self.assertEqual(before.rows[0].key, after.rows[0].key)
+        self.assertEqual(before.rows[-1].key, after.rows[-1].key)
 
 
 class ConsoleInteractionTests(unittest.IsolatedAsyncioTestCase):
@@ -101,7 +101,8 @@ class ConsoleInteractionTests(unittest.IsolatedAsyncioTestCase):
         app = ConsoleApp(Source())
         async with app.run_test(size=(106, 29)) as pilot:
             row = app.query_one(EvidenceRow)
-            self.assertGreater(app.query_one("#summary").region.y, app.query_one("#heading").region.y)
+            self.assertEqual(app.query_one("#heading").region.height, 1)  # one compact title line
+            self.assertEqual(len(app.query("Footer")), 0)
             self.assertTrue(row.collapsed)
             app.sources.current = replace(stop, details="New evidence", state="passed")
             await app.refresh_sources()
@@ -121,3 +122,73 @@ class ConsoleInteractionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(row.collapsed)
             await pilot.press("space")
             self.assertFalse(row.collapsed)
+
+
+class ConsoleFollowTests(unittest.IsolatedAsyncioTestCase):
+    def rows(self, count, now=None):
+        import time
+
+        now = now or time.time()
+        return [Row(f"r{i}", f"line {i}", "d", when=now - (count - i) * 5) for i in range(count)]
+
+    async def test_new_rows_are_followed_until_the_user_scrolls_up_and_latest_resumes(self):
+        class Source:
+            def __init__(self):
+                self.count = 60
+
+            def read(self):
+                return Dashboard("T", "", self.rows(self.count), None)
+
+            def directories(self):
+                return set()
+
+        source = Source()
+        source.rows = lambda count: ConsoleFollowTests.rows(self, count)
+        app = ConsoleApp(source)
+        async with app.run_test(size=(80, 20)) as pilot:
+            box = app.query_one(FollowScroll)
+            await pilot.pause()
+            self.assertTrue(box.following)
+            self.assertGreater(box.max_scroll_y, 0)
+            self.assertEqual(box.scroll_y, box.max_scroll_y)
+            source.count = 70
+            await app.refresh_sources()
+            await pilot.pause()
+            self.assertEqual(box.scroll_y, box.max_scroll_y)  # a new line at the bottom is followed
+            box.scroll_to(y=0, animate=False)
+            await pilot.pause()
+            self.assertFalse(box.following)
+            self.assertTrue(app.query_one("#latest").display)
+            source.count = 80
+            await app.refresh_sources()
+            await pilot.pause()
+            self.assertEqual(box.scroll_y, 0)  # scrolled up: no yanking
+            await pilot.press("end")
+            await pilot.pause()
+            self.assertTrue(box.following)
+            self.assertEqual(box.scroll_y, box.max_scroll_y)
+            self.assertFalse(app.query_one("#latest").display)
+
+    async def test_every_row_has_a_live_dim_age_column(self):
+        rows = [Row("a", "first", "d", when=1000.0), Row("b", "undated", "d")]
+
+        class Source:
+            def read(self):
+                return Dashboard("T", "", rows, None)
+
+            def directories(self):
+                return set()
+
+        app = ConsoleApp(Source())
+        async with app.run_test(size=(80, 12)) as pilot:
+            await pilot.pause()
+            first = app.widgets["a"]
+            self.assertIn("[dim]", first.title)
+            first.tick(1000.0 + 125)
+            self.assertIn("2m", first.title)
+            first.tick(1000.0 + 7300)
+            self.assertIn("2h", first.title)
+            self.assertNotIn("0s", app.widgets["b"].title)
+
+    def test_ago_is_compact(self):
+        self.assertEqual([ago(s) for s in (3, 59, 60, 240, 7300, 90000)], ["3s", "59s", "1m", "4m", "2h", "1d"])

@@ -162,7 +162,7 @@ class MatchingPane:
         state = "passed" if exact or (last and last.get("outcome") in self.matched and "landed" in outcome) else "event"
         if refusal and not exact:
             state = "stop"
-        return Row(f"match-{lane.name}", short(title, 120), "\n".join(details), state, open=True)
+        return Row(f"match-{lane.name}", short(title, 120), "\n".join(details), state, open=True, when=max(touched))
 
     def rows(self, sources: Any, events: list[dict[str, Any]]) -> list[Row]:
         del events

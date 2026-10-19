@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .dashboard_model import Dashboard, Row
+from .dashboard_model import Dashboard, Row, event_epoch
 from .feed import canonical_kind, format_event
 
 PROGRESS_SCHEMA = 2
@@ -197,14 +197,15 @@ class LandingsPane:
     def rows(self, events: list[dict[str, Any]]) -> list[Row]:
         landed = [event for event in events if canonical_kind(event) == "LAND"]
         rows = []
-        for event in reversed(landed[-self.limit :]):
+        for event in landed[-self.limit :]:
             key = f"land-{event.get('time')}-{event.get('message')}"
             rows.append(
                 Row(
                     key,
-                    f"{str(event.get('time', ''))[11:19]} {event.get('message', '')}",
+                    str(event.get("message", "")),
                     "\n".join(format_event(event)),
                     "passed",
+                    when=event_epoch(event),
                 )
             )
         if not rows:
@@ -273,14 +274,17 @@ class ExperimentsPane:
         for row in waiting:
             request = row["request"]
             created = datetime.fromisoformat(request["created"]).timestamp()
-            title = (
-                f"{row['state']} {age(time.time() - created)}  {request['address']} {request['function']}"
-                f"  · {request['question']}"
-            )
+            title = f"{row['state']}  {request['address']} {request['function']}  · {request['question']}"
             lines = [f"{key}: {request.get(key)}" for key in ("id", "requester", "decomp_path", "match_state")]
             lines += [f"evidence: {item['path']} {item['sha256'][:12]}" for item in request.get("evidence", [])]
             rows.append(
-                Row(f"req-{row['id']}", title, "\n".join(lines), "planned" if row["state"] == "open" else "event")
+                Row(
+                    f"req-{row['id']}",
+                    title,
+                    "\n".join(lines),
+                    "planned" if row["state"] == "open" else "event",
+                    when=created,
+                )
             )
         if not waiting:
             rows.append(
@@ -291,16 +295,15 @@ class ExperimentsPane:
             address = str((event.get("payload") or {}).get("owner_address") or "unknown")
             if address != "unknown":
                 latest[address] = event
-        for address, event in sorted(latest.items(), key=lambda item: str(item[1].get("time")), reverse=True)[
-            : self.limit
-        ]:
+        newest = sorted(latest.items(), key=lambda item: str(item[1].get("time")), reverse=True)[: self.limit]
+        for address, event in reversed(newest):
             payload = event.get("payload") or {}
             title = (
-                f"{str(event.get('time', ''))[11:19]} {address} [{payload.get('match_state', 'unknown')}]"
+                f"{address} [{payload.get('match_state', 'unknown')}]"
                 f" {event.get('status')} · {payload.get('question') or event.get('message', '')}"
             )
             state = "stop" if event.get("status") in ("failed", "blocked") else "passed"
-            rows.append(Row(f"probe-{address}", title, "\n".join(format_event(event)), state))
+            rows.append(Row(f"probe-{address}", title, "\n".join(format_event(event)), state, when=event_epoch(event)))
         if sources.host is not None:
             host = sources.host
             rows.append(
