@@ -318,8 +318,22 @@ def _activity(config: dict[str, Any]) -> Any:
     return ActivityPane(config)
 
 
+def _lane(config: dict[str, Any]) -> Any:
+    from .lane import LanePane
+
+    return LanePane(config)
+
+
+def _ops(config: dict[str, Any]) -> Any:
+    from .ops import OpsPane
+
+    return OpsPane(config)
+
+
 PANES: dict[str, Callable[[dict[str, Any]], Any]] = {
     "activity": _activity,
+    "lane": _lane,
+    "ops": _ops,
     "experiments": ExperimentsPane,
     "progress": ProgressPane,
     "landings": LandingsPane,
@@ -343,8 +357,12 @@ def lifecycle_model(panes: dict[str, Any], sources: Any, events: list[dict[str, 
         first = next((row.title for row in rows if row.key.startswith("probe-")), "no PROBE yet")
         heading = f"{title} · {waiting} open probe requests"
     footer = ""
+    pinned = [line for pane in panes.values() if hasattr(pane, "pins") for line in pane.pins(sources)]
+    if "lane" in panes or "ops" in panes:
+        heading = f"{title} \u00b7 {sum(1 for row in rows if not row.key.endswith('-none'))} rows"
+        first = ""
     if "activity" in panes:
         heading = f"{title} · {sum(1 for row in rows if row.key != 'act-none')} events"
         first = ""
         footer = panes["activity"].footer(sources)
-    return Dashboard(heading, first, rows, rows[0].key if rows else None, footer)
+    return Dashboard(heading, first, rows, rows[0].key if rows else None, footer, pinned)

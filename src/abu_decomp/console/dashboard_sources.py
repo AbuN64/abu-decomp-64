@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import glob
 import json
+import time
 from pathlib import Path
 
-from .dashboard_model import Dashboard, Event, EventLog, Row, boot_model, mission_model
+from .dashboard_model import Dashboard, Event, EventLog, Row, boot_model, event_epoch, mission_model
 from .feed import EventReader, canonical_kind
 from .host_output import HostOutput
 from .panes import PANES, lifecycle_model
@@ -143,7 +144,7 @@ class Sources:
                 if self.config.get("release_current")
                 else {}
             )
-            model = boot_model(
+            boot = boot_model(
                 profile,
                 status,
                 receipt,
@@ -160,6 +161,7 @@ class Sources:
                 test_step=test_step,
                 build_step=self.config.get("build_step", "build"),
             )
+            model = self.with_lane(boot, status, receipt, runtime, events) if self.panes else boot
         elif self.panes:
             model = lifecycle_model(self.panes, self, events, self.title)
         else:
@@ -186,6 +188,24 @@ class Sources:
             )
         for index, error in enumerate(self.errors):
             model.rows.insert(0, Row(f"source-error-{index}", "Source unavailable", error, "stop"))
+        return model
+
+    def boot_is_current(self, status: dict, receipt: dict, runtime: dict) -> bool:
+        """A boot gate is current when its build or run was written within `boot_fresh_seconds` (default 900)."""
+        stamps = [
+            event_epoch({"time": value})
+            for value in (runtime.get("updated_at"), status.get("started_at"), receipt.get("started_at"))
+            if value
+        ]
+        newest = max((s for s in stamps if s), default=None)
+        return newest is not None and time.time() - newest <= float(self.config.get("boot_fresh_seconds", 900))
+
+    def with_lane(self, boot: Dashboard, status: dict, receipt: dict, runtime: dict, events: EventLog) -> Dashboard:
+        """The tile's panes (a lane's live effort) with the boot gate's rows and status lines only while current."""
+        model = lifecycle_model(self.panes, self, events, self.title)
+        if self.boot_is_current(status, receipt, runtime):
+            model.rows.extend(boot.rows)
+            model.pinned.extend(boot.pinned)
         return model
 
     def directories(self) -> set[Path]:
