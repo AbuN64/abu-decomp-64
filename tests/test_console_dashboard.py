@@ -160,13 +160,19 @@ class ConsoleFollowTests(unittest.IsolatedAsyncioTestCase):
         app = ConsoleApp(source)
         async with app.run_test(size=(80, 20)) as pilot:
             box = app.query_one(FollowScroll)
-            await pilot.pause()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if box.scroll_y == box.max_scroll_y > 0:
+                    break
             self.assertTrue(box.following)
             self.assertGreater(box.max_scroll_y, 0)
             self.assertEqual(box.scroll_y, box.max_scroll_y)
             source.count = 70
             await app.refresh_sources()
-            await pilot.pause()
+            for _ in range(40):  # layout settles later on a slow machine
+                await pilot.pause(0.05)
+                if box.scroll_y == box.max_scroll_y > 40:
+                    break
             self.assertEqual(box.scroll_y, box.max_scroll_y)  # a new line at the bottom is followed
             box.scroll_to(y=0, animate=False)
             await pilot.pause()
@@ -177,7 +183,10 @@ class ConsoleFollowTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(box.scroll_y, 0)  # scrolled up: no yanking
             await pilot.press("end")
-            await pilot.pause()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if box.scroll_y == box.max_scroll_y:
+                    break
             self.assertTrue(box.following)
             self.assertEqual(box.scroll_y, box.max_scroll_y)
             self.assertFalse(app.query_one("#latest").display)
