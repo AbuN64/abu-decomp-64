@@ -1544,6 +1544,7 @@ def lifecycle_text():
         "A fresh HANDOFF at a drained boundary starts the same runtime60s successor deadline; "
         "rewrites do not reset it and model-summary waiting is interrupted safely. "
         "%s "
+        "Steers and STANDING-ORDERS.md carry over into every continuation brief. "
         "Do not compact. These conditional lifecycle rules supersede older instructions to "
         "handoff immediately, write RESULT on handoff, or wait for an owner relaunch. "
         "Lane output directory: %s. Completion rule: --done-when %s."

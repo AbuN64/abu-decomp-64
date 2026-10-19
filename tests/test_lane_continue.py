@@ -39,6 +39,40 @@ class BriefTests(unittest.TestCase):
         self.assertIn("../A-2/HANDOFF.md", again)
         self.assertNotIn("../A-1/", again)
 
+    def chain(self, tmp, steers_per_link, standing=None):
+        """Brief after each link: the live brief gets steers appended after the rules, as steer.py does."""
+        brief = "TASK do x\n\n" + RULES
+        for number, steers in enumerate(steers_per_link, 1):
+            for name, text in steers:
+                brief += f"\n\nSTEER (10:0{number}, {name}):\n{text}\n"
+            old, new = Path(tmp) / f"A-{number}", Path(tmp) / f"A-{number + 1}"
+            old.mkdir(exist_ok=True)
+            if standing and number == 1:
+                (old / "STANDING-ORDERS.md").write_text(standing)
+            brief = continuation.continuation_brief(brief, RULES, old.name, old, new)
+        return brief
+
+    def test_two_link_chain_keeps_the_steers_and_standing_orders_on_top(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            brief = self.chain(tmp, [[("a.txt", "do A\n\nsecond para"), ("b.txt", "do B")]], "ALWAYS push\n")
+        self.assertTrue(brief.startswith("<!-- STANDING-ORDERS -->\nALWAYS push\n<!-- /STANDING-ORDERS -->\n\nTASK"))
+        self.assertEqual(brief.count("## Steers carried from earlier links"), 1)
+        self.assertLess(brief.index("do A\n\nsecond para"), brief.index("do B"))
+        self.assertLess(brief.index("do B"), brief.index("LANE RULES"))
+        self.assertIn("carry over", brief)
+
+    def test_three_link_chain_keeps_every_steer_once_in_order(self):
+        steers = [[("a.txt", "do A")], [("b.txt", "do B"), ("a2.txt", "do A")], [("c.txt", "do C")]]
+        with tempfile.TemporaryDirectory() as tmp:
+            brief = self.chain(tmp, steers, "ALWAYS push\n")
+        for text in ("do A", "do B", "do C", "ALWAYS push"):
+            self.assertEqual(brief.count(text), 1, text)
+        self.assertEqual(brief.count("## Steers carried"), 1)
+        self.assertEqual(brief.count("LANE RULES"), 1)
+        self.assertLess(brief.index("do A"), brief.index("do B"))
+        self.assertLess(brief.index("do B"), brief.index("do C"))
+        self.assertTrue(brief.startswith("<!-- STANDING-ORDERS -->"))
+
     def test_unit_spec_reads_systemd_quoted_exec_start(self):
         text = (
             "[Service]\nExecStart=\n"
@@ -219,6 +253,19 @@ class ContinueTests(unittest.TestCase):
     def test_the_continuation_brief_teaches_the_done_marker(self):
         brief = continuation.continuation_brief("TASK\n", RULES, "A-1", Path("/l/A-1"), Path("/l/A-2"))
         self.assertIn("FIRST line is exactly `DONE`", brief)
+
+    def test_a_manual_continue_keeps_the_steers_and_standing_orders(self):
+        old = self.launch_a()
+        (old / "STANDING-ORDERS.md").write_text("ALWAYS push\n")
+        with (old / "brief.md").open("a") as handle:
+            handle.write("\n\nSTEER (10:00, s.txt):\nuse the cache\n")
+        self.units.clear()
+        code, envelope = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "A-2"])
+        self.assertEqual(code, 0, envelope)
+        brief = (self.root / "A-2" / "brief.md").read_text()
+        self.assertTrue(brief.startswith("<!-- STANDING-ORDERS -->\nALWAYS push"))
+        self.assertEqual(brief.count("use the cache"), 1)
+        self.assertIn("## Steers carried from earlier links", brief)
 
     def test_a_nonempty_new_directory_is_refused(self):
         old = self.launch_a()
