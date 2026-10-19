@@ -91,7 +91,7 @@ def task_text(brief: str) -> str:
     return split_brief(brief)[0]
 
 
-def continuation_brief(brief: str, rules: str, old_name: str, old_dir: Path, new_dir: Path) -> str:
+def continuation_brief(brief: str, rules: str, old_name: str, old_dir: Path, new_dir: Path, adopt: str = "") -> str:
     handoff = os.path.relpath(old_dir / "HANDOFF.md", new_dir)
     status = os.path.relpath(old_dir / "STATUS.md", new_dir)
     task, steers, standing = split_brief(brief)
@@ -100,7 +100,7 @@ def continuation_brief(brief: str, rules: str, old_name: str, old_dir: Path, new
         standing = declared.read_text().strip("\n")
     section = (
         f"{HEADING}\n\n"
-        f"This lane continues {old_name}, which has closed. Before anything else read {handoff} and {status}, "
+        + f"This lane continues {old_name}, which has closed. Before anything else read {handoff} and {status}, "
         "then continue from where STATUS says. Do not redo finished steps or rerun finished checks. "
         "Keep your own STATUS.md and HANDOFF.md in this lane's directory. "
         f"{CARRY_RULE} "
@@ -181,18 +181,6 @@ def old_unit(old_dir: Path, first: list[str] = ()) -> tuple[str, dict[str, Any]]
         if spec.get("dir") and Path(spec["dir"]) == old_dir:
             return unit, spec
     return None
-
-
-def replace_active(path: Path, old_dir: Path, name: str | None, transcript: str | None) -> None:
-    """Rewrite the active list: drop the old lane's line (by its transcript path), then add the new one."""
-    lines = path.read_text().splitlines() if path.exists() else []
-    old = str(old_dir / "transcript.jsonl") if old_dir else None
-    kept = [line for line in lines if not (old and line.partition("=")[2].strip() == old)]
-    if name and transcript and f"{name}={transcript}" not in kept:
-        kept.append(f"{name}={transcript}")
-    temporary = path.with_name(path.name + ".new")
-    temporary.write_text("".join(line + "\n" for line in kept))
-    os.replace(temporary, path)
 
 
 def require(spec: dict[str, Any], keys: tuple[str, ...]) -> None:

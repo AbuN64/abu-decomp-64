@@ -110,6 +110,27 @@ class LaneControlTests(unittest.TestCase):
         )
         self.assertEqual(json.loads(self.feed.read_text())["lane"]["name"], "T1")
 
+    def test_a_claude_lane_registers_without_a_unit_and_ends_like_any_other(self):
+        output = self.root / "tasks" / "abc.output"
+        argv = [*self.seat, "lane", "register", "--name", "C1", "--transcript", str(output), "--kind", "tooling"]
+        code, envelope = run([*argv, "--model", "opus"])
+        self.assertEqual((code, envelope["findings"][0]["key"]), (1, "lanes.ladder"))
+        code, envelope = run([*argv, "--model", "sonnet"])
+        self.assertEqual(code, 0, envelope)
+        row = json.loads((self.root / "lanes.json").read_text())["lanes"][0]
+        self.assertEqual((row["name"], row["state"], row["transcript"], row["unit"]), ("C1", "live", str(output), None))
+        self.assertEqual(run([*argv, "--model", "sonnet"])[1]["findings"][0]["key"], "lanes.overlap")
+        # a later launch does not close the unit-less row as a stopped unit
+        self.assertEqual(self.launch("T2", "/work/t2")[0], 0)
+        self.assertEqual(
+            [r["state"] for r in json.loads((self.root / "lanes.json").read_text())["lanes"]], ["live", "live"]
+        )
+        code, envelope = run([*self.seat, "lane", "end", "--name", "C1", "--reason", "agent finished"])
+        self.assertEqual(code, 0, envelope)
+        self.assertEqual(self.stopped, [])
+        rows = json.loads((self.root / "lanes.json").read_text())["lanes"]
+        self.assertEqual((rows[0]["state"], rows[0]["reason"]), ("ended", "agent finished"))
+
     def test_ladder_refusals_and_owner_override(self):
         for kind, model in (("tooling", "gpt-6.1-sol"), ("tooling", "opus"), ("impl", "opus")):
             with self.subTest(kind=kind, model=model):

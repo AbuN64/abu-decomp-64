@@ -189,6 +189,13 @@ def _lane_arguments(parser: argparse.ArgumentParser) -> None:
     launch.add_argument("--fanout", required=True, choices=("enabled", "disabled"))
     launch.add_argument("--max-agents", type=int, required=True)
     launch.add_argument("--owner-override", help="the owner's reason for a model outside the ladder")
+    register = actions.add_parser("register", help="record a lane that has no unit (a Claude agent) in the registry")
+    register.add_argument("--name", required=True)
+    register.add_argument("--transcript", type=Path, required=True, help="absolute path of the agent's task output")
+    register.add_argument("--kind", required=True, choices=("tooling", "impl"))
+    register.add_argument("--model", required=True)
+    register.add_argument("--track", choices=("official", "experiment"), default="official")
+    register.add_argument("--owner-override", help="the owner's reason for a model outside the ladder")
     steer = actions.add_parser("steer", help="append the text of a file to a lane's active turn")
     steer.add_argument("--name", help="a registered live lane")
     steer.add_argument("--dir", type=Path, help="lane directory (a lane launched elsewhere)")
@@ -225,6 +232,14 @@ def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
         spec["owns"] = [str(path) for path in args.owns]
         spec["export"] = list(args.export or [])
         return control.launch(profile, spec), 0, []
+    if args.action == "register":
+        return (
+            control.register(
+                profile, {k: v for k, v in vars(args).items() if k not in {"command", "action", "profile"}}
+            ),
+            0,
+            [],
+        )
     if args.action == "continue":
         flags = ("track", "kind", "model", "effort", "wall", "continues", "done_when", "fanout", "max_agents")
         given = {
@@ -405,7 +420,7 @@ COMMANDS: dict[str, Command] = {
     "recipe": Command("run Recipe Maker on the profile's project (or --project)", _tool_arguments, _run_tool),
     "taste": Command("run Cake Taste with the profile's Taste profile", _tool_arguments, _run_tool),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
-    "lane": Command("launch, steer and end AI lanes", _lane_arguments, _run_lane),
+    "lane": Command("launch, register, steer and end AI lanes", _lane_arguments, _run_lane),
     "supervisor": Command("supervise a role headless, or stage an artifact", _supervisor_arguments, _run_supervisor),
     "build": Command("build committed sources and promote verified releases", _build_arguments, _run_build),
     "console": Command(

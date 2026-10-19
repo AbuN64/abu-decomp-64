@@ -93,10 +93,8 @@ class ContinueTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         (self.root / "models.toml").write_text(LADDER.replace("[models]\n", '[models]\n"gpt-6-astra" = "astra"\n'))
         (self.root / "rules.md").write_text(RULES)
-        self.active = self.root / "lanes.active"
-        self.active.write_text("# NAME=PATH\nOTHER=/x/transcript.jsonl\n")
         lanes = {"registry": "lanes.json", "ladder": "models.toml", "codex": "codex", "socket_dir": "sockets",
-                 "rules": "rules.md", "active_file": "lanes.active"}  # fmt: skip
+                 "rules": "rules.md"}  # fmt: skip
         (self.root / "seat.json").write_text(json.dumps({"schema_version": 1, "name": "w", "lanes": lanes}))
         self.seat = ["--profile", str(self.root / "seat.json")]
         self.units: set[str] = set()
@@ -175,14 +173,10 @@ class ContinueTests(unittest.TestCase):
         brief = (self.root / "A-2/brief.md").read_text()
         self.assertIn("../A-1/HANDOFF.md", brief)
         self.assertEqual(brief.count("LANE RULES"), 1)
-        self.assertEqual(
-            self.active.read_text().splitlines(),
-            ["# NAME=PATH", "OTHER=/x/transcript.jsonl", f"A-2={self.root / 'A-2/transcript.jsonl'}"],
-        )
+        self.assertEqual(rows[1]["transcript"], str(self.root / "A-2/transcript.jsonl"))
 
     def test_old_launched_lane_reads_its_unit_and_needs_owns_and_track(self):
         old = self.lane("E-12", "TASK e\n\n" + RULES)
-        self.active.write_text(f"E-12={old / 'transcript.jsonl'}\n")
         self.unit_files["lane-e-12"] = (
             f'ExecStart="/usr/bin/python3" "/x/lane.py" "--model" "gpt-6-astra" "--effort" "high" "--wall" "5400" '
             f'"--continues" "5" "--done-when" "result" "--fanout" "disabled" "--max-agents" "0" "--dir" "{old}" '
@@ -203,7 +197,8 @@ class ContinueTests(unittest.TestCase):
         self.assertEqual((self.flag(command, "--model"), self.flag(command, "--continues")), ("gpt-6-astra", "5"))
         self.assertEqual(self.flag(command, "--owner-override"), "owner: stays on Astra")
         self.assertEqual(envelope["result"]["continued_from"]["unit"], "lane-e-12")
-        self.assertEqual(self.active.read_text().splitlines(), [f"E-13={self.root / 'E-13/transcript.jsonl'}"])
+        rows = json.loads((self.root / "lanes.json").read_text())["lanes"]
+        self.assertEqual([(row["name"], row["state"]) for row in rows], [("E-13", "live")])
 
     def test_registry_row_without_the_full_spec_is_filled_from_its_unit(self):
         old = self.launch_a()

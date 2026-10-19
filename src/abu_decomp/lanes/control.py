@@ -1,4 +1,7 @@
-"""`decomp lane launch|continue|steer|end`: the lane lifecycle over the registry, ladder and systemd units."""
+"""`decomp lane launch|register|continue|steer|end`: the lane lifecycle over the registry, ladder and systemd units.
+
+The registry (`lanes.registry`) is the one list of lanes: Codex lanes enter it at launch, a Claude lane (no unit; its
+transcript is the agent's task output) enters it with `register`, and the orchestrator's peek reads it."""
 
 from __future__ import annotations
 
@@ -21,8 +24,6 @@ from abu_decomp.lanes import Ladder, Lane, continuation, overlap_findings, regis
 DONE_WHEN = ("identical", "result")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _KEYS = frozenset({"registry", "ladder", "codex", "socket_dir", "rules"})
-# `active_file`: the NAME=PATH list the workspace hygiene reads; launch, continue and end keep it current when set.
-_OPTIONAL = frozenset({"active_file"})
 # Spec keys a registry row keeps so `decomp lane continue` can relaunch the lane as it was.
 INHERITED = ("model", "kind", "effort", "wall", "continues", "owns", "track", "done_when", "fanout", "max_agents")
 RUNNER = Path(__file__).with_name("runner.py")
@@ -35,16 +36,15 @@ class Settings:
     codex: Path
     socket_dir: Path
     rules: Path
-    active_file: Path | None = None
 
 
 def settings(profile: Profile) -> Settings:
     """The `lanes` section: registry file, model ladder, codex binary, socket directory and brief rules."""
     table = profile.section("lanes")
-    config.check_keys(profile.source_file, "lanes", table, _KEYS, _KEYS | _OPTIONAL)
-    paths = [profile.path(f"lanes.{key}", table[key]) for key in ("registry", "ladder", "codex", "socket_dir", "rules")]
-    active = profile.path("lanes.active_file", table["active_file"]) if "active_file" in table else None
-    return Settings(*paths, active_file=active)
+    config.check_keys(profile.source_file, "lanes", table, _KEYS, _KEYS)
+    return Settings(
+        *[profile.path(f"lanes.{key}", table[key]) for key in ("registry", "ladder", "codex", "socket_dir", "rules")]
+    )
 
 
 def announce(profile: Profile, row: dict[str, Any], status: str, message: str) -> dict[str, Any] | None:
@@ -190,14 +190,37 @@ def launch(
                 shutil.rmtree(directory, ignore_errors=True)
             raise
         rows.append(row)
-    if seat.active_file:
-        old_dir = Path(replaces["dir"]) if replaces else None
-        continuation.replace_active(seat.active_file, old_dir, name, lane.transcript)
     return {
         "lane": row,
         "unit": unit,
         "event": announce(profile, row, "started", f"launched {name} on {spec['model']}"),
     }
+
+
+def register(profile: Profile, spec: dict[str, Any]) -> dict[str, Any]:
+    """Record a lane that has no unit (a Claude agent) as live, after the ladder check: its transcript is the agent's
+    task output, which the peek reads. `lane end` closes it like any other row."""
+    seat = settings(profile)
+    name, transcript = spec["name"], Path(spec["transcript"])
+    if not _NAME.fullmatch(name):
+        raise DecompError("lanes.name", f"lane name {name!r} must be letters, digits, dot, dash or underscore")
+    if not transcript.is_absolute():
+        raise DecompError("lanes.arguments", f"--transcript must be an absolute path: {transcript}")
+    rung = Ladder.load(seat.ladder).check(spec["kind"], spec["model"], spec.get("owner_override"))
+    lane = Lane(name, spec["kind"], spec["model"], spec["track"], (), transcript=str(transcript))
+    with registry.locked(seat.registry) as rows:
+        if any(r["name"] == name and r.get("state") == "live" for r in rows):
+            raise DecompError("lanes.overlap", f"{name} is already live in {seat.registry}")
+        row = registry.row_of(
+            lane,
+            state="live",
+            started=time.time(),
+            agent="claude",
+            rung=rung,
+            owner_override=spec.get("owner_override") or None,
+        )
+        rows.append(row)
+    return {"lane": row, "event": announce(profile, row, "started", f"registered {name} on {spec['model']}")}
 
 
 def _row(profile: Profile, name: str) -> dict[str, Any]:
@@ -240,13 +263,11 @@ def end(profile: Profile, name: str, reason: str, stop: bool) -> dict[str, Any]:
         row = next((r for r in reversed(rows) if r["name"] == name and r.get("state") == "live"), None)
         if row is None:
             raise DecompError("lanes.unknown", f"no live lane {name} in {seat.registry}")
-        if row["unit"] in registry.active_units():
+        if row.get("unit") and row["unit"] in registry.active_units():
             if not stop:
                 raise DecompError("lanes.live", f"{row['unit']} is still running; pass --stop to stop it")
             stop_unit(row["unit"])
         row.update(state="ended", ended=time.time(), reason=reason)
-    if seat.active_file:
-        continuation.replace_active(seat.active_file, Path(row["dir"]), None, None)
     return {"lane": row, "event": announce(profile, row, "passed", f"ended {name}: {reason}")}
 
 

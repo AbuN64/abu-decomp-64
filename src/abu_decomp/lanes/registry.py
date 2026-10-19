@@ -1,4 +1,4 @@
-"""The lane registry (lanes.json). Only `decomp lane launch` and `decomp lane end` write it."""
+"""The lane registry (lanes.json), the one list of lanes. `decomp lane launch|register|continue|end` write it."""
 
 from __future__ import annotations
 
@@ -68,12 +68,13 @@ def locked(path: Path) -> Iterator[list[dict[str, Any]]]:
 
 
 def live_rows(rows: list[dict[str, Any]], units: set[str]) -> list[dict[str, Any]]:
-    """Rows still live. A live row whose unit has stopped is closed here, so a dead lane never blocks a launch."""
+    """Rows still live. A live row whose unit has stopped is closed here, so a dead lane never blocks a launch; a row
+    with no unit (a registered Claude lane) stays live until `lane end`."""
     live = []
     for row in rows:
         if row.get("state") != "live":
             continue
-        if row.get("unit") in units:
+        if row.get("unit") is None or row["unit"] in units:
             live.append(row)
         else:
             row.update(state="ended", ended=time.time(), reason="unit inactive")
