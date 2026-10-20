@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, runslice
+from abu_decomp import DecompError, priority, runslice
 from abu_decomp.config import Profile, load_profile
 
 
@@ -591,6 +591,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.write(version_text())
         return 0
     if argv is None:  # a real start, not a call from a test or from `decomp mcp`'s own dispatch
+        priority.apply(args)  # before the slice exec, which keeps it
         runslice.start(args)
     started = time.monotonic()
     invocation = uuid.uuid4().hex
