@@ -95,7 +95,15 @@ class EmitTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     event[0]["payload"],
-                    {"op": tool, "verb": args[0], "ok": True, "seconds": 1.235, "findings": 0, "lane": "RW-SOL-A"},
+                    {
+                        "op": tool,
+                        "verb": args[0],
+                        "ok": True,
+                        "seconds": 1.235,
+                        "cpu": 0.0,
+                        "findings": 0,
+                        "lane": "RW-SOL-A",
+                    },
                 )
                 self.assertEqual(event[0]["message"], f"{tool} {args[0]}: ok")
             failed = self.emit(

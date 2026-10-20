@@ -11,16 +11,18 @@ import json
 import math
 import os
 import re
+import signal
 import subprocess
 import sys
+import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError
+from abu_decomp import DecompError, meter
 from abu_decomp.config import Profile, check_keys
 
 DISTRIBUTION = "abu-decomp-64"
@@ -281,6 +283,7 @@ class ToolResult:
     context: dict[str, str]
     text: bytes | None = None  # the tool's own stdout when it printed text (--version, --help), not a JSON document
     seconds: float = 0.0  # wall time of the tool's process (monotonic clock), reported on the call's event
+    cpu: float = 0.0  # CPU seconds of the tool and everything it ran, orphans adopted (abu_decomp.meter)
 
     @property
     def ok(self) -> bool:
@@ -419,6 +422,19 @@ def ready(profile: Profile, project: Path) -> None:
     verify_dependencies()
 
 
+def _on_terminate() -> Callable[[], None]:
+    """Turn SIGTERM into SystemExit(143) until the returned function restores the old handler, so a `timeout` cap ends
+    the call through its cleanup (the tool is killed and waited for) and the CPU its workers used is still read."""
+    if threading.current_thread() is not threading.main_thread():
+        return lambda: None
+
+    def raise_exit(signum: int, frame: Any) -> None:
+        raise SystemExit(128 + signum)
+
+    previous = signal.signal(signal.SIGTERM, raise_exit)
+    return lambda: signal.signal(signal.SIGTERM, previous)
+
+
 def invoke(
     tool: str,
     profile: Profile,
@@ -461,7 +477,9 @@ def invoke(
     if isinstance(chosen, Settings):
         environment["UNBAKE_HOST"] = str(chosen.host)
     environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + environment.get("PATH", "")
-    started = time.monotonic()
+    meter.adopt()
+    started, cpu_before = time.monotonic(), meter.cpu()
+    stop = _on_terminate()
     try:
         completed = subprocess.run(
             [str(Path(sys.executable).absolute()), "-I", "-c", bootstrap, *command],
@@ -473,10 +491,20 @@ def invoke(
             env=environment,
         )
     except subprocess.TimeoutExpired as exc:
-        raise DependencyError("dependency.timeout", f"{tool} exceeded {chosen.timeout_seconds:g}s") from exc
+        meter.kill_descendants()  # the tool's workers outlive it otherwise and burn CPU no meter reads
+        spent = meter.cpu() - cpu_before
+        raise DependencyError(
+            "dependency.timeout", f"{tool} exceeded {chosen.timeout_seconds:g}s and used {spent:.1f} CPU s"
+        ) from exc
     except OSError as exc:
         raise DependencyError("dependency.process", f"cannot execute {tool}: {exc}") from exc
-    seconds = time.monotonic() - started
+    except (KeyboardInterrupt, SystemExit):  # a cap (`timeout`) or ^C: the workers die with the tool, read their CPU
+        meter.kill_descendants()
+        print(f"decomp: {tool} stopped after {meter.cpu() - cpu_before:.1f} CPU s", file=sys.stderr)
+        raise
+    finally:
+        stop()
+    seconds, spent = time.monotonic() - started, meter.cpu() - cpu_before
     if is_text_call(given):
         return ToolResult(
             tool,
@@ -487,6 +515,7 @@ def invoke(
             where,
             completed.stdout,
             seconds,
+            spent,
         )
     try:
         document = json.loads(completed.stdout.decode("utf-8"))
@@ -510,6 +539,7 @@ def invoke(
         provenance,
         where,
         seconds=seconds,
+        cpu=spent,
     )
 
 

@@ -13,14 +13,13 @@ from __future__ import annotations
 import fcntl
 import os
 import re
-import resource
 import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, land, priority
+from abu_decomp import DecompError, events, land, meter, priority
 from abu_decomp.config import Profile
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
@@ -63,8 +62,8 @@ class Ship:
         self.weight, self.cgroup, self.notes = table["lock_weight"], cgroup, []
         self.run, self.landing, self.append, self.clock, self.lock_wait = run, landing, append, clock, lock_wait
         self.steps: list[dict[str, Any]] = []
-        used = resource.getrusage(resource.RUSAGE_CHILDREN)
-        self.cpu_mark = used.ru_utime + used.ru_stime
+        meter.adopt()
+        self.cpu_mark = meter.cpu()
         self.refused: list[dict[str, Any]] = []  # inputs the ship refused whole before the land that pushed
 
     # git ----------------------------------------------------------------------------------------------------------
@@ -75,9 +74,8 @@ class Ship:
         return code, (out if not code else (err or out))
 
     def step(self, name: str, started: float, **detail: Any) -> None:
-        used = resource.getrusage(resource.RUSAGE_CHILDREN)
-        now = used.ru_utime + used.ru_stime
-        spent, self.cpu_mark = now - self.cpu_mark, now  # children's CPU since the previous step, beside its wall
+        now = meter.cpu()
+        spent, self.cpu_mark = now - self.cpu_mark, now  # descendants' CPU since the previous step, beside its wall
         self.steps.append({"step": name, "seconds": round(self.clock() - started, 3), "cpu": round(spent, 2), **detail})
 
     def identity(self) -> dict[str, str]:

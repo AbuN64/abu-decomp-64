@@ -249,7 +249,9 @@ def emit_recipe(profile: Profile, args: list[str], document: dict[str, Any], lan
     )
 
 
-def emit_default(profile: Profile, tool: str, verb: str, document: dict[str, Any], lane: str, seconds: float) -> None:
+def emit_default(
+    profile: Profile, tool: str, verb: str, document: dict[str, Any], lane: str, seconds: float, cpu: float = 0.0
+) -> None:
     """The event every tool call without a richer payload writes: MATCH when ok, else RUN-FAIL."""
     ok = bool(document.get("ok"))
     found = [f for f in document.get("findings") or () if isinstance(f, dict)]
@@ -258,6 +260,7 @@ def emit_default(profile: Profile, tool: str, verb: str, document: dict[str, Any
         "verb": verb,
         "ok": ok,
         "seconds": round(seconds, 3),
+        "cpu": round(cpu, 2),
         "findings": len(found),
         "lane": lane,
     }
@@ -288,7 +291,13 @@ def emit_unbake(profile: Profile, verb: str, document: dict[str, Any], lane: str
 
 
 def emit(
-    profile: Profile, tool: str, args: list[str], document: dict[str, Any], project: Path | None, seconds: float = 0.0
+    profile: Profile,
+    tool: str,
+    args: list[str],
+    document: dict[str, Any],
+    project: Path | None,
+    seconds: float = 0.0,
+    cpu: float = 0.0,
 ) -> None:
     """After every `decomp <tool>` call that returned a JSON document: one event, rich for the verbs in VERBS and
     RECIPE_VERBS, the default (op = tool, verb, ok, seconds, findings, lane) for the rest. Never raises."""
@@ -305,6 +314,6 @@ def emit(
             emit_recipe(profile, args, document, lane)
             return
         if not (tool == "unbake" and verb in VERBS and emit_unbake(profile, verb, document, lane)):
-            emit_default(profile, tool, verb, document, lane, seconds)
+            emit_default(profile, tool, verb, document, lane, seconds, cpu)
     except (DecompError, OSError, KeyError, TypeError, ValueError) as error:
         print(f"decomp: no operation event written: {error}", file=sys.stderr)

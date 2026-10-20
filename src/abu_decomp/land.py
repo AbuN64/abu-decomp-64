@@ -117,7 +117,6 @@ import fnmatch
 import json
 import os
 import re
-import resource
 import shlex
 import subprocess
 import sys
@@ -129,7 +128,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, proposals, retarget, standalone, tools
+from abu_decomp import DecompError, events, meter, proposals, retarget, standalone, tools
 from abu_decomp.config import Profile, check_keys
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
@@ -781,8 +780,8 @@ class Landing:
         self.union_seen: dict[str, bool] = {}  # path -> whether gitattributes say merge=union
         self.regenerated: dict[str, str] = {}  # generated file the sync changed -> the lane whose sources caused it
         self.written: set[str] = set()  # every path an unbake setup or sync of this land says it wrote
-        used = resource.getrusage(resource.RUSAGE_CHILDREN)
-        self.cpu_start = self.cpu_mark = used.ru_utime + used.ru_stime  # children's CPU at the land's start
+        meter.adopt()
+        self.cpu_start = self.cpu_mark = meter.cpu()  # descendants' CPU at the land's start
         self.proof: dict[str, Any] | None = None  # the rename proof of the tree as it is (prove stage)
 
     # git -------------------------------------------------------------------------------------------------------
@@ -814,8 +813,7 @@ class Landing:
     def cpu_since_gate(self) -> float:
         """CPU seconds (user+system) every finished child of this land used since the previous gate row, so each row
         carries its own cost beside its wall (owner cap: 300 CPU per land). Gates run one after another."""
-        used = resource.getrusage(resource.RUSAGE_CHILDREN)
-        now = used.ru_utime + used.ru_stime
+        now = meter.cpu()
         spent, self.cpu_mark = now - self.cpu_mark, now
         return round(spent, 2)
 
