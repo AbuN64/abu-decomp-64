@@ -1,0 +1,293 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Address facts: https://n64.readthedocs.io/#memory-map
+ * Linux/i386 adapter: a protected register page lets the CPU execute one native
+ * memory instruction. SIGTRAP reprotects it. Component calls run on a separate
+ * TLS stack after sigreturn; a second signal restores the saved machine context.
+ * No instruction decoder, guest CPU, ptrace or callbacks in signal context. */
+#define _GNU_SOURCE
+#include "n64c_memory.h"
+#include "n64c_internal.h"
+#include "n64c_mmio.h"
+
+#if defined(__linux__) && defined(__i386__)
+#include <signal.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <ucontext.h>
+
+enum { PAGE_BYTES=4096, MAX_MAPS=12, RESUME_SIGNAL=SIGUSR2, TLB_ENTRIES=32 };
+static const u32 devices[]={0x04400000,0x04500000,0x04600000,0x04800000};
+typedef struct { void *base; size_t bytes; } Mapping;
+static Mapping maps[MAX_MAPS];
+static unsigned map_count, handlers;
+static u32 ram_size;
+static int window_fd=-1;               /* the memfd behind every window, kept for TLB mappings */
+typedef struct { void *base; size_t bytes; u32 physical; } TlbMapping;
+static TlbMapping tlb[TLB_ENTRIES][2];
+static struct sigaction prior[3];
+static const int signals[]={SIGSEGV,SIGTRAP,RESUME_SIGNAL};
+static _Thread_local struct {
+    ucontext_t saved;
+    void *page;
+    u32 physical, offset, value;
+    int stage, write, error;
+    _Alignas(16) unsigned char stack[65536];
+} transaction;
+
+static _Noreturn void fault_stop(void)
+{
+    static const char message[]="n64compat: invalid MMIO fault\n";
+    (void)write(STDERR_FILENO,message,sizeof message-1);
+    _Exit(78);
+}
+static _Noreturn void dispatch(void);
+
+static void redirect(ucontext_t *context)
+{
+    uintptr_t top=(uintptr_t)(transaction.stack+sizeof transaction.stack);
+    top=(top & ~(uintptr_t)15)-sizeof(uintptr_t);
+    *(uintptr_t *)top=0; /* dispatch never returns */
+    context->uc_mcontext.gregs[REG_ESP]=(greg_t)top;
+    context->uc_mcontext.gregs[REG_EIP]=(greg_t)(uintptr_t)dispatch;
+    context->uc_mcontext.gregs[REG_EFL]&=~(greg_t)(0x100|0x400);
+}
+static int device_page(uintptr_t address,u32 *physical)
+{
+    if (address<0x80000000u || address>=0xC0000000u) return 0;
+    *physical=(u32)address & 0x1FFFFFFFu;
+    for (unsigned i=0;i<sizeof devices/sizeof devices[0];i++)
+        if (*physical>=devices[i] && *physical<devices[i]+PAGE_BYTES) return 1;
+    return 0;
+}
+static void signal_handler(int signal_number,siginfo_t *info,void *opaque)
+{
+    ucontext_t *context=opaque;
+    if (signal_number==RESUME_SIGNAL && transaction.stage==3) {
+        *context=transaction.saved;
+        transaction.stage=0;
+        errno=transaction.error;
+        return;
+    }
+    if (signal_number==RESUME_SIGNAL && transaction.stage==2) {
+        *context=transaction.saved;
+        transaction.stage=1;
+        errno=transaction.error;
+        return;
+    }
+    if (signal_number==SIGTRAP && transaction.stage==1 && info->si_code==TRAP_TRACE) {
+        transaction.value=*(volatile u32 *)((u8 *)transaction.page+transaction.offset);
+        if (mprotect(transaction.page,PAGE_BYTES,PROT_NONE)!=0) fault_stop();
+        context->uc_mcontext.gregs[REG_EFL]&=~(greg_t)0x100;
+        if (transaction.write) {
+            transaction.saved=*context;
+            transaction.stage=4;
+            redirect(context);
+        } else {
+            transaction.stage=0;
+        }
+        return;
+    }
+    u32 physical;
+    if (signal_number==SIGSEGV && transaction.stage==0 &&
+        device_page((uintptr_t)info->si_addr,&physical)) {
+        if ((physical & 3u) || (context->uc_mcontext.gregs[REG_EFL]&0x100))
+            fault_stop();
+        transaction.error=errno;
+        transaction.physical=physical;
+        transaction.offset=physical & (PAGE_BYTES-1u);
+        transaction.page=(void *)((uintptr_t)info->si_addr & ~(uintptr_t)(PAGE_BYTES-1));
+        transaction.write=(context->uc_mcontext.gregs[REG_ERR]&2)!=0;
+        transaction.saved=*context;
+        transaction.stage=5;
+        redirect(context);
+        return;
+    }
+    /* Preserve real faults outside the hardware windows. We install only over
+     * default handlers; returning retries the fault under the default action. */
+    for (unsigned i=0;i<3;i++)
+        if (signals[i]==signal_number) {
+            (void)sigaction(signal_number,&prior[i],NULL);
+            return;
+        }
+    fault_stop();
+}
+static _Noreturn void dispatch(void)
+{
+    int ok;
+    if (transaction.stage==5) {
+        u32 value;
+        ok=n64c_mmio_read(transaction.physical,&value);
+        if (ok && mprotect(transaction.page,PAGE_BYTES,PROT_READ|PROT_WRITE)==0) {
+            *(volatile u32 *)((u8 *)transaction.page+transaction.offset)=value;
+            transaction.saved.uc_mcontext.gregs[REG_EFL]|=0x100;
+            transaction.stage=2;
+        } else ok=0;
+    } else if (transaction.stage==4) {
+        ok=n64c_mmio_write(transaction.physical,transaction.value);
+        if (ok) transaction.stage=3;
+    } else ok=0;
+    if (!ok) {
+        fprintf(stderr,"boot-missing: MMIO-%08x\n",transaction.physical);
+        fflush(stderr);
+        _Exit(78);
+    }
+    sigset_t resume;
+    sigemptyset(&resume);
+    sigaddset(&resume,RESUME_SIGNAL);
+    if (sigprocmask(SIG_UNBLOCK,&resume,NULL)!=0 || raise(RESUME_SIGNAL)!=0)
+        fault_stop();
+    fault_stop(); /* signal return resumes the original native instruction */
+}
+static int map_at(u32 address,size_t bytes,int protection,int fd,off_t offset)
+{
+    if (map_count>=MAX_MAPS) return 0;
+    void *target=(void *)(uintptr_t)address;
+    void *result=mmap(target,bytes,protection,MAP_SHARED|MAP_FIXED_NOREPLACE,fd,offset);
+    if (result==MAP_FAILED) return 0;
+    if (result!=target) { munmap(result,bytes); return 0; }
+    maps[map_count++]=(Mapping){result,bytes};
+    return 1;
+}
+static int map_pair(u32 physical,size_t bytes,int protection,int fd,off_t offset)
+{
+    return map_at(0x80000000u+physical,bytes,protection,fd,offset) &&
+           map_at(0xA0000000u+physical,bytes,protection,fd,offset);
+}
+void osUnmapTLB(s32 index)
+{
+    if (index<0 || index>=TLB_ENTRIES) {
+        fprintf(stderr,"n64c: osUnmapTLB index %d outside the native TLB model\n",(int)index);
+        fault_stop();
+    }
+    for (unsigned j=0;j<2;j++) {
+        TlbMapping *page=&tlb[index][j];
+        if (page->base && munmap(page->base,page->bytes)!=0) fault_stop();
+        *page=(TlbMapping){0};
+    }
+}
+void osUnmapTLBAll(void)
+{
+    for (s32 i=0;i<TLB_ENTRIES;i++) osUnmapTLB(i);
+}
+void osMapTLB(s32 index,u32 pm,void *vaddr,u32 evenpaddr,u32 oddpaddr,s32 asid)
+{
+    (void)asid;
+    const size_t page=(((size_t)pm|0x1FFFu)+1u)/2u;
+    if (index<0 || index>=TLB_ENTRIES || window_fd<0 || (uintptr_t)vaddr%(2*page)) {
+        fprintf(stderr,"n64c: osMapTLB index %d vaddr %p outside the native TLB model\n",(int)index,vaddr);
+        fault_stop();
+    }
+    osUnmapTLB(index);
+    const u32 pages[2]={evenpaddr,oddpaddr};
+    for (unsigned j=0;j<2;j++) {
+        if (pages[j]==0xFFFFFFFFu) continue;
+        const u32 physical=pages[j]&0x1FFFFFFFu;
+        void *target=(char *)vaddr+j*page;
+        void *result=physical%PAGE_BYTES || physical>ram_size || page>ram_size-physical ? MAP_FAILED :
+            mmap(target,page,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_FIXED_NOREPLACE,window_fd,(off_t)physical);
+        if (result!=target) {
+            fprintf(stderr,"n64c: osMapTLB page 0x%08x -> %p not mappable\n",physical,target);
+            fault_stop();
+        }
+        tlb[index][j]=(TlbMapping){result,page,physical};
+    }
+}
+void n64c_memory_close(void)
+{
+    osUnmapTLBAll();
+    if (window_fd>=0) { close(window_fd);window_fd=-1; }
+    while (handlers) {
+        --handlers;
+        (void)sigaction(signals[handlers],&prior[handlers],NULL);
+    }
+    while (map_count) {
+        --map_count;
+        munmap(maps[map_count].base,maps[map_count].bytes);
+    }
+    ram_size=0;
+    transaction.stage=0;
+}
+int n64c_memory_open(const N64cMemoryConfig *config)
+{
+    if (!config || map_count || (config->rdram_bytes!=0x400000u &&
+        config->rdram_bytes!=0x800000u) || !config->rom_bytes ||
+        config->rom_bytes>0x0FC00000u || !config->video_clock_hz ||
+        sysconf(_SC_PAGESIZE)!=PAGE_BYTES) return 0;
+    for (unsigned i=0;i<3;i++) {
+        if (sigaction(signals[i],NULL,&prior[i])!=0 || prior[i].sa_handler!=SIG_DFL)
+            return 0;
+    }
+    size_t cart_bytes=((size_t)config->rom_bytes+PAGE_BYTES-1u)&~(size_t)(PAGE_BYTES-1u);
+    int fd=memfd_create("n64c-address-windows",MFD_CLOEXEC);
+    if (fd<0) return 0;
+    size_t total=(size_t)config->rdram_bytes+cart_bytes+sizeof devices/sizeof devices[0]*PAGE_BYTES;
+    int ok=ftruncate(fd,(off_t)total)==0 &&
+        map_pair(0,config->rdram_bytes,PROT_READ|PROT_WRITE,fd,0) &&
+        map_pair(0x10000000u,cart_bytes,PROT_READ|PROT_WRITE,fd,(off_t)config->rdram_bytes);
+    if (ok) {
+        ok=n64c_pi_read(0,(void *)(uintptr_t)0x90000000u,config->rom_bytes)==0;
+        ok=ok && mprotect((void *)(uintptr_t)0x90000000u,cart_bytes,PROT_READ)==0 &&
+            mprotect((void *)(uintptr_t)0xB0000000u,cart_bytes,PROT_READ)==0;
+    }
+    for (unsigned i=0;ok && i<sizeof devices/sizeof devices[0];i++)
+        ok=map_pair(devices[i],PAGE_BYTES,PROT_NONE,fd,
+            (off_t)(config->rdram_bytes+cart_bytes+i*PAGE_BYTES));
+    if (ok) window_fd=fd; else close(fd);
+    if (ok) {
+        struct sigaction action;
+        memset(&action,0,sizeof action);
+        action.sa_sigaction=signal_handler;
+        action.sa_flags=SA_SIGINFO;
+        sigemptyset(&action.sa_mask);
+        for (unsigned i=0;ok && i<3;i++) {
+            ok=sigaction(signals[i],&action,NULL)==0;
+            if (ok) handlers++;
+        }
+    }
+    if (!ok) { n64c_memory_close(); return 0; }
+    ram_size=config->rdram_bytes;
+    n64c_mmio_reset(config->video_clock_hz);
+    return 1;
+}
+void *n64c_memory_ram(u32 physical,u32 bytes)
+{
+    if (physical>ram_size || bytes>ram_size-physical || !ram_size) return NULL;
+    return (void *)(uintptr_t)(0x80000000u+physical);
+}
+u32 n64c_probe_tlb(const void *pointer)
+{
+    uintptr_t value=(uintptr_t)pointer;
+    for (unsigned i=0;i<TLB_ENTRIES;i++)
+        for (unsigned j=0;j<2;j++) {
+            const TlbMapping *page=&tlb[i][j];
+            uintptr_t base=(uintptr_t)page->base;
+            if (page->base && value>=base && value-base<page->bytes)
+                return page->physical+(u32)(value-base);
+        }
+    return UINT32_MAX;
+}
+u32 n64c_memory_physical(const void *pointer)
+{
+    uintptr_t value=(uintptr_t)pointer;
+    if ((value>=0x80000000u && value<0x80000000u+ram_size) ||
+        (value>=0xA0000000u && value<0xA0000000u+ram_size)) return (u32)value&0x1FFFFFFFu;
+    u32 physical=n64c_probe_tlb(pointer);
+    return physical!=UINT32_MAX ? physical : (u32)value;
+}
+#else
+int n64c_memory_open(const N64cMemoryConfig *config) { (void)config; return 0; }
+void n64c_memory_close(void) {}
+void *n64c_memory_ram(u32 physical,u32 bytes) { (void)physical; (void)bytes; return NULL; }
+u32 n64c_memory_physical(const void *pointer) { return (u32)(uintptr_t)pointer; }
+u32 n64c_probe_tlb(const void *pointer) { (void)pointer; return UINT32_MAX; }
+void osUnmapTLB(s32 index) { (void)index; }
+void osUnmapTLBAll(void) {}
+void osMapTLB(s32 index,u32 pm,void *vaddr,u32 evenpaddr,u32 oddpaddr,s32 asid)
+{
+    (void)index;(void)pm;(void)vaddr;(void)evenpaddr;(void)oddpaddr;(void)asid;
+}
+#endif

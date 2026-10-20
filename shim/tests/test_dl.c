@@ -1,0 +1,297 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Focused tests for the display-list boundary (n64c_dl): segment resolution in RSP order, call and
+ * branch copies, BRANCH_Z segment isolation, replay-record conversion to host layout, microcode loads,
+ * cut lists, G_LINE3D as two triangles, the colour-image hook and unknown opcodes. Lists are written by hand into a RAM image, word-swapped for replay as the oracle
+ * capture stores it. */
+#include "../n64c_dl.h"
+#include <math.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+static uint8_t ram[1 << 16];
+static int fails, replay;
+#define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #c); fails++; } } while (0)
+static void put32(uint32_t a, uint32_t v) { memcpy(ram + (a & 0xFFFF), &v, 4); }
+static void put16(uint32_t a, uint16_t v) { memcpy(ram + ((a & 0xFFFF) ^ (replay ? 2 : 0)), &v, 2); }
+static void put8(uint32_t a, uint8_t v) { ram[(a & 0xFFFF) ^ (replay ? 3 : 0)] = v; }
+static uint32_t at; /* write cursor */
+static void cmd(uint32_t w0, uint32_t w1) { put32(at, w0); put32(at + 4, w1); at += 8; }
+static uint32_t op(const uintptr_t *c) { return (uint32_t)(c[0] >> 24); }
+static N64cGfxMem begin(int word_order)
+{
+    memset(ram, 0, sizeof ram);
+    replay = word_order;
+    return (N64cGfxMem){ram, sizeof ram - 1, word_order};
+}
+
+static void test_replay_records(void)
+{
+    N64cGfxMem mem = begin(1);
+    /* vertex 0 at segment 6 + 0x100: ob = (-2, 3, 400), flag 7, tc = (32, -64), rgba = 11 22 33 44 */
+    const int16_t v[6] = {-2, 3, 400, 7, 32, -64};
+    for (int i = 0; i < 6; i++)
+        put16(0x2100 + i * 2, (uint16_t)v[i]);
+    for (int i = 0; i < 4; i++)
+        put8(0x210C + i, (uint8_t)(0x11 * (i + 1)));
+    for (int i = 0; i < 8; i++) /* RGBA16 texels, bytes in ROM order */
+        put8(0x2400 + i, (uint8_t)(0xA0 + i));
+    at = 0x2200; /* callee: texture image + load block of 4 texels */
+    cmd(0xFDu << 24 | 2u << 19 | (4 - 1), 0x06000400);
+    cmd(0xF3u << 24, 7u << 24 | 3u << 12);
+    cmd(0xDFu << 24, 0);
+    at = 0x1000;
+    cmd(0xDBu << 24 | 0x06u << 16 | 6 * 4, 0x00002000); /* segment 6 = physical 0x2000 */
+    cmd(0x01u << 24 | 1u << 12 | 2u, 0x06000100);       /* G_VTX one vertex */
+    cmd(0xDEu << 24, 0x06000200);                       /* G_DL push */
+    cmd(0xDAu << 24 | 0x38u << 16, 0x80003000);          /* G_MTX at KSEG0 */
+    cmd(0xDDu << 24 | 0x7FF, 0x80004000);               /* G_LOAD_UCODE */
+    cmd(0xDFu << 24, 0);
+    N64cDlArena arena = {0};
+    N64cDlStats st;
+    const uintptr_t *root = n64c_dl_translate(&mem, 0x80001000, &arena, &st, NULL);
+    CHECK(root != NULL);
+    if (!root)
+        return;
+    CHECK(st.lists == 2 && st.commands == 9 && st.bad == 0 && st.ucode_loads == 1);
+    const int16_t *hv = (const int16_t *)root[3];
+    CHECK(hv[0] == -2 && hv[1] == 3 && hv[2] == 400 && hv[3] == 7 && hv[4] == 32 && hv[5] == -64);
+    const uint8_t *rgba = (const uint8_t *)root[3] + 12;
+    CHECK(rgba[0] == 0x11 && rgba[1] == 0x22 && rgba[2] == 0x33 && rgba[3] == 0x44);
+    const uintptr_t *callee = (const uintptr_t *)root[5];
+    CHECK(op(root + 4) == 0xDE && op(callee) == 0xFD && op(callee + 4) == 0xDF);
+    const uint8_t *tex = (const uint8_t *)callee[1];
+    CHECK(tex[0] == 0xA0 && tex[7] == 0xA7);
+    CHECK(root[7] == (uintptr_t)(ram + 0x3000));             /* matrices are read in place */
+    CHECK(op(root + 8) == 0x00 && root[9] == 0);              /* microcode load became a no-op */
+    CHECK(op(root + 10) == 0xDF);
+    n64c_dl_arena_free(&arena);
+}
+
+static void test_native_branch_z(void)
+{
+    N64cGfxMem mem = begin(0);
+    at = 0x3000; /* branch target changes segment 6, then ends */
+    cmd(0xDBu << 24 | 0x06u << 16 | 6 * 4, 0x00005000);
+    cmd(0xDFu << 24, 0);
+    at = 0x1000;
+    cmd(0xDBu << 24 | 0x06u << 16 | 6 * 4, 0x00002000);
+    cmd(0xE1u << 24, 0x00003000);       /* RDPHALF_1: BRANCH_Z target (physical) */
+    cmd(0x04u << 24, 0);                /* G_BRANCH_Z */
+    cmd(0x01u << 24 | 1u << 12 | 2u, 0x06000010);
+    cmd(0xDEu << 24 | 1u << 16, 0x06000800); /* G_DL branch: list ends here */
+    cmd(0xDFu << 24, 0);                     /* never reached by the RSP */
+    at = 0x2800;
+    cmd(0xDFu << 24, 0);
+    N64cDlArena arena = {0};
+    N64cDlStats st;
+    const uintptr_t *root = n64c_dl_translate(&mem, 0x1000, &arena, &st, NULL);
+    CHECK(root != NULL);
+    if (!root)
+        return;
+    CHECK(st.lists == 3 && st.bad == 0);
+    const uintptr_t *target = (const uintptr_t *)root[3];
+    CHECK(op(target) == 0xDB && op(target + 2) == 0xDF);
+    CHECK(root[7] == (uintptr_t)(ram + 0x2010)); /* fall-through keeps the caller's segment 6 */
+    CHECK(op(root + 8) == 0xDE && op((const uintptr_t *)root[9]) == 0xDF);
+    CHECK(op(root + 10) == 0xDF); /* the copy ends where the branch leaves */
+    size_t used = arena.used;
+    n64c_dl_arena_reset(&arena);
+    CHECK(n64c_dl_translate(&mem, 0x1000, &arena, &st, NULL) != NULL && arena.used == used);
+    n64c_dl_arena_free(&arena);
+}
+
+static void test_cut_list(void)
+{
+    N64cGfxMem mem = begin(0);
+    at = sizeof ram - 16; /* two no-ops at the end of memory, no G_ENDDL */
+    cmd(0, 0);
+    cmd(0, 0);
+    N64cDlArena arena = {0};
+    N64cDlStats st;
+    const uintptr_t *root = n64c_dl_translate(&mem, sizeof ram - 16, &arena, &st, NULL);
+    CHECK(root != NULL && st.commands == 2 && st.bad == 1);
+    CHECK(root && op(root + 4) == 0xDF);
+    /* an operand outside memory is counted and its command dropped */
+    at = 0x1000;
+    cmd(0x01u << 24 | 1u << 12 | 2u, 0x00FF0000);
+    cmd(0xDFu << 24, 0);
+    root = n64c_dl_translate(&mem, 0x1000, &arena, &st, NULL);
+    CHECK(root && op(root) == 0x00 && root[1] == 0 && st.bad == 1);
+    /* a replay image mirrors addresses past its end (24-bit RSP DMA address, 64 KiB image here) */
+    mem = begin(1);
+    put32(0x0200, 0x12345678);
+    at = 0x1000;
+    cmd(0xDAu << 24 | 0x38u << 16, 0xFF010200);
+    cmd(0xDFu << 24, 0);
+    root = n64c_dl_translate(&mem, 0x1000, &arena, &st, NULL);
+    CHECK(root && root[1] == (uintptr_t)(ram + 0x0200) && st.bad == 0);
+    n64c_dl_arena_free(&arena);
+}
+
+/* 16.16 Mtx as the game stores it: integer halves of row-major pairs, then fraction halves. */
+static void put_mtx(uint32_t a, const float m[4][4])
+{
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j += 2) {
+            const uint32_t x = (uint32_t)(int32_t)lroundf(m[i][j] * 65536), y = (uint32_t)(int32_t)lroundf(m[i][j + 1] * 65536);
+            put32(a + (uint32_t)(i * 2 + j / 2) * 4, (x & 0xFFFF0000u) | y >> 16);
+            put32(a + 32 + (uint32_t)(i * 2 + j / 2) * 4, x << 16 | (y & 0xFFFFu));
+        }
+}
+static void put_vtx(uint32_t a, int16_t x, int16_t y, int16_t z, uint8_t shade)
+{
+    const int16_t v[6] = {x, y, z, 0, 5, 6};
+    for (int i = 0; i < 6; i++)
+        put16(a + (uint32_t)i * 2, (uint16_t)v[i]);
+    for (int i = 0; i < 4; i++)
+        put8(a + 12 + (uint32_t)i, shade);
+}
+static const int16_t *slot_ob(const uintptr_t *vtx_cmd, uint32_t slot) { return (const int16_t *)(vtx_cmd[1] + (slot - 60) * 16); }
+/* Cross product the renderer culls by (Fast3D GfxSpTri1): negative faces the viewer under CULL_BACK. */
+static float tri_cross(const uintptr_t *vtx_cmd, uint32_t w0)
+{
+    const int16_t *a = slot_ob(vtx_cmd, (w0 >> 16 & 0xFF) / 2), *b = slot_ob(vtx_cmd, (w0 >> 8 & 0xFF) / 2),
+                  *c = slot_ob(vtx_cmd, (w0 & 0xFF) / 2);
+    return (float)(a[0] - b[0]) * (float)(c[1] - b[1]) - (float)(a[1] - b[1]) * (float)(c[0] - b[0]);
+}
+static void test_line(void)
+{
+    N64cGfxMem mem = begin(0);
+    const float identity[4][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
+    const float scale[4][4] = {{1.0f / 128, 0, 0, 0}, {0, 1.0f / 128, 0, 0}, {0, 0, 1.0f / 128, 0}, {0, 0, 0, 1}};
+    /* w = 1 + z / 128: a point at z = -128 lies on the eye plane */
+    const float persp[4][4] = {{1.0f / 128, 0, 0, 0}, {0, 1.0f / 128, 0, 0}, {0, 0, 1.0f / 128, 1.0f / 128}, {0, 0, 0, 1}};
+    put_mtx(0x3000, identity);
+    put_mtx(0x3040, scale);
+    put_mtx(0x3080, persp);
+    const int16_t vp[8] = {640, 480, 511, 0, 640, 480, 511, 0}; /* 320x240 in quarter pixels */
+    for (int i = 0; i < 8; i++)
+        put16(0x2000 + (uint32_t)i * 2, (uint16_t)vp[i]);
+    put_vtx(0x2100, 0, 0, 0, 0x11);
+    put_vtx(0x2110, 64, 0, 0, 0x55);
+    put_vtx(0x2120, 64, 0, -128, 0x77);
+    at = 0x1000;
+    cmd(0x08u << 24 | 0u << 16 | 2u << 8, 0);           /* line before any state: dropped */
+    cmd(0xDCu << 24 | (16 / 8 - 1) << 19 | 8, 0x2000);   /* G_MOVEMEM viewport */
+    cmd(0xDAu << 24 | 0x38u << 16 | 0x3, 0x3000);    /* modelview load */
+    cmd(0xDAu << 24 | 0x38u << 16 | 0x7, 0x3040);    /* projection load */
+    cmd(0x01u << 24 | 3u << 12 | 3u << 1, 0x2100);       /* three vertices into slots 0-2 */
+    cmd(0x08u << 24 | 0u << 16 | 2u << 8, 0);           /* line 0-1, width code 0 */
+    cmd(0xDAu << 24 | 0x38u << 16 | 0x7, 0x3080);
+    cmd(0x01u << 24 | 3u << 12 | 3u << 1, 0x2100);
+    cmd(0x08u << 24 | 0u << 16 | 4u << 8 | 2, 0);       /* line 0-2 crosses the near plane, width code 2 */
+    cmd(0xDFu << 24, 0);
+    N64cDlArena arena = {0};
+    N64cDlStats st;
+    const uintptr_t *root = n64c_dl_translate(&mem, 0x1000, &arena, &st, NULL);
+    CHECK(root != NULL);
+    if (!root)
+        return;
+    CHECK(st.lines == 2 && st.lines_dropped == 1 && st.bad == 0 && st.unknown == 0);
+    CHECK(op(root) == 0x00);
+    CHECK(op(root + 10) == 0xDE);
+    const uintptr_t *l = (const uintptr_t *)root[11];
+    CHECK(l[0] == (0xDAu << 24 | 0x38u << 16 | 2) && l[2] == (0xDAu << 24 | 0x38u << 16 | 7)); /* MV push, P load */
+    CHECK(l[4] == (0x01u << 24 | 4u << 12 | 64u << 1));                                       /* slots 60-63 */
+    const int16_t *q = (const int16_t *)l[5];
+    /* 160..240 px at y 120; 0.75 px either side is 0.75 / 120 NDC = 102 units */
+    CHECK(q[0] == 0 && q[1] == -102 && q[2] == 0 && q[16 / 2 + 1] == 102 && q[32 / 2] == 8192 && q[48 / 2 + 1] == 102);
+    CHECK(((const uint8_t *)l[5])[12] == 0x11 && ((const uint8_t *)l[5])[32 + 12] == 0x55 && q[4] == 5);
+    CHECK(op(l + 6) == 0x05 && op(l + 8) == 0x05 && tri_cross(l + 4, (uint32_t)l[6]) < 0 && tri_cross(l + 4, (uint32_t)l[8]) < 0);
+    CHECK(l[10] == (0xD8u << 24 | 0x38u << 16 | 2) && l[11] == 64);                           /* G_POPMTX 1 */
+    CHECK(l[12] == root[12] && l[13] == (uintptr_t)(ram + 0x3040) && op(l + 14) == 0xDF);    /* projection back */
+    const uintptr_t *n = (const uintptr_t *)root[17];
+    CHECK(op(root + 16) == 0xDE && n[13] == (uintptr_t)(ram + 0x3080));
+    const int16_t *r = (const int16_t *)n[5];
+    /* clipped at w = 0.5, x = 0.25: NDC x 0.5, z -1; width 2.5 px: 1.25 / 120 NDC = 171 units */
+    CHECK(r[32 / 2] == 8192 && r[32 / 2 + 2] == -16384 && abs(r[32 / 2 + 1]) == 171 && ((const uint8_t *)n[5])[32 + 12] == 0x77);
+    n64c_dl_arena_free(&arena);
+}
+static void test_modify_vertex(void)
+{
+    N64cGfxMem mem = begin(0);
+    const float scale[4][4] = {{1.0f / 128, 0, 0, 0}, {0, 1.0f / 128, 0, 0}, {0, 0, 1.0f / 128, 0}, {0, 0, 0, 1}};
+    put_mtx(0x3000, scale);
+    const int16_t vp[8] = {640, 480, 511, 0, 640, 480, 511, 0};
+    for (int i = 0; i < 8; i++)
+        put16(0x2000 + (uint32_t)i * 2, (uint16_t)vp[i]);
+    at = 0x1000;
+    cmd(0xDCu << 24 | (16 / 8 - 1) << 19 | 8, 0x2000);
+    cmd(0xDAu << 24 | 0x38u << 16 | 0x3, 0x3000);
+    cmd(0xDAu << 24 | 0x38u << 16 | 0x7, 0x3000);
+    cmd(0xD9u << 24 | 0xFFFFFF, 0x20000);                          /* lighting on */
+    cmd(0x02u << 24 | 0x18u << 16 | 3 * 2, (uint32_t)(100 * 4) << 16 | 50 * 4); /* slot 3 at (100, 50) */
+    cmd(0x02u << 24 | 0x10u << 16 | 3 * 2, 0xAABBCCDD);
+    cmd(0x02u << 24 | 0x14u << 16 | 3 * 2, 0x00200040);           /* ST stays with the renderer */
+    cmd(0x02u << 24 | 0x18u << 16 | 4 * 2, (uint32_t)(200 * 4) << 16 | 50 * 4);
+    cmd(0x08u << 24 | 6u << 16 | 8u << 8, 0);
+    cmd(0x02u << 24 | 0x1Cu << 16 | 4 * 2, 0xFFFF0000u);         /* ZSCREEN -1: NDC (-1 - 511) / 511 */
+    cmd(0x02u << 24 | 0x1Cu << 16 | 40 * 2, 0);                   /* slot 40 never loaded: dropped */
+    cmd(0xDFu << 24, 0);
+    N64cDlArena arena = {0};
+    N64cDlStats st;
+    const uintptr_t *root = n64c_dl_translate(&mem, 0x1000, &arena, &st, NULL);
+    CHECK(root && st.modifies == 4 && st.modifies_dropped == 1 && st.lines == 1);
+    if (!root)
+        return;
+    const uintptr_t *m = (const uintptr_t *)root[11]; /* the RGBA modify reloads with lighting lifted */
+    CHECK(op(root + 8) == 0xDE && op(root + 10) == 0xDE && op(m + 4) == 0xD9 && m[4] == (0xD9u << 24 | (~0x20000u & 0xFFFFFF)));
+    CHECK(m[6] == (0x01u << 24 | 1u << 12 | 4u << 1));
+    const int16_t *ob = (const int16_t *)m[7];
+    CHECK(ob[0] == -6144 && ob[1] == 9557 && ((const uint8_t *)m[7])[12] == 0xAA && ((const uint8_t *)m[7])[15] == 0xDD);
+    CHECK(op(m + 8) == 0xD9 && m[9] == 0x20000 && op(m + 10) == 0xD8);
+    CHECK(op(root + 12) == 0x02 && root[13] == 0x00200040);
+    const uintptr_t *again = (const uintptr_t *)root[15]; /* slot 4 reload: no colour set, lighting stays */
+    CHECK(op(again + 4) == 0x01);
+    const uintptr_t *l = (const uintptr_t *)root[17];
+    const uint8_t *q = (const uint8_t *)l[7];
+    CHECK(op(l + 4) == 0xD9 && op(l + 6) == 0x01 && q[12] == 0xAA && q[16 + 12] == 0xAA);
+    CHECK(op(l + 8) == 0x02 && l[9] == 0x00200040 && op(l + 10) == 0x02 && l[8] == (0x02u << 24 | 0x14u << 16 | 60 * 2));
+    const uintptr_t *z = (const uintptr_t *)root[19];
+    CHECK(op(root + 18) == 0xDE && ((const int16_t *)z[5])[2] == -16416 && op(root + 20) == 0x00);
+    n64c_dl_arena_free(&arena);
+}
+static uint32_t hook_phys, hook_width, hook_calls;
+static int hook(void *user, uint32_t phys, uint32_t width, uintptr_t extra[2])
+{
+    CHECK(user == &hook_calls);
+    hook_calls++;
+    hook_phys = phys;
+    hook_width = width;
+    extra[0] = 0x21u << 24;
+    extra[1] = 7;
+    return 1;
+}
+static void test_color_image_hook(void)
+{
+    N64cGfxMem mem = begin(0);
+    at = 0x1000;
+    cmd(0xFEu << 24, 0x00008000);                              /* G_SETZIMG */
+    cmd(0xFFu << 24 | 2u << 19 | (320 - 1), 0x00008000);       /* depth clear: colour image = depth image */
+    cmd(0xFFu << 24 | 2u << 19 | (320 - 1), 0x8000C000);       /* the game's colour image */
+    cmd(0x42u << 24, 0);                                       /* outside the F3DEX2 and RDP ranges */
+    cmd(0xDFu << 24, 0);
+    N64cDlArena arena = {0};
+    N64cDlStats st;
+    const N64cDlHooks hooks = {hook, &hook_calls};
+    const uintptr_t *root = n64c_dl_translate(&mem, 0x1000, &arena, &st, &hooks);
+    CHECK(root && hook_calls == 1 && hook_phys == 0xC000 && hook_width == 320);
+    CHECK(root && op(root + 2) == 0xFF && op(root + 4) == 0xDE);
+    const uintptr_t *l = root ? (const uintptr_t *)root[5] : NULL;
+    CHECK(l && op(l) == 0xFF && l[1] == (uintptr_t)(ram + 0xC000) && l[2] == 0x21u << 24 && l[3] == 7 && op(l + 4) == 0xDF);
+    CHECK(st.unknown == 1 && st.unknown_op == 0x42);
+    n64c_dl_arena_free(&arena);
+}
+int main(void)
+{
+    test_line();
+    test_modify_vertex();
+    test_color_image_hook();
+    test_replay_records();
+    test_native_branch_z();
+    test_cut_list();
+    if (fails)
+        return 1;
+    puts("n64c_dl: ok");
+    return 0;
+}

@@ -1,0 +1,487 @@
+path	verdict	evidence	linked_by_n64compat
+.clang-format	clean	tooling config or prose	no
+.clang-tidy	clean	tooling config or prose	no
+.github/workflows/apt-deps.txt	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+.github/workflows/brew-deps.txt	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+.github/workflows/build-validation.yml	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+.github/workflows/docs.yml	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+.github/workflows/test-validation.yml	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+.github/workflows/tidy-format-validation.yml	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+.github/workflows/tidy-result-publish.yml	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+.gitignore	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+CMakeLists.txt	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+CODE_OF_CONDUCT.md	clean	tooling config or prose	no
+CONTRIBUTING.md	clean	tooling config or prose	no
+Doxyfile	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+LICENSE	clean	MIT licence text	no
+README.md	clean	tooling config or prose	no
+cmake/Default.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/DefaultCXX.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/HandleCompilerRT.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/SetupTccRuntime.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/Utils.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/automate-vcpkg.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/cvars.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/dependencies/android.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/dependencies/common.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/dependencies/git-patch.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/dependencies/ios.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/dependencies/linux.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/dependencies/mac.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/dependencies/openbsd.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/dependencies/patches/imgui-fixes-and-config.patch	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/dependencies/patches/stormlib-optimizations.patch	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/dependencies/windows-vcpkg.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/dependencies/windows.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+cmake/ios-toolchain-populate.cmake	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+docs/CODE-OF-CONDUCT.md	clean	tooling config or prose	no
+docs/COMMUNITY.md	clean	tooling config or prose	no
+docs/CONTRIBUTING.md	clean	tooling config or prose	no
+docs/FAST-RENDERER.md	clean	tooling config or prose	no
+docs/GUIDES.md	clean	tooling config or prose	no
+docs/INDEX.md	clean	tooling config or prose	no
+docs/PORTING.md	clean	tooling config or prose	no
+docs/SCRIPTING.md	clean	tooling config or prose	no
+docs/VERSIONING.md	clean	tooling config or prose	no
+docs/doxygen/Gemfile	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+docs/doxygen/_config.yml	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+docs/migration/EPOCH-2.md	clean	tooling config or prose	no
+include/fast/Fast3dGui.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/Fast3dWindow.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/FastMouseStateManager.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/LICENSE.txt	clean	MIT licence text	no
+include/fast/README.md	clean	tooling config or prose	no
+include/fast/WindowEvent.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/backends/gfx_direct3d11.h	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+include/fast/backends/gfx_direct3d_common.h	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+include/fast/backends/gfx_dxgi.h	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+include/fast/backends/gfx_metal.h	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+include/fast/backends/gfx_metal_shader.h	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+include/fast/backends/gfx_opengl.h	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+include/fast/backends/gfx_rendering_api.h	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+include/fast/backends/gfx_screen_config.h	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+include/fast/backends/gfx_sdl.h	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+include/fast/backends/gfx_window_manager_api.h	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+include/fast/debug/GfxDebugger.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/f3dex.h	grey	opcode tables re-typed from gbi.h (same names, same '/* -1 */' trailers); added 2024-05-05 (5b7164e) as a copy of gbi.h constants	no
+include/fast/f3dex2.h	grey	opcode tables re-typed from gbi.h (same names, same '/* -1 */' trailers); added 2024-05-05 (5b7164e) as a copy of gbi.h constants	no
+include/fast/interpreter.h	unknown	MIT, Emill/MaikelChan (src/fast/LICENSE.txt); own code in the n64-fast3d-engine lineage built for sm64-port; no decomp text found, but it cannot compile without the grey gbi/lus_gbi headers and its behaviour tables mirror the microcode; origin of its first import is 6610d4e 'Added fast3d (WIP modifications)'	no
+include/fast/lus_gbi.h	grey	opcode tables re-typed from gbi.h (same names, same '/* -1 */' trailers); added 2024-05-05 (5b7164e) as a copy of gbi.h constants	no
+include/fast/resource/ResourceType.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/resource/factory/DisplayListFactory.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/resource/factory/LightFactory.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/resource/factory/MatrixFactory.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/resource/factory/TextureFactory.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/resource/factory/VertexFactory.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/resource/type/DisplayList.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/resource/type/Light.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/resource/type/Matrix.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/resource/type/Texture.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/resource/type/Vertex.h	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+include/fast/types.h	unknown	small LUS-own glue; depends on the grey opcode tables	no
+include/fast/ucodehandlers.h	unknown	small LUS-own glue; depends on the grey opcode tables	no
+include/libultraship/bridge.h	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+include/libultraship/bridge/audiobridge.h	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+include/libultraship/bridge/consolevariablebridge.h	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+include/libultraship/bridge/controllerbridge.h	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+include/libultraship/bridge/crashhandlerbridge.h	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+include/libultraship/bridge/eventsbridge.h	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+include/libultraship/bridge/gfxbridge.h	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+include/libultraship/bridge/gfxdebuggerbridge.h	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+include/libultraship/bridge/resourcebridge.h	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+include/libultraship/bridge/scriptingbridge.h	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+include/libultraship/bridge/windowbridge.h	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+include/libultraship/classes.h	unknown	not classified by path rule	no
+include/libultraship/color.h	unknown	not classified by path rule	no
+include/libultraship/controller/controldeck/ControlDeck.h	unknown	not classified by path rule	no
+include/libultraship/controller/controldevice/controller/Controller.h	unknown	not classified by path rule	no
+include/libultraship/controller/controldevice/controller/mapping/ControllerDefaultMappings.h	unknown	not classified by path rule	no
+include/libultraship/libultra.h	unknown	not classified by path rule	no
+include/libultraship/libultra/abi.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; audio command macros (A_SPNOOP.. aSetBuffer) in the SDK abi.h shape	no
+include/libultraship/libultra/controller.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; carries decomp-style '/* 0x00 */' field-offset comments and '// size = 0x..' trailers (decomp reconstruction of SDK structs)	no
+include/libultraship/libultra/convert.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits	no
+include/libultraship/libultra/eeprom.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits	no
+include/libultraship/libultra/exception.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; carries decomp-style '/* 0x00 */' field-offset comments and '// size = 0x..' trailers (decomp reconstruction of SDK structs)	no
+include/libultraship/libultra/gbi.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; gbi.h line 39 'To enable Fast3DEX grucode support, define F3DEX_GBI.', line 44 _DW macro, forced F3DEX_GBI_2: sm64-port gbi.h text	no
+include/libultraship/libultra/gs2dex.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits	no
+include/libultraship/libultra/gu.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits	no
+include/libultraship/libultra/internal.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; carries decomp-style '/* 0x00 */' field-offset comments and '// size = 0x..' trailers (decomp reconstruction of SDK structs)	no
+include/libultraship/libultra/interrupt.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits	no
+include/libultraship/libultra/mbi.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits	no
+include/libultraship/libultra/message.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; carries decomp-style '/* 0x00 */' field-offset comments and '// size = 0x..' trailers (decomp reconstruction of SDK structs)	no
+include/libultraship/libultra/motor.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits	no
+include/libultraship/libultra/os.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits	no
+include/libultraship/libultra/pfs.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; carries decomp-style '/* 0x00 */' field-offset comments and '// size = 0x..' trailers (decomp reconstruction of SDK structs)	no
+include/libultraship/libultra/pi.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; carries decomp-style '/* 0x00 */' field-offset comments and '// size = 0x..' trailers (decomp reconstruction of SDK structs)	no
+include/libultraship/libultra/printf.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; carries decomp-style '/* 0x00 */' field-offset comments and '// size = 0x..' trailers (decomp reconstruction of SDK structs)	no
+include/libultraship/libultra/r4300.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits	no
+include/libultraship/libultra/rcp.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits	no
+include/libultraship/libultra/rdp.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits	no
+include/libultraship/libultra/sptask.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; carries decomp-style '/* 0x00 */' field-offset comments and '// size = 0x..' trailers (decomp reconstruction of SDK structs)	no
+include/libultraship/libultra/thread.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; carries decomp-style '/* 0x00 */' field-offset comments and '// size = 0x..' trailers (decomp reconstruction of SDK structs)	no
+include/libultraship/libultra/time.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; carries decomp-style '/* 0x00 */' field-offset comments and '// size = 0x..' trailers (decomp reconstruction of SDK structs)	no
+include/libultraship/libultra/types.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits	no
+include/libultraship/libultra/vi.h	grey	Whole directory arrived 2021-09-12 (6610d4e) as otrlib/Lib/Fast3D/U64/PR/ultra64/*, the include/PR/ layout of the sm64-port lineage; text keeps its idioms; no provenance statement; MIT covers only LUS's own edits; carries decomp-style '/* 0x00 */' field-offset comments and '// size = 0x..' trailers (decomp reconstruction of SDK structs)	no
+include/libultraship/libultraship.h	grey	os_* implementations written 2024-05-06 (6dc4bd1 'Libultra implementations'); shaped to the decomp layout (OSMesgQueue 0x18, thread struct) and compiled against the grey libultra headers; os_mesg.cpp is non-blocking, so unusable for threads anyway	no
+include/libultraship/log/luslog.h	unknown	not classified by path rule	no
+include/libultraship/luslog.h	unknown	not classified by path rule	no
+include/libultraship/window/gui/GfxDebuggerWindow.h	unknown	not classified by path rule	no
+include/libultraship/window/gui/InputEditorWindow.h	unknown	not classified by path rule	no
+include/ship/Api.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/actions/EventAction.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/audio/Audio.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/audio/AudioBackend.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/audio/AudioChannelsSetting.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/audio/AudioPlayer.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/audio/CoreAudioAudioPlayer.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/audio/NullAudioPlayer.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/audio/SDLAudioPlayer.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/audio/SoundMatrixDecoder.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/audio/WasapiAudioPlayer.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/config/Config.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/config/ConsoleVariable.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldeck/ControlDeck.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldeck/ControlPort.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/ControlDevice.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/Controller.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/ControllerButton.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/ControllerGyro.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/ControllerLED.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/ControllerRumble.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/ControllerStick.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/ControllerAxisDirectionMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/ControllerButtonMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/ControllerDefaultMappings.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/ControllerGyroMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/ControllerInputMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/ControllerLEDMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/ControllerMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/ControllerRumbleMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/factories/AxisDirectionMappingFactory.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/factories/ButtonMappingFactory.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/factories/GyroMappingFactory.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/factories/LEDMappingFactory.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/factories/RumbleMappingFactory.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/keyboard/KeyboardKeyToAnyMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/keyboard/KeyboardKeyToAxisDirectionMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/keyboard/KeyboardKeyToButtonMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/keyboard/KeyboardScancodes.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/mouse/MouseButtonToAnyMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/mouse/MouseButtonToAxisDirectionMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/mouse/MouseButtonToButtonMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/mouse/MouseWheelToAnyMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/mouse/MouseWheelToAxisDirectionMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/mouse/MouseWheelToButtonMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/mouse/WheelHandler.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAnyMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAxisDirectionMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToButtonMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAnyMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAxisDirectionMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToButtonMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/sdl/SDLGyroMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/sdl/SDLLEDMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/sdl/SDLMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/controldevice/controller/mapping/sdl/SDLRumbleMapping.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/physicaldevice/GlobalSDLDeviceSettings.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/physicaldevice/PhysicalDeviceType.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/controller/physicaldevice/SDLAddRemoveDeviceEventHandler.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/core/Action.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/core/ActionList.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/core/Component.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/core/ComponentList.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/core/Context.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/core/EventActionList.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/core/Part.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/core/PartList.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/core/Tickable.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/core/TickableComponent.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/core/TickableList.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/core/Version.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/debug/Console.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/debug/CrashHandler.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/events/CoreEvents.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/events/EventSystem.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/events/EventTypes.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/events/Events.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/events/ListenerAction.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/log/Logger.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/port/mobile/MobileImpl.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/File.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/Resource.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/ResourceFactory.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/ResourceFactoryBinary.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/ResourceFactoryXML.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/ResourceIdentifier.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/ResourceLoader.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/ResourceManager.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/ResourceType.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/archive/Archive.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/archive/ArchiveManager.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/archive/FolderArchive.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/archive/O2rArchive.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/archive/OtrArchive.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/factory/BlobFactory.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/factory/JsonFactory.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/factory/ShaderFactory.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/type/Blob.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/type/Json.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/resource/type/Shader.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/scripting/LibraryLoader.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/scripting/ScriptLoader.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/security/Keystore.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/thread/ThreadPool.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/AppleFolderManager.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/HResultException.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/StrHash64.h	clean	BSD-style notice from libcore Crc.cpp (sourceforge), substantially modified; OSI licence, no N64 material	no
+include/ship/utils/StringHelper.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/Utils.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/binarytools/BinaryReader.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/binarytools/BinaryWriter.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/binarytools/BitConverter.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/binarytools/MemoryStream.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/binarytools/Stream.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/binarytools/endianness.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/color.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/filesystemtools/Directory.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/filesystemtools/DiskFile.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/filesystemtools/FileHelper.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/filesystemtools/Path.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/filesystemtools/PathHelper.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/glob.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/macUtils.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/utils/stox.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/FileDrop.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/MouseStateManager.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/Window.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/ComponentHierarchyWindow.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/ConsoleWindow.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/EventDebuggerWindow.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/Fonts.h	unknown	embedded font data / icon table with its own licence (FontAwesome 4 is OFL/MIT; Fonts.h data origin not stated)	no
+include/ship/window/gui/GameOverlay.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/Gui.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/GuiElement.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/GuiMenuBar.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/GuiWindow.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/IconsFontAwesome4.h	unknown	embedded font data / icon table with its own licence (FontAwesome 4 is OFL/MIT; Fonts.h data origin not stated)	no
+include/ship/window/gui/StatsWindow.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/resource/Font.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/resource/FontFactory.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/resource/GuiTexture.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+include/ship/window/gui/resource/GuiTextureFactory.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+keys/script/HM64.pem	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+keys/script/Kenix1.pem	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+keys/script/Kenix2.pem	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+keys/script/Kenix3.pem	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+keys/script/Kenix4.pem	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+keys/script/Kenix5.pem	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+requirements.txt	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+src/CMakeLists.txt	clean	build script	no
+src/fast/CMakeLists.txt	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/Fast3dGui.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/Fast3dWindow.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/FastMouseStateManager.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/LICENSE.txt	clean	MIT licence text	no
+src/fast/README.md	clean	tooling config or prose	no
+src/fast/backends/gfx_direct3d11.cpp	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+src/fast/backends/gfx_direct3d_common.cpp	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+src/fast/backends/gfx_dxgi.cpp	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+src/fast/backends/gfx_metal.cpp	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+src/fast/backends/gfx_metal_shader.cpp	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+src/fast/backends/gfx_opengl.cpp	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+src/fast/backends/gfx_sdl.cpp	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+src/fast/debug/GfxDebugger.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/interpreter.cpp	unknown	MIT, Emill/MaikelChan (src/fast/LICENSE.txt); own code in the n64-fast3d-engine lineage built for sm64-port; no decomp text found, but it cannot compile without the grey gbi/lus_gbi headers and its behaviour tables mirror the microcode; origin of its first import is 6610d4e 'Added fast3d (WIP modifications)'	no
+src/fast/resource/factory/DisplayListFactory.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/resource/factory/LightFactory.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/resource/factory/MatrixFactory.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/resource/factory/TextureFactory.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/resource/factory/VertexFactory.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/resource/type/DisplayList.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/resource/type/Light.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/resource/type/Matrix.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/resource/type/Texture.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/resource/type/Vertex.cpp	unknown	Fast3D support code (resources, debugger, GUI) in the same lineage as interpreter.cpp; depends on grey headers or on the interpreter	no
+src/fast/shaders/directx/default.shader.hlsl	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+src/fast/shaders/metal/default.shader.metal	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+src/fast/shaders/opengl/default.shader.glsl	clean	MIT rendering-API wrappers (OpenGL/D3D11/Metal) and shader sources; no SDK constants or decomp text found by grep; fetched/linked only with the interpreter, so unused here	no
+src/libultraship/CMakeLists.txt	clean	build script	no
+src/libultraship/bridge/UltraBridge.cpp	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+src/libultraship/bridge/UltraBridge.h	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+src/libultraship/bridge/audiobridge.cpp	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+src/libultraship/bridge/consolevariablebridge.cpp	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+src/libultraship/bridge/controllerbridge.cpp	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+src/libultraship/bridge/crashhandlerbridge.cpp	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+src/libultraship/bridge/eventsbridge.cpp	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+src/libultraship/bridge/gfxbridge.cpp	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+src/libultraship/bridge/gfxdebuggerbridge.cpp	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+src/libultraship/bridge/resourcebridge.cpp	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+src/libultraship/bridge/scriptingbridge.cpp	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+src/libultraship/bridge/windowbridge.cpp	grey	LUS bridge code that includes the grey libultra/gbi headers	no
+src/libultraship/controller/controldeck/ControlDeck.cpp	unknown	not classified by path rule	no
+src/libultraship/controller/controldevice/controller/Controller.cpp	unknown	not classified by path rule	no
+src/libultraship/controller/controldevice/controller/mapping/ControllerDefaultMappings.cpp	unknown	not classified by path rule	no
+src/libultraship/libultra/AudioDmaRegistry.cpp	grey	os_* implementations written 2024-05-06 (6dc4bd1 'Libultra implementations'); shaped to the decomp layout (OSMesgQueue 0x18, thread struct) and compiled against the grey libultra headers; os_mesg.cpp is non-blocking, so unusable for threads anyway	no
+src/libultraship/libultra/AudioDmaRegistry.h	grey	os_* implementations written 2024-05-06 (6dc4bd1 'Libultra implementations'); shaped to the decomp layout (OSMesgQueue 0x18, thread struct) and compiled against the grey libultra headers; os_mesg.cpp is non-blocking, so unusable for threads anyway	no
+src/libultraship/libultra/os.cpp	grey	os_* implementations written 2024-05-06 (6dc4bd1 'Libultra implementations'); shaped to the decomp layout (OSMesgQueue 0x18, thread struct) and compiled against the grey libultra headers; os_mesg.cpp is non-blocking, so unusable for threads anyway	no
+src/libultraship/libultra/os_cache.cpp	grey	os_* implementations written 2024-05-06 (6dc4bd1 'Libultra implementations'); shaped to the decomp layout (OSMesgQueue 0x18, thread struct) and compiled against the grey libultra headers; os_mesg.cpp is non-blocking, so unusable for threads anyway	no
+src/libultraship/libultra/os_eeprom.cpp	grey	os_* implementations written 2024-05-06 (6dc4bd1 'Libultra implementations'); shaped to the decomp layout (OSMesgQueue 0x18, thread struct) and compiled against the grey libultra headers; os_mesg.cpp is non-blocking, so unusable for threads anyway	no
+src/libultraship/libultra/os_mesg.cpp	grey	os_* implementations written 2024-05-06 (6dc4bd1 'Libultra implementations'); shaped to the decomp layout (OSMesgQueue 0x18, thread struct) and compiled against the grey libultra headers; os_mesg.cpp is non-blocking, so unusable for threads anyway	no
+src/libultraship/libultra/os_pi.cpp	grey	os_* implementations written 2024-05-06 (6dc4bd1 'Libultra implementations'); shaped to the decomp layout (OSMesgQueue 0x18, thread struct) and compiled against the grey libultra headers; os_mesg.cpp is non-blocking, so unusable for threads anyway	no
+src/libultraship/libultra/os_time.cpp	grey	os_* implementations written 2024-05-06 (6dc4bd1 'Libultra implementations'); shaped to the decomp layout (OSMesgQueue 0x18, thread struct) and compiled against the grey libultra headers; os_mesg.cpp is non-blocking, so unusable for threads anyway	no
+src/libultraship/libultra/os_vi.cpp	grey	os_* implementations written 2024-05-06 (6dc4bd1 'Libultra implementations'); shaped to the decomp layout (OSMesgQueue 0x18, thread struct) and compiled against the grey libultra headers; os_mesg.cpp is non-blocking, so unusable for threads anyway	no
+src/libultraship/libultra/os_vm.cpp	grey	os_* implementations written 2024-05-06 (6dc4bd1 'Libultra implementations'); shaped to the decomp layout (OSMesgQueue 0x18, thread struct) and compiled against the grey libultra headers; os_mesg.cpp is non-blocking, so unusable for threads anyway	no
+src/libultraship/log/luslog.cpp	unknown	not classified by path rule	no
+src/libultraship/window/gui/GfxDebuggerWindow.cpp	unknown	not classified by path rule	no
+src/libultraship/window/gui/InputEditorWindow.cpp	unknown	not classified by path rule	no
+src/ship/CMakeLists.txt	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/actions/EventAction.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/audio/Audio.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/audio/AudioPlayer.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/audio/CoreAudioAudioPlayer.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/audio/NullAudioPlayer.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/audio/SDLAudioPlayer.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/audio/SoundMatrixDecoder.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/audio/WasapiAudioPlayer.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/bridge/Bridge.h	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/config/Config.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/config/ConsoleVariable.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldeck/ControlDeck.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldeck/ControlPort.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/ControlDevice.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/Controller.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/ControllerButton.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/ControllerGyro.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/ControllerLED.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/ControllerRumble.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/ControllerStick.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/ControllerAxisDirectionMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/ControllerButtonMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/ControllerDefaultMappings.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/ControllerGyroMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/ControllerInputMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/ControllerLEDMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/ControllerMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/ControllerRumbleMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/factories/AxisDirectionMappingFactory.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/factories/ButtonMappingFactory.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/factories/GyroMappingFactory.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/factories/LEDMappingFactory.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/factories/RumbleMappingFactory.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/keyboard/KeyboardKeyToAnyMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/keyboard/KeyboardKeyToAxisDirectionMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/keyboard/KeyboardKeyToButtonMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/mouse/MouseButtonToAnyMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/mouse/MouseButtonToAxisDirectionMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/mouse/MouseButtonToButtonMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/mouse/MouseWheelToAnyMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/mouse/MouseWheelToAxisDirectionMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/mouse/MouseWheelToButtonMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/mouse/WheelHandler.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAnyMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAxisDirectionMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToButtonMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAnyMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAxisDirectionMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToButtonMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/sdl/SDLGyroMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/sdl/SDLLEDMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/controldevice/controller/mapping/sdl/SDLRumbleMapping.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/physicaldevice/GlobalSDLDeviceSettings.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/controller/physicaldevice/SDLAddRemoveDeviceEventHandler.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/core/Action.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/core/ActionList.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/core/Component.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/core/ComponentList.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/core/Context.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/core/Part.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/core/Tickable.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/core/TickableComponent.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/debug/Console.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/debug/CrashHandler.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/events/EventSystem.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/events/Events.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/events/ListenerAction.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/install_config.h.in	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/log/Logger.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/port/mobile/MobileImpl.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/Resource.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/ResourceFactoryBinary.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/ResourceFactoryXML.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/ResourceLoader.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/ResourceManager.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/archive/Archive.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/archive/ArchiveManager.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/archive/FolderArchive.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/archive/O2rArchive.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/archive/OtrArchive.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/factory/BlobFactory.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/factory/JsonFactory.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/factory/ShaderFactory.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/type/Blob.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/type/Json.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/resource/type/Shader.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/scripting/LibraryLoader.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/scripting/ScriptLoader.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/security/Keystore.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/thread/ThreadPool.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/utils/AppleFolderManager.mm	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/utils/StrHash64.cpp	clean	BSD-style notice from libcore Crc.cpp (sourceforge), substantially modified; OSI licence, no N64 material	no
+src/ship/utils/StringHelper.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/utils/Utils.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/utils/binarytools/BinaryReader.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/utils/binarytools/BinaryWriter.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/utils/binarytools/MemoryStream.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/utils/binarytools/Stream.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/utils/glob.c	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/utils/macUtils.mm	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/utils/stox.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/FileDrop.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/MouseStateManager.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/Window.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/ComponentHierarchyWindow.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/ConsoleWindow.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/EventDebuggerWindow.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/GameOverlay.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/Gui.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/GuiElement.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/GuiMenuBar.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/GuiWindow.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/StatsWindow.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/resource/Font.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/resource/FontFactory.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/resource/GuiTexture.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+src/ship/window/gui/resource/GuiTextureFactory.cpp	clean	LUS own framework code (resources, config, window, controller deck, GUI), MIT, authored 2021-2026 by LUS contributors; no N64 SDK or decomp constructs found by grep	no
+tests/CMakeLists.txt	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/action_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/archive_resource_fixtures.h	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/archive_resource_meta_resolution_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/archive_resource_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/archive_self_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/binary_io_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/bitconverter_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/component_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/connected_physical_device_manager_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/crc64_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/event_system_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/events_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/gfx_sdl_window_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/glob_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/part_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/path_diskfile_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/path_file_helper_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/resource_type_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/rumble_mapping_factory_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/script_test.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/sound_matrix_decoder_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/splittext_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/stox_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/string_helper_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/tickable_component_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/tickable_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tests/utils_tests.cpp	clean	build scripts, docs, CI and tests; MIT; never linked into the shim	no
+tools/generate_keys.py	unknown	not classified by path rule	no
+tools/generate_keys_header.py	unknown	not classified by path rule	no
+tools/sign.py	unknown	not classified by path rule	no

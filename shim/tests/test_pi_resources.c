@@ -1,0 +1,250 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Byte-order descriptors of ROM resources (the rows of decomp/us_rev1.json "resources"), exercised through the PI
+ * layer with hand-derived goldens: a menu-archive header (21 big-endian words), its 28-byte image records
+ * (u32 u32 u16 u16 u16 u16 u16 u16 u32 u32), a resource directory (u32 table), and the menu archive's font records,
+ * glyph tables, bitmap offsets, string index, resource map and the audio section table. Bytes outside a descriptor stay
+ * as in the ROM. */
+#include "../n64c_os.h"
+#include "../n64c_pi.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int checks;
+#define CHECK(value) do { checks++; if (!(value)) {     fprintf(stderr,"FAIL resources:%d: %s\n",__LINE__,#value); exit(1); } } while (0)
+static OSMesgQueue queue;
+static OSMesg messages[4];
+static void be32(u8 *where,u32 value)
+{
+    where[0]=(u8)(value>>24);where[1]=(u8)(value>>16);where[2]=(u8)(value>>8);where[3]=(u8)value;
+}
+static void be16(u8 *where,unsigned value)
+{
+    where[0]=(u8)(value>>8);where[1]=(u8)value;
+}
+static void event(int success)
+{
+    OSMesg message;
+    CHECK((osRecvMesg(&queue,&message,OS_MESG_NOBLOCK)==0)==success);
+}
+typedef struct { u32 zero0, zero4; s16 width, offsetY, height, count, spacing, unk12; u32 glyphs, bitmaps, size; } FontRecord;
+_Static_assert(sizeof(FontRecord)==32,"32-byte menu archive font record");
+typedef struct { u32 texture; s8 width, height, offsetX, offsetY; } Glyph;
+_Static_assert(sizeof(Glyph)==8,"8-byte glyph");
+typedef struct { u32 pointer, link; u16 format, width, height, colours, spare, runtime; u32 palette, pixels; } ImageRecord;
+_Static_assert(sizeof(ImageRecord)==28,"28-byte menu archive image record");
+int main(void)
+{
+    const char *path="n64c_resources_test.rom";
+    enum { HEADER=0x40, IMAGES=0x40+0x54, DIRECTORY=0x140, TEXT=0x180 };
+    u8 rom[0x800]={0};
+    static const u32 words[21]={0x54,0x15fc,0x1650,0x60,0x16b0,0x58,0x1708,0x900,0x2008,8,0x2010,0x1888,0x3898,
+        0x1b0,0x3a48,0x381f4,0x3bc3c,0x4c2b0,0x87eec,0x3358,0xffffffffu};
+    for (unsigned i=0;i<21;i++) be32(rom+HEADER+4*i,words[i]);
+    /* record 0: format 8, 284x222, 256 colours, pixels at 0xF9C0; record 1: 284x183, 128 colours */
+    be16(rom+IMAGES+8,8);be16(rom+IMAGES+10,284);be16(rom+IMAGES+12,222);be16(rom+IMAGES+14,256);
+    be32(rom+IMAGES+24,0xF9C0);
+    be16(rom+IMAGES+28+8,8);be16(rom+IMAGES+28+10,284);be16(rom+IMAGES+28+12,183);be16(rom+IMAGES+28+14,128);
+    be32(rom+IMAGES+28+20,0xFBC0);be32(rom+IMAGES+28+24,0x1C9A0);
+    be32(rom+DIRECTORY,3);be32(rom+DIRECTORY+4,0x14);be32(rom+DIRECTORY+8,0xE8F50);be32(rom+DIRECTORY+12,0x640);
+    memcpy(rom+TEXT,"Display Buffer",15);
+    enum { FONTS=0x200, OFFSETS=0x260, GLYPHS=0x2C0, INDEX=0x4C0, MAP=0x4D0, AUDIO=0x560 };
+    /* two 32-byte font records: width 8, offset -9, height 10, 7 bitmaps, spacing -2; second with 16, -6, 9, 11, -2 */
+    be16(rom+FONTS+8,8);be16(rom+FONTS+10,0xFFF7);be16(rom+FONTS+12,10);be16(rom+FONTS+14,7);be16(rom+FONTS+16,0xFFFE);
+    be32(rom+FONTS+0x14,0);be32(rom+FONTS+0x18,0);be32(rom+FONTS+0x1C,0x12A8);
+    be16(rom+FONTS+32+8,16);be16(rom+FONTS+32+10,0xFFFA);be16(rom+FONTS+32+12,9);be16(rom+FONTS+32+14,11);be16(rom+FONTS+32+16,0xFFFE);
+    be32(rom+FONTS+32+0x14,0x300);be32(rom+FONTS+32+0x18,0x1318);be32(rom+FONTS+32+0x1C,0xEA8);
+    be32(rom+OFFSETS,0x12A8);be32(rom+OFFSETS+4,0x12B8);be32(rom+OFFSETS+8,0x21C0);
+    /* glyph 0: texture 0, 5x6, offsets 16, -4; glyph 1: texture 0x30, 5x9 */
+    be32(rom+GLYPHS,0);rom[GLYPHS+4]=5;rom[GLYPHS+5]=6;rom[GLYPHS+6]=0x10;rom[GLYPHS+7]=0xFC;
+    be32(rom+GLYPHS+8,0x30);rom[GLYPHS+12]=5;rom[GLYPHS+13]=9;rom[GLYPHS+14]=0x10;rom[GLYPHS+15]=0xF8;
+    be32(rom+INDEX,0);be32(rom+INDEX+4,0x34C);
+    be32(rom+MAP,0);be32(rom+MAP+4,4804);be32(rom+MAP+8,0);
+    be32(rom+MAP+12,4804);be32(rom+MAP+16,916);be32(rom+MAP+20,0);
+    be32(rom+AUDIO,0x28B264);be32(rom+AUDIO+4,0x299510);be32(rom+AUDIO+8,0x299510);be32(rom+AUDIO+12,0x503CB8);
+    /* three back-to-back widget records of different sizes (tag = u16 at +0x0E): type 1 (0x2C), 3 (0x30), 4 (0x3C), then
+       a record whose tag no layout names */
+    enum { PAGE=0x600, PAGE_BYTES=0x2C+0x30+0x3C };
+    be32(rom+PAGE,0x11223344);be16(rom+PAGE+0xC,0x3B);be16(rom+PAGE+0xE,1);rom[PAGE+0x10]=0xFF;be16(rom+PAGE+0x12,0x2002);
+    be16(rom+PAGE+0x14,0x5B);be32(rom+PAGE+0x20,0x3F800000);
+    be16(rom+PAGE+0x2C+0xE,3);be32(rom+PAGE+0x2C+0x2C,0xCAFEBABEu);
+    for (unsigned i=0;i<6;i++) rom[PAGE+0x5C+0x2C+i]=(u8)(i+1);
+    be16(rom+PAGE+0x5C+0xE,4);be16(rom+PAGE+0x5C+0x32,0x0102);be32(rom+PAGE+0x5C+0x34,7);be32(rom+PAGE+0x5C+0x38,0x1378);
+    be16(rom+PAGE+0x98+0xE,99);
+    /* cue sound containers (tag = record count at +0x1C): one of 56 bytes, one of 80 with two 24-byte records */
+    enum { CUE=0x700, CUE_BYTES=56+80 };
+    static const u32 cueA[8]={2,0x10,0x18,0x38,0xAAAA0001u,0,0x18,1}, cueB[8]={2,0x10,0x18,0x50,0xBBBB0002u,0,0x18,2};
+    for (unsigned i=0;i<8;i++) { be32(rom+CUE+4*i,cueA[i]); be32(rom+CUE+56+4*i,cueB[i]); }
+    for (unsigned r=0;r<3;r++) {
+        u8 *record=rom+CUE+(r==0 ? 32 : 56+32+24*(r-1));
+        for (unsigned h=0;h<7;h++) be16(record+2*h,0x1100+(r<<4)+h);
+        record[0xE]=0x7F;record[0xF]=0x81;
+        for (unsigned h=0;h<4;h++) be16(record+0x10+2*h,0x2200+(r<<4)+h);
+    }
+    FILE *file=fopen(path,"wb");
+    CHECK(file && fwrite(rom,1,sizeof rom,file)==sizeof rom && fclose(file)==0);
+    N64cConfig config={.rom_path=path};
+    n64c_init(&config);
+    osCreateMesgQueue(&queue,messages,4);
+    CHECK(n64c_pi_register(HEADER,HEADER+0x54,N64C_RES_SWAP32,NULL)==0);
+    CHECK(n64c_pi_register(IMAGES,IMAGES+56,N64C_RES_STRUCT,"4 4 2 2 2 2 2 2 4 4")==0);
+    CHECK(n64c_pi_register(DIRECTORY,DIRECTORY+16,N64C_RES_SWAP32,NULL)==0);
+    CHECK(n64c_pi_register(TEXT,TEXT+15,N64C_RES_RAW,NULL)==0);
+    CHECK(n64c_pi_register(FONTS,FONTS+64,N64C_RES_STRUCT,"4 4 2 2 2 2 2 2 4 4 4")==0);
+    CHECK(n64c_pi_register(OFFSETS,OFFSETS+12,N64C_RES_SWAP32,NULL)==0);
+    CHECK(n64c_pi_register(GLYPHS,GLYPHS+16,N64C_RES_STRUCT,"4 1 1 1 1")==0);
+    CHECK(n64c_pi_register(INDEX,INDEX+8,N64C_RES_SWAP32,NULL)==0);
+    CHECK(n64c_pi_register(MAP,MAP+24,N64C_RES_SWAP32,NULL)==0);
+    CHECK(n64c_pi_register(AUDIO,AUDIO+32,N64C_RES_SWAP32,NULL)==0);
+    CHECK(n64c_pi_register(HEADER+0x50,HEADER+0x58,N64C_RES_SWAP32,NULL)==-1); /* overlaps the header */
+    static const char *widgets="14/2;1=4 4 4 2 2 1 1 2 2 2 2 2 2 2 4 4 4;3=4 4 4 2 2 1 1 2 2 2 2 2 2 2 4 4 4 4;"
+        "4=4 4 4 2 2 1 1 2 2 2 2 2 2 2 4 4 4 1 1 1 1 1 1 2 4 4";
+    CHECK(n64c_pi_register(PAGE+0x200,PAGE+0x240,N64C_RES_TAGGED,NULL)==-1);
+    CHECK(n64c_pi_register(PAGE+0x200,PAGE+0x240,N64C_RES_TAGGED,"14/3;1=4 4 4 2 2")==-1);          /* tag width */
+    CHECK(n64c_pi_register(PAGE+0x200,PAGE+0x240,N64C_RES_TAGGED,"14/2;1=4 4")==-1);                /* record shorter than its tag */
+    CHECK(n64c_pi_register(PAGE+0x200,PAGE+0x240,N64C_RES_TAGGED,"14/2;1=4 4 4 2 2;1=4 4 4 2 2")==-1); /* tag twice */
+    CHECK(n64c_pi_register(PAGE+0x200,PAGE+0x240,N64C_RES_TAGGED,"14/2")==-1);                      /* no layout */
+    CHECK(n64c_pi_register(PAGE,PAGE+PAGE_BYTES+0x30,N64C_RES_TAGGED,widgets)==0);
+    {
+        static const char cueRecord[]="2 2 2 2 2 2 2 1 1 2 2 2 2 ";
+        char layouts[200];
+        snprintf(layouts,sizeof layouts,"28/4;1=4 4 4 4 4 4 4 4 %s;2=4 4 4 4 4 4 4 4 %s%s",cueRecord,cueRecord,cueRecord);
+        CHECK(n64c_pi_register(CUE,CUE+CUE_BYTES,N64C_RES_TAGGED,layouts)==0);    /* 34 fields in one layout */
+    }
+    /* the whole header, then one word out of it */
+    u32 header[21];
+    CHECK(osPiStartDma(NULL,0,OS_READ,HEADER,header,sizeof header,&queue)==0);
+    event(1);
+    CHECK(header[0]==0x54 && header[1]==0x15fc && header[9]==8 && header[15]==0x381f4 && header[20]==0xffffffffu);
+    u32 word=0;
+    CHECK(osPiStartDma(NULL,0,OS_READ,HEADER+4*15,&word,4,&queue)==0);
+    event(1);
+    CHECK(word==0x381f4);
+    /* both image records in one DMA */
+    ImageRecord records[2];
+    CHECK(osPiStartDma(NULL,0,OS_READ,IMAGES,records,sizeof records,&queue)==0);
+    event(1);
+    CHECK(records[0].pointer==0 && records[0].format==8 && records[0].width==284 && records[0].height==222 &&
+        records[0].colours==256 && records[0].palette==0 && records[0].pixels==0xF9C0);
+    CHECK(records[1].width==284 && records[1].height==183 && records[1].colours==128 &&
+        records[1].palette==0xFBC0 && records[1].pixels==0x1C9A0);
+    /* record 1 alone, and its first 14 bytes (whole fields only) */
+    ImageRecord one;
+    memset(&one,0,sizeof one);
+    CHECK(osPiStartDma(NULL,0,OS_READ,IMAGES+28,&one,sizeof one,&queue)==0);
+    event(1);
+    CHECK(one.height==183 && one.pixels==0x1C9A0);
+    u16 halves[7]={0};
+    CHECK(osPiStartDma(NULL,0,OS_READ,IMAGES+28+8,halves,6,&queue)==0);
+    event(1);
+    CHECK(halves[0]==8 && halves[1]==284 && halves[2]==183);
+    /* a DMA that ends inside a halfword or word of a record is refused with no completion event */
+    u8 scratch[28];
+    CHECK(osPiStartDma(NULL,0,OS_READ,IMAGES+28,scratch,9,&queue)==-1);
+    event(0);
+    CHECK(osPiStartDma(NULL,0,OS_READ,IMAGES+28+8,scratch,5,&queue)==-1);
+    event(0);
+    /* directory table */
+    u32 directory[4];
+    CHECK(osPiStartDma(NULL,0,OS_READ,DIRECTORY,directory,sizeof directory,&queue)==0);
+    event(1);
+    CHECK(directory[0]==3 && directory[1]==0x14 && directory[2]==0xE8F50 && directory[3]==0x640);
+    /* raw text and an unregistered range keep the ROM bytes */
+    char text[15];
+    CHECK(osPiStartDma(NULL,0,OS_READ,TEXT,text,sizeof text,&queue)==0);
+    event(1);
+    CHECK(strcmp(text,"Display Buffer")==0);
+    u8 plain[4];
+    CHECK(osPiStartDma(NULL,0,OS_READ,HEADER+0x54+56,plain,4,&queue)==0);
+    event(1);
+    CHECK(plain[0]==rom[HEADER+0x54+56] && plain[3]==rom[HEADER+0x54+59]);
+    /* font records: halfwords signed, words whole, in one DMA and as the second record alone */
+    FontRecord fonts[2];
+    CHECK(osPiStartDma(NULL,0,OS_READ,FONTS,fonts,sizeof fonts,&queue)==0);
+    event(1);
+    CHECK(fonts[0].width==8 && fonts[0].offsetY==-9 && fonts[0].height==10 && fonts[0].count==7 && fonts[0].spacing==-2 &&
+        fonts[0].glyphs==0 && fonts[0].bitmaps==0 && fonts[0].size==0x12A8);
+    CHECK(fonts[1].width==16 && fonts[1].offsetY==-6 && fonts[1].count==11 && fonts[1].glyphs==0x300 &&
+        fonts[1].bitmaps==0x1318 && fonts[1].size==0xEA8);
+    FontRecord font;
+    CHECK(osPiStartDma(NULL,0,OS_READ,FONTS+32,&font,sizeof font,&queue)==0);
+    event(1);
+    CHECK(font.glyphs==0x300 && font.spacing==-2);
+    /* bitmap offsets are 32-bit values */
+    u32 offsets[3];
+    CHECK(osPiStartDma(NULL,0,OS_READ,OFFSETS,offsets,sizeof offsets,&queue)==0);
+    event(1);
+    CHECK(offsets[0]==0x12A8 && offsets[1]==0x12B8 && offsets[2]==0x21C0);
+    /* glyphs: the texture word is swapped, the four signed bytes are not */
+    Glyph glyphs[2];
+    CHECK(osPiStartDma(NULL,0,OS_READ,GLYPHS,glyphs,sizeof glyphs,&queue)==0);
+    event(1);
+    CHECK(glyphs[0].texture==0 && glyphs[0].width==5 && glyphs[0].height==6 && glyphs[0].offsetX==16 && glyphs[0].offsetY==-4);
+    CHECK(glyphs[1].texture==0x30 && glyphs[1].width==5 && glyphs[1].height==9 && glyphs[1].offsetY==-8);
+    /* string index, resource map entries and the audio section table */
+    u32 index[2];
+    CHECK(osPiStartDma(NULL,0,OS_READ,INDEX,index,sizeof index,&queue)==0);
+    event(1);
+    CHECK(index[0]==0 && index[1]==0x34C);
+    u32 map[6];
+    CHECK(osPiStartDma(NULL,0,OS_READ,MAP,map,sizeof map,&queue)==0);
+    event(1);
+    CHECK(map[1]==4804 && map[2]==0 && map[3]==4804 && map[4]==916 && map[5]==0);
+    u32 audio[4];
+    CHECK(osPiStartDma(NULL,0,OS_READ,AUDIO,audio,sizeof audio,&queue)==0);
+    event(1);
+    CHECK(audio[0]==0x28B264 && audio[1]==0x299510 && audio[2]==0x299510 && audio[3]==0x503CB8);
+    /* widget page: the whole range, one record on its own, one word out of a record */
+    u8 page[PAGE_BYTES+0x30];
+    CHECK(osPiStartDma(NULL,0,OS_READ,PAGE,page,PAGE_BYTES,&queue)==0);
+    event(1);
+    u32 w32;u16 w16;
+    memcpy(&w32,page,4);CHECK(w32==0x11223344);
+    memcpy(&w16,page+0xC,2);CHECK(w16==0x3B);
+    memcpy(&w16,page+0xE,2);CHECK(w16==1);
+    CHECK(page[0x10]==0xFF);
+    memcpy(&w16,page+0x12,2);CHECK(w16==0x2002);
+    memcpy(&w16,page+0x14,2);CHECK(w16==0x5B);
+    memcpy(&w32,page+0x20,4);CHECK(w32==0x3F800000);
+    memcpy(&w32,page+0x2C+0x2C,4);CHECK(w32==0xCAFEBABEu);
+    for (unsigned i=0;i<6;i++) CHECK(page[0x5C+0x2C+i]==i+1);
+    memcpy(&w16,page+0x5C+0x32,2);CHECK(w16==0x0102);
+    memcpy(&w32,page+0x5C+0x34,4);CHECK(w32==7);
+    memcpy(&w32,page+0x5C+0x38,4);CHECK(w32==0x1378);
+    u8 second[0x30+0x3C];
+    CHECK(osPiStartDma(NULL,0,OS_READ,PAGE+0x2C,second,sizeof second,&queue)==0);
+    event(1);
+    memcpy(&w16,second+0xE,2);CHECK(w16==3);
+    memcpy(&w32,second+0x2C,4);CHECK(w32==0xCAFEBABEu);
+    memcpy(&w32,second+0x30+0x38,4);CHECK(w32==0x1378);
+    u32 image=0;
+    CHECK(osPiStartDma(NULL,0,OS_READ,PAGE+0x2C+0x2C,&image,4,&queue)==0);
+    event(1);
+    CHECK(image==0xCAFEBABEu);
+    u8 cut[8];
+    CHECK(osPiStartDma(NULL,0,OS_READ,PAGE+0x2C+0x2C,cut,3,&queue)==-1);   /* ends inside a word */
+    event(0);
+    CHECK(osPiStartDma(NULL,0,OS_READ,PAGE+PAGE_BYTES,cut,4,&queue)==-1);  /* a record no layout names */
+    event(0);
+    u8 cue[CUE_BYTES];
+    CHECK(osPiStartDma(NULL,0,OS_READ,CUE,cue,sizeof cue,&queue)==0);
+    event(1);
+    memcpy(&w32,cue+0x10,4);CHECK(w32==0xAAAA0001u);
+    memcpy(&w32,cue+0x1C,4);CHECK(w32==1);
+    memcpy(&w16,cue+0x20,2);CHECK(w16==0x1100);
+    memcpy(&w16,cue+0x2C,2);CHECK(w16==0x1106);
+    CHECK(cue[0x2E]==0x7F && cue[0x2F]==0x81);
+    memcpy(&w16,cue+0x30,2);CHECK(w16==0x2200);
+    memcpy(&w16,cue+0x36,2);CHECK(w16==0x2203);
+    memcpy(&w32,cue+56+0x1C,4);CHECK(w32==2);
+    memcpy(&w16,cue+56+0x20,2);CHECK(w16==0x1110);
+    memcpy(&w16,cue+56+0x38+0xC,2);CHECK(w16==0x1126);
+    u8 cueTail[0x20];
+    CHECK(osPiStartDma(NULL,0,OS_READ,CUE+56+0x20,cueTail,sizeof cueTail,&queue)==0);  /* starts at the second container's records */
+    event(1);
+    memcpy(&w16,cueTail,2);CHECK(w16==0x1110);
+    n64c_shutdown();
+    CHECK(remove(path)==0);
+    printf("PI resource descriptors: %d checks; swap32 header, image and font records, glyphs, offsets, map, audio table, directory, raw text, tagged widget pages, refusals\n",checks);
+    return 0;
+}

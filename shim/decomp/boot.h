@@ -1,0 +1,33 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+#ifndef N64C_DECOMP_BOOT_H
+#define N64C_DECOMP_BOOT_H
+#include "n64c_os.h"
+#include "n64c_pi.h"
+#include "n64c_system.h"
+typedef struct {
+    const char *symbol;
+    u32 rom, ram, bytes;
+    N64cResKind kind;
+    const char *fields;
+} N64cBootLoad;
+extern const N64cBootLoad n64c_boot_loads[];
+/* Original resident data built from the source's own data units (image.py):
+ * bytes at an image offset are copied to physical RDRAM before typed loads. */
+typedef struct {
+    u32 ram, offset, bytes;
+} N64cBootImage;
+extern const N64cBootImage n64c_boot_image[];
+extern const size_t n64c_boot_image_count;
+extern const unsigned char n64c_boot_image_bytes[];
+extern const size_t n64c_boot_load_count;
+/* ROM ranges the game DMAs later: PI byte-order descriptors only (ram is 0, nothing is copied). */
+extern const N64cBootLoad n64c_boot_resources[];
+extern const size_t n64c_boot_resource_count;
+extern const u32 n64c_boot_ram_bytes, n64c_boot_video_clock;
+extern const u32 n64c_boot_rom_bytes;
+extern const char n64c_boot_rom_sha256[];
+extern const N64cSystemGlobals n64c_boot_system;
+extern const u32 n64c_boot_tv_type, n64c_boot_reset_type;
+extern const int n64c_boot_audio_abi; /* N64aFlavour, or -1: audio tasks are refused */
+int n64c_boot_entry(void);
+#endif
