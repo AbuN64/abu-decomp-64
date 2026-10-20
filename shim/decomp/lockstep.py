@@ -8,16 +8,20 @@ changed pages' bytes, and the arguments and return of the first 8 calls of each 
     lockstep.py types --build BUILD --trace boot-trace.tsv --out types.tsv
     lockstep.py compare --oracle DIR --port DIR --trace boot-trace.tsv [--symbols symbol_addrs.txt]
                         [--port-exe rage_decomp_boot] [--types types.tsv] [--ignore ignore.tsv] [--oracle2 DIR]
-                        [--json out.json]
+                        [--rom baserom.z64] [--json out.json]
 
 compare prints the first diverging (function, page, symbol+offset, words) and the matched-through number: the largest
 first-hit order up to which neither memory nor any recorded call diverges persistently. The oracle keeps canonical
 big-endian bytes and the port native ones, so a word matches when the port's bytes are the oracle's as bytes, as
-16-bit halves, as one 32-bit value, as half of a 64-bit value, or as the same function (native address vs original).
-Guest stack pages (from the oracle's stack pointers), words that differ between two oracle runs (--oracle2) and
-ignore.tsv rows (SYMBOL or 0xSTART-0xEND, then a reason) are masked. A memory divergence is persistent when the word
+16-bit halves, as one 32-bit value, as half of a 64-bit value, or as the same function or data object (native address
+vs original: the port keeps game statics in its executable, so a pointer to native D_80123456+8 is 0x8012345e).
+Words that already differ at the first trace function (loader vs shim setup) count only once the game writes them.
+Calls of functions without a known prototype (--types) are not compared: their arity is unknown. Guest stack pages
+(from the oracle's stack pointers), words that differ between two oracle runs (--oracle2), ignore.tsv rows (SYMBOL or
+0xSTART-0xEND, then a reason) and, with --rom, oracle words still holding IPL3's boot copy of the ROM (the port runs
+that code natively and never copies it) are masked. A memory divergence is persistent when the word
 still differs at the next --persist compared points. Words holding a host pointer (outside RDRAM, not a function)
-are shim-owned state: listed, never counted. Exit 0 when nothing diverges, 1 when something does, 2 on bad input.
+are shim-owned state, and floats within 4 ulp are rounding (MIPS single vs x87): listed, never counted. Exit 0 when nothing diverges, 1 when something does, 2 on bad input.
 """
 import argparse
 import array
@@ -77,17 +81,45 @@ def read_symbols(path):
     return rows, by_name
 
 
-def read_exe_functions(path):
-    """Sorted (address, size, name, local) of the port executable's functions (nm)."""
+def read_exe_symbols(path, kinds):
+    """Sorted (address, size, name, local) of the port executable's symbols of the nm kinds given."""
     if not path:
         return []
     out = subprocess.run(["nm", "-S", "-n", "--defined-only", str(path)], capture_output=True, text=True, check=True)
     rows = []
     for line in out.stdout.splitlines():
         f = line.split()
-        if len(f) == 4 and f[2] in "Tt":
-            rows.append((int(f[0], 16), int(f[1], 16), f[3], f[2] == "t"))
+        if len(f) == 4 and f[2] in kinds:
+            rows.append((int(f[0], 16), int(f[1], 16), f[3], f[2].islower()))
     return rows
+
+
+def read_exe_functions(path):
+    return read_exe_symbols(path, "Tt")
+
+
+def read_exe_data(path):
+    return [r for r in read_exe_symbols(path, "DdBbRr") if r[1]]
+
+
+BOOT_COPY = (0x80000400, 0x1000, 0x100000)  # IPL3 copies ROM 0x1000.. (1 MiB) to 0x80000400
+
+
+def read_boot_copy(path):
+    """IPL3's boot copy as canonical big-endian bytes, from a z64/v64/n64 ROM, or None."""
+    if not path:
+        return None
+    rom = bytearray(pathlib.Path(path).read_bytes()[:BOOT_COPY[1] + BOOT_COPY[2]])
+    magic = bytes(rom[:4])
+    if magic == bytes.fromhex("37804012"):
+        rom[0::2], rom[1::2] = rom[1::2], rom[0::2]
+    elif magic == bytes.fromhex("40123780"):
+        words = array.array("I", bytes(rom[:len(rom) // 4 * 4]))
+        words.byteswap()
+        rom = bytearray(words.tobytes())
+    elif magic != bytes.fromhex("80371240"):
+        raise ValueError(f"{path}: not an N64 ROM")
+    return bytes(rom[BOOT_COPY[1]:])
 
 
 class Side:
@@ -148,8 +180,16 @@ class Side:
 
 
 # ---- word equivalence -------------------------------------------------------------------------------------------
+def near_float(ov, pv, ulps=4):
+    """Both words are the same ordinary-magnitude float but for the last bits (MIPS vs x87/SSE rounding)."""
+    if (ov ^ pv) & 0x80000000 or abs(ov - pv) > ulps:
+        return False
+    exponent = (ov >> 23) & 0xFF
+    return 0x60 <= exponent <= 0x9F
+
+
 class Matcher:
-    def __init__(self, ram, symbols, exe_functions):
+    def __init__(self, ram, symbols, exe_functions, exe_data=()):
         self.ram = ram
         self.sym_rows, self.sym_addr = symbols
         self.sym_keys = [a for a, _ in self.sym_rows]
@@ -159,6 +199,44 @@ class Matcher:
         for _, _, name, _ in exe_functions:
             if name in self.sym_addr:
                 self.original_functions.add(self.sym_addr[name])
+        self.data = []
+        for address, size, name, _ in sorted(exe_data):
+            original = self.original_address(name)
+            if original is not None:
+                self.data.append((address, size, original))
+        self.data_keys = [a for a, _, _ in self.data]
+        self.stacks = ([], [])
+
+    def set_stacks(self, oracle_sps, port_sps):
+        """Every thread's stack span on each side, so a pointer to any thread's locals matches the other's."""
+        def spans(sps, below, above):
+            return [(min(v) - below, max(v) + above) for v in sps.values() if v and max(v) - min(v) < 0x100000]
+        self.stacks = (spans(oracle_sps, PAGE, ORACLE_STACK), spans(port_sps, PAGE, PORT_STACK))
+
+    def both_stack(self, oracle_value, port_value):
+        return (any(lo <= oracle_value < hi for lo, hi in self.stacks[0])
+                and any(lo <= port_value < hi for lo, hi in self.stacks[1]))
+
+    def original_address(self, name):
+        """The original address of a native data object: its symbol_addrs entry or its D_XXXXXXXX name."""
+        name = name.split(".")[0]
+        if name in self.sym_addr:
+            return self.sym_addr[name]
+        m = re.fullmatch(r"[A-Za-z]+_(8[0-9A-Fa-f]{7})", name)
+        return int(m[1], 16) if m else None
+
+    def port_data(self, value):
+        """The original address of native address value inside a game data object (one past its end too), or None."""
+        i = bisect.bisect_right(self.data_keys, value) - 1
+        if i < 0:
+            return None
+        address, size, original = self.data[i]
+        return original + value - address if value <= address + size else None
+
+    def same_address(self, oracle_value, port_value):
+        """The port value is the oracle's code or data address in native form."""
+        return self.same_function(oracle_value, port_value) or (
+            RDRAM <= oracle_value < RDRAM + self.ram and self.port_data(port_value) == oracle_value)
 
     def port_function(self, value):
         """The original address of the port function at native address value, or None."""
@@ -183,6 +261,7 @@ class Matcher:
     def host_pointer(self, oracle_value, port_value):
         in_ram = RDRAM <= port_value < RDRAM + self.ram
         return (not in_ram and port_value > 0xFFFF and self.port_function(port_value) is None
+                and self.port_data(port_value) is None
                 and (oracle_value == 0 or RDRAM <= oracle_value < RDRAM + self.ram))
 
     def symbol(self, address):
@@ -210,14 +289,14 @@ class Matcher:
             if q == c or q == c[::-1] or q == c[1::-1] + c[2:] or q == c[:2] + c[:1:-1] or q == c[1::-1] + c[:1:-1]:
                 continue
             ov, pv = int.from_bytes(c, "big"), int.from_bytes(q, "little")
-            if self.same_function(ov, pv):
+            if self.same_address(ov, pv):
                 continue
             if w % 2 == 0 and w + 1 < WORDS and port[4 * w:4 * w + 8] == oracle[4 * w:4 * w + 8][::-1]:
                 skip = True
                 continue
             if w % 2 == 1 and port[4 * w - 4:4 * w + 4] == oracle[4 * w - 4:4 * w + 4][::-1]:
                 continue
-            result[w] = "host-pointer" if self.host_pointer(ov, pv) else "value"
+            result[w] = "host-pointer" if self.host_pointer(ov, pv) else "fp-ulp" if near_float(ov, pv) else "value"
         return result
 
 
@@ -383,9 +462,9 @@ def same_word(matcher, kind, ov, pv, osp, psp):
     if (ov & m) == (pv & m):
         return True
     if kind in ("ptr", "int32", "unknown"):
-        if abs(ov - osp) < ORACLE_STACK and abs(pv - psp) < PORT_STACK:
+        if abs(ov - osp) < ORACLE_STACK and abs(pv - psp) < PORT_STACK or matcher.both_stack(ov, pv):
             return True
-        return matcher.same_function(ov, pv)
+        return matcher.same_address(ov, pv)
     return False
 
 
@@ -395,10 +474,8 @@ def compare_call(matcher, kinds, local, oc, pc):
     f = {12: int(oc["f12"], 16), 14: int(oc["f14"], 16)}
     words = [int(x, 16) for x in pc["a"]]
     osp, psp = int(oc["sp"], 16), int(pc["sp"], 16)
-    if kinds is None:
-        if local:
-            return None
-        kinds = ["unknown"] * 4
+    if kinds is None:  # no prototype: the arity is unknown, so registers past it hold anything
+        return None
     where, port_at = o32_slots(kinds)
     for index, (k, at, pos) in enumerate(zip(kinds, where, port_at)):
         if k in ("var", "agg") or at is None or pos + (8 if k in ("double", "int64") else 4) > 32:
@@ -419,7 +496,8 @@ def compare_call(matcher, kinds, local, oc, pc):
     return None
 
 
-def compare_return(matcher, ret_kind, oret, pret):
+def compare_return(matcher, ret_kind, oret, pret, osp=0, psp=-PORT_STACK * 4):
+    """The return's divergence, or None; pointers into the caller's stack (osp/psp: the call's sp) match."""
     if ret_kind in (None, "void", "agg", "unknown"):
         return None
     v0, v1 = (int(x, 16) for x in oret["r"])
@@ -438,7 +516,7 @@ def compare_return(matcher, ret_kind, oret, pret):
     if ret_kind == "int64":
         ov, pv = v0 << 32 | v1, edx << 32 | eax
         return None if ov == pv else f"return int64 0x{ov:016x} vs port 0x{pv:016x}"
-    if same_word(matcher, ret_kind, v0, eax, 0, -PORT_STACK * 4):
+    if same_word(matcher, ret_kind, v0, eax, osp, psp):
         return None
     return f"return {ret_kind} 0x{v0:08x} vs port 0x{eax:08x}"
 
@@ -469,6 +547,21 @@ def masked_ranges(args, matcher, oracle):
     return ranges
 
 
+def boot_unmask(diff, pg, oracle_page, boot, seen):
+    """The page's differing words without those the oracle still holds as IPL3 copied them."""
+    base = RDRAM + pg * PAGE - BOOT_COPY[0]
+    if base + PAGE <= 0 or base >= len(boot):
+        return diff
+    out = {}
+    for w, cls in diff.items():
+        at = base + 4 * w
+        if 0 <= at and at + 4 <= len(boot) and oracle_page[4 * w:4 * w + 4] == boot[at:at + 4]:
+            seen.add(pg * WORDS + w)
+        else:
+            out[w] = cls
+    return out
+
+
 def words_text(data, w, big):
     out = []
     for k in range(w, min(w + 4, WORDS)):
@@ -483,7 +576,9 @@ def compare(args):
     if not oracle.canonical or port.canonical:
         raise ValueError("--oracle must be the canonical-be side and --port the native one")
     ram = min(oracle.meta["ram"], port.meta["ram"])
-    matcher = Matcher(ram, read_symbols(args.symbols), read_exe_functions(args.port_exe))
+    matcher = Matcher(ram, read_symbols(args.symbols), read_exe_functions(args.port_exe), read_exe_data(args.port_exe))
+    matcher.set_stacks(oracle.sps, port.sps)
+    boot = read_boot_copy(args.rom)
     types = read_types(args.types)
     ranges = masked_ranges(args, matcher, oracle)
     masked_words = set()
@@ -500,7 +595,7 @@ def compare(args):
                     volatile.update(pg * WORDS + w for w in range(WORDS) if x[4 * w:4 * w + 4] != y[4 * w:4 * w + 4])
     common = sorted(set(oracle.points) & set(port.points))
     cache = {}
-    per_point = []
+    per_point, boot_words = [], set()
     for key in common:
         a, b = oracle.points[key][0], port.points[key][0]
         diff = {}
@@ -508,20 +603,39 @@ def compare(args):
             pair = (a[pg], b[pg])
             if pair not in cache:
                 cache[pair] = matcher.page_diff(oracle.page(a[pg]), port.page(b[pg]))
+                if boot is not None and cache[pair]:
+                    cache[pair] = boot_unmask(cache[pair], pg, oracle.page(a[pg]), boot, boot_words)
             for w, cls in cache[pair].items():
                 index = pg * WORDS + w
                 if index not in masked_words and index not in volatile:
                     diff[index] = (cls, pair)
         per_point.append(diff)
-    memory, shim, transient = [], set(), 0
+    memory, shim, transient, setup, ulp = [], set(), 0, {}, set()
+
+    def oracle_word(index, pair):
+        w = index % WORDS
+        return oracle.page(pair[0])[4 * w:4 * w + 4]
+
     for j, key in enumerate(common):
         previous = per_point[j - 1] if j else {}
         later = per_point[j + 1:j + 1 + args.persist]
         for index, (cls, pair) in sorted(per_point[j].items()):
-            if index in previous:
+            if j == 0 and key == min(names):
+                # before the first game function: loader (IPL3) vs shim setup, not game behaviour; re-armed once
+                # the game writes the word
+                setup[index] = oracle_word(index, pair)
+                continue
+            if index in setup:
+                if oracle_word(index, pair) == setup[index]:
+                    continue
+                del setup[index]
+            elif index in previous:
                 continue
             if cls == "host-pointer":
                 shim.add(index)
+                continue
+            if cls == "fp-ulp":
+                ulp.add(index)
                 continue
             if not all(index in p for p in later):
                 transient += 1
@@ -536,7 +650,8 @@ def compare(args):
         for i in sorted(set(oracle.calls.get(key, {})) & set(port.calls.get(key, {}))):
             why = compare_call(matcher, kinds, local, oracle.calls[key][i], port.calls[key][i])
             if why is None and i in oracle.rets.get(key, {}) and i in port.rets.get(key, {}):
-                why = compare_return(matcher, ret_kind, oracle.rets[key][i], port.rets[key][i])
+                why = compare_return(matcher, ret_kind, oracle.rets[key][i], port.rets[key][i],
+                                     int(oracle.calls[key][i]["sp"], 16), int(port.calls[key][i]["sp"], 16))
             if why:
                 calls.append((key, i, why))
     first_mem = memory[0][0] if memory else None
@@ -548,7 +663,8 @@ def compare(args):
         "compared": len(common), "trace": len(names), "first": None, "memory": [], "calls": [],
         "shim_words": len(shim), "transient_words": transient, "masked": [[f"0x{lo:08x}", f"0x{hi:08x}", why]
                                                                          for lo, hi, why in ranges],
-        "volatile_words": len(volatile), "watch": {"oracle": oracle.watch[:50], "port": port.watch[:50]},
+        "volatile_words": len(volatile), "boot_copy_words": len(boot_words),
+        "setup_words": len(setup), "fp_ulp_words": len(ulp), "first_memory": None, "first_call": None, "watch": {"oracle": oracle.watch[:50], "port": port.watch[:50]},
     }
     for key, index, (oh, ph) in memory[:args.limit]:
         address = RDRAM + index * 4
@@ -559,6 +675,8 @@ def compare(args):
             "oracle": words_text(oracle.page(oh), w, True), "port": words_text(port.page(ph), w, False)})
     for key, i, why in calls[:args.limit]:
         report["calls"].append({"order": key, "function": names.get(key, ["?"])[0], "call": i, "why": why})
+    report["first_memory"] = dict(report["memory"][0], kind="memory") if report["memory"] else None
+    report["first_call"] = dict(report["calls"][0], kind="call") if report["calls"] else None
     if bad is not None:
         if first_call is not None and (first_mem is None or first_call <= first_mem):
             report["first"] = dict(report["calls"][0], kind="call")
@@ -580,6 +698,9 @@ def print_report(report):
     else:
         print(f"lockstep: first divergence at order {first['order']} {first['function']}: page {first['page']} "
               f"{first['symbol']}: oracle {first['oracle']} | port {first['port']}")
+    if first is not None and first["kind"] == "memory" and report["first_call"]:
+        c = report["first_call"]
+        print(f"lockstep: first call divergence at order {c['order']} {c['function']} call {c['call']}: {c['why']}")
     for row in report["memory"][:10]:
         print(f"lockstep: memory order {row['order']} {row['function']} {row['symbol']} ({row['address']}): "
               f"oracle {row['oracle']} | port {row['port']}")
@@ -587,7 +708,9 @@ def print_report(report):
         print(f"lockstep: call order {row['order']} {row['function']} #{row['call']}: {row['why']}")
     print(f"lockstep: {len(report['memory'])} persistent memory words, {len(report['calls'])} call divergences listed; "
           f"{report['shim_words']} shim-owned words, {report['transient_words']} transient, "
-          f"{report['volatile_words']} volatile masked")
+          f"{report['volatile_words']} volatile, {report['boot_copy_words']} boot-copy masked, "
+          f"{report['setup_words']} setup words (differ before the first game function), "
+          f"{report['fp_ulp_words']} float words within 4 ulp")
 
 
 def build_parser():
@@ -608,6 +731,7 @@ def build_parser():
     c.add_argument("--types")
     c.add_argument("--ignore")
     c.add_argument("--oracle2")
+    c.add_argument("--rom", help="the ROM, to mask IPL3's boot copy the port never makes")
     c.add_argument("--persist", type=int, default=2)
     c.add_argument("--pak", type=int, default=708)
     c.add_argument("--limit", type=int, default=200)

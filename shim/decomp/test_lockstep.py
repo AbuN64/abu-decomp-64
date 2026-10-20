@@ -231,6 +231,80 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(matcher.page_diff(bytes(page_o), bytes(page_p)), {})
         self.assertTrue(matcher.is_local(["fn_two", "fn_two_new"]))
 
+    def test_native_data_pointers_match_by_original_address(self):
+        matcher = ls.Matcher(PAGES * 4096, ls.read_symbols(self.path / "symbols.txt"), [],
+                             [(0x0805A000, 0x100, "D_80001800", True), (0x0805B000, 0x20, "rw_table.12", False)])
+        self.assertTrue(matcher.same_address(0x80001808, 0x0805A008))
+        self.assertTrue(matcher.same_address(0x80001900, 0x0805A100))  # one past the end
+        self.assertFalse(matcher.same_address(0x80001808, 0x0805A00C))
+        self.assertIsNone(matcher.port_data(0x0805B000))  # no original address for the name
+        self.assertFalse(matcher.host_pointer(0x80001808, 0x0805A008))
+
+    def test_calls_without_a_prototype_are_not_compared(self):
+        matcher = ls.Matcher(PAGES * 4096, ([], {}), [])
+        oc = {"a": ["1", "2", "3", "4"], "f12": "0", "f14": "0", "sp": "80003f00"}
+        pc = {"a": ["9"] * 8, "sp": "ffffd000"}
+        self.assertIsNone(ls.compare_call(matcher, None, False, oc, pc))
+        self.assertIn("arg0 int32", ls.compare_call(matcher, ["int32"], False, oc, pc))
+
+    def test_returned_stack_pointers_and_other_threads_stacks_match(self):
+        matcher = ls.Matcher(PAGES * 4096, ([], {}), [])
+        oret, pret = {"r": ["80003e80", "0"]}, {"r": ["ffffd010", "0"]}
+        self.assertIsNone(ls.compare_return(matcher, "ptr", oret, pret, 0x80003EC0, 0xFFFFD000))
+        self.assertIsNotNone(ls.compare_return(matcher, "ptr", oret, pret))
+        matcher.set_stacks({1: [0x80003EC0], 2: [0x80002F00]}, {7: [0xFFFFD000], 8: [0xB92FF000]})
+        self.assertTrue(ls.same_word(matcher, "ptr", 0x80002E80, 0xB92FFF38, 0x80003EC0, 0xFFFFD000))
+        self.assertFalse(ls.same_word(matcher, "ptr", 0x80001000, 0xB92FFF38, 0x80003EC0, 0xFFFFD000))
+
+    def test_float_rounding_is_listed_not_counted(self):
+        self.assertTrue(ls.near_float(0x441DE734, 0x441DE733))
+        self.assertFalse(ls.near_float(0x441DE734, 0x441DE740))
+        self.assertFalse(ls.near_float(5, 6))  # small integers are not floats
+        self.both(1)
+        self.ram.u32(0x80001810, 0x3F59E2CA, port_value=0x3F59E2C9)
+        self.both(2)
+        self.both(3)
+        self.both(4)
+        report = self.run_compare()
+        self.assertIsNone(report["first"], report)
+        self.assertEqual(report["fp_ulp_words"], 1)
+
+    def test_setup_differences_count_once_the_game_writes_them(self):
+        self.ram.u32(0x80001820, 0, port_value=0x77)  # the shim wrote it before the first game function
+        self.ram.u32(0x80001830, 0, port_value=0x55)
+        self.both(1)
+        self.both(2)
+        self.ram.u32(0x80001830, 3, port_value=4)  # the game writes it and the port disagrees
+        self.both(3)
+        self.both(4)
+        self.both(5)
+        report = self.run_compare()
+        self.assertEqual(report["setup_words"], 1)
+        self.assertEqual((report["first"]["order"], report["first"]["address"]), (3, "0x80001830"))
+        self.assertEqual(report["matched_through"], 2)
+
+    def test_rom_boot_copy_is_masked(self):
+        rom = bytearray(0x1000 + 0x100000)
+        rom[0:4] = bytes.fromhex("80371240")
+        rom[0x1000 + 0x1400:0x1000 + 0x1404] = bytes.fromhex("27bdffc8")  # IPL3 puts it at 0x80001800
+        (self.path / "rom.z64").write_bytes(rom)
+        self.ram.oracle[0x1800:0x1804] = bytes.fromhex("27bdffc8")
+        self.ram.u32(0x80001900, 2, port_value=1)  # differs after the first point: counted
+        self.both(1)
+        self.both(2)
+        self.ram.u32(0x80001904, 2, port_value=1)
+        self.both(3)
+        self.both(4)
+        self.both(5)
+        report = self.run_compare("--rom", str(self.path / "rom.z64"))
+        self.assertEqual(report["boot_copy_words"], 1)
+        self.assertEqual(report["setup_words"], 1)
+        self.assertEqual(report["first"]["address"], "0x80001904")
+        v64 = bytearray(rom)
+        v64[0::2], v64[1::2] = rom[1::2], rom[0::2]
+        (self.path / "rom.v64").write_bytes(v64)
+        self.assertEqual(ls.read_boot_copy(self.path / "rom.v64"), ls.read_boot_copy(self.path / "rom.z64"))
+
     def test_aux_info_kinds(self):
         typedefs = {"s32": "int", "f32": "float", "u8": "unsigned char", "Vec": "struct", "OSTime": "u64",
                     "u64": "unsigned long long"}
