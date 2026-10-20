@@ -45,10 +45,6 @@ def markers(source, prefix):
         r"n64c_" + prefix + r"_marker_(" + IDENT + ")" + suffix, source)))
 
 
-def errors(compiler, source, flags):
-    result = subprocess.run([compiler, *flags, "-x", "c", "-fsyntax-only", str(source)],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    return result.returncode, [line for line in result.stderr.splitlines() if "error:" in line]
 def mapped(text, maps):
     for old, new in maps:
         text = text.replace(old, new)
@@ -126,8 +122,14 @@ def prepare(compiler, source, output, stubs, inventory, depfile, flags, maps=(),
     output.parent.mkdir(parents=True, exist_ok=True)
     flags = list(flags) + [f"-fmacro-prefix-map={old}={new}" for old, new in maps]
     store = Cache(cache, compiler, source, flags, maps) if cache else None
+    mode = "NON_MATCHING" if "-DNON_MATCHING" in flags else "matched"
     result = store.lookup() if store else None
     if result:
+        record = result["inventory"]
+        if record.get("mode") != mode or record.get("non_matching_errors"):
+            sys.stderr.write(f"decomp-prepare: unit {source.name} ({source}): refusing cached fallback "
+                             f"or invalid result (requested {mode}, cached {record.get('mode')!r})\n")
+            return 1
         sys.stderr.write(result["stderr"])
         output.write_text(result["i"])
         stubs.write_text(result["stubs"])
@@ -135,26 +137,21 @@ def prepare(compiler, source, output, stubs, inventory, depfile, flags, maps=(),
         deps = [store.unmap(path) for path, _ in result["deps"]]
         depfile.write_text(f"{output}: " + " \\\n ".join(deps) + "\n")
         return 0
-    notes = []
-    # A unit whose fuzzy NON_MATCHING bodies do not compile still contributes its
-    # matched C: it is rebuilt as the matching build sees it, and the fuzzy
-    # functions become INCLUDE_ASM stops. Their diagnostics stay in the inventory.
-    mode, rejected = "NON_MATCHING" if "-DNON_MATCHING" in flags else "matched", []
+    # NON_MATCHING is an input contract. A failed body must never become a
+    # successful matched-only unit with generated stops, including via the cache.
     if mode == "NON_MATCHING":
-        status, rejected = errors(compiler, source, flags)
-        matched = [flag for flag in flags if flag != "-DNON_MATCHING"]
-        if status and not errors(compiler, source, matched)[0]:
-            flags, mode = matched, "matched"
-            notes.append(f"decomp-prepare: {source}: NON_MATCHING C does not compile; "
-                         "using matched C with stops\n")
-            sys.stderr.write(notes[-1])
-        else:
-            rejected = []
+        check = subprocess.run([compiler, *flags, "-x", "c", "-fsyntax-only", str(source)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if check.returncode:
+            sys.stderr.write(f"decomp-prepare: unit {source.name} ({source}): NON_MATCHING compile failed\n")
+            sys.stderr.write(check.stderr)
+            return check.returncode
     command = [compiler, *flags, "-x", "c", "-E", "-MD", "-MF", str(depfile),
                "-MT", str(output), str(source)]
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True)
     if result.returncode:
+        sys.stderr.write(f"decomp-prepare: unit {source.name} ({source}): preprocessing failed\n")
         sys.stderr.write(result.stderr)
         return result.returncode
     missing = markers(result.stdout, "missing")
@@ -166,14 +163,14 @@ def prepare(compiler, source, output, stubs, inventory, depfile, flags, maps=(),
     declarations += ['long long ' + name + '(void) { return n64c_boot_missing("' + name + '"); }'
                      for name in missing]
     text = map_markers(result.stdout, maps)
-    record = {"missing": missing, "data": data, "mode": mode, "non_matching_errors": rejected[:50]}
+    record = {"missing": missing, "data": data, "mode": mode, "non_matching_errors": []}
     output.write_text(text)
     stubs.write_text("\n".join(declarations) + "\n")
     inventory.write_text(json.dumps(dict(record, source=str(source)), sort_keys=True) + "\n")
     if store:
         try:
             store.store({"i": text, "stubs": "\n".join(declarations) + "\n", "inventory": record,
-                         "stderr": "".join(notes), "deps": [[mapped(p, maps), ""] for p in dependencies(depfile)]},
+                         "stderr": "", "deps": [[mapped(p, maps), ""] for p in dependencies(depfile)]},
                         dependencies(depfile))
         except OSError as error:  # a full or read-only cache never fails the build
             sys.stderr.write(f"decomp-prepare: cache not written: {error}\n")

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Exercise real preprocessing, compilation, ABI calls and terminal stops."""
 import argparse
+import contextlib
+import io
 import importlib.util
 import json
 import pathlib
@@ -50,8 +52,9 @@ class PrepareTests(unittest.TestCase):
                        check=True, capture_output=True, text=True)
         return exe
 
-    def test_uncompilable_nonmatching_falls_back_to_matched_c(self):
-        files, data = self.generate("""
+    def test_uncompilable_nonmatching_fails_without_stops(self):
+        src = self.path / "conflict.c"
+        src.write_text("""
 extern int shared;
 int matched(void) { return 7; }
 #ifdef NON_MATCHING
@@ -61,15 +64,19 @@ int fuzzy(void) { return shared; }
 INCLUDE_ASM("text", fuzzy);
 #endif
 """)
-        self.assertEqual(data["mode"], "matched")
-        self.assertEqual(data["missing"], ["fuzzy"])
-        self.assertTrue(any("conflicting types" in e for e in data["non_matching_errors"]))
-        exe = self.executable(files, "int matched(void); void fuzzy(void);\n"
-                              "int main(int c, char **v) { (void)v; if (c > 1) fuzzy(); return matched() - 7; }\n")
-        self.assertEqual(subprocess.run([exe]).returncode, 0)
-        stop = subprocess.run([exe, "x"], capture_output=True, text=True)
-        self.assertEqual(stop.returncode, 78)
-        self.assertIn("boot-missing: fuzzy", stop.stderr)
+        files = [self.path / n for n in ("source.i", "stubs.c", "inventory.json", "source.d")]
+        cache = self.path / "cache"
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            status = module.prepare(args.compiler, src, *files,
+                self.flags + ["-DNON_MATCHING", "-include", str(ROOT / "native.h")], cache=cache)
+        self.assertNotEqual(status, 0)
+        self.assertIn("conflicting types", stderr.getvalue())
+        self.assertIn("unit conflict.c", stderr.getvalue())
+        self.assertIn(str(src), stderr.getvalue())
+        self.assertFalse(any(f.exists() for f in files))
+        self.assertEqual(list(cache.rglob("*")), [])
+
     def test_active_branches_and_nonmatching_body(self):
         files, data = self.generate("""
 const char quote = '"';
