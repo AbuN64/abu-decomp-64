@@ -13,6 +13,7 @@ from __future__ import annotations
 import fcntl
 import os
 import re
+import resource
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -62,6 +63,8 @@ class Ship:
         self.weight, self.cgroup, self.notes = table["lock_weight"], cgroup, []
         self.run, self.landing, self.append, self.clock, self.lock_wait = run, landing, append, clock, lock_wait
         self.steps: list[dict[str, Any]] = []
+        used = resource.getrusage(resource.RUSAGE_CHILDREN)
+        self.cpu_mark = used.ru_utime + used.ru_stime
         self.refused: list[dict[str, Any]] = []  # inputs the ship refused whole before the land that pushed
 
     # git ----------------------------------------------------------------------------------------------------------
@@ -72,7 +75,10 @@ class Ship:
         return code, (out if not code else (err or out))
 
     def step(self, name: str, started: float, **detail: Any) -> None:
-        self.steps.append({"step": name, "seconds": round(self.clock() - started, 3), **detail})
+        used = resource.getrusage(resource.RUSAGE_CHILDREN)
+        now = used.ru_utime + used.ru_stime
+        spent, self.cpu_mark = now - self.cpu_mark, now  # children's CPU since the previous step, beside its wall
+        self.steps.append({"step": name, "seconds": round(self.clock() - started, 3), "cpu": round(spent, 2), **detail})
 
     def identity(self) -> dict[str, str]:
         """GIT_AUTHOR/COMMITTER for the commits: `land.author` ("Name <email>"), else the tree's own git config."""

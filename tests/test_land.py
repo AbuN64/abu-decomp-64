@@ -202,6 +202,14 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.renameproofs, [("renameproof", "--against", self.base)])
         self.assertNotIn("rename_proof_refused", result)
 
+    def test_every_gate_row_and_the_result_carry_the_cpu_the_children_used(self):
+        one = self.patch("L1", {"c.c": C_C + "// x\n"})
+        result, code, _ = self.land([one])
+        self.assertEqual(code, 0)
+        ran = [g for g in result["gates"] if not g.get("skipped")]
+        self.assertTrue(ran and all(isinstance(g["cpu"], float) and g["cpu"] >= 0 for g in ran))
+        self.assertGreaterEqual(result["cpu"], 0)
+
     def test_a_change_that_is_not_a_pure_rename_takes_the_build_and_says_why(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})
         result, code, _ = self.land([one])

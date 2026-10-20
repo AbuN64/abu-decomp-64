@@ -117,6 +117,7 @@ import fnmatch
 import json
 import os
 import re
+import resource
 import shlex
 import subprocess
 import sys
@@ -780,6 +781,8 @@ class Landing:
         self.union_seen: dict[str, bool] = {}  # path -> whether gitattributes say merge=union
         self.regenerated: dict[str, str] = {}  # generated file the sync changed -> the lane whose sources caused it
         self.written: set[str] = set()  # every path an unbake setup or sync of this land says it wrote
+        used = resource.getrusage(resource.RUSAGE_CHILDREN)
+        self.cpu_start = self.cpu_mark = used.ru_utime + used.ru_stime  # children's CPU at the land's start
         self.proof: dict[str, Any] | None = None  # the rename proof of the tree as it is (prove stage)
 
     # git -------------------------------------------------------------------------------------------------------
@@ -797,8 +800,24 @@ class Landing:
     # gates -----------------------------------------------------------------------------------------------------
     def gate(self, name: str, passed: bool, started: float, **detail: Any) -> bool:
         self.gates[:] = [g for g in self.gates if g["gate"] != name]  # a replay or a retry replaces the gate's row
-        self.gates.append({"gate": name, "pass": passed, "seconds": round(self.clock() - started, 3), **detail})
+        self.gates.append(
+            {
+                "gate": name,
+                "pass": passed,
+                "seconds": round(self.clock() - started, 3),
+                "cpu": self.cpu_since_gate(),
+                **detail,
+            }
+        )
         return passed
+
+    def cpu_since_gate(self) -> float:
+        """CPU seconds (user+system) every finished child of this land used since the previous gate row, so each row
+        carries its own cost beside its wall (owner cap: 300 CPU per land). Gates run one after another."""
+        used = resource.getrusage(resource.RUSAGE_CHILDREN)
+        now = used.ru_utime + used.ru_stime
+        spent, self.cpu_mark = now - self.cpu_mark, now
+        return round(spent, 2)
 
     def fail(self, key: str, message: str, **detail: Any) -> None:
         self.findings.append({"key": key, "message": message, "blocking": True, **detail})
@@ -1957,6 +1976,7 @@ class Landing:
             "head": self.extra.get("head"),
             "pass": not failed,
             "gates": self.gates,
+            "cpu": round(self.cpu_mark - self.cpu_start, 2),  # the gates' CPU, summed
             "lanes": self.lanes,
             "untracked_other": self.extra.get("untracked_other", []),
             **({"symbol_check": self.extra["symbol_check"]} if "symbol_check" in self.extra else {}),
