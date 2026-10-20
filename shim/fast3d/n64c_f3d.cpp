@@ -85,6 +85,7 @@ extern "C" N64cF3d* n64c_f3d_open(const N64cF3dConfig* config)
 {
     if (!config || !config->window_w || !config->window_h || !config->fb_w || !config->fb_h)
         return nullptr;
+    N64c::F3dContextScope context; // Init creates a context; release it before a guest task runs.
     auto f3d = std::make_unique<N64cF3d>();
     f3d->config = *config;
     std::string shaders = config->shaders ? config->shaders : "", settings = config->settings ? config->settings : "";
@@ -126,6 +127,7 @@ extern "C" N64cF3d* n64c_f3d_open(const N64cF3dConfig* config)
 
 extern "C" int n64c_f3d_run(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N64cDlStats* stats)
 {
+    auto context = f3d->window->UseContext();
     n64c_dl_arena_reset(&f3d->arena);
     f3d->surface = 0;
     const N64cDlHooks hooks = {color_image, f3d};
@@ -148,6 +150,7 @@ extern "C" int n64c_f3d_run(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N6
 extern "C" uint32_t n64c_f3d_surface(const N64cF3d* f3d) { return f3d->surface; }
 extern "C" int n64c_f3d_read(N64cF3d* f3d, uint32_t phys, uint32_t* rgba, uint32_t w, uint32_t h)
 {
+    auto context = f3d->window->UseContext();
     const auto it = f3d->surfaces.find(phys);
     if (it == f3d->surfaces.end() || !rgba || !w || !h)
         return 0;
@@ -271,6 +274,7 @@ static void status_text(uint32_t ww, uint32_t wh, const char* text)
 }
 static int present(N64cF3d* f3d, uint32_t phys, const char* text)
 {
+    auto context = f3d->window->UseContext();
     f3d->window->HandleEvents();
     uint32_t ww = 0, wh = 0;
     int32_t x = 0, y = 0;
@@ -307,10 +311,12 @@ extern "C" void n64c_f3d_close(N64cF3d* f3d)
 {
     if (!f3d)
         return;
+    auto context = f3d->window->UseContext();
     n64c_dl_arena_free(&f3d->arena);
     f3d->interpreter->Destroy();
     f3d->interpreter.reset();
     delete f3d->renderer;
+    context.Retire();
     delete f3d->window;
     delete f3d;
 }

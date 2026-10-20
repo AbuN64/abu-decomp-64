@@ -5,12 +5,14 @@
 // controller code, so the keyboard and mouse hooks are inert.
 #pragma once
 #include "fast/backends/gfx_window_manager_api.h"
+#include "f3d_context.h"
 #include <SDL3/SDL.h>
 
 namespace N64c {
 class F3dWindow final : public Fast::GfxWindowBackend {
   public:
     ~F3dWindow() override;
+    F3dContextScope UseContext() const { return F3dContextScope(mWindow, mContext); }
     void Init(const char* gameName, const char* apiName, bool startFullScreen, uint32_t width, uint32_t height,
               int32_t posX, int32_t posY) override;
     void Close() override;
