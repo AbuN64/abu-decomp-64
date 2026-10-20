@@ -120,6 +120,45 @@ class PanesTests(unittest.TestCase):
             held, result = asyncio.run(scenario(Supervisor(profile, "subject", config, Screen())))
             assert held and result is False
 
+    def test_cancelled_run_stops_its_output_reader_before_the_log_closes(self):
+        # "Task exception was never retrieved ... I/O operation on closed file" in the port-supervisor journal
+        async def scenario(supervisor, binary):
+            errors = []
+            read_output = supervisor._read_output
+
+            async def watched(stream, output):
+                try:
+                    await read_output(stream, output)
+                except ValueError as error:
+                    errors.append(error)
+                    raise
+
+            supervisor._read_output = watched
+            command = ["/bin/sh", "-c", "while :; do echo line; sleep 0.01; done"]
+            supervisor._command = lambda _run_dir: (command, dict(os.environ), binary)
+            supervisor._debug_command = lambda cmd, _run_dir: cmd
+            task = asyncio.create_task(supervisor.run_once())
+            await asyncio.sleep(0.3)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            await asyncio.sleep(0.2)  # the child keeps printing; a reader left running would hit the closed log
+            supervisor.proc.kill()
+            await supervisor.proc.wait()
+            return errors
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "binary"
+            binary.write_bytes(b"x")
+            config = {
+                "status_path": "status.json",
+                "runs_root": "runs",
+                "retry_delay_seconds": 30,
+                "watchdog_seconds": 90,
+            }
+            self.assertEqual(asyncio.run(scenario(Supervisor(Profile(root), "subject", config, Screen()), binary)), [])
+
     def test_artifact_is_copied_and_verified_from_configured_root(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Profile(Path(temporary))

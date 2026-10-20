@@ -284,6 +284,10 @@ class Supervisor:
                     for task in (wait, stack, manual):
                         if not task.done():
                             task.cancel()
+                    if not reader.done():  # never leave it writing to the log the `with` is about to close
+                        reader.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await reader
         if self.proc and self.proc.returncode is not None:
             exit_code = self.proc.returncode
         if self.signal_name and outcome == "nonzero_exit":
