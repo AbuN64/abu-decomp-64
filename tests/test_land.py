@@ -849,6 +849,29 @@ class LandTests(unittest.TestCase):
         self.assertTrue((self.tree / "asm/v/f.s").exists() and (self.tree / "asm/v/new.s").exists())
         self.assertFalse((self.tree / "build/v/a.d").exists() or (self.tree / "build/v/a.o").exists())
 
+    def test_a_refused_land_keeps_the_build_state_of_a_preprocessed_object(self):
+        """Where the build preprocesses apart (a `.i.ok` stamp beside the object), a refused land deletes none of it:
+        the restored files are newer than the stamp, so the text is made again and the object compiles only if its
+        bytes changed."""
+        (self.tree / ".gitignore").write_text("build/\n")
+        git(self.tree, "add", ".gitignore")
+        git(self.tree, "commit", "-qm", "ignore")
+        base = git(self.tree, "rev-parse", "HEAD").strip()
+        for name in ("build/v/a.c.o", "build/v/a.c.d", "build/v/a.c.i.ok"):
+            (self.tree / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.tree / name).write_text("old\n")
+        bad = self.patch("L1", {"b.c": "BAD\n"})
+
+        def build():
+            for name in ("build/v/a.c.o", "build/v/a.c.d", "build/v/a.c.i.ok"):
+                (self.tree / name).write_text("rewritten by the land\n")
+            return 1, "", "ld: BAD"
+
+        self.check_result = build
+        _, code, _ = self.land([bad], base=base)
+        self.assertEqual(code, 1)
+        self.assertTrue(all((self.tree / f"build/v/a.c.{s}").exists() for s in ("o", "d", "i.ok")))
+
     def test_union_paths_must_be_a_list_of_globs(self):
         seat = json.loads((self.root / "seat.json").read_text())
         seat["land"]["union_paths"] = "versions/*"

@@ -1725,9 +1725,12 @@ class Landing:
         """The tree exactly as check_base found it: tracked files and index back to the base tree, and the files the
         inputs and builds added (not ignored) removed. Of the ignored build state only make's dependency files the
         land wrote go, each with the object beside it: one can name a header only an input added, which make cannot
-        rebuild without. The rest stays, so the tree stays warm: make rebuilds what the restored sources (newer than
-        their objects) need, and unbake re-extracts by its own key and manifest (10-20: deleting every rewritten
-        ignored file gutted the extracted assembly after one refused input, and the next land rebuilt everything)."""
+        rebuild without. Where the build preprocesses apart (a `.i.ok` stamp beside the object) nothing goes: every
+        restored file is newer than the stamp, so make preprocesses again, -MP lets a header an input added be gone,
+        and an object compiles only if its `.i` bytes changed (a refused ship leaves the tree warm). The rest stays, so
+        the tree stays warm: make rebuilds what the restored sources (newer than their objects) need, and unbake
+        re-extracts by its own key and manifest (10-20: deleting every rewritten ignored file gutted the extracted
+        assembly after one refused input, and the next land rebuilt everything)."""
         self.git("read-tree", "-u", "--reset", self.base_tree)
         for name in sorted(
             set(self.git("ls-files", "--others", "--exclude-standard").splitlines()) - self.start_untracked
@@ -1735,6 +1738,8 @@ class Landing:
             (self.tree / name).unlink(missing_ok=True)
         for name, stamp in self.ignored_state().items():
             if name.endswith(".d") and self.start_ignored.get(name) != stamp:
+                if (self.tree / f"{name[:-2]}.i.ok").exists():
+                    continue  # the build preprocesses apart: the restored files' times remake the text, bytes decide
                 (self.tree / name).unlink(missing_ok=True)
                 (self.tree / f"{name[:-2]}.o").unlink(missing_ok=True)
 
