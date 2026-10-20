@@ -318,6 +318,7 @@ def settings(profile: Profile) -> dict[str, Any]:
                 "actor",
                 "recipe",
                 "recipe_suffixes",
+                "rename_inert",
                 "subject_limit",
                 "remote",
                 "branch",
@@ -350,6 +351,9 @@ def settings(profile: Profile) -> dict[str, Any]:
     limit = table.get("subject_limit", DEFAULT_SUBJECT_LIMIT)
     if type(limit) is not int or limit < 20:
         raise LandError("config.schema", f"{profile.source_file}:land.subject_limit: expected an integer of 20 or more")
+    inert = table.get("rename_inert", [])
+    if not isinstance(inert, list) or not all(isinstance(item, str) and item for item in inert):
+        raise LandError("config.schema", f"{profile.source_file}:land.rename_inert: expected a list of path globs")
     weight = table.get("lock_weight")
     if weight is not None and (type(weight) is not int or not 1 <= weight <= 10000):
         raise LandError("config.schema", f"{profile.source_file}:land.lock_weight: expected an integer 1..10000")
@@ -361,6 +365,7 @@ def settings(profile: Profile) -> dict[str, Any]:
         "markers": tuple(markers),
         "union_paths": tuple(union),
         "regenerated_paths": tuple(regenerated),
+        "rename_inert": tuple(inert),  # paths a pure rename may add, remove or change freely (no build reads them)
         "suffix": str(table.get("asm_suffix", ".s")),
         "readme": str(table.get("readme", "README.md")),
         "timeout": float(timeout),
@@ -1300,6 +1305,26 @@ class Landing:
         own `make check` was a second build per round and per bisect or credit build (10-20)."""
         return self.unbake("setup", "setup", "setup", "--no-make")
 
+    def rename_proof(self) -> dict[str, Any] | None:
+        """The landed change proved a pure rename by `unbake renameproof` (the tree over the base, one rename map,
+        token for token): the objects cannot change, so the build is skipped and the receipt rides the gate row. The
+        ROMs on disk are the base's; `unbake verify 0` hashes them and records the verdict, and a tree without them
+        (verify refuses) takes the build. Not a pure rename: the reasons are kept on the record and the build runs."""
+        args = ["renameproof", "--against", str(self.extra.get("base", self.base))]
+        for glob in self.config["rename_inert"]:
+            args += ["--inert", glob]
+        called = self.invoke("unbake", self.profile, args, project=self.tree)
+        if not called.ok:
+            found = called.document.get("findings") or []
+            self.extra["rename_proof_refused"] = [str(f.get("message") or f.get("key")) for f in found[:6]]
+            return None
+        verdict = self.invoke("unbake", self.profile, ["verify", "0"], project=self.tree)
+        if not verdict.ok:
+            self.extra["rename_proof_refused"] = ["pure rename, but the tree holds no verified ROMs to carry over"]
+            return None
+        result = called.document.get("result") or {}
+        return {key: result.get(key) for key in ("against", "base", "tree", "files", "renames", "map", "inert")}
+
     def check(self) -> bool:
         started = self.clock()
         jobs = None
@@ -1312,6 +1337,9 @@ class Landing:
                 )
                 return self.gate("check", False, started)
             jobs = int(text)
+        proof = self.rename_proof()
+        if proof is not None:
+            return self.gate("check", True, started, jobs=jobs, rename_proof=proof)
         command = build_command(self.config["check"], jobs)
         env = dict(os.environ)
         env["UNBAKE_HOST"] = str(tools.host_file(self.profile))
@@ -1915,6 +1943,11 @@ class Landing:
             "lanes": self.lanes,
             "untracked_other": self.extra.get("untracked_other", []),
             **({"symbol_check": self.extra["symbol_check"]} if "symbol_check" in self.extra else {}),
+            **(
+                {"rename_proof_refused": self.extra["rename_proof_refused"]}
+                if "rename_proof_refused" in self.extra
+                else {}
+            ),
             **self.groups(),
             "refused_inputs": self.refused_inputs,
             "attempts": self.attempts,

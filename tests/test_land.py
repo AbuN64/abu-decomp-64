@@ -74,6 +74,7 @@ class LandTests(unittest.TestCase):
         self.unbake, self.commands, self.events, self.recipes = [], [], [], []
         self.on_sync = lambda: None
         self.on_check = lambda: None
+        self.renameproofs, self.rename_pure = [], False
         self.check_result = lambda: (0, "built\n", "")
 
     def patch(self, lane, edits):
@@ -95,6 +96,24 @@ class LandTests(unittest.TestCase):
             document = {"ok": ok, **(result if ok else {}), "findings": [] if ok else [{"message": "no map"}]}
             return SimpleNamespace(ok=ok, returncode=0 if ok else 1, document=document)
         self.unbake.append(tuple(args))
+        if args[0] == "renameproof":
+            self.renameproofs.append(tuple(args))
+            ok = self.rename_pure
+            result = {
+                "against": args[2],
+                "base": "b",
+                "tree": "t",
+                "files": 1,
+                "renames": 1,
+                "map": [["a", "b"]],
+                "inert": [],
+            }
+            document = {
+                "ok": ok,
+                "result": result if ok else {},
+                "findings": [] if ok else [{"message": "a file is added"}],
+            }
+            return SimpleNamespace(ok=ok, returncode=0 if ok else 1, document=document)
         written = []
         if args[0] == "sync" and "--check" not in args:
             written = self.on_sync() or []
@@ -156,6 +175,7 @@ class LandTests(unittest.TestCase):
             self.unbake,
             [
                 ("setup", "--no-make"),
+                ("renameproof", "--against", self.base),
                 ("verify", "0"),
                 ("sync", "--settle"),
                 ("audit", "--against", self.base),
@@ -163,6 +183,38 @@ class LandTests(unittest.TestCase):
         )
         self.assertEqual([e["kind"] for e in self.events], ["LAND"])
         self.assertEqual(self.events[0]["status"], "passed")
+
+    def test_a_pure_rename_skips_the_build_and_carries_its_receipt(self):
+        one = self.patch("L1", {"c.c": C_C + "// x\n"})
+        self.rename_pure = True
+        result, code, _ = self.land([one])
+        self.assertEqual(code, 0)
+        self.assertEqual([c[0] for c in self.commands], [("admit", "8")])  # no make
+        row = next(g for g in result["gates"] if g["gate"] == "check")
+        self.assertTrue(row["pass"])
+        self.assertEqual(row["rename_proof"]["map"], [["a", "b"]])
+        self.assertIn(("verify", "0"), self.unbake)
+        self.assertEqual(self.renameproofs, [("renameproof", "--against", self.base)])
+        self.assertNotIn("rename_proof_refused", result)
+
+    def test_a_change_that_is_not_a_pure_rename_takes_the_build_and_says_why(self):
+        one = self.patch("L1", {"c.c": C_C + "// x\n"})
+        result, code, _ = self.land([one])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.commands), 2)  # admit + make
+        self.assertEqual(result["rename_proof_refused"], ["a file is added"])
+        row = next(g for g in result["gates"] if g["gate"] == "check")
+        self.assertNotIn("rename_proof", row)
+
+    def test_a_pure_rename_whose_roms_verify_refuses_takes_the_build(self):
+        one = self.patch("L1", {"c.c": C_C + "// x\n"})
+        self.rename_pure = True
+        refuse = {"on": True}
+        self.sync_ok = lambda args: not (args[0] == "verify" and refuse.pop("on", False))
+        result, code, _ = self.land([one])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.commands), 2)
+        self.assertIn("no verified ROMs", result["rename_proof_refused"][0])
 
     def test_a_new_file_unbake_says_it_wrote_is_committed_with_the_land(self):
         one = self.patch("L1", {"b.c": "int func_3(void) { return 3; }\n"})
@@ -1277,7 +1329,9 @@ class LandTests(unittest.TestCase):
         self.assertEqual((code, findings[0]["key"]), (1, "land.check"))
         self.assertIn("unbake verify refused", findings[0]["message"])
         self.assertFalse(self.gates(result)["check"])
-        self.assertEqual(self.unbake[:3], [("setup", "--no-make"), ("verify", "0")])
+        self.assertEqual(
+            self.unbake[:3], [("setup", "--no-make"), ("renameproof", "--against", self.base), ("verify", "0")]
+        )
 
     def test_event_writer_failure_fails_the_landing(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})
