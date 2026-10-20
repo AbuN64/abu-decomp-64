@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef N64C_DECOMP_TRACE_H
 #define N64C_DECOMP_TRACE_H
+#include <stdint.h>
 /* Boot hit census. The oracle's boot-to-menu trace (boot-trace.tsv, in first-hit order) is compiled
  * into n64c_trace_entries by trace.py. With RAGE_DECOMP_TRACE the original units are built with
  * -finstrument-functions and the first entry of each trace function prints
@@ -48,4 +49,7 @@ unsigned n64c_trace_position(unsigned *total, const char **last);
  * the run's failure list and returns the exit code (78 when anything failed, else rc). */
 int n64c_runon_init(void) __attribute__((weak));
 int n64c_runon_end(int rc) __attribute__((weak));
+/* Lockstep (N64C_LOCKSTEP=1 with N64C_LOCKSTEP_DIR, N64C_LOCKSTEP_WATCH; see trace.c and lockstep.py): page hashes of
+ * RDRAM at each first hit plus the first calls' arguments and returns, compared offline with the oracle's. */
+uint64_t n64c_lockstep_hash(const unsigned char *page);
 #endif

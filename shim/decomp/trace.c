@@ -7,7 +7,9 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
+#include <inttypes.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -93,6 +95,256 @@ NOINST static int expected_entry(void)
             return (int)i;
     return -1;
 }
+
+/* ---- Lockstep (N64C_LOCKSTEP=1, diagnostic flavour): the port half of the oracle comparison (lockstep.py). ----
+ * At the first hit of every watched trace function the RDRAM image is hashed per 4 KiB page; pages whose hash
+ * changed since the previous point are listed in lockstep.jsonl and their bytes stored once per hash in pages.bin
+ * (16-byte header: u32 page, u32 0, u64 hash; then the page). The port keeps RDRAM in its own (native) byte order;
+ * lockstep.py owns every equivalence between that and the oracle's canonical big-endian bytes. The first
+ * LOCKSTEP_CALLS calls of each trace function also record 8 argument words from the frame and, through a return
+ * trampoline, eax/edx/st(0) at its return. N64C_LOCKSTEP_WATCH=<addr> records every change of that RDRAM word seen
+ * at an instrumented entry or exit, naming the function. Nothing here runs unless N64C_LOCKSTEP=1. */
+extern void *n64c_memory_ram(unsigned physical, unsigned bytes) __attribute__((weak));
+enum { LS_PAGE = 4096, LS_CALLS = 8, LS_SHADOW = 256, LS_WATCH_LINES = 20000 };
+static int ls_on, ls_log = -1, ls_store = -1;
+static const unsigned char *ls_ram;
+static unsigned ls_pages, ls_points, ls_stored_mask, ls_stored_n, ls_zero_stored;
+static uint64_t *ls_last, *ls_stored;
+static unsigned *ls_calls;
+static char *ls_line;
+static unsigned char ls_copy[LS_PAGE];
+static pthread_mutex_t ls_lock = PTHREAD_MUTEX_INITIALIZER;
+static volatile const uint32_t *ls_watch;
+static uint32_t ls_watch_value;
+static unsigned ls_watch_lines;
+typedef struct {
+    unsigned long frame, ret;
+    unsigned entry, call;
+} LsReturn;
+static __thread LsReturn ls_shadow[LS_SHADOW];
+static __thread unsigned ls_depth;
+NOINST static long ls_tid(void)
+{
+    return (long)syscall(SYS_gettid);
+}
+/* FNV-1a over little-endian 64-bit words of the page bytes; lockstep.py and the oracle compute the same. */
+NOINST uint64_t n64c_lockstep_hash(const unsigned char *page)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (unsigned i = 0; i < LS_PAGE; i += 8) {
+        uint64_t w;
+        memcpy(&w, page + i, 8);
+        h = (h ^ w) * 0x100000001b3ull;
+    }
+    return h;
+}
+NOINST static void ls_write(int fd, const void *data, size_t size)
+{
+    const char *p = data;
+    while (size) {
+        const ssize_t n = write(fd, p, size);
+        if (n <= 0)
+            return;
+        p += n;
+        size -= (size_t)n;
+    }
+}
+/* 1 when the hash is new to pages.bin (its content must be stored). */
+NOINST static int ls_stored_add(uint64_t h)
+{
+    if (!h) {
+        const int fresh = !ls_zero_stored;
+        ls_zero_stored = 1;
+        return fresh;
+    }
+    if ((ls_stored_n + 1) * 2 > ls_stored_mask) {
+        const unsigned old_mask = ls_stored_mask;
+        uint64_t *old = ls_stored, *grown = calloc((size_t)(old_mask + 1) * 2, sizeof *grown);
+        if (!grown)
+            return 1;
+        ls_stored = grown;
+        ls_stored_mask = old_mask * 2 + 1;
+        for (unsigned i = 0; i <= old_mask; i++)
+            if (old[i]) {
+                unsigned s = (unsigned)(old[i] >> 17) & ls_stored_mask;
+                while (ls_stored[s])
+                    s = (s + 1) & ls_stored_mask;
+                ls_stored[s] = old[i];
+            }
+        free(old);
+    }
+    unsigned s = (unsigned)(h >> 17) & ls_stored_mask;
+    while (ls_stored[s] && ls_stored[s] != h)
+        s = (s + 1) & ls_stored_mask;
+    if (ls_stored[s])
+        return 0;
+    ls_stored[s] = h;
+    ls_stored_n++;
+    return 1;
+}
+NOINST static void ls_init(void)
+{
+    const char *on = getenv("N64C_LOCKSTEP"), *dir = getenv("N64C_LOCKSTEP_DIR"), *watch = getenv("N64C_LOCKSTEP_WATCH");
+    if (!on || strcmp(on, "1") != 0)
+        return;
+    if (!dir || !*dir)
+        dir = "lockstep";
+    unsigned bytes = 0;
+    for (unsigned b = 0x800000u; b >= 0x400000u && !ls_ram && n64c_memory_ram; b >>= 1)
+        if ((ls_ram = n64c_memory_ram(0, b)) != NULL)
+            bytes = b;
+    char path[4096];
+    mkdir(dir, 0777);
+    snprintf(path, sizeof path, "%s/lockstep.jsonl", dir);
+    ls_log = ls_ram ? open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0666) : -1;
+    snprintf(path, sizeof path, "%s/pages.bin", dir);
+    ls_store = ls_log >= 0 ? open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0666) : -1;
+    ls_pages = bytes / LS_PAGE;
+    ls_stored_mask = 4095;
+    ls_last = calloc(ls_pages ? ls_pages : 1, sizeof *ls_last);
+    ls_stored = calloc(ls_stored_mask + 1, sizeof *ls_stored);
+    ls_calls = calloc(n64c_trace_count, sizeof *ls_calls);
+    ls_line = malloc((size_t)ls_pages * 32 + 1024);
+    if (ls_store < 0 || !ls_last || !ls_stored || !ls_calls || !ls_line) {
+        fprintf(stderr, "boot-lockstep: off (%s)\n", ls_ram ? "cannot write its files" : "no RDRAM");
+        return;
+    }
+    if (watch && *watch) {
+        char *end;
+        const unsigned long address = strtoul(watch, &end, 16);
+        const unsigned physical = (unsigned)address & 0x1FFFFFFFu;
+        if (!*end && !(address & 3) && physical + 4 <= bytes) {
+            ls_watch = (volatile const uint32_t *)(ls_ram + physical);
+            ls_watch_value = *ls_watch;
+        } else
+            fprintf(stderr, "boot-lockstep: watch %s ignored (not an aligned RDRAM word)\n", watch);
+    }
+    dprintf(ls_log, "{\"k\":\"meta\",\"side\":\"port\",\"ram\":%u,\"page\":%u,\"bytes\":\"native\","
+            "\"hash\":\"fnv1a64-le64\",\"calls\":%u,\"trace\":%u,\"watch\":\"%08lx\"}\n", bytes, LS_PAGE, LS_CALLS,
+            n64c_trace_count, ls_watch ? 0x80000000ul + (unsigned long)((const unsigned char *)ls_watch - ls_ram) : 0ul);
+    ls_on = 1;
+    fprintf(stderr, "boot-lockstep: on, %u pages hashed at each first hit, files in %s\n", ls_pages, dir);
+}
+/* One point: called with the census lock held at the first hit of entry i. */
+NOINST static void ls_point(unsigned i)
+{
+    char *p = ls_line;
+    p += sprintf(p, "{\"k\":\"hit\",\"n\":%u,\"order\":%u,\"fn\":\"%s\",\"thr\":%ld,\"pages\":[", ls_points++,
+                 n64c_trace_entries[i].order, entry_name(i), ls_tid());
+    const char *sep = "";
+    for (unsigned pg = 0; pg < ls_pages; pg++) {
+        memcpy(ls_copy, ls_ram + (size_t)pg * LS_PAGE, LS_PAGE);
+        const uint64_t h = n64c_lockstep_hash(ls_copy);
+        if (ls_points > 1 && h == ls_last[pg])
+            continue;
+        ls_last[pg] = h;
+        if (ls_stored_add(h)) {
+            uint32_t head[4] = {pg, 0, (uint32_t)h, (uint32_t)(h >> 32)};
+            ls_write(ls_store, head, sizeof head);
+            ls_write(ls_store, ls_copy, LS_PAGE);
+        }
+        p += sprintf(p, "%s[%u,\"%016" PRIx64 "\"]", sep, pg, h);
+        sep = ",";
+    }
+    p += sprintf(p, "]}\n");
+    ls_write(ls_log, ls_line, (size_t)(p - ls_line));
+}
+NOINST static void ls_line_out(const char *line, int n)
+{
+    if (n <= 0)
+        return;
+    pthread_mutex_lock(&ls_lock);
+    ls_write(ls_log, line, (size_t)n);
+    pthread_mutex_unlock(&ls_lock);
+}
+NOINST static void ls_watch_check(const void *fn, const char *at)
+{
+    const uint32_t now = *ls_watch;
+    if (now == __atomic_load_n(&ls_watch_value, __ATOMIC_RELAXED) || ls_watch_lines >= LS_WATCH_LINES)
+        return;
+    pthread_mutex_lock(&ls_lock);
+    const uint32_t old = ls_watch_value;
+    if (now != old && ls_watch_lines < LS_WATCH_LINES) {
+        ls_watch_value = now;
+        ls_watch_lines++;
+        unsigned offset = 0;
+        const char *name = n64c_trace_symbol(fn, &offset);
+        dprintf(ls_log, "{\"k\":\"watch\",\"at\":\"%s\",\"fn\":\"%s\",\"thr\":%ld,\"old\":\"%08x\",\"new\":\"%08x\"}\n",
+                at, name ? name : "?", ls_tid(), old, now);
+    }
+    pthread_mutex_unlock(&ls_lock);
+}
+#if defined(__i386__)
+void n64c_lockstep_return_i386(void);
+/* The trampoline a recorded call returns through: block holds st(0) (2 words), whether st(0) was full, edx, eax;
+ * the returning function's stack pointer is just above it. Returns the original return address. */
+NOINST __attribute__((used, force_align_arg_pointer)) unsigned long n64c_lockstep_returned_i386(const unsigned long *block)
+{
+    const unsigned long esp = (unsigned long)(block + 5);
+    while (ls_depth && ls_shadow[ls_depth - 1].frame + 12 < esp) /* frames a longjmp or run-on unwound past */
+        ls_depth--;
+    if (!ls_depth || ls_shadow[ls_depth - 1].frame + 8 > esp) {
+        fprintf(stderr, "boot-lockstep: return through no recorded frame (esp %08lx)\n", esp);
+        _Exit(78);
+    }
+    const LsReturn r = ls_shadow[--ls_depth];
+    char line[256], st0[24] = "null";
+    if (block[2])
+        snprintf(st0, sizeof st0, "\"%08lx%08lx\"", block[1], block[0]);
+    ls_line_out(line, snprintf(line, sizeof line, "{\"k\":\"ret\",\"order\":%u,\"i\":%u,\"thr\":%ld,\"r\":[\"%08lx\","
+                               "\"%08lx\"],\"st0\":%s}\n", n64c_trace_entries[r.entry].order, r.call, ls_tid(),
+                               block[4], block[3], st0));
+    return r.ret;
+}
+__asm__(".text\n"
+        ".globl n64c_lockstep_return_i386\n"
+        ".type n64c_lockstep_return_i386, @function\n"
+        "n64c_lockstep_return_i386:\n"
+        "    pushl %eax\n"
+        "    pushl %edx\n"
+        "    subl $12, %esp\n"
+        "    movl $0, 8(%esp)\n"
+        "    fxam\n"
+        "    fnstsw %ax\n"
+        "    andw $0x4500, %ax\n"
+        "    cmpw $0x4100, %ax\n"
+        "    je 1f\n"
+        "    fstl (%esp)\n"
+        "    movl $1, 8(%esp)\n"
+        "1:  movl %esp, %eax\n"
+        "    pushl %eax\n"
+        "    call n64c_lockstep_returned_i386\n"
+        "    addl $4, %esp\n"
+        "    movl %eax, %ecx\n"
+        "    addl $12, %esp\n"
+        "    popl %edx\n"
+        "    popl %eax\n"
+        "    jmp *%ecx\n"
+        ".size n64c_lockstep_return_i386, .-n64c_lockstep_return_i386\n");
+#endif
+/* A call of entry i: its argument words (the frame's caller-pushed area) and, through the trampoline, its return. */
+NOINST static void ls_call(unsigned i, void *call_site, const unsigned long *regs)
+{
+    const unsigned call = __atomic_fetch_add(&ls_calls[i], 1, __ATOMIC_RELAXED);
+    if (call >= LS_CALLS || !regs)
+        return;
+    unsigned long *frame = (unsigned long *)regs[3];
+    char line[400];
+    int n = snprintf(line, sizeof line, "{\"k\":\"call\",\"order\":%u,\"i\":%u,\"thr\":%ld,\"sp\":\"%08lx\",\"a\":[",
+                     n64c_trace_entries[i].order, call, ls_tid(), (unsigned long)frame);
+    for (int k = 0; k < 8; k++)
+        n += snprintf(line + n, sizeof line - (size_t)n, "%s\"%08lx\"", k ? "," : "", frame[2 + k]);
+    n += snprintf(line + n, sizeof line - (size_t)n, "]}\n");
+    ls_line_out(line, n);
+#if defined(__i386__)
+    if (frame[1] == (unsigned long)call_site && ls_depth < LS_SHADOW) {
+        ls_shadow[ls_depth++] = (LsReturn){(unsigned long)frame, frame[1], i, call};
+        frame[1] = (unsigned long)n64c_lockstep_return_i386;
+    }
+#else
+    (void)call_site;
+#endif
+}
 NOINST void n64c_trace_init(void)
 {
     const unsigned total = n64c_trace_count;
@@ -134,6 +386,7 @@ NOINST void n64c_trace_init(void)
     fprintf(stderr, "boot-step: trace armed: %u of %u functions watched (%u shim-bound, %u not linked)\n",
             eligible, total, shim_bound, unresolved);
     fflush(stderr);
+    ls_init();
     __atomic_store_n(&armed, 1, __ATOMIC_RELEASE);
 }
 NOINST static void first_hit(unsigned i)
@@ -145,6 +398,8 @@ NOINST static void first_hit(unsigned i)
         hits++;
         last_order = n64c_trace_entries[i].order;
         last_name = entry_name(i);
+        if (ls_on)
+            ls_point(i);
         fprintf(stderr, "boot-step: %u/%u %s\n", hits, n64c_trace_count, last_name);
         if (expected >= 0 && (unsigned)expected != i && (unsigned)expected + 1 != expected_noted) {
             expected_noted = (unsigned)expected + 1;
@@ -186,12 +441,16 @@ NOINST static void trace_enter(void *fn, void *call_site, const unsigned long *r
     if (!__atomic_load_n(&armed, __ATOMIC_ACQUIRE))
         return;
     push_frame(fn, call_site, regs);
+    if (ls_watch)
+        ls_watch_check(fn, "enter");
     for (unsigned s = slot_of(fn) & slot_mask; slots[s].index; s = (s + 1) & slot_mask)
         if (slots[s].fn == fn) {
             const unsigned i = slots[s].index - 1;
             if (!__atomic_load_n(&hit[i], __ATOMIC_RELAXED))
                 first_hit(i);
-            return;
+            if (ls_on)
+                ls_call(i, call_site, regs);
+            break;
         }
 }
 #if defined(__i386__)
@@ -229,6 +488,8 @@ NOINST void __cyg_profile_func_enter(void *fn, void *call_site)
 NOINST void __cyg_profile_func_exit(void *fn, void *call_site)
 {
     (void)call_site;
+    if (ls_watch)
+        ls_watch_check(fn, "exit");
     N64cTraceStack *mine = own;
     if (!mine || !mine->depth)
         return;
@@ -299,6 +560,8 @@ NOINST void n64c_trace_summary(void)
             fprintf(stderr, ", next in oracle order %s (order %u)", entry_name((unsigned)expected),
                     n64c_trace_entries[expected].order);
         fputc('\n', stderr);
+        if (ls_on)
+            fprintf(stderr, "boot-lockstep: %u points written\n", ls_points);
         fflush(stderr);
     }
     pthread_mutex_unlock(&lock);
