@@ -277,6 +277,9 @@ int main(void)
     si[1]=0x1FC007C0;
     expect_event(13);
     CHECK(packet[2]==0x83 && si[6]==0);
+    CHECK(!n64c_memory_tracer_in_status("Name:\tx\nTracerPid:\t0\nUid:\t1\n"));
+    CHECK(n64c_memory_tracer_in_status("Name:\tx\nTracerPid:\t4242\nUid:\t1\n"));
+    CHECK(!n64c_memory_tracer_in_status("Name:\tx\nPid:\t7\n"));
     child_failure(0,78);
     child_failure(1,SIGSEGV);
     child_failure(3,78); /* a TLB miss is a named boot stop */

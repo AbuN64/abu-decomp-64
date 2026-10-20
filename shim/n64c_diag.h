@@ -20,4 +20,6 @@ int n64c_diag_fault(int signal_number,void *info,void *context) __attribute__((w
 int n64c_diag_code_pointer(u32 address,void *context) __attribute__((weak));
 /* A guest DMA or unpack whose bytes no byte-order row covers: rom/bytes is the uncovered part, ram where it went. */
 void n64c_diag_layout(const char *what,u32 rom,u32 bytes,const void *ram) __attribute__((weak));
+/* The named boot stop (decomp/missing.c). Linked in the boot driver only. */
+long long n64c_boot_missing(const char *symbol) __attribute__((weak));
 #endif

@@ -18,6 +18,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <ucontext.h>
 
 enum { PAGE_BYTES=4096, MAX_MAPS=12, RESUME_SIGNAL=SIGUSR2, TLB_ENTRIES=32 };
@@ -98,6 +99,34 @@ static int guest_code_fetch(const ucontext_t *context,uintptr_t address)
     if ((uintptr_t)context->uc_mcontext.gregs[REG_EIP]!=address || !ram_size) return 0;
     return guest_virtual(address) || (address>=0x80000000u && address<0xC0000000u);
 }
+/* A debugger holds the process (the tile runs under gdb). It stops on every signal the handlers below take
+ * on purpose, so the supervisor passes SIGSEGV, SIGUSR2 and SIGTRAP through; a genuine host fault then dies in
+ * the default action with no stop. Traced runs name that fault at the stop function instead. */
+int n64c_memory_tracer_in_status(const char *text)
+{
+    static const char key[]="TracerPid:";
+    for (const char *line=text;line && *line;) {
+        if (strncmp(line,key,sizeof key-1)==0) {
+            line+=sizeof key-1;
+            while (*line==' ' || *line=='\t') line++;
+            return *line>='1' && *line<='9';
+        }
+        line=strchr(line,'\n');
+        if (line) line++;
+    }
+    return 0;
+}
+static int host_traced(void)
+{
+    char text[2048];
+    int fd=open("/proc/self/status",O_RDONLY);
+    if (fd<0) return 0;
+    ssize_t got=read(fd,text,sizeof text-1);
+    (void)close(fd);
+    if (got<=0) return 0;
+    text[got]=0;
+    return n64c_memory_tracer_in_status(text);
+}
 static void signal_handler(int signal_number,siginfo_t *info,void *opaque)
 {
     ucontext_t *context=opaque;
@@ -164,6 +193,11 @@ static void signal_handler(int signal_number,siginfo_t *info,void *opaque)
         n64c_diag_fault && n64c_diag_fault(signal_number,info,context)) return;
     /* Preserve real faults outside the hardware windows. We install only over
      * default handlers; returning retries the fault under the default action. */
+    if (signal_number==SIGSEGV && n64c_boot_missing && host_traced()) {
+        char subject[32];
+        snprintf(subject,sizeof subject,"host-fault-%08x",(unsigned)(uintptr_t)info->si_addr);
+        n64c_boot_missing(subject); /* the debugger's stop function; the process ends there */
+    }
     for (unsigned i=0;i<3;i++)
         if (signals[i]==signal_number) {
             (void)sigaction(signal_number,&prior[i],NULL);
