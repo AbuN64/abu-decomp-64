@@ -457,6 +457,19 @@ def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     return ship(_profile(args.profile), args.tree, parse_patches(args.patch), messages=parse_messages(args.patch))
 
 
+def _standalone_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--tree", type=Path, required=True, help="a game repo checkout")
+    parser.add_argument("--against", help="judge only the lines the work tree adds over this git revision")
+
+
+def _run_standalone(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import standalone
+
+    found = standalone.mentions(args.tree, args.against)
+    result = {"tree": str(args.tree), "against": args.against, "lines": len(found), "mentions": found}
+    return result, int(bool(found)), [standalone.finding(found, "standalone.tool_named")] if found else []
+
+
 def _behave_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", type=Path, help="the project tree to act on (default: the profile's project)")
     parser.add_argument("--host", type=Path, help="the unbake host file for that tree (default: the profile's host)")
@@ -518,6 +531,11 @@ COMMANDS: dict[str, Command] = {
     "stream": Command("serve, supervise, control and capture the headless tile stream", _passthrough, _run_stream),
     "port": Command("generate a native port repository skeleton", _port_arguments, _run_port),
     "land": Command("apply lane patches to a proof tree and run the landing gates", _land_arguments, _run_land),
+    "standalone": Command(
+        "list the lines of a game repo (or those it adds over --against) that name one of our tools",
+        _standalone_arguments,
+        _run_standalone,
+    ),
     "ship": Command(
         "land one input on the warm tree, commit it and push it fast-forward to the branch", _ship_arguments, _run_ship
     ),
