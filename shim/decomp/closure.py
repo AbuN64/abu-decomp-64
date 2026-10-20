@@ -33,6 +33,9 @@ import needs as needsfeed  # noqa: E402
 import policy  # noqa: E402
 NAMED = re.compile(r"D_auto_(8[0-9A-F]{7})")
 ALIAS = re.compile(r"D_(?:auto_)?00([0-9A-F]{6})")
+# The same name with a version suffix (D_0024B52C_us_rev1: ACTOR_TABLE_A, the entry the setup stores as a behaviour):
+# the pinned value is still a function address without its KSEG0 bit.
+FUNCTION_ALIAS = re.compile(r"D_(?:auto_)?00([0-9A-F]{6})(?:_[a-z][a-z0-9_]*)?")
 
 
 class Facts:
@@ -79,7 +82,7 @@ class Facts:
     def function_alias(self, sym):
         """D_00XXXXXX / D_auto_00XXXXXX name a function's address without its KSEG0 bit
         (D_002BD378 -> func_802BD378_de). The pinned us-rev1 value wins over the name."""
-        m = ALIAS.fullmatch(sym)
+        m = FUNCTION_ALIAS.fullmatch(sym)
         if not m:
             return None
         target = int(self.addrs[sym][0], 16) | 0x80000000 if sym in self.addrs else int("80" + m.group(1), 16)

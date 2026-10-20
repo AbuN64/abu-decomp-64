@@ -238,6 +238,12 @@ class RouteTests(unittest.TestCase):
         self.route("D_80100000")  # pinned data binds at its us-rev1 address, not its name
         self.assertEqual(self.d["data"]["D_80100000"], "0x80104000")
 
+    def test_versioned_alias_of_a_function_binds_to_the_function_not_to_storage(self):
+        # D_0024B52C_us_rev1 pins 0x0024B52C; a function sits at 0x8024B52C, and the game calls through the address.
+        self.facts.addrs["D_00200000_us_rev1"] = ("0x00200000", "")
+        kind, detail = self.route("D_00200000_us_rev1")
+        self.assertEqual(self.d["bindings"].get("D_00200000_us_rev1"), "func_80200000_de")
+        self.assertNotIn("D_00200000_us_rev1", self.d["data"], "zeroed data would be executed as code")
     def test_alias_target_links_its_unit(self):
         # D_00XXXXXX takes a function's address; the function's unit is linked like a direct call would link it.
         kind, detail = self.route("D_00200000")
