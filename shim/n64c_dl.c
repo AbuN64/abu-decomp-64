@@ -345,7 +345,7 @@ static void ndc_record(unsigned char out[16], const Slot *v, float x, float y, f
 
 /* Modelview and projection that turn vertex positions in 1/16384 units into normalized device
  * coordinates: diag(2^-7, 2^-7, 2^-7, 1) each, exact in 16.16. */
-static const int32_t ndc_scale[16] = {0, 0, 0, 1, 0, 0, 0, 0, 0x02000000, 0, 0x00000200, 0, 0, 0x02000000, 0, 0};
+static const int32_t ndc_scale[16] = {0, 0, 0, 0, 0, 0, 0, 1, 0x02000000, 0, 0x00000200, 0, 0, 0x02000000, 0, 0};
 
 /* Generated lists that load vertices placed in NDC: prologue, the caller's commands, epilogue. */
 typedef struct {

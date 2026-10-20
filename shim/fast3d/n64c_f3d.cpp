@@ -6,6 +6,7 @@
 // G_SETCIMG); the root list runs inside [G_DL root][OTR_G_RESETFB][G_ENDDL] so no framebuffer stays bound.
 #include "n64c_f3d.h"
 #include "f3d_window.h"
+#include "f3d_surface.h"
 #include "fast/interpreter.h"
 #include "fast/backends/gfx_opengl.h"
 #include "fast/debug/GfxDebugger.h"
@@ -50,15 +51,11 @@ struct N64cF3d {
 static int color_image(void* user, uint32_t phys, uint32_t width, uintptr_t extra[2])
 {
     auto* f3d = static_cast<N64cF3d*>(user);
-    auto it = f3d->surfaces.find(phys);
-    if (it == f3d->surfaces.end()) {
-        const uint32_t h = f3d->config.fb_h;
-        const int fb = f3d->interpreter->CreateFrameBuffer(width, h, width, h, 1);
-        it = f3d->surfaces.emplace(phys, fb).first;
-    }
+    const int fb = N64c::ColorImageSurface(*f3d->interpreter, *f3d->renderer, f3d->surfaces,
+                                          phys, width, f3d->config.fb_h);
     f3d->surface = phys;
     extra[0] = (uintptr_t)(uint8_t)Fast::OTR_G_SETFB << 24;
-    extra[1] = (uintptr_t)it->second;
+    extra[1] = (uintptr_t)fb;
     return 1;
 }
 

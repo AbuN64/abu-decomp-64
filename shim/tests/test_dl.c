@@ -154,6 +154,30 @@ static float tri_cross(const uintptr_t *vtx_cmd, uint32_t w0)
                   *c = slot_ob(vtx_cmd, (w0 & 0xFF) / 2);
     return (float)(a[0] - b[0]) * (float)(c[1] - b[1]) - (float)(a[1] - b[1]) * (float)(c[0] - b[0]);
 }
+/* Execute the actual generated modelview and projection on homogeneous points. Checking only
+ * the reloaded vertex bytes misses a misplaced W term that collapses screen-space clears. */
+static void check_ndc_transform(const uintptr_t *list)
+{
+    for (int x = -1; x <= 1; x++)
+        for (int y = -1; y <= 1; y++)
+            for (int z = -1; z <= 1; z++) {
+                float v[4] = {x * 16384.0f, y * 16384.0f, z * 16384.0f, 1};
+                for (int step = 0; step < 2; step++) {
+                    const uint32_t *matrix = (const uint32_t *)list[step * 2 + 1];
+                    float out[4] = {0};
+                    for (int row = 0; row < 4; row++)
+                        for (int col = 0; col < 4; col++) {
+                            const int word = row * 2 + col / 2;
+                            const int shift = col % 2 ? 0 : 16;
+                            const int32_t fixed = (int32_t)(((matrix[word] >> shift & 65535u) << 16) |
+                                                           (matrix[word + 8] >> shift & 65535u));
+                            out[col] += v[row] * ((float)fixed / 65536.0f);
+                        }
+                    memcpy(v, out, sizeof v);
+                }
+                CHECK(v[0] == x && v[1] == y && v[2] == z && v[3] == 1);
+            }
+}
 static void test_line(void)
 {
     N64cGfxMem mem = begin(0);
@@ -191,6 +215,7 @@ static void test_line(void)
     CHECK(op(root) == 0x00);
     CHECK(op(root + 10) == 0xDE);
     const uintptr_t *l = (const uintptr_t *)root[11];
+    check_ndc_transform(l);
     CHECK(l[0] == (0xDAu << 24 | 0x38u << 16 | 2) && l[2] == (0xDAu << 24 | 0x38u << 16 | 7)); /* MV push, P load */
     CHECK(l[4] == (0x01u << 24 | 4u << 12 | 64u << 1));                                       /* slots 60-63 */
     const int16_t *q = (const int16_t *)l[5];
@@ -235,6 +260,7 @@ static void test_modify_vertex(void)
     if (!root)
         return;
     const uintptr_t *m = (const uintptr_t *)root[11]; /* the RGBA modify reloads with lighting lifted */
+    check_ndc_transform(m);
     CHECK(op(root + 8) == 0xDE && op(root + 10) == 0xDE && op(m + 4) == 0xD9 && m[4] == (0xD9u << 24 | (~0x20000u & 0xFFFFFF)));
     CHECK(m[6] == (0x01u << 24 | 1u << 12 | 4u << 1));
     const int16_t *ob = (const int16_t *)m[7];
