@@ -834,7 +834,7 @@ class Landing:
         return json.loads(done.stdout)
 
     def is_fact_file(self, name: str) -> bool:
-        """A symbol fact file: it matches `land.union_paths`, so its lines are `name = 0xADDR;` facts that splat reads."""
+        """A symbol fact file: it matches `land.union_paths`, its lines are `name = 0xADDR;` facts."""
         return any(fnmatch.fnmatchcase(name, glob) for glob in self.config["union_paths"])
 
     def is_union(self, name: str) -> bool:
