@@ -277,6 +277,22 @@ int main(void)
     si[1]=0x1FC007C0;
     expect_event(13);
     CHECK(packet[2]==0x83 && si[6]==0);
+    {   /* the register-page decoder: lengths, direction, register, immediate */
+        unsigned length,reg,write; u32 imm;
+        const unsigned char load[]={0x8B,0x15,0x78,0x56,0x34,0x12};      /* mov edx,[abs32] */
+        const unsigned char store[]={0x89,0x4B,0x10};                    /* mov [ebx+16],ecx */
+        const unsigned char sib[]={0x8B,0x44,0x91,0x08};                 /* mov eax,[ecx+edx*4+8] */
+        const unsigned char immed[]={0xC7,0x00,0x44,0x33,0x22,0x11};     /* mov dword [eax],0x11223344 */
+        const unsigned char moffs[]={0xA3,0,0,0,0};
+        const unsigned char bad[]={0x8A,0x00};
+        const unsigned char alu[]={0x01,0x03};
+        CHECK(n64c_memory_decode_mov(load,&length,&reg,&write,&imm) && length==6 && reg==2 && !write);
+        CHECK(n64c_memory_decode_mov(store,&length,&reg,&write,&imm) && length==3 && reg==1 && write);
+        CHECK(n64c_memory_decode_mov(sib,&length,&reg,&write,&imm) && length==4 && reg==0 && !write);
+        CHECK(n64c_memory_decode_mov(immed,&length,&reg,&write,&imm) && length==6 && write && imm==0x11223344u);
+        CHECK(n64c_memory_decode_mov(moffs,&length,&reg,&write,&imm) && length==5 && write);
+        CHECK(!n64c_memory_decode_mov(bad,&length,&reg,&write,&imm) && !n64c_memory_decode_mov(alu,&length,&reg,&write,&imm));
+    }
     CHECK(!n64c_memory_tracer_in_status("Name:\tx\nTracerPid:\t0\nUid:\t1\n"));
     CHECK(n64c_memory_tracer_in_status("Name:\tx\nTracerPid:\t4242\nUid:\t1\n"));
     CHECK(!n64c_memory_tracer_in_status("Name:\tx\nPid:\t7\n"));

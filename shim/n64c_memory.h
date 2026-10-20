@@ -14,4 +14,6 @@ void *n64c_memory_ram(u32 physical, u32 bytes);
 u32 n64c_memory_physical(const void *pointer);
 /* Nonzero when a /proc/<pid>/status text names a tracer (TracerPid not 0). */
 int n64c_memory_tracer_in_status(const char *text);
+/* Length, register, direction and immediate of the 32-bit mov at code, or 0 for any other instruction. */
+int n64c_memory_decode_mov(const unsigned char *code,unsigned *length,unsigned *reg,unsigned *write,u32 *immediate);
 #endif
