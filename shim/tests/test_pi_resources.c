@@ -101,6 +101,12 @@ int main(void)
     for (unsigned i=0;i<32;i++) be16(c+0xE8+2*i,(i*257u-4000u)&0xFFFFu);
     memcpy(rom+BADCTL,c,CTL_BYTES);
     be32(rom+BADCTL+0x50,0x800062);
+    /* overlay data the source types (IMAGE): the ROM holds the big-endian rows, the native image the typed ones */
+    enum { OVL=0xB40 };
+    typedef struct { u32 info, flags; s32 behaviour; f32 gravity; } Setup;
+    static const Setup setups[2]={{0x80104458u,0x3C5729u,5,-2304.0f},{0,0,0,0.0f}};
+    be32(rom+OVL,0x80104458u);be32(rom+OVL+4,0x3C5729u);be32(rom+OVL+8,5);be32(rom+OVL+12,0xC5100000u);
+    rom[OVL-1]=0x5A;rom[OVL+sizeof setups]=0xA5;
     FILE *file=fopen(path,"wb");
     CHECK(file && fwrite(rom,1,sizeof rom,file)==sizeof rom && fclose(file)==0);
     N64cConfig config={.rom_path=path};
@@ -303,8 +309,24 @@ int main(void)
     CHECK(osPiStartDma(NULL,0,OS_READ,CUE+56+0x20,cueTail,sizeof cueTail,&queue)==0);  /* starts at the second container's records */
     event(1);
     memcpy(&w16,cueTail,2);CHECK(w16==0x1110);
+    CHECK(n64c_pi_register_image(OVL,OVL+sizeof setups,NULL)==-1);
+    CHECK(n64c_pi_register_image(CTL+0x10,CTL+0x20,(const u8 *)setups)==-1);  /* overlaps the bank */
+    CHECK(n64c_pi_register_image(OVL,OVL+sizeof setups,(const u8 *)setups)==0);
+    CHECK(n64c_pi_register(OVL+4,OVL+8,N64C_RES_SWAP32,NULL)==-1);               /* overlaps the image */
+    u8 window[sizeof setups+8];
+    memset(window,0xEE,sizeof window);
+    CHECK(osPiStartDma(NULL,0,OS_READ,OVL-4,window,sizeof window,&queue)==0);
+    event(1);
+    CHECK(window[3]==0x5A && window[4+sizeof setups]==0xA5);                       /* outside: ROM bytes */
+    CHECK(memcmp(window+4,setups,sizeof setups)==0);
+    Setup parts[2];                                                                /* a DMA cutting a field */
+    CHECK(osPiStartDma(NULL,0,OS_READ,OVL,parts,6,&queue)==0);
+    event(1);
+    CHECK(osPiStartDma(NULL,0,OS_READ,OVL+6,(u8 *)parts+6,sizeof parts-6,&queue)==0);
+    event(1);
+    CHECK(memcmp(parts,setups,sizeof setups)==0 && parts[0].behaviour==5 && parts[0].gravity==-2304.0f);
     n64c_shutdown();
     CHECK(remove(path)==0);
-    printf("PI resource descriptors: %d checks; swap32 header, image and font records, glyphs, offsets, map, audio table, directory, raw text, tagged widget pages, audio control bank, refusals\n",checks);
+    printf("PI resource descriptors: %d checks; swap32 header, image and font records, glyphs, offsets, map, audio table, directory, raw text, tagged widget pages, audio control bank, overlay image, refusals\n",checks);
     return 0;
 }

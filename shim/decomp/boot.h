@@ -19,6 +19,13 @@ typedef struct {
 extern const N64cBootImage n64c_boot_image[];
 extern const size_t n64c_boot_image_count;
 extern const unsigned char n64c_boot_image_bytes[];
+/* Overlay data from the same units, keyed by ROM offset: the PI layer writes these image bytes over every DMA of the
+ * range (n64c_pi_register_image), wherever the game puts the overlay. */
+typedef struct {
+    u32 rom, offset, bytes;
+} N64cBootRomImage;
+extern const N64cBootRomImage n64c_boot_rom_image[];
+extern const size_t n64c_boot_rom_image_count;
 extern const size_t n64c_boot_load_count;
 /* ROM ranges the game DMAs later: PI byte-order descriptors only (ram is 0, nothing is copied). */
 extern const N64cBootLoad n64c_boot_resources[];

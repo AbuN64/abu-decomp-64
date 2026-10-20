@@ -5,7 +5,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-typedef enum { N64C_RES_RAW, N64C_RES_SWAP16, N64C_RES_SWAP32, N64C_RES_STRUCT, N64C_RES_TAGGED, N64C_RES_ALCTL } N64cResKind;
+typedef enum { N64C_RES_RAW, N64C_RES_SWAP16, N64C_RES_SWAP32, N64C_RES_STRUCT, N64C_RES_TAGGED, N64C_RES_ALCTL,
+               N64C_RES_IMAGE } N64cResKind;
 /* Resolve an original pointer to its native32-bit value. The binding owner
  * supplies function/data identities; PI never guesses from address bit patterns.
  * A zero pointer stays zero without calling the resolver. */
@@ -21,6 +22,10 @@ void n64c_pi_set_relocator(N64cRelocateFn resolve,void *user);
  * Resources must be disjoint whole records. DMA subranges must contain whole
  * multibyte fields. Failed reads have no completion event; discard their buffer. */
 int n64c_pi_register(u32 lo, u32 hi, N64cResKind kind, const char *fields);
+/* IMAGE: the ROM range [lo, hi) holds data the source types (overlay data units compiled natively, image.py); every
+ * DMA of a subrange receives the matching bytes of image (hi-lo bytes, kept by the caller) in place of the ROM's,
+ * so a field cut by the DMA ends is still whole once both parts arrive. Same disjointness rule as n64c_pi_register. */
+int n64c_pi_register_image(u32 lo, u32 hi, const u8 *image);
 #ifdef __cplusplus
 }
 #endif

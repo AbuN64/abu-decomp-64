@@ -2,12 +2,18 @@
 """Build the original resident data image from the decomp's own data units.
 
 select: lists the function-free units that the pinned layout places in a resident
-(non-overlay) section. build: reads their native objects, places every named
+(non-overlay) section, then those it places in a shared-address overlay section for the
+project's version. build: reads their native objects, places every named
 data symbol at its pinned original address and emits a link-time image (image.c, image.bin, image.ld, image.json) whose
 pointer words are relocated (data targets to their original addresses, functions
 to their native definitions or a generated fatal stop). Referenced names whose
 original address lies inside the image are bound to that address. Symbols that
 cannot be placed faithfully are refused with a reason and stay unresolved.
+Overlay data has no fixed RDRAM home (the game DMAs the overlay wherever it runs it, e.g. into
+memory it then TLB-maps): its symbols are keyed by their ROM offset instead (section LMA plus
+the symbol's offset from the section VMA) and the PI layer writes their native bytes over every
+DMA of that ROM range (n64c_pi_register_image), so the types the source gives them decide the
+byte order the native reads see.
 """
 import argparse
 import json
@@ -26,6 +32,14 @@ FUNCTION = re.compile(r"INCLUDE_ASM|\)\s*\{|^\{", re.M)
 OUTPUT = re.compile(r"^\s*(\.\w+)\s+(0x[0-9A-Fa-f]+)\s*:\s*AT\((0x[0-9A-Fa-f]+)\)")
 INPUT = re.compile(r"^\s*(src/\S+?)\.o\(")
 FACT = re.compile(r"(\w+)\s*=\s*(0x[0-9A-Fa-f]+);(.*)")
+INITIALISED = re.compile(r"\.(?:s?data|rodata)\b")
+# Names the data emitter gives bytes it has not typed (hash blobs, padding, unresolved spans, code words kept as a
+# data array under the function's name): an overlay keeps its ROM bytes there, since a native word array of them
+# would only swap texels, code and strings.
+PLACEHOLDER = re.compile(r"D_(?:blob|auto)_\w+|D_d\d+_[0-9a-f]+|func_\w+")
+ROM_FACT = re.compile(r"\brom:(0x[0-9A-Fa-f]+)")
+CONDITION = re.compile(r"^\s*#\s*(if|elif|else|endif)\b(.*)")
+TERM = re.compile(r"(!?)\s*defined\s*\(\s*(\w+)\s*\)")
 KUSEG_ALIAS = re.compile(r"D_(?:auto_)?00[0-9A-F]{6}(?:_[a-z0-9_]+)?")
 SHT_SYMTAB, SHT_NOBITS, SHT_REL, SHT_RELA = 2, 8, 9, 4
 SHF_ALLOC, SHF_EXEC = 2, 4
@@ -33,26 +47,91 @@ STT_OBJECT, STT_FUNC, STT_SECTION = 1, 2, 3
 R_386_NONE, R_386_32 = 0, 1
 
 
-def select(source, exclude):
-    placements, shared, current = {}, {}, None
+def _active(expression, macro):
+    """A layout #if/#elif condition: defined(NAME) or !defined(NAME) terms joined by ||, for one version macro."""
+    value = False
+    for term in expression.split("||"):
+        match = TERM.fullmatch(term.strip())
+        if not match:
+            raise ValueError("unsupported layout condition: " + expression.strip())
+        value |= (match[2] == macro) != bool(match[1])
+    return value
+
+
+def placements(source, version=None):
+    """(unit, section key, LMA, input spec) per input line; with a version, only its lines and sections."""
+    macro = "VERSION_" + version.upper().replace("-", "_") if version else None
+    stack, current, rows = [], None, []
     for line in (source / "RageWars.ld").read_text().splitlines():
+        condition = CONDITION.match(line)
+        if condition and macro:
+            word, rest = condition[1], condition[2]
+            if word == "if":
+                parent = all(frame[0] for frame in stack)
+                value = parent and _active(rest, macro)
+                stack.append([value, value])
+            elif word == "elif":
+                if not stack:
+                    raise ValueError("#elif without #if in the layout")
+                parent = all(frame[0] for frame in stack[:-1])
+                value = parent and not stack[-1][1] and _active(rest, macro)
+                stack[-1] = [value, stack[-1][1] or value]
+            elif word == "else":
+                if not stack:
+                    raise ValueError("#else without #if in the layout")
+                parent = all(frame[0] for frame in stack[:-1])
+                stack[-1] = [parent and not stack[-1][1], True]
+            elif not stack:
+                raise ValueError("#endif without #if in the layout")
+            else:
+                stack.pop()
+            continue
+        if macro and not all(frame[0] for frame in stack):
+            continue
         match = OUTPUT.match(line)
         if match:
-            key = (match[1], int(match[2], 16))
-            shared.setdefault(key, set()).add(int(match[3], 16))
-            current = key
+            current = ((match[1], int(match[2], 16)), int(match[3], 16))
             continue
         match = INPUT.match(line)
         if match and match[1].endswith((".CPP", ".c")):
-            placements.setdefault(match[1], set()).add(current)
-    overlay = {key for key, lmas in shared.items() if len(lmas) > 1}
-    units = []
-    for unit, keys in sorted(placements.items()):
-        if unit in exclude or keys & overlay:
-            continue
-        path = source / unit
-        if path.is_file() and not FUNCTION.search(path.read_text(errors="replace")):
-            units.append(unit)
+            rows.append((match[1], *(current or (None, None)), line[match.end():]))
+    return rows
+
+
+def overlay_keys(source):
+    """Sections sharing one name and VMA at several LMAs: shared-address overlays."""
+    shared = {}
+    for line in (source / "RageWars.ld").read_text().splitlines():
+        match = OUTPUT.match(line)
+        if match:
+            shared.setdefault((match[1], int(match[2], 16)), set()).add(int(match[3], 16))
+    return {key for key, lmas in shared.items() if len(lmas) > 1}
+
+
+def function_free(path):
+    return path.is_file() and not FUNCTION.search(path.read_text(errors="replace"))
+
+
+def overlay_units(source, version):
+    """Overlay data units of one version: unit -> (VMA, LMA) of the overlay section holding its initialised data."""
+    overlay, units = overlay_keys(source), {}
+    for unit, key, lma, spec in placements(source, version):
+        if key in overlay and INITIALISED.search(spec) and not re.search(r"bss|COMMON", spec) \
+                and units.setdefault(unit, (key[1], lma)) != (key[1], lma):
+            raise ValueError("overlay data unit in two sections: " + unit)
+    return units
+
+
+def select(source, exclude, version=None):
+    keys = {}
+    for unit, key, _, _ in placements(source):
+        keys.setdefault(unit, set()).add(key)
+    overlay = overlay_keys(source)
+    units = [unit for unit, unit_keys in sorted(keys.items())
+             if unit not in exclude and not unit_keys & overlay and function_free(source / unit)]
+    if version:
+        units += [unit for unit in sorted(overlay_units(source, version))
+                  if unit not in exclude and function_free(source / unit)]
     return units
 
 
@@ -79,6 +158,33 @@ def facts(source, version):
                 and (address | 0x80000000) in functions:
             table[symbol] = (address, "func")
     return table
+
+
+def rom_facts(source, version):
+    """symbol -> ROM offset from the pinned facts' rom: annotations."""
+    roms = {}
+    for file in ("symbol_addrs.txt", "aliases.txt"):
+        path = source / "versions" / version / file
+        if path.exists():
+            for line in path.read_text().splitlines():
+                match, rom = FACT.match(line.strip()), ROM_FACT.search(line)
+                if match and rom:
+                    roms[match[1]] = int(rom[1], 16)
+    return roms
+
+
+def overlapping(items, key, refused):
+    """Faithful placement: a native extent that reaches a later original symbol has a different
+    native layout, or two units claim one place."""
+    items.sort(key=lambda item: (item[key], item["name"]))
+    for index, item in enumerate(items):
+        end = item[key] + item["symbol"]["size"]
+        for later in items[index + 1:]:
+            if later[key] >= end:
+                break
+            refused[item["name"]] = "native extent overlaps " + later["name"]
+            refused.setdefault(later["name"], "native extent overlapped by " + item["name"])
+    return [item for item in items if item["name"] not in refused]
 
 
 class Elf:
@@ -129,6 +235,7 @@ def build(manifest, source, objects, linked, output):
     project = policy.load_project(manifest, source)
     ram = int(project["rdram_bytes"], 0)
     table = facts(source, project["version"])
+    overlays, roms = overlay_units(source, project["version"]), rom_facts(source, project["version"])
     claimed = set(project["data"]) | set(project["bindings"]) | set(project["stops"])
     linked_defined, linked_undefined = set(), set()
     for path in linked:
@@ -136,12 +243,13 @@ def build(manifest, source, objects, linked, output):
             if symbol["name"] and symbol["bind"] in (1, 2):
                 (linked_defined if symbol["shndx"] else linked_undefined).add(symbol["name"])
     resolved_names = linked_defined | set(project["bindings"]) | set(project["stops"])
-    placed, refused = [], {}
+    placed, overlay_placed, refused = [], [], {}
     failed, code_units = [], []
     for path in objects:
         if not path.stat().st_size:
             failed.append(str(path))
             continue
+        section_of = next((overlays[unit] for unit in overlays if path.as_posix().endswith("/" + unit + ".o")), None)
         elf = Elf(path)
         if any(s["type"] == STT_FUNC and s["shndx"] for s in elf.symbols):
             code_units.append(str(path))  # functions arrive by include; not a data unit
@@ -154,22 +262,26 @@ def build(manifest, source, objects, linked, output):
                 refused[name] = "no pinned original data address"
                 continue
             address = table[name][0]
+            if section_of:
+                vma, lma = section_of
+                if elf.sections[symbol["shndx"]]["type"] == SHT_NOBITS:
+                    refused[name] = "overlay bss has no ROM bytes"
+                elif PLACEHOLDER.fullmatch(name):
+                    refused[name] = "untyped emitter placeholder: the overlay keeps its ROM bytes"
+                elif address < vma:
+                    refused[name] = "pinned below its overlay section"
+                elif roms.get(name, lma + address - vma) != lma + address - vma:
+                    refused[name] = "overlay ROM offset differs from its rom fact"
+                else:
+                    overlay_placed.append({"name": name, "rom": lma + address - vma, "elf": elf, "symbol": symbol})
+                continue
             if not 0x80000000 <= address or address - 0x80000000 + symbol["size"] > ram:
                 refused[name] = "outside mapped RDRAM"
                 continue
             placed.append({"name": name, "address": address, "elf": elf, "symbol": symbol})
-    placed.sort(key=lambda item: (item["address"], item["name"]))
-    # Faithful placement: a native extent that reaches a later original symbol
-    # has a different native layout, or two units claim one address.
-    for index, item in enumerate(placed):
-        end = item["address"] + item["symbol"]["size"]
-        for later in placed[index + 1:]:
-            if later["address"] >= end:
-                break
-            refused[item["name"]] = "native extent overlaps " + later["name"]
-            refused.setdefault(later["name"], "native extent overlapped by " + item["name"])
-    keep = [item for item in placed if item["name"] not in refused]
-    stops, blob, words, extents, imaged = set(), bytearray(), [], [], 0
+    keep = overlapping(placed, "address", refused)
+    keep_overlay = overlapping(overlay_placed, "rom", refused)
+    stops, blob, words, extents, rom_extents, imaged = set(), bytearray(), [], [], [], 0
 
     def resolve(elf, symbol_index, addend):
         """A pointer word's value: an original address, or a native name."""
@@ -191,7 +303,7 @@ def build(manifest, source, objects, linked, output):
             return ("addr", table[name][0] + addend)
         return None
 
-    for item in keep:
+    for item in keep + keep_overlay:
         elf, symbol = item["elf"], item["symbol"]
         section = elf.sections[symbol["shndx"]]
         size = symbol["size"]
@@ -220,10 +332,11 @@ def build(manifest, source, objects, linked, output):
         base = len(blob)
         blob += chunk
         words += [(base + offset, name, addend) for offset, name, addend in patches]
-        if extents and extents[-1][0] + extents[-1][2] == item["address"]:
-            extents[-1][2] += size
+        runs, start = (rom_extents, item["rom"]) if "rom" in item else (extents, item["address"])
+        if runs and runs[-1][0] + runs[-1][2] == start and runs[-1][1] + runs[-1][2] == base:
+            runs[-1][2] += size
         else:
-            extents.append([item["address"], base, size])
+            runs.append([start, base, size])
     stops -= resolved_names
     covered = lambda address: any(start <= address < start + size for start, _, size in extents)
     binds = {}
@@ -251,11 +364,16 @@ def build(manifest, source, objects, linked, output):
     code.append("const N64cBootImage n64c_boot_image[] = {")
     code += [f"    {{{start - 0x80000000}u, {base}u, {size}u}}," for start, base, size in extents]
     code += ["    {0u, 0u, 0u}", "};", f"const size_t n64c_boot_image_count = {len(extents)};"]
+    code.append("const N64cBootRomImage n64c_boot_rom_image[] = {")
+    code += [f"    {{0x{start:x}u, {base}u, {size}u}}," for start, base, size in rom_extents]
+    code += ["    {0u, 0u, 0u}", "};", f"const size_t n64c_boot_rom_image_count = {len(rom_extents)};"]
     (output / "image.c").write_text("\n".join(code) + "\n")
     (output / "image.ld").write_text("".join(f"{name} = 0x{address:08x};\n" for name, address in binds.items())
                                      + "SECTIONS {} INSERT AFTER .text;\n")
     report = {"symbols": imaged,
               "bytes": len(blob), "extents": len(extents), "relocated_words": len(words),
+              "overlay_symbols": sorted(item["name"] for item in keep_overlay if item["name"] not in refused),
+              "rom_extents": [[f"0x{start:x}", size] for start, _, size in rom_extents],
               "failed_units": failed, "code_units": code_units, "function_stops": sorted(stops), "bound": sorted(binds), "refused": dict(sorted(refused.items()))}
     (output / "image.json").write_text(json.dumps(report, indent=1) + "\n")
 
@@ -314,8 +432,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     try:
         if args.command == "select":
-            exclude = set(policy.load_project(args.manifest, args.source)["sources"])
-            print(";".join(select(args.source, exclude)))
+            project = policy.load_project(args.manifest, args.source)
+            print(";".join(select(args.source, set(project["sources"]), project["version"])))
         elif args.command == "compile":
             flags = args.flags[1:] if args.flags[:1] == ["--"] else args.flags
             compile_unit(args.prepare, args.compiler, args.source, args.output, flags)

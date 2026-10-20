@@ -80,9 +80,45 @@ int main(void) {
 BOOT_H = """#include <stddef.h>
 typedef unsigned int u32;
 typedef struct { u32 ram, offset, bytes; } N64cBootImage;
+typedef struct { u32 rom, offset, bytes; } N64cBootRomImage;
 extern const N64cBootImage n64c_boot_image[];
 extern const size_t n64c_boot_image_count;
 extern const unsigned char n64c_boot_image_bytes[];
+"""
+# Per-version layout: the overlay section has one LMA per version; only the active version's lines count.
+VERSIONED = """SECTIONS
+{
+#if defined(VERSION_OTHER)
+    .ovl_80400000 0x80400000 : AT(0x5000) SUBALIGN(1)
+#elif defined(VERSION_TEST)
+    .ovl_80400000 0x80400000 : AT(0x6000) SUBALIGN(1)
+#endif
+    {
+#if defined(VERSION_OTHER)
+        src/OTHER.CPP.o(.data);
+#endif
+#if defined(VERSION_TEST) || defined(VERSION_THIRD)
+        src/CODE.CPP.o(.text);
+        src/SETUP.CPP.o(.data);
+#endif
+    }
+}
+"""
+SETUP = """struct Info { int unused; };
+typedef struct { struct Info *info; unsigned long flags; int behaviour; float gravity; } Setup;
+extern struct Info target;
+Setup setups[2] = {{&target, 0x3C5729, 5, -2304.0f}, {0}};
+unsigned char misplaced[4] = {1, 2, 3, 4};
+int zeroed;
+unsigned int D_blob_0123abcd[1] = {7};
+unsigned int func_80400400_de[1] = {0x27BDFFC8};
+"""
+SETUP_FACTS = """setups = 0x80400100; // rom:0x6100
+misplaced = 0x80400120; // rom:0x9999
+zeroed = 0x80400200; //
+D_blob_0123abcd = 0x80400300; // rom:0x6300
+func_80400400_de = 0x80400400; // rom:0x6400
+target = 0x80001000; //
 """
 MISSING = '#include <stdio.h>\n#include <stdlib.h>\nvoid n64c_boot_missing(const char *s) ' \
           '{ printf("boot-missing: %s\\n", s); exit(78); }\n'
@@ -135,6 +171,39 @@ class ImageTests(unittest.TestCase):
 
     def test_select_keeps_resident_function_free_units(self):
         self.assertEqual(image.select(self.source, {"src/CODE.CPP"}), ["src/A.CPP", "src/B.CPP"])
+
+    def test_overlay_data_is_keyed_by_rom_offset(self):
+        # an overlay data unit of the project's version is imaged at LMA + (pinned address - VMA): the PI layer
+        # writes those native bytes over the overlay's DMA; bss and a ROM offset that contradicts its fact are refused
+        (self.source / "RageWars.ld").write_text(VERSIONED)
+        (self.source / "versions/test/symbol_addrs.txt").write_text(SETUP_FACTS)
+        (self.source / "src" / "SETUP.CPP").write_text(SETUP)
+        (self.source / "src" / "OTHER.CPP").write_text("int other = 1;\n")
+        self.assertEqual(image.overlay_units(self.source, "test"), {"src/SETUP.CPP": (0x80400000, 0x6000)})
+        self.assertEqual(image.select(self.source, {"src/CODE.CPP"}, "test"), ["src/SETUP.CPP"])
+        self.assertEqual(image.select(self.source, set(), "other"), ["src/OTHER.CPP"])
+        (self.path / "src").mkdir()
+        unit = self.compile(self.source / "src" / "SETUP.CPP", self.path / "src" / "SETUP.CPP.o", "-x", "c",
+                            "-fno-common")
+        out = self.path / "out"
+        image.build(self.manifest, self.source, [unit], [], out)
+        report = json.loads((out / "image.json").read_text())
+        self.assertEqual(report["overlay_symbols"], ["setups"])
+        self.assertEqual(report["rom_extents"], [["0x6100", 32]])
+        self.assertEqual(report["extents"], 0)
+        self.assertEqual(report["refused"]["zeroed"], "overlay bss has no ROM bytes")
+        self.assertEqual(report["refused"]["misplaced"], "overlay ROM offset differs from its rom fact")
+        self.assertIn("placeholder", report["refused"]["D_blob_0123abcd"])
+        self.assertIn("placeholder", report["refused"]["func_80400400_de"])
+        self.assertIn("{0x6100u, 0u, 32u},", (out / "image.c").read_text())
+        rows = (out / "image.bin").read_bytes()
+        self.assertEqual(rows[:16], bytes.fromhex("00100080 29573c00 05000000 000010c5"))
+        self.assertEqual(rows[16:], bytes(16))
+
+    def test_layout_condition_refuses_unknown_forms(self):
+        (self.source / "RageWars.ld").write_text("#if VERSION_TEST > 1\n#endif\n")
+        with self.assertRaises(ValueError):
+            image.placements(self.source, "test")
 
     def test_image_places_relocates_refuses_and_binds(self):
         objects = [self.compile(self.source / "src" / unit, self.path / (unit + ".o"), "-x", "c")

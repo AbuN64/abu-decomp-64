@@ -88,6 +88,15 @@ int main(int argc,char **argv)
             return 2;
         }
     }
+    for (size_t i=0;i<n64c_boot_rom_image_count;i++) {
+        const N64cBootRomImage *part=&n64c_boot_rom_image[i];
+        if (part->rom>(u32)bytes || part->bytes>(u32)bytes-part->rom ||
+            n64c_pi_register_image(part->rom,part->rom+part->bytes,n64c_boot_image_bytes+part->offset)!=0) {
+            fprintf(stderr,"boot-input: invalid overlay data image at ROM 0x%08x\n",part->rom);
+            n64c_shutdown();
+            return 2;
+        }
+    }
     N64cMemoryConfig memory={n64c_boot_ram_bytes,(u32)bytes,n64c_boot_video_clock};
     if (!n64c_memory_open(&memory)) {
         fprintf(stderr,"boot-input: native address windows unavailable\n");

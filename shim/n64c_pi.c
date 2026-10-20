@@ -8,6 +8,7 @@
  *   STRUCT   repeated record described by a field string, e.g. "2222 4 11" (digits are field widths in bytes)
  *   TAGGED   records of different sizes laid back to back; a tag (1, 2 or 4 bytes, big-endian, at a fixed offset of
  *            each record) selects the record's field string and so its size (widget pages)
+ *   IMAGE    data the source types: the range's bytes come from its native compile (overlay data units), not the ROM
  * A DMA may cover any sub-range of a resource; alignment is taken relative to the resource start. */
 #include "n64c_internal.h"
 #include "n64c_pi.h"
@@ -18,7 +19,9 @@
 
 typedef struct { u32 tag, stride; char fields[64]; } TagLayout;
 typedef struct { u32 offset, width, count; TagLayout layout[16]; } Tagged;
-typedef struct { u32 lo, hi; N64cResKind kind; char fields[64]; u32 stride; const Tagged *tagged; u8 *widths; } Res;
+typedef struct {
+    u32 lo, hi; N64cResKind kind; char fields[64]; u32 stride; const Tagged *tagged; u8 *widths; const u8 *image;
+} Res;
 static Res res[256];
 static int n_res;
 static Tagged tagged_pool[8];
@@ -91,7 +94,7 @@ static int parse_tagged(Tagged *out,const char *spec)
 }
 int n64c_pi_register(u32 lo,u32 hi,N64cResKind kind,const char *fields)
 {
-    if (n_res>=256 || hi<=lo || (unsigned)kind>N64C_RES_ALCTL) return -1;
+    if (n_res>=256 || hi<=lo || (unsigned)kind>N64C_RES_ALCTL) return -1; /* IMAGE: n64c_pi_register_image */
     for (int i=0;i<n_res;i++)
         if (lo<res[i].hi && hi>res[i].lo) return -1;
     Res entry={.lo=lo,.hi=hi,.kind=kind};
@@ -129,6 +132,14 @@ int n64c_pi_register(u32 lo,u32 hi,N64cResKind kind,const char *fields)
     }
     if ((hi-lo)%entry.stride) return -1;
     res[n_res++]=entry;
+    return 0;
+}
+int n64c_pi_register_image(u32 lo,u32 hi,const u8 *image)
+{
+    if (n_res>=256 || hi<=lo || !image) return -1;
+    for (int i=0;i<n_res;i++)
+        if (lo<res[i].hi && hi>res[i].lo) return -1;
+    res[n_res++]=(Res){.lo=lo,.hi=hi,.kind=N64C_RES_IMAGE,.stride=1,.image=image};
     return 0;
 }
 static int convert_field(u8 *bytes,char field)
@@ -213,6 +224,10 @@ static int fixup(u32 dev,u8 *destination,u32 bytes)
         }
         if (entry->kind==N64C_RES_ALCTL) {
             if (!fix_widths(entry,start,finish,dev,destination)) return 0;
+            continue;
+        }
+        if (entry->kind==N64C_RES_IMAGE) {
+            memcpy(destination+(size_t)(start-dev),entry->image+(size_t)(start-entry->lo),(size_t)(finish-start));
             continue;
         }
         uint64_t record=entry->lo+(start-entry->lo)/entry->stride*entry->stride;
