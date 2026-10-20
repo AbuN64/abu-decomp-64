@@ -212,15 +212,15 @@ int main(void) { return n64c_boot_entry(); }
                             "A": {"fields": "4 4"}, "B": {"directory": {"each": "C"}}, "C": {"fields": "2 2"}}}
         bundles = {"format": "bundle", "kind": "graph", "root": "Outer", "evidence": "Fixture nested streams",
                    "types": {"Outer": {"directory": {"each": "Stream"}}, "Stream": {"packed": "Inner"},
-                             "Inner": {"leaf": "Half"}, "Half": {"fields": "2"}}}
+                             "Inner": {"planes": "Half"}, "Half": {"fields": "2"}}}
         self.project["blob_layouts"] = [graph, tagged, bundles]
         self.generate()
         code = (self.path / "output/bindings.c").read_text()
         self.assertIn('{"pack.a", 1280u, 0u, 64u, N64C_RES_GRAPH, "D:-,2;F:2 2 @0:3;L:1;F:4 2 2"},', code)
         self.assertIn('{"pack.b", 1344u, 0u, 32u, N64C_RES_RAW, 0},', code)
         self.assertIn('{"plain", 1536u, 0u, 64u, N64C_RES_GRAPH, "G:0/4:0=1,3=2;F:4 4;E:3;F:2 2"},', code)
-        self.assertIn('{"bundle.1", 1664u, 0u, 32u, N64C_RES_GRAPH, "E:3;F:2;L:1;P:2"},', code)
-        self.assertIn('{"bundle.2", 1696u, 0u, 32u, N64C_RES_GRAPH, "E:3;F:2;L:1;P:2"},', code)
+        self.assertIn('{"bundle.1", 1664u, 0u, 32u, N64C_RES_GRAPH, "E:3;F:2;X:1;P:2"},', code)
+        self.assertIn('{"bundle.2", 1696u, 0u, 32u, N64C_RES_GRAPH, "E:3;F:2;X:1;P:2"},', code)
         self.assertIn("n64c_boot_packed_count", code)
         self.assertNotIn('"split"', code)
         self.assertNotIn('"elsewhere"', code)
@@ -245,6 +245,8 @@ int main(void) { return n64c_boot_entry(); }
                 lambda rows: rows[2].update(format="no such format"),
                 lambda rows: rows[2].update(blob="plain"),                       # blob and format
                 lambda rows: rows[2]["types"].update(Stream={"packed": 3}),
+                lambda rows: rows[2]["types"].update(Inner={"planes": "Outer"}),       # planes of a directory
+                lambda rows: rows[2]["types"].update(Half={"fields": "2 @0:Half"}),    # planes with a reference
                 lambda rows: rows.append(dict(rows[2], format="bundle"))]):
             with self.subTest(case=index):
                 bad = copy.deepcopy(self.project)

@@ -131,7 +131,7 @@ static void container2(u8 *c)
     be16(c+32,2); c[34]=8; c[35]=9; be16(c+36,0x0A0B); be16(c+38,0x0C0D);
     be32(c+40,0x11121314u); be16(c+44,0x2122); be16(c+46,0x2324); be16(c+48,0x2526);
 }
-enum { S1=0x100, S2=0x200, BAD=0x400, ROMGRAPH=0x500, MISFIT=0x600, ROMGRAPH2=0x680, NEST=0x740 };
+enum { S1=0x100, S2=0x200, BAD=0x400, ROMGRAPH=0x500, MISFIT=0x600, ROMGRAPH2=0x680, NEST=0x740, PLANES=0x7A0 };
 static u8 ram[512];
 static void misfit(void)
 {
@@ -142,7 +142,7 @@ static void misfit(void)
 int main(void)
 {
     const char *path="n64c_packed_test.rom";
-    static u8 rom[0x800];
+    static u8 rom[0x840];
     u8 c[SIZE];
     int size1=stream1();
     memcpy(rom+S1,rnc1,(size_t)size1);
@@ -161,6 +161,14 @@ int main(void)
     CHECK(NEST+16+size3<=(int)sizeof rom);
     be32(rom+NEST,1); be32(rom+NEST+4,16); be32(rom+NEST+8,16+(u32)size3);
     memcpy(rom+NEST+16,rnc2,(size_t)size3);
+    /* an RNC2 stream of a leaf stored as byte planes: two records {u16, u32}, plane k = byte k of each record */
+    static const u8 records[2][6]={{1,2,3,4,5,6},{0x11,0x12,0x13,0x14,0x15,0x16}};
+    u8 planes[20];
+    be32(planes,6); be32(planes+4,2);
+    for (int k=0;k<6;k++) for (int i=0;i<2;i++) planes[8+k*2+i]=records[i][k];
+    int size4=stream2(planes,sizeof planes);
+    CHECK(PLANES+size4<=(int)sizeof rom);
+    memcpy(rom+PLANES,rnc2,(size_t)size4);
     FILE *file=fopen(path,"wb");
     CHECK(file && fwrite(rom,1,sizeof rom,file)==sizeof rom && fclose(file)==0);
     N64cConfig config={.rom_path=path};
@@ -180,6 +188,9 @@ int main(void)
     CHECK(n64c_pi_register(ROMGRAPH2,ROMGRAPH2+50,N64C_RES_GRAPH,program2)==0);
     CHECK(n64c_pi_register(0x700,0x740,N64C_RES_GRAPH,"P:-")==-1);                      /* no RNC stream there */
     CHECK(n64c_pi_register(NEST,NEST+16+(u32)size3,N64C_RES_GRAPH,"D:1;P:2;L:3;F:2")==0);
+    CHECK(n64c_pi_register(0x700,0x740,N64C_RES_GRAPH,"X:1;F:4")==-1);                  /* planes in a ROM range */
+    CHECK(n64c_pi_register_packed(MISFIT,MISFIT+(u32)size1,N64C_RES_GRAPH,"X:1;F:4 @0:1")==-1); /* planes: no refs */
+    CHECK(n64c_pi_register_packed(PLANES,PLANES+(u32)size4,N64C_RES_GRAPH,"X:1;F:2 4")==0);
     /* the header in host order, the packed bytes raw, also when a DMA cuts the header */
     u32 w; u16 h;
     dma(S1,ram,6);
@@ -227,12 +238,23 @@ int main(void)
     memcpy(&w,out,4); CHECK(w==2);
     memcpy(&h,out+8,2); CHECK(h==0x0102);
     memcpy(&h,out+10,2); CHECK(h==0x0304);
+    dma(PLANES,ram,(u32)size4);                                                       /* byte planes */
+    memset(out,0,sizeof out);
+    n64c_pi_rnc2_unpack(ram,out,size4-18,sizeof planes);
+    memcpy(&w,out,4); CHECK(w==6);
+    memcpy(&w,out+4,4); CHECK(w==2);
+    u8 built[12];                                                                      /* the game's transpose */
+    for (int i=0;i<2;i++) for (int k=0;k<6;k++) built[i*6+k]=out[8+k*2+i];
+    memcpy(&h,built,2); CHECK(h==0x0102);
+    memcpy(&w,built+2,4); CHECK(w==0x03040506u);
+    memcpy(&h,built+6,2); CHECK(h==0x1112);
+    memcpy(&w,built+8,4); CHECK(w==0x13141516u);
     CHECK(exits78(misfit));
     n64c_shutdown();
     CHECK(remove(path)==0);
     printf("PI packed streams: %d checks; host-order headers (cut DMA), raw packed bytes, origins, method 1 STRUCT, "
            "method 2 GRAPH (pool references, shared and null), ROM GRAPH (tagged variants, head + elements, a nested "
            "stream), "
-           "untraced raw, refusals\n",checks);
+           "byte-plane leaves, untraced raw, refusals\n",checks);
     return 0;
 }

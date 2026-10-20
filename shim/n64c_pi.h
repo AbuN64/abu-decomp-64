@@ -44,6 +44,10 @@ int n64c_pi_register_image(u32 lo, u32 hi, const u8 *image);
  *                           unpacks it, like a PACKED range's
  *   L:<t>                   a leaf: u32 stride (the size of F or T type t; any when count is 0), u32 count, count
  *                           records of type t
+ *   X:<t>                   a leaf stored as byte planes (the game transposes it into records, plane k = byte k of
+ *                           every record): u32 stride (the size of F type t, no references), u32 count, then stride
+ *                           planes of count bytes; each field's planes are reversed so the transpose builds host-order
+ *                           records. Only in unpacked bytes (a ROM range is converted per DMA piece)
  *   D:<t>,<t>,...           a directory: u32 count, u32 section offsets from its start (the table runs to the first
  *                           section, an end offset may follow); section i has type i of the list (- for none: its
  *                           bytes are typed by references, or stay raw)

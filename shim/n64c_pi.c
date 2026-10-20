@@ -25,8 +25,8 @@
 
 typedef struct { u32 tag, stride; char fields[64]; } TagLayout;
 typedef struct { u32 offset, width, count; TagLayout layout[16]; } Tagged;
-/* GRAPH types (n64c_pi.h): kind F/L/D/E/G; items: F widths (1-8) or references (REF | section << 16 | type), L and E
- * [type], D section types (NONE: untyped), G tag/type pairs; size: F record bytes; tag offset/width: G. */
+/* GRAPH types (n64c_pi.h): kind F/L/X/D/E/G/T/R/P; items: F widths (1-8) or references (REF | section << 16 | type),
+ * L, X and E [type], D section types (NONE: untyped), G/T tag/type pairs; size: F record bytes; tag offset/width: G/T. */
 typedef struct { char kind; u32 size, offset, width, n; u32 *items; } GType;
 typedef struct { u32 count; GType *types; } Graph;
 #define GRAPH_REF 0x80000000u
@@ -149,7 +149,7 @@ static int parse_gtype(GType *type,const char **text)
 {
     const char *p=*text;
     u32 cap=8;
-    if (!p[0] || !strchr("FLDEGTRP",p[0]) || p[1]!=':') return 0;
+    if (!p[0] || !strchr("FLXDEGTRP",p[0]) || p[1]!=':') return 0;
     type->kind=p[0];
     p+=2;
     if (type->kind=='G' || type->kind=='T') {
@@ -190,7 +190,8 @@ static int parse_gtype(GType *type,const char **text)
             type->items[type->n++]=a;
             if (*p==',') p++;
             else if (*p && *p!=';') return 0;
-            if (((type->kind=='L' || type->kind=='E' || type->kind=='P') && type->n>1) || (type->kind=='R' && type->n>2))
+            if (((type->kind=='L' || type->kind=='X' || type->kind=='E' || type->kind=='P') && type->n>1) ||
+                (type->kind=='R' && type->n>2))
                 return 0;
         }
     }
@@ -215,7 +216,8 @@ static Graph *parse_graph(const char *text)
         if (!ok || !*p) break;
         p++; /* ';' */
     }
-    /* every referenced type exists; a leaf holds F or T records, T variants and R parts are F records */
+    /* every referenced type exists; a leaf holds F or T records, T variants, R parts and plane leaves F records (a
+     * plane leaf's records hold no references: an offset cut into planes is not readable) */
     for (u32 t=0;ok && t<graph->count;t++) {
         GType *type=&graph->types[t];
         for (u32 i=0;ok && i<type->n;i++) {
@@ -229,6 +231,11 @@ static Graph *parse_graph(const char *text)
             char kind=graph->types[target].kind;
             if (type->kind=='L') ok=kind=='F' || kind=='T';
             if (type->kind=='T' || type->kind=='R') ok=kind=='F';
+            if (type->kind=='X') {
+                const GType *record=&graph->types[target];
+                ok=kind=='F';
+                for (u32 k=0;ok && k<record->n;k++) ok=!(record->items[k]&GRAPH_REF);
+            }
             if (type->kind=='T' && graph->types[target].size>type->size) type->size=graph->types[target].size;
         }
     }
@@ -277,7 +284,9 @@ static int parse_layout(Layout *layout,N64cResKind kind,const char *fields)
     return 1;
 }
 typedef struct { u32 at, unpacked, type; } Stream; /* a P node met by a walk: offset, unpacked bytes, type */
-static u8 *graph_widths(const Graph *graph,u32 root,const u8 *data,u32 bytes,Stream **streams,u32 *n_streams);
+typedef u32 Planes[3]; /* an X node: records offset, count, F type */
+static u8 *graph_widths(const Graph *graph,u32 root,const u8 *data,u32 bytes,Stream **streams,u32 *n_streams,
+                       Planes **planes,u32 *n_planes);
 static int disjoint(u32 lo,u32 hi)
 {
     if (n_res>=MAX_RES || hi<=lo) return 0;
@@ -295,7 +304,7 @@ int n64c_pi_register(u32 lo,u32 hi,N64cResKind kind,const char *fields)
         Stream *streams=NULL;
         u32 n_streams=0;
         int ok=bytes && fseek(rom,(long)lo,SEEK_SET)==0 && fread(bytes,1,hi-lo,rom)==hi-lo &&
-            (entry.widths=graph_widths(graph,0,bytes,hi-lo,&streams,&n_streams))!=NULL;
+            (entry.widths=graph_widths(graph,0,bytes,hi-lo,&streams,&n_streams,NULL,NULL))!=NULL;
         free(bytes);
         if (ok && n_nested+(int)n_streams>cap_nested) {
             int cap=cap_nested ? cap_nested : 64;
@@ -579,6 +588,7 @@ static const TagLayout *tag_layout(const Tagged *tagged,const u8 *record,u32 roo
 typedef struct {
     const Graph *graph; const u8 *data; u8 *map; u32 bytes; u32 (*seen)[2]; u32 n_seen, cap_seen;
     Stream *streams; u32 n_streams, cap_streams; /* the P nodes met */
+    Planes *planes; u32 n_planes, cap_planes; int planes_ok; /* the X nodes met; 0: a ROM range, X does not fit */
 } Walk;
 static int same_swapped(const u8 *bytes,u32 width)
 {
@@ -689,6 +699,26 @@ static int walk_type(Walk *walk,u32 type,u32 at,u32 limit,const u32 *bases,u32 n
             if (!walk_type(walk,t->items[1],p,limit,bases,n_bases,depth+1)) return 0;
         return 1;
     }
+    if (t->kind=='X') { /* a leaf stored as byte planes: plane k holds byte k of every record */
+        const GType *record=&walk->graph->types[t->items[0]];
+        if (!walk->planes_ok || at+8>limit) return 0;
+        u32 stride=be_value(walk->data+at,4), count=be_value(walk->data+at+4,4);
+        if ((count && (stride!=record->size || count>(limit-at-8)/stride)) || !mark(walk,at,4) || !mark(walk,at+4,4))
+            return 0;
+        for (u32 p=at+8;p<at+8+stride*count;p++)
+            if (!mark(walk,p,1)) return 0; /* claimed: the planes are reordered, never swapped in place */
+        if (!count) return 1;
+        if (walk->n_planes==walk->cap_planes) {
+            Planes *grown=realloc(walk->planes,(walk->cap_planes=walk->cap_planes ? walk->cap_planes*2 : 8)*
+                                    sizeof *grown);
+            if (!grown) return 0;
+            walk->planes=grown;
+        }
+        walk->planes[walk->n_planes][0]=at+8;
+        walk->planes[walk->n_planes][1]=count;
+        walk->planes[walk->n_planes++][2]=t->items[0];
+        return 1;
+    }
     if (t->kind=='L') {
         const GType *record=&walk->graph->types[t->items[0]];
         if (at+8>limit) return 0;
@@ -724,13 +754,17 @@ static int walk_type(Walk *walk,u32 type,u32 at,u32 limit,const u32 *bases,u32 n
     return ok;
 }
 /* The width map of bytes typed by graph (each multi-byte field's width at its first byte, 0 elsewhere); NULL when
- * the graph does not fit the bytes. */
-static u8 *graph_widths(const Graph *graph,u32 root,const u8 *data,u32 bytes,Stream **streams,u32 *n_streams)
+ * the graph does not fit the bytes. The plane leaves met go to planes; without planes (a ROM range, converted per DMA
+ * piece) a plane leaf does not fit. */
+static u8 *graph_widths(const Graph *graph,u32 root,const u8 *data,u32 bytes,Stream **streams,u32 *n_streams,
+                       Planes **planes,u32 *n_planes)
 {
-    Walk walk={.graph=graph,.data=data,.bytes=bytes,.map=calloc(bytes ? bytes : 1,1)};
+    Walk walk={.graph=graph,.data=data,.bytes=bytes,.map=calloc(bytes ? bytes : 1,1),.planes_ok=planes!=NULL};
     if (!walk.map) return NULL;
     int ok=root<graph->count && walk_type(&walk,root,0,bytes,NULL,0,0);
     free(walk.seen);
+    if (planes && ok) { *planes=walk.planes; *n_planes=walk.n_planes; }
+    else free(walk.planes);
     if (streams) { *streams=walk.streams; *n_streams=walk.n_streams; }
     else free(walk.streams); /* streams nested in unpacked bytes are not DMA'd: only their headers are typed */
     if (!ok) { free(walk.map); if (streams) { free(*streams); *streams=NULL; *n_streams=0; } return NULL; }
@@ -738,13 +772,28 @@ static u8 *graph_widths(const Graph *graph,u32 root,const u8 *data,u32 bytes,Str
         if (walk.map[at]==1 || walk.map[at]==9) walk.map[at]=0;
     return walk.map;
 }
+/* A plane leaf's records come back from the game's transpose (record byte k = plane k): a field of width w at offset
+ * o is in host order when its planes o .. o+w-1 are reversed, so the transpose builds host-order records. */
+static void reverse_planes(const GType *record,u8 *planes,u32 count)
+{
+    u32 offset=0;
+    for (u32 i=0;i<record->n;offset+=record->items[i++])
+        for (u32 a=offset,b=offset+record->items[i]-1;a<b;a++,b--)
+            for (u32 k=0;k<count;k++) {
+                u8 value=planes[a*count+k];planes[a*count+k]=planes[b*count+k];planes[b*count+k]=value;
+            }
+}
 static int apply_graph(const Graph *graph,u32 root,u8 *data,u32 bytes)
 {
-    u8 *widths=graph_widths(graph,root,data,bytes,NULL,NULL);
+    Planes *planes=NULL;
+    u32 n_planes=0;
+    u8 *widths=graph_widths(graph,root,data,bytes,NULL,NULL,&planes,&n_planes);
     if (!widths) return 0;
     for (u32 at=0;at<bytes;at++)
         if (widths[at]) convert_field(data+at,(char)('0'+widths[at]));
+    for (u32 i=0;i<n_planes;i++) reverse_planes(&graph->types[planes[i][2]],data+planes[i][0],planes[i][1]);
     free(widths);
+    free(planes);
     return 1;
 }
 static int apply_layout(const Layout *layout,u8 *data,u32 bytes)

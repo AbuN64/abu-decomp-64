@@ -21,8 +21,9 @@ NAMED_ADDRESS = re.compile(r"D_auto_(8[0-9A-F]{7})\Z")
 # u16/u32 are the older spellings. Unpacked RNC streams may also be a "graph" (n64c_pi.h GRAPH): named types, each a
 # record ("fields": widths and "@<section>:<Type>" offset references), a "leaf" (stride, count, records), or a
 # "directory" (offset table container; a list of section types, {"each": Type} for all, or tag-selected types), a
-# tag-selected record ("variants"), a head record followed by element records to the extent's end ("head_then"), or
-# an RNC stream nested in the bytes ("packed": the type of its unpacked bytes, or null).
+# tag-selected record ("variants"), a head record followed by element records to the extent's end ("head_then"), a
+# leaf stored as byte planes that the game transposes into records ("planes": the record type), or an RNC stream
+# nested in the bytes ("packed": the type of its unpacked bytes, or null).
 KINDS = {"raw": "N64C_RES_RAW", "swap16": "N64C_RES_SWAP16", "swap32": "N64C_RES_SWAP32", "fields": "N64C_RES_STRUCT",
          "tagged": "N64C_RES_TAGGED", "alctl": "N64C_RES_ALCTL", "u16": "N64C_RES_SWAP16", "u32": "N64C_RES_SWAP32",
          "graph": "N64C_RES_GRAPH"}
@@ -117,6 +118,10 @@ def graph_program(item, label):
             if not isinstance(value, str) or not {"fields", "variants"} & set(types.get(value, {})):
                 raise ValueError(f"graph leaf needs a record type: {label}: {name}")
             program.append("L:" + ref(value, "leaf"))
+        elif shape == "planes":
+            if not isinstance(value, str) or "fields" not in types.get(value, {}) or "@" in types[value]["fields"]:
+                raise ValueError(f"graph planes needs a record type without references: {label}: {name}")
+            program.append("X:" + ref(value, "planes"))
         elif shape == "packed" and (value is None or isinstance(value, str)):
             program.append("P:" + ("-" if value is None else ref(value, "packed")))
         elif shape == "head_then" and isinstance(value, list) and len(value) == 2 and \
