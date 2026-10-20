@@ -5,6 +5,7 @@
  * before the list runs, and sample bytes are stored in the ABI's word-swapped layout (byte i at i ^ 3). */
 #include "../n64c_al.h"
 #include "../audio_abi/n64a_abi.h"
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -375,6 +376,46 @@ static void test_reverb(void)
     CHECK(wet > 20000);
 }
 
+/* The game writes one byte at +0x1c and leaves the following padding alone. */
+static void test_fx_config_padding(void)
+{
+    _Static_assert(sizeof(((ALSynConfig *)0)->fxType) == 1, "fxType is a byte");
+#if UINTPTR_MAX == UINT32_MAX
+    _Static_assert(offsetof(ALSynConfig, fxType) == 0x1c, "game fxType offset");
+    _Static_assert(offsetof(ALSynConfig, params) == 0x20, "game effects pointer");
+#endif
+    Acmd expected[2048], actual[2048];
+    s32 expected_len = 0;
+    size_t expected_used = 0;
+    const u8 patterns[] = {0, 0x90, 0xff};
+    for (size_t trial = 0; trial < sizeof patterns; trial++) {
+        ALSynConfig c = {.maxVVoices = 2, .maxPVoices = 2, .maxUpdates = 0x100,
+            .dmaproc = rom_dma_new, .heap = &heap, .outputRate = 22050,
+            .fxType = 6, .params = (void *)fx_table};
+        u8 *bytes = (u8 *)&c;
+        for (size_t i = offsetof(ALSynConfig, fxType) + 1;
+             i < offsetof(ALSynConfig, params); i++) bytes[i] = patterns[trial];
+        alHeapInit(&heap, ram + HEAP_OFF, HEAP_LEN);
+        alInit(&globals, &c);
+        CHECK(globals.drvr != NULL);
+        s32 n = 0;
+        alAudioFrame(actual, &n, (s16 *)(uintptr_t)OUT_OFF, 128);
+        /* A dry silent frame has five commands; the custom network adds work. */
+        CHECK(n > 5 && n <= 2048);
+        size_t used = (size_t)(heap.cur - heap.base);
+        if (trial == 0) {
+            expected_len = n;
+            expected_used = used;
+            memcpy(expected, actual, (size_t)n * sizeof *actual);
+        } else {
+            CHECK(n == expected_len);
+            CHECK(used == expected_used);
+            CHECK(memcmp(expected, actual, (size_t)n * sizeof *actual) == 0);
+        }
+        alClose(&globals);
+    }
+}
+
 /* Compact sequence: one track with a tempo, a program change, a pan, then two notes (the second after a
  * delta) and a track end; played through a one-instrument bank over a raw wave. */
 enum { SEQ_OFF = 0x340000, BANK_OFF = 0x341000 };
@@ -450,6 +491,7 @@ int main(void)
     test_adpcm_stream();
     test_voice_priority();
     test_reverb();
+    test_fx_config_padding();
     test_csp();
     printf("n64c_al: %s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;

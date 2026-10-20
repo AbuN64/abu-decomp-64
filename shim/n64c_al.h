@@ -129,7 +129,7 @@ typedef struct ALSynConfig {
     ALDMANew dmaproc;
     ALHeap *heap;
     s32 outputRate;
-    s32 fxType;
+    u8 fxType;
     void *params;
 } ALSynConfig;
 
