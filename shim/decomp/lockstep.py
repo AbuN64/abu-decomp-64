@@ -403,8 +403,11 @@ def build_types(build, trace, out_path, compiler, jobs):
     def one(index_unit):
         index, unit = index_unit
         target = work / f"{index}.txt"
-        subprocess.run([compiler, "-m32", "-fsyntax-only", "-w", "-aux-info", str(target), "-x", "cpp-output",
-                        str(unit)], capture_output=True, text=True, check=False)
+        # Match the native decompilation build's language contract. GCC's newer
+        # default rejects conversions accepted by that build, dropping its types.
+        target.unlink(missing_ok=True)
+        subprocess.run([compiler, "-m32", "-std=gnu89", "-fsyntax-only", "-w", "-aux-info", str(target), "-x", "cpp-output",
+                        str(unit)], capture_output=True, text=True, check=True)
         return unit, target
 
     typedefs, found = {}, {}
