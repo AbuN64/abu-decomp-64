@@ -43,7 +43,8 @@ def run(binary, rom, project_path, goldens, output):
         golden = (goldens / image["path"]).resolve()
         if not golden.is_relative_to(goldens.resolve()) or digest(golden) != image["sha256"]:
             raise ValueError("oracle image hash/path differs from manifest")
-        if digest(rom) != project["rom_sha256"]:
+        layout = [d for d in project.get("dumps", []) if d.get("id") == project.get("version") and d.get("supported")]
+        if len(layout) != 1 or digest(rom) != layout[0]["sha256"]:
             raise ValueError("user ROM hash differs from project input")
         for key in ["framebuffer", "output"]:
             if len(gate[key]) != 2 or any(type(n) is not int or not 0 < n <= 4096 for n in gate[key]):
@@ -52,8 +53,10 @@ def run(binary, rom, project_path, goldens, output):
                       project_sha256=digest(project_path), golden_sha256=digest(golden),
                       checkpoint=gate["checkpoint"], retrace=gate["retrace"])
         ppm = attempt / "native.ppm"
-        command = [str(binary.resolve()), str(rom.resolve()), str(ppm.resolve()),
-                   str(gate["retrace"]), *map(str, gate["framebuffer"]), *map(str, gate["output"])]
+        # The game extracts the ROM into a fresh user folder first, as on a player's first run.
+        command = [str(binary.resolve()), "--no-dialog", "--user-dir", str((attempt / "user").resolve()),
+                   "--rom", str(rom.resolve()), "--capture", str(ppm.resolve()), "--retrace", str(gate["retrace"]),
+                   "--fb", "x".join(map(str, gate["framebuffer"])), "--window", "x".join(map(str, gate["output"]))]
         report["command"] = command
         with (attempt / "boot.log").open("w") as log:
             result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=120, check=False)

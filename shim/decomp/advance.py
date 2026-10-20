@@ -85,8 +85,9 @@ def boot(binary, rom, work, run_on=False, seconds=120):
         # The boot ends itself before the timeout, so the failure list and the census close the log.
         env.update({"N64C_RUN_ON": "1", "N64C_RUN_ON_LIMIT": str(max(seconds - 15, 10))})
     # -k: the boot catches SIGTERM (SDL/LUS handlers) and a hung boot kept running past it, stalling the walk.
-    r = subprocess.run(["timeout", "-k", "10", str(seconds), str(binary), str(rom), str(picture), "180", "284", "222",
-                        "320", "240"], env=env, capture_output=True, text=True)
+    r = subprocess.run(["timeout", "-k", "10", str(seconds), str(binary), "--no-dialog", "--user-dir", str(work / "user"),
+                        "--rom", str(rom), "--capture", str(picture), "--retrace", "180", "--fb", "284x222",
+                        "--window", "320x240"], env=env, capture_output=True, text=True)
     (work / "boot.log").write_text(r.stderr)
     lines = [line for line in r.stderr.splitlines() if line.startswith("boot-")]
     stops = [line for line in lines if re.fullmatch(r"boot-missing: \S+", line)]
@@ -175,7 +176,7 @@ def main():
                     1 if rc in (124, 137) else 0)
 
     for step in range(args.steps):
-        rc, last = boot(args.build / "rage_decomp_boot", args.rom, args.work, not args.fail_fast, args.seconds)
+        rc, last = boot(args.build / "ragewars", args.rom, args.work, not args.fail_fast, args.seconds)
         d = json.loads(args.manifest.read_text())
         log = args.work / "boot.log"
         text = log.read_text() if not args.fail_fast and log.exists() else ""

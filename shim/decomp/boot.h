@@ -36,7 +36,6 @@ extern const N64cBootLoad n64c_boot_packed[];
 extern const size_t n64c_boot_packed_count;
 extern const u32 n64c_boot_ram_bytes, n64c_boot_video_clock;
 extern const u32 n64c_boot_rom_bytes;
-extern const char n64c_boot_rom_sha256[];
 extern const N64cSystemGlobals n64c_boot_system;
 extern const u32 n64c_boot_tv_type, n64c_boot_reset_type;
 extern const int n64c_boot_audio_abi; /* N64aFlavour, or -1: audio tasks are refused */

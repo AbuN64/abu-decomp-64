@@ -4,6 +4,9 @@
 #include "n64c_os.h"
 /* audio_abi: N64aFlavour of the game's audio microcode, or -1 to refuse audio tasks. */
 /* window_width/height 0: offscreen software rendering (capture); otherwise a visible window of that size. */
+/* Program and user files for the renderer (shader archive, settings file; NULL: beside the executable) and an
+ * offscreen live run (no visible window). Applies to the next n64c_boot_frame_start. */
+void n64c_boot_frame_host(const char *shaders,const char *settings,int offscreen);
 int n64c_boot_frame_start(u32 width,u32 height,u32 ram_bytes,int audio_abi,u32 window_width,u32 window_height);
 /* Run the original threads at the VI rate, showing every presentation, until the window closes (1) or
  * no original thread is left (0). Original stops exit the process. */

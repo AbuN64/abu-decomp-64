@@ -32,7 +32,8 @@ class BindingTests(unittest.TestCase):
         facts.mkdir(parents=True)
         (facts / "symbol_addrs.txt").write_text("marker = 0x80000200; // rom:0x100\nend = 0x80400000; //\n")
         self.project = {"source_pin": "a" * 40, "version": "test", "rdram_bytes": "0x400000",
-            "video_clock_hz": 48681812, "rom_bytes": 4096, "rom_sha256": "b" * 64,
+            "video_clock_hz": 48681812, "rom_bytes": 4096,
+            "dumps": [{"id": "test", "size": 4096, "sha256": "b" * 64, "supported": True}],
             "entry": "original_entry", "data": {"marker": "0x80000200", "end": "0x80400000"},
             "bindings": {"original_runtime": "host_runtime"},
             "stops": {"missing_runtime": "Fixture unresolved runtime identity"},
@@ -429,7 +430,9 @@ int main(void) { return n64c_boot_entry(); }
             lambda p: p["loads"][0].update(rom=4090),
             lambda p: p["loads"][0].update(evidence=""),
             lambda p: p["loads"].append(copy.deepcopy(p["loads"][0])),
-            lambda p: p.update(rom_sha256="wrong"),
+            lambda p: p["dumps"][0].update(sha256="wrong"),
+            lambda p: p["dumps"][0].update(size=8192),
+            lambda p: p["dumps"][0].update(supported=False),
             lambda p: p.update(source_pin="wrong"),
             lambda p: p.update(loads=[]),
             lambda p: p.update(audio_abi={"flavour": "mp3", "evidence": "x"}),

@@ -344,8 +344,10 @@ def generate(manifest, source, output):
     if ram not in (0x400000, 0x800000) or not clock:
         raise ValueError("invalid memory configuration")
     rom_bytes = number(project["rom_bytes"])
-    rom_digest = project["rom_sha256"]
-    if not 0 < rom_bytes <= 0x0fc00000 or not re.fullmatch(r"[a-f0-9]{64}", rom_digest):
+    # The layout is the supported dump named like the project version (the installer's dump table).
+    layout = [d for d in project.get("dumps", []) if isinstance(d, dict) and d.get("id") == project["version"]]
+    if not 0 < rom_bytes <= 0x0fc00000 or len(layout) != 1 or layout[0].get("size") != rom_bytes or \
+            not layout[0].get("supported") or not re.fullmatch(r"[a-f0-9]{64}", str(layout[0].get("sha256"))):
         raise ValueError("invalid ROM identity")
     bindings, owners = [], set()
     def claim(symbol):
@@ -391,7 +393,6 @@ def generate(manifest, source, output):
     code += [f'extern int {entry}(void);', f'int n64c_boot_entry(void) {{ return {entry}(); }}',
              f'const u32 n64c_boot_ram_bytes = {ram}u;', f'const u32 n64c_boot_video_clock = {clock}u;',
              f'const u32 n64c_boot_rom_bytes = {rom_bytes}u;',
-             f'const char n64c_boot_rom_sha256[] = "{rom_digest}";',
              'const N64cBootLoad n64c_boot_loads[] = {']
     ranges, rom_ranges = [], []
     for load in project["loads"]:

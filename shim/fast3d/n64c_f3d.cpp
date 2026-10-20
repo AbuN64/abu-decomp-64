@@ -15,6 +15,7 @@
 #include "ship/thread/ThreadPool.h"
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_opengl.h>
 #include <cstdio>
@@ -88,7 +89,9 @@ extern "C" N64cF3d* n64c_f3d_open(const N64cF3dConfig* config)
     f3d->config = *config;
     std::string shaders = config->shaders ? config->shaders : "", settings = config->settings ? config->settings : "";
     try {
-        const std::filesystem::path exe = std::filesystem::canonical("/proc/self/exe").parent_path();
+        // The program folder on every platform (SDL resolves the running executable).
+        const char* base = SDL_GetBasePath();
+        const std::filesystem::path exe = base ? std::filesystem::path(base) : std::filesystem::current_path();
         if (shaders.empty())
             shaders = (exe / "fast3d-shaders.o2r").string();
         if (settings.empty())

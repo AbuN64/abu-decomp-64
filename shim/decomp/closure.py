@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Grow us_rev1.json to the link closure of rage_decomp_boot, routing what cannot link.
+"""Grow us_rev1.json to the link closure of ragewars, routing what cannot link.
 
-Each round builds rage_decomp_boot (ninja -k 0) and routes every undefined reference:
+Each round builds ragewars (ninja -k 0) and routes every undefined reference:
 - the source unit that defines it is added (C body, or an INCLUDE_ASM stand-in whose prepared stub is a stop);
 - a unit that fails to compile (a declaration conflict: decomp owner) is refused; a function only it
   defines becomes an explicit stop naming the first conflict;
@@ -279,7 +279,7 @@ def main():
     for round_ in range(args.rounds):
         with log_path.open("w") as log_file:
             rc = subprocess.run(["cmake", "--build", str(args.build), "-j", str(args.jobs), "--target",
-                                 "rage_decomp_boot", "--", "-k", "0"], stdout=log_file, stderr=subprocess.STDOUT).returncode
+                                 "ragewars", "--", "-k", "0"], stdout=log_file, stderr=subprocess.STDOUT).returncode
         log = log_path.read_text(errors="replace")
         d = json.loads(args.manifest.read_text())
         built_manifest = json.dumps(d, sort_keys=True)

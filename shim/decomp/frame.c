@@ -116,6 +116,14 @@ static void live_stop(const char *symbol)
     if (n64c_sched_on_guest()) n64c_sched_halt();
     show_stop(symbol);
 }
+static struct {
+    const char *shaders,*settings;
+    int offscreen;
+} host;
+void n64c_boot_frame_host(const char *shaders,const char *settings,int offscreen)
+{
+    host.shaders=shaders;host.settings=settings;host.offscreen=offscreen;
+}
 int n64c_boot_frame_start(u32 width,u32 height,u32 ram_bytes,int audio_abi,u32 window_width,u32 window_height)
 {
     if (window_width>4096 || window_height>4096 || !window_width!=!window_height) return 0;
@@ -128,7 +136,8 @@ int n64c_boot_frame_start(u32 width,u32 height,u32 ram_bytes,int audio_abi,u32 w
     if (audio_abi>=0 && !(frame.audio=n64a_abi_create((N64aFlavour)audio_abi))) return 0;
     const int live=window_width!=0;
     const N64cF3dConfig config={.window_w=live ? window_width : width,.window_h=live ? window_height : height,
-                                .fb_w=width,.fb_h=height,.software=!live,.offscreen=!live};
+                                .fb_w=width,.fb_h=height,.software=!live || host.offscreen,
+                                .offscreen=!live || host.offscreen,.shaders=host.shaders,.settings=host.settings};
     if (!(frame.f3d=n64c_f3d_open(&config))) { n64c_boot_frame_close();return 0; }
     frame.memory=(N64cGfxMem){base,ram_bytes-1,0};
     n64c_set_task_handler(M_GFXTASK,graphics,NULL);
