@@ -63,6 +63,24 @@ static int device_page(uintptr_t address,u32 *physical)
         if (*physical>=devices[i] && *physical<devices[i]+PAGE_BYTES) return 1;
     return 0;
 }
+extern char __executable_start[];
+/* A guest KUSEG address the guest maps through the TLB (osMapTLB): below the host image, where the host itself
+ * maps nothing, and above the lowest 64 KiB that Linux never maps (vm.mmap_min_addr), so a null-pointer access
+ * stays a host fault. */
+static int guest_virtual(uintptr_t address)
+{
+    return ram_size && address>=0x10000u && address<(uintptr_t)__executable_start;
+}
+/* A guest access to a virtual page no TLB entry maps when nothing services it (off a guest thread, or no
+ * OS_EVENT_FAULT queue): the boot stops here by name instead of crashing. */
+static _Noreturn void tlb_miss_stop(u32 address)
+{
+    char line[]="boot-missing: TLB-miss-00000000\n";
+    static const char hex[]="0123456789abcdef";
+    for (int i=0;i<8;i++) line[sizeof line-3-i]=hex[(address>>(4*i))&15u];
+    (void)write(STDERR_FILENO,line,sizeof line-1);
+    _Exit(78);
+}
 static void signal_handler(int signal_number,siginfo_t *info,void *opaque)
 {
     ucontext_t *context=opaque;
@@ -106,6 +124,17 @@ static void signal_handler(int signal_number,siginfo_t *info,void *opaque)
         redirect(context);
         return;
     }
+    if (signal_number==SIGSEGV && transaction.stage==0 && guest_virtual((uintptr_t)info->si_addr)) {
+        if (!n64c_sched_on_guest() || (context->uc_mcontext.gregs[REG_EFL]&0x100))
+            tlb_miss_stop((u32)(uintptr_t)info->si_addr);
+        transaction.error=errno;
+        transaction.physical=(u32)(uintptr_t)info->si_addr; /* the guest virtual address (badvaddr) */
+        transaction.write=(context->uc_mcontext.gregs[REG_ERR]&2)!=0;
+        transaction.saved=*context;
+        transaction.stage=6;
+        redirect(context);
+        return;
+    }
     /* Preserve real faults outside the hardware windows. We install only over
      * default handlers; returning retries the fault under the default action. */
     for (unsigned i=0;i<3;i++)
@@ -129,6 +158,13 @@ static _Noreturn void dispatch(void)
     } else if (transaction.stage==4) {
         ok=n64c_mmio_write(transaction.physical,transaction.value);
         if (ok) transaction.stage=3;
+    } else if (transaction.stage==6) {
+        /* TLB miss: MIPS exception code TLBL (2) for a load, TLBS (3) for a store, in Cause bits 2..6. The guest's
+         * fault service maps the page (osMapTLB) and restarts the thread; the access then runs again. */
+        if (!n64c_sched_fault((transaction.write ? 3u : 2u)<<2,transaction.physical))
+            tlb_miss_stop(transaction.physical);
+        transaction.stage=3;
+        ok=1;
     } else ok=0;
     if (!ok) {
         fprintf(stderr,"boot-missing: MMIO-%08x\n",transaction.physical);

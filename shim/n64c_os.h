@@ -106,6 +106,8 @@ u32 osGetCount(void);
 void __osSetCompare(u32 value);
 /* Native scheduler extension: current guest identity, NULL on the host. This is not a public libultra name. */
 OSThread *n64c_running_thread(void);
+/* The thread the last CPU fault stopped (public libultra contract): NULL before any fault. */
+OSThread *osGetCurrFaultedThread(void);
 OSIntMask osSetIntMask(OSIntMask mask);
 /* Interrupt critical sections; cache operations need no host emulation. */
 u32 __osDisableInt(void);
@@ -336,6 +338,10 @@ int n64c_thread_count(void);
 __attribute__((noreturn)) void n64c_sched_halt(void);
 int n64c_sched_halted(void);
 int n64c_sched_on_guest(void);
+/* A TLB miss of the running guest thread (the libultra fault path): the thread is stopped with OS_FLAG_FAULT,
+ * its context records cause and badvaddr, OS_EVENT_FAULT is posted, and the call returns once osStartThread
+ * resumes it. Returns 0 (nothing changed) off a guest thread or when no queue receives OS_EVENT_FAULT. */
+int n64c_sched_fault(u32 cause, u32 badvaddr);
 #ifdef __cplusplus
 }
 #endif

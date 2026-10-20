@@ -63,6 +63,34 @@ static void reader(void *argument)
     vi[1]=0x800;
     order=1;
 }
+/* TLB miss service as a pager does it: the fault event names the stopped thread, its context the cause and
+ * address; the pager maps the page and restarts the thread, whose load then completes. */
+static OSMesgQueue faults;
+static OSMesg fault_slots[2];
+static OSThread faulting;
+static u32 fault_value;
+static unsigned fault_done;
+static void faulter(void *argument)
+{
+    (void)argument;
+    fault_value=*(volatile u32 *)(uintptr_t)0x00A00004u;
+    fault_done=1;
+}
+static void pager(void *argument)
+{
+    (void)argument;
+    OSMesg message;
+    CHECK(osRecvMesg(&faults,&message,OS_MESG_BLOCK)==0 && message.data32==21);
+    OSThread *thread=osGetCurrFaultedThread();
+    u32 cause,address;
+    memcpy(&cause,thread->context+0x100,sizeof cause);
+    memcpy(&address,thread->context+0x104,sizeof address);
+    CHECK(thread==&faulting && thread->state==OS_STATE_STOPPED && (thread->flags&2) && !fault_done);
+    CHECK((cause&0x7C)==8 && address==0x00A00004u); /* TLBL: a load miss */
+    *(u32 *)n64c_memory_ram(0x3004,4)=0xFEEDBEEFu;
+    osMapTLB(5,0,(void *)(uintptr_t)0x00A00000u,0x3000u,0xFFFFFFFFu,-1);
+    osStartThread(thread);
+}
 static void writer(void *argument)
 {
     (void)argument;
@@ -80,6 +108,8 @@ static void child_failure(int kind,int expected)
     if (child==0) {
         if (kind==0) (void)pi[200]; /* unknown register */
         else if (kind==2) osUnmapTLB(32);
+        else if (kind==3) (void)*(volatile u32 *)(uintptr_t)0x00800000u; /* unmapped guest virtual page */
+        else if (kind==4) { volatile u32 *volatile host=(volatile u32 *)(uintptr_t)0x10u; (void)*host; } /* host null page */
         else *(volatile u32 *)(uintptr_t)0xB0000000u=0; /* immutable ROM */
         _Exit(99);
     }
@@ -192,6 +222,19 @@ int main(void)
     osStartThread(&low);
     n64c_run_idle();
     CHECK(order==2 && n64c_thread_count()==0);
+    CHECK(osGetCurrFaultedThread()==NULL);
+    osCreateMesgQueue(&faults,fault_slots,2);
+    message.data32=21;
+    osSetEventMesg(OS_EVENT_FAULT,&faults,message);
+    OSThread service;
+    osCreateThread(&faulting,3,faulter,NULL,NULL,10);
+    osCreateThread(&service,4,pager,NULL,NULL,30);
+    osStartThread(&service);
+    osStartThread(&faulting);
+    n64c_run_idle();
+    CHECK(fault_done && fault_value==0xFEEDBEEFu && osGetCurrFaultedThread()==&faulting);
+    osUnmapTLB(5);
+    osSetEventMesg(OS_EVENT_FAULT,NULL,message);
     vi[0]=3;
     CHECK(osViGetNextFramebuffer()==n64c_memory_ram(0x800,1));
     CHECK(n64c_frame()==0 && osViGetCurrentFramebuffer()==n64c_memory_ram(0x800,1));
@@ -203,7 +246,8 @@ int main(void)
     ai[0]=0x100;
     ai[4]=1520;
     ai[1]=16;
-    CHECK(samples==4 && sample_rate==48681812u/1521u && ai[1]==0 && ai[3]==0);
+    /* The submitted buffer plays on the virtual clock: AI_STATUS reads DMA busy (one of two FIFO entries held). */
+    CHECK(samples==4 && sample_rate==48681812u/1521u && ai[1]==0 && ai[3]==AI_STATUS_DMA_BUSY);
     expect_event(12);
     n64c_cont_set_input(input,NULL);
     message.data32=13;
@@ -233,6 +277,8 @@ int main(void)
     CHECK(packet[2]==0x83 && si[6]==0);
     child_failure(0,78);
     child_failure(1,SIGSEGV);
+    child_failure(3,78); /* a TLB miss is a named boot stop */
+    child_failure(4,SIGSEGV); /* a host fault stays a crash */
     n64c_shutdown();
     CHECK(n64c_memory_ram(0,1)==NULL);
     struct sigaction action;

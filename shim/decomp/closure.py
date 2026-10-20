@@ -130,6 +130,8 @@ def tidy(d, facts, deny=None):
         del d["stops"][sym]  # data routed as a function stop
     for sym in [k for k, why in d["stops"].items() if k in facts.game and "(SDK: shim binding decision)" in why]:
         del d["stops"][sym]  # game code in the libultra range (policy.game_code) routes again as game code
+    for sym in [k for k, v in d["stops"].items() if v.startswith("no linked definition")]:
+        del d["stops"][sym]  # an alias target an older closure stopped instead of routing it
     rebind(d, facts)
 
 
@@ -139,6 +141,10 @@ def rebind(d, facts):
                 and (facts.sdk(k) or any(facts.sdk_unit(h) for h in facts.definers(k)))]:
         del d["stops"][sym]
         d["bindings"][sym] = facts.shim_name(sym)
+    # A corrected shim-bindings.txt row rebinds a function an older row bound to another shim function.
+    for sym, target in list(d["bindings"].items()):
+        if (name := facts.shim_name(sym)) and name != target:
+            d["bindings"][sym] = name
 
 
 def route(d, sym, facts, deny, pin, frontier, fresh):
@@ -174,22 +180,24 @@ def route(d, sym, facts, deny, pin, frontier, fresh):
         fresh.add(hits[0])
         return "added", hits[0]
     if (alias := facts.function_alias(sym)):
+        # The alias names the function's address; the function itself routes like a direct reference (its unit is
+        # added, or it is a frontier, libultra, refused or no-C stop), so the binding never points at nothing.
         d["bindings"][sym] = alias
-        owners = facts.definers(alias)
-        if alias not in d["stops"] and not any(h in d["sources"] for h in owners):
-            d["stops"][alias] = (f"{owners[0]} defines it; not linked yet at {pin} (boot frontier)" if frontier and owners
-                                 else f"no linked definition at {pin}")
-        return "routed", "binding " + alias
+        kind, detail = route(d, alias, facts, deny, pin, frontier, fresh)
+        return ("added", detail) if kind == "added" else ("routed", "binding " + alias)
     if re.fullmatch(r"D_[0-9A-F]{3,6}", sym) and sym in addrs and not found and int(addrs[sym][0], 16) < 0x4000000:
         d.setdefault("rom_offsets", {})[sym] = addrs[sym][0]
         return "routed", "rom " + addrs[sym][0]
-    if (named := NAMED.fullmatch(sym)) and sym not in addrs and not found:
+    # A definer that is linked and still leaves sym undefined defines it only for another version (#if VERSION_DE):
+    # at us-rev1 the name has no C definition and binds like one.
+    undefined_here = not found or all(h in d["sources"] for h in found)
+    if (named := NAMED.fullmatch(sym)) and sym not in addrs and undefined_here:
         if (fn := facts.function_at(int(named.group(1), 16))):
             d["bindings"][sym] = fn
             return "routed", "binding " + fn
         d["data"][sym] = "0x" + named.group(1)
         return "routed", "data (named) 0x" + named.group(1)
-    if sym.startswith("D_") and sym in addrs and not found and int(addrs[sym][0], 16) >= 0x80000000:
+    if sym.startswith("D_") and sym in addrs and undefined_here and int(addrs[sym][0], 16) >= 0x80000000:
         d["data"][sym] = addrs[sym][0]
         return "routed", "data " + addrs[sym][0]
     why = next((deny[h] for h in found if h in deny), None)
@@ -202,6 +210,12 @@ def route(d, sym, facts, deny, pin, frontier, fresh):
     pinned = f" (pinned {addrs[sym][0]}{addrs[sym][1].strip() and ' ' + addrs[sym][1].strip()})" if sym in addrs else ""
     d["stops"][sym] = (why + f" at {pin}; RW NEEDS one declaration") if why else f"no C definition at {pin}" + pinned
     return "routed", "stop " + d["stops"][sym]
+
+
+def undefined_symbols(log):
+    """Names the link left undefined: object references, and binding targets the linker script names
+    (`undefined symbol `X' referenced in expression`, which stops ld before it lists any reference)."""
+    return sorted(set(re.findall(r"undefined (?:reference to|symbol) [`']([A-Za-z0-9_]+)'", log)))
 
 
 def refuse(d, deny, log):
@@ -245,7 +259,7 @@ def main():
         built_manifest = json.dumps(d, sort_keys=True)
         tidy(d, facts, deny)
         refuse(d, deny, log)
-        undefined = sorted(set(re.findall(r"undefined reference to [`']([A-Za-z0-9_]+)'", log)))
+        undefined = undefined_symbols(log)
         fresh, out, needs = set(), [], []
         for sym in undefined:
             kind, detail = route(d, sym, facts, deny, pin, args.frontier, fresh)

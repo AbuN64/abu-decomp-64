@@ -20,6 +20,7 @@ typedef struct HostThread {
     void (*entry)(void *);
     void *arg;
     int created, finished;
+    int faulted;                /* stopped by a CPU fault until osStartThread resumes it */
     struct HostThread *runnext; /* run queue link */
 } HostThread;
 
@@ -139,7 +140,7 @@ static void wake(HostThread *t)
 {
     HostThread *cur = self();
     runq_insert(t);
-    if (cur && baton == cur && t->os->priority > cur->os->priority) {
+    if (cur && baton == cur && !cur->faulted && t->os->priority > cur->os->priority) {
         runq_insert(cur);
         switch_away(cur);
     }
@@ -267,6 +268,46 @@ OSIntMask osSetIntMask(OSIntMask mask)
     deliver_pending();
     return previous;
 }
+static OSThread *faulted_thread;
+enum { CONTEXT_CAUSE = 0x100, CONTEXT_BADVADDR = 0x104, FLAG_FAULT = 2 }; /* __OSThreadContext offsets, OS_FLAG_FAULT */
+OSThread *osGetCurrFaultedThread(void)
+{
+    pthread_mutex_lock(&big);
+    OSThread *t = faulted_thread;
+    pthread_mutex_unlock(&big);
+    return t;
+}
+int n64c_sched_fault(u32 cause, u32 badvaddr)
+{
+    HostThread *h = self();
+    if (!h)
+        return 0;
+    pthread_mutex_lock(&big);
+    OSMesgQueue *mq = events[OS_EVENT_FAULT].mq;
+    OSMesg msg = events[OS_EVENT_FAULT].msg;
+    if (!mq || baton != h) {
+        pthread_mutex_unlock(&big);
+        fprintf(stderr, "n64c: TLB miss at 0x%08x not serviced: %s\n", (unsigned)badvaddr,
+                mq ? "the faulting thread does not hold the CPU" : "no OS_EVENT_FAULT queue is set");
+        return 0;
+    }
+    OSThread *t = h->os;
+    memcpy(t->context + CONTEXT_CAUSE, &cause, sizeof cause);
+    memcpy(t->context + CONTEXT_BADVADDR, &badvaddr, sizeof badvaddr);
+    t->state = OS_STATE_STOPPED;
+    t->flags |= FLAG_FAULT;
+    h->faulted = 1;
+    faulted_thread = t;
+    trace("fault", t);
+    pthread_mutex_unlock(&big);
+    /* The faulted thread keeps the baton while it posts (wake() never requeues it), then gives it away. */
+    osSendMesg(mq, msg, OS_MESG_NOBLOCK);
+    pthread_mutex_lock(&big);
+    if (h->faulted)
+        switch_away(h);
+    pthread_mutex_unlock(&big);
+    return 1;
+}
 OSThread *n64c_running_thread(void)
 {
     HostThread *h = self();
@@ -307,6 +348,7 @@ void osStartThread(OSThread *t)
             h->created = 1;
         }
         trace("start", t);
+        h->faulted = 0;
         wake(h);
     }
     pthread_mutex_unlock(&big);

@@ -110,6 +110,13 @@ class Check(unittest.TestCase):
         idx = sweep.build_index({"u.c": "extern int x;\nint f(int a) {\n  return g(a);\n}\nINCLUDE_ASM(\"p\", h);\n"})
         self.assertEqual((idx.get("f"), idx.get("h"), idx.get("x"), idx.get("g")), (["u.c"], ["u.c"], None, None))
 
+    def test_stale_list_unit_resolves_to_the_tree(self):
+        idx = sweep.build_index({"src/particle/a.c": "int f(int a) {\n  return a;\n}\n", "src/b.c": "int g(void) {\n}\n"})
+        self.assertEqual(sweep.owner(idx, "f", "src/FX_2/a.c"), "src/particle/a.c")  # moved since the list
+        self.assertEqual(sweep.owner(idx, "g", "src/b.c"), "src/b.c")
+        self.assertEqual(sweep.owner(idx, "nowhere", "src/c.c"), "src/c.c")  # unknown: the row reports it as listed
+        idx = sweep.build_index({"src/x.c": "int f(int a);\n", "src/y.c": "int f(int a) {\n  return a;\n}\n"})
+        self.assertEqual(sweep.owner(idx, "f", "src/old.c", lambda s: ["src/y.c"]), "src/y.c")  # not the prototype
     def test_rows_appear_before_the_list_finishes(self):
         gate, seen = threading.Event(), []
         a = rec("a.c", {"f": "T", "slow": "T"}, {"f": [], "slow": []})

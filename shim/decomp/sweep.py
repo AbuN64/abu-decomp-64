@@ -211,7 +211,16 @@ class Router:
         if sym in d["stops"]:
             return ("blocked", *stop_class(d["stops"][sym]))
         if kind == "added":
-            return "blocked", "unit-not-built", f"{detail} defines {sym} but did not build"
+            # The walk built that unit and its object does not define sym (a definition for another version only),
+            # so it is a linked unit as far as routing goes: route again, as closure.py does once it is linked.
+            d["sources"].append(detail)
+            kind, detail = self.route(d, sym, self.facts, self.deny, self.pin, False, set())
+            if kind == "need":
+                return "blocked", "data-missing", detail
+            if sym in d["stops"]:
+                return ("blocked", *stop_class(d["stops"][sym]))
+            if kind == "added":
+                return "blocked", "unit-not-built", f"{detail} defines {sym} but did not build"
         return "ok", kind, detail
 
 
@@ -309,6 +318,17 @@ class Graph:
         return dedup
 
 
+def owner(index, sym, unit, definers=None):
+    """The unit that defines sym in the swept tree: the listed one while it still does, else the one that defines it
+    now (a list made at an older pin names files that have moved or been split since). The index alone also holds
+    column-0 prototypes, so `definers` (closure.Facts.definers: a body or INCLUDE_ASM) picks among its units."""
+    units = index.get(sym, [])
+    if unit in units:
+        return unit
+    found = definers(sym) if definers else units
+    return found[0] if found else unit
+
+
 def check_function(graph, deny, sym, unit):
     """-> (check, verdict, first error line, blocker count, further blockers)."""
     if graph.router.sdk(sym, None if unit in (None, "", "-") else unit):
@@ -400,6 +420,8 @@ def run_sweep(rows, graph, deny, linked, workers, out, on_row=None):
     out.mkdir(parents=True, exist_ok=True)
 
     def work(row):
+        facts = getattr(graph.router, "facts", None)
+        row = {**row, "unit": owner(graph.index, row["symbol"], row["unit"], facts.definers if facts else None)}
         check, verdict, why, count, more = check_function(graph, deny, row["symbol"], row["unit"])
         return {**row, "check": check, "verdict": verdict, "why": why, "count": count, "more": more}
 

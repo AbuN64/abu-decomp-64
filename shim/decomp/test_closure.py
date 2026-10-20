@@ -124,6 +124,11 @@ class RouteTests(unittest.TestCase):
         closure.policy.sanitize(project, source, {}, {}, "")
         self.assertEqual(project["sources"], ["src/sdk/802B2378.c"])
 
+    def test_corrected_shim_row_rebinds(self):
+        self.d["bindings"]["func_802BADC0_de"] = "n64c_old_guess"
+        closure.tidy(self.d, self.facts)
+        self.assertEqual(self.d["bindings"]["func_802BADC0_de"], "osGetTime")
+
     def test_libultra_stop_becomes_binding_when_shim_provides_it(self):
         self.d["stops"]["func_802BADC0_de"] = "no C definition"
         closure.tidy(self.d, self.facts)
@@ -195,6 +200,39 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.d["bindings"]["D_auto_00200100"], "func_80200100_de")
         self.route("D_80100000")  # pinned data binds at its us-rev1 address, not its name
         self.assertEqual(self.d["data"]["D_80100000"], "0x80104000")
+
+    def test_alias_target_links_its_unit(self):
+        # D_00XXXXXX takes a function's address; the function's unit is linked like a direct call would link it.
+        kind, detail = self.route("D_00200000")
+        self.assertEqual((kind, detail), ("added", "src/GAME/80200000.CPP"))
+        self.assertEqual(self.d["bindings"]["D_00200000"], "func_80200000_de")
+        self.assertEqual(self.d["sources"], ["src/GAME/80200000.CPP"])
+        self.assertEqual(self.d["stops"], {})
+        # An older closure's dead-end stop for such a target is dropped so this round routes it.
+        self.d["sources"].clear()
+        self.d["stops"]["func_80200000_de"] = "no linked definition at 0000000"
+        closure.tidy(self.d, self.facts)
+        self.assertEqual(self.d["stops"], {})
+        # At the frontier the target waits as a frontier stop; a libultra target goes to the shim, never linked.
+        self.d["bindings"].clear()
+        self.route("D_00200000", frontier=True)
+        self.assertIn("(boot frontier)", self.d["stops"]["func_80200000_de"])
+        self.route("D_002BFEB0")
+        self.assertEqual(self.d["bindings"]["func_802BADC0_de"], "osGetTime")
+        self.assertEqual(self.d["sources"], [])
+
+    def test_data_defined_only_for_another_version_binds_its_pin(self):
+        unit = "src/GAME/table.CPP"
+        self.facts.text[unit] = "#if defined(VERSION_DE)\nunsigned int D_80100000[] = {\n    1,\n};\n#endif\n"
+        self.assertEqual(self.route("D_80100000"), ("added", unit))
+        # Linked and still undefined: the definition is for another version; the pinned address binds it.
+        self.assertEqual(self.route("D_80100000"), ("routed", "data 0x80104000"))
+        self.assertEqual(self.d["data"]["D_80100000"], "0x80104000")
+
+    def test_linker_script_binding_target_counts_as_undefined(self):
+        log = ("bindings.ld:321: undefined symbol `func_802953FC_us_rev1' referenced in expression\n"
+               "a.o: in function `f': undefined reference to `func_80200000_de'\n")
+        self.assertEqual(closure.undefined_symbols(log), ["func_80200000_de", "func_802953FC_us_rev1"])
 
     def test_data_is_never_a_stop(self):
         kind, detail = self.route("D_80999999")
