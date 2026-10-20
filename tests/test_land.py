@@ -150,7 +150,8 @@ class LandTests(unittest.TestCase):
         )
         self.assertTrue(self.commands[1][1])  # UNBAKE_HOST reaches the check command
         self.assertEqual(
-            self.unbake, [("setup",), ("sync",), ("sync",), ("sync", "--check"), ("audit", "--against", self.base)]
+            self.unbake,
+            [("setup",), ("sync",), ("verify", "0"), ("sync",), ("sync", "--check"), ("audit", "--against", self.base)],
         )
         self.assertEqual([e["kind"] for e in self.events], ["LAND"])
         self.assertEqual(self.events[0]["status"], "passed")
@@ -1101,6 +1102,18 @@ class LandTests(unittest.TestCase):
         result, code, findings = self.land([one])
         self.assertEqual((code, findings[0]["key"], findings[0]["tail"]), (1, "land.check", "boom"))
         self.assertIsNone(self.gates(result)["sync_after"])
+        self.assertIn(("verify", "2"), self.unbake)  # a failed build revokes the recorded credit
+
+    def test_the_check_gate_records_the_verdict_and_fails_when_verify_refuses_the_roms(self):
+        """The project's build never calls our tools: land records the verdict with `unbake verify STATUS`, and a
+        build that exits 0 but whose ROMs verify refuses fails the check gate."""
+        one = self.patch("L1", {"c.c": C_C + "// x\n"})
+        self.sync_ok = lambda args: args[0] != "verify"
+        result, code, findings = self.land([one])
+        self.assertEqual((code, findings[0]["key"]), (1, "land.check"))
+        self.assertIn("unbake verify refused", findings[0]["message"])
+        self.assertFalse(self.gates(result)["check"])
+        self.assertEqual(self.unbake[:3], [("setup",), ("sync",), ("verify", "0")])
 
     def test_event_writer_failure_fails_the_landing(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})

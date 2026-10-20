@@ -5,8 +5,9 @@ refused), so a venv's provenance is always a commit that `decomp dependencies` c
 installed the pins that must agree are compared and the ones that would have to move are printed:
 
   decomp's pyproject pins of unbake, Recipe Maker and Cake Taste (at DECOMP_SHA) against the commits asked for;
-  Recipe Maker's own pin of unbake (at its commit) against the unbake commit;
-  the project's pin file (`tools.pin_file`, default ci/run) against the version each commit declares.
+  Recipe Maker's own pin of unbake (at its commit) against the unbake commit.
+
+A game project pins none of our tools (it builds with its own make), so a deploy never asks a project to move.
 
 Any mismatch refuses the deploy and names the file, the pin, what it says now and what it must say. When they agree,
 each checkout the seat names in `tools.checkouts` (a tool's code run from a git checkout) is brought to the pinned
@@ -86,26 +87,6 @@ def pins_of(pyproject: str) -> dict[str, dict[str, str]]:
     return found
 
 
-def version_of(pyproject: str, url: str, sha: str, fetch: Fetch) -> str:
-    """The version a pyproject declares: its `version`, or the `__version__` of the module a setuptools dynamic
-    version names (`attr = "pkg.__version__"`, read from the package's __init__.py at the same commit)."""
-    document = tomllib.loads(pyproject)
-    if version := document.get("project", {}).get("version"):
-        return str(version)
-    attr = document.get("tool", {}).get("setuptools", {}).get("dynamic", {}).get("version", {}).get("attr", "")
-    module = attr.rpartition(".")[0].replace(".", "/")
-    if not module:
-        return ""
-    for base in ("src/", ""):
-        try:
-            text = fetch(url, sha, f"{base}{module}/__init__.py")
-        except DeployError:
-            continue
-        if found := re.search(r"""^__version__\s*=\s*["']([^"']+)["']""", text, re.M):
-            return found[1]
-    return ""
-
-
 def check_sha(label: str, value: str) -> str:
     if not SHA.fullmatch(value):
         raise DeployError(
@@ -114,14 +95,11 @@ def check_sha(label: str, value: str) -> str:
     return value
 
 
-def plan(
-    decomp: str, wanted: dict[str, str], fetch: Fetch, pin_file: Path | None
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+def plan(decomp: str, wanted: dict[str, str], fetch: Fetch) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """(requirements to install, pins that must move). `wanted` maps tool command to the commit asked for."""
     own = pins_of(fetch(DECOMP_URL, decomp, "pyproject.toml"))
     moves: list[dict[str, str]] = []
     requirements = [{"name": tools.DISTRIBUTION, "url": DECOMP_URL, "commit": decomp}]
-    versions: dict[str, str] = {}
     tool_pyprojects: dict[str, str] = {}
     for command, tool in tools.TOOLS.items():
         pin = own.get(tools._normal(tool.distribution))
@@ -140,7 +118,6 @@ def plan(
             )
         requirements.append({"name": pin["name"], "url": pin["url"], "commit": commit})
         tool_pyprojects[command] = fetch(pin["url"], commit, "pyproject.toml")
-        versions[command] = version_of(tool_pyprojects[command], pin["url"], commit, fetch)
     unbake_commit = next(r["commit"] for r in requirements if tools._normal(r["name"]) == "unbake")
     recipe_pin = pins_of(tool_pyprojects["recipe"]).get("unbake")
     if recipe_pin is None or recipe_pin["commit"] != unbake_commit:
@@ -153,18 +130,6 @@ def plan(
                 "why": "Recipe Maker must pin the deployed unbake, then decomp's Recipe pin moves to that commit",
             }
         )
-    if pin_file is not None:
-        for command, version in tools.project_pins(pin_file).items():
-            if versions.get(command) != version:
-                moves.append(
-                    {
-                        "file": str(pin_file),
-                        "pin": command,
-                        "now": version,
-                        "must": versions.get(command, "?"),
-                        "why": f"the {command} commit being deployed declares version {versions.get(command)}",
-                    }
-                )
     return requirements, moves
 
 
@@ -390,7 +355,7 @@ def deploy(
                 "deploy.migrate", f"{venv} is a real directory, not a symlink; run once with --migrate to convert it"
             )
     project = tools.project_dir(profile)
-    requirements, moves = plan(decomp, wanted, fetch, tools.pin_file_of(profile, project))
+    requirements, moves = plan(decomp, wanted, fetch)
     findings = [
         {
             "key": "deploy.pin_must_move",

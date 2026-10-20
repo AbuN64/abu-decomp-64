@@ -28,7 +28,6 @@ class SeatTreeTests(unittest.TestCase):
             ("abu_decomp.tools.subprocess.run", {"return_value": done}),
             ("abu_decomp.tools.verify_dependencies", {"return_value": {}}),
             ("abu_decomp.tools.require_checkouts", {}),
-            ("abu_decomp.tools.pin_findings", {"return_value": []}),
         ):
             patcher = mock.patch(target, **kwargs)
             patcher.start()

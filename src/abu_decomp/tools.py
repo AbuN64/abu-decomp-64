@@ -156,7 +156,7 @@ class TasteSettings:
     taste_profile: Path | None
 
 
-_TOOLS_KEYS = frozenset({"project", "host", "timeout_seconds", "taste_profile", "pin_file", "checkouts", "run_slice"})
+_TOOLS_KEYS = frozenset({"project", "host", "timeout_seconds", "taste_profile", "checkouts", "run_slice"})
 
 
 def _table(profile: Profile, *needed: str) -> dict[str, Any]:
@@ -413,11 +413,9 @@ def require_named_tree(profile: Profile, tool: str, given: Sequence[str], projec
 
 
 def ready(profile: Profile, project: Path) -> None:
-    """Refuse, before anything runs on `project`, when the installed tools are not the pinned ones or the project's
-    own pin file names other versions: the checks every invoke on another tree makes, for a caller that writes to that
-    tree first (a landing) and must refuse before it does."""
-    if refused := pin_findings(profile, project):
-        raise DependencyError("dependency.project_pin", "; ".join(refused))
+    """Refuse, before anything runs on `project`, when the installed tools are not the pinned ones: the check every
+    invoke on another tree makes, for a caller that writes to that tree first (a landing) and must refuse before it
+    does. A project pins none of our tools (it builds without them), so only decomp's own pins are compared."""
     verify_dependencies()
 
 
@@ -545,8 +543,6 @@ def api_call(
         raise DependencyError("dependency.arguments", f"unbake api call {function} is not allowed")
     chosen = settings(profile, project, host)
     require_checkouts(profile, ["unbake"])
-    if project and (refused := pin_findings(profile, chosen.project)):
-        raise DependencyError("dependency.project_pin", "; ".join(refused))
     verify_dependencies()
     environment = dict(os.environ)
     environment["UNBAKE_HOST"] = str(chosen.host)
@@ -578,47 +574,3 @@ def api_call(
         {"call": f"api {function}", "report": None if seen is None else ({f"api {function}": seen} if seen else {})}
     )
     return value
-
-
-# The wheel a project installs, named in its pin file: .../download/v0.5.7/unbake-0.5.7-py3-none-any.whl
-_WHEEL = re.compile(
-    r"/(?P<name>[A-Za-z0-9_.]+)-(?P<version>[0-9][A-Za-z0-9.]*)-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+\.whl"
-)
-
-
-def project_pins(file: Path) -> dict[str, str]:
-    """Tool command -> version the project's pin file installs (empty when it pins none of ours)."""
-    found: dict[str, str] = {}
-    for match in _WHEEL.finditer(file.read_text(errors="replace")):
-        for command, tool in TOOLS.items():
-            if _normal(match["name"]) == _normal(tool.distribution):
-                found[command] = match["version"]
-    return found
-
-
-def pin_file_of(profile: Profile, tree: Path) -> Path | None:
-    """The project pin file (`tools.pin_file`, default ci/run) in `tree` or the nearest ancestor that has one."""
-    try:
-        name = profile.section("tools").get("pin_file", "ci/run")
-    except DecompError:
-        return None
-    for directory in (tree, *tree.parents):
-        if (directory / name).is_file():
-            return directory / name
-        if (directory / ".git").exists():
-            break  # the project root: a pin file above it belongs to something else
-    return None
-
-
-def pin_findings(profile: Profile, tree: Path) -> list[str]:
-    """Why the pinned tools decomp would run on `tree` differ from the project's own pin; empty when they agree."""
-    file = pin_file_of(profile, tree.resolve())
-    if file is None:
-        return []
-    verify_dependencies()
-    findings = []
-    for command, wanted in project_pins(file).items():
-        have = metadata.distribution(TOOLS[command].distribution).version
-        if have != wanted:
-            findings.append(f"{command} {have} is installed with decomp but {file} pins {wanted}")
-    return findings

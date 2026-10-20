@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import abu_decomp
-from abu_decomp import DecompError, config, tools
+from abu_decomp import DecompError, config
 from abu_decomp.config import Profile
 from abu_decomp.lanes import Ladder, Lane, continuation, jobs, overlap_findings, registry, steer
 
@@ -119,9 +119,6 @@ def launch(
             raise DecompError("lanes.arguments", f"--cwd must be an existing absolute directory: {cwd}")
     ladder = Ladder.load(seat.ladder)
     rung = ladder.check(spec["kind"], spec["model"], spec.get("owner_override"))
-    # The lane runs the tool installed with decomp, so it must be the version its project's own pin names.
-    if refused := tools.pin_findings(profile, cwd):
-        raise DecompError("lanes.tool_pin", "; ".join(refused))
     unit = unit_of(name)
     socket = seat.socket_dir / f"{name}.sock"
     lane = Lane(

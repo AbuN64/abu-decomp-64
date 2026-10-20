@@ -41,15 +41,18 @@ Gates, in order; the first failure stops the run and the rest are reported as sk
                exactly the versions whose symbol facts, yaml or ROM changed (unbake stamps each version's extraction
                in the tree), then builds
   sync         `unbake sync`
-  check        the configured check command as `unbake-run [--work N] -- CHECK -j{j}` (N, the admit answer, caps it)
+  check        the configured check command as `unbake-run [--work N] -- CHECK -j{j}` (N, the admit answer, caps it),
+               then `unbake verify STATUS` with its exit: the project's build never calls our tools, so the verdict
+               the report and sync read is recorded here (a refused verify fails the gate)
   sync_after   `unbake sync` again, after check
   sync_check   `unbake sync --check`
   If setup, sync, check, sync_after or sync_check fails with more than one input landed, the failure is bisected by
   input: the tree is rebuilt with growing prefixes of the inputs (warm caches, ceil(log2 n) builds) until the first
   input whose presence breaks the build is found; that input is refused alone (`land.input_build_failed`, the build's
   reason; the result's `refused_inputs`) and the rest are built again. `attempts` lists every build.
-  audit        `unbake audit --against BASE`, the call the project's own `ci/run audit` makes, on the final tree: the
-               source rules the landing adds over the base (raw-offset, ...) are refused here exactly as CI refuses them
+  audit        `unbake audit --against BASE` on the final tree: the source rules the landing adds over the base
+               (raw-offset, ...) are refused here; the project's own CI runs only its standalone build check, so this
+               gate and sync_check are where those rules hold
   markers      no marker line (INCLUDE_ASM, NON_MATCHING, ...) added in a file no applied patch touched
   untracked_s  no untracked assembly file (every one a patch or sync produced is tracked or staged)
   readme       no code percentage in the README lower than at the base, unless an input declares the fall:
@@ -1251,7 +1254,18 @@ class Landing:
         if code:
             tail = "\n".join((out + err).strip().splitlines()[-12:])
             self.fail("land.check", f"{' '.join(command)} exited {code}", tail=tail)
-        return self.gate("check", code == 0, started, jobs=jobs, command=command)
+        # The project's build never calls our tools: the verdict the report and sync read is recorded from here,
+        # with the build's exit (a failed build revokes credit), by the same pinned unbake the other gates run.
+        verdict = self.invoke("unbake", self.profile, ["verify", str(code)], project=self.tree)
+        if not code and not verdict.ok:
+            found = verdict.document.get("findings") or [{"message": f"unbake verify exited {verdict.returncode}"}]
+            self.fail(
+                "land.check",
+                f"unbake verify refused the built ROMs: {found[0].get('message') or found[0].get('key')}",
+                unbake_findings=found[:10],
+            )
+        passed = code == 0 and verdict.ok
+        return self.gate("check", passed, started, jobs=jobs, command=command)
 
     # post-run gates -----------------------------------------------------------------------------------------------
     def changed_files(self) -> list[str]:

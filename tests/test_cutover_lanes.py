@@ -152,23 +152,17 @@ class ProjectTargetTests(unittest.TestCase):
             tools.invoke("taste", self.profile, ["profile"], project=self.root / "tree")
         self.assertEqual(caught.exception.key, "dependency.arguments")
 
-    def test_a_tree_whose_own_pin_differs_from_the_installed_tool_is_refused(self):
+    def test_a_tree_that_still_names_another_tool_version_is_not_refused(self):
+        """A game project pins none of our tools: an old wheel line left in a tree's files is inert text, and the
+        installed tool runs on the tree (a tool release never asks a project to move)."""
+        envelope = {"ok": True, "result": {}, "findings": [], "stages": [], "invocation": "x"}
+        done = subprocess.CompletedProcess([], 0, json.dumps(envelope).encode(), b"")
         old = Distribution("https://github.com/AbuN64/cake-unbake-64", "a" * 40, version="0.5.5")
-        with installed(unbake=old), mock.patch("abu_decomp.tools.subprocess.run") as call:
-            with self.assertRaises(tools.DependencyError) as caught:
-                tools.invoke("unbake", self.profile, ["status"], project=self.root / "tree")
-            self.assertEqual(caught.exception.key, "dependency.project_pin")
-            self.assertIn("pins 0.5.11", caught.exception.detail)
-            call.assert_not_called()
-
-    def test_pin_file_lookup_stops_at_the_project_root(self):
-        (self.root / "ci").mkdir()
-        (self.root / "ci/run").write_text(WHEEL)
-        (self.root / "tree/sub").mkdir()
-        self.assertEqual(tools.pin_file_of(self.profile, self.root / "tree/sub"), self.root / "tree/ci/run")
-        (self.root / "nogit").mkdir()
-        (self.root / "bare/.git").mkdir(parents=True)
-        self.assertIsNone(tools.pin_file_of(self.profile, self.root / "bare"))
+        with installed(unbake=old), mock.patch("abu_decomp.tools.subprocess.run", return_value=done) as call:
+            self.assertTrue(tools.invoke("unbake", self.profile, ["status"], project=self.root / "tree").ok)
+            tools.ready(self.profile, self.root / "tree")
+        call.assert_called_once()
+        self.assertFalse(hasattr(tools, "pin_findings") or hasattr(tools, "pin_file_of"))
 
 
 class LaunchPinTests(unittest.TestCase):
@@ -211,14 +205,11 @@ class LaunchPinTests(unittest.TestCase):
             "continues": 2, "done_when": "result", "fanout": "disabled", "max_agents": 0,
         }  # fmt: skip
 
-    def test_launch_refuses_a_tool_that_differs_from_the_project_pin_and_names_the_finding(self):
+    def test_launch_never_compares_the_installed_tool_with_a_file_of_the_project(self):
         old = Distribution("https://github.com/AbuN64/cake-unbake-64", "a" * 40, version="0.5.5")
-        with installed(unbake=old), self.assertRaises(DecompError) as caught:
+        with installed(unbake=old):
             control.launch(self.profile, self.spec)
-        self.assertEqual(caught.exception.key, "lanes.tool_pin")
-        self.assertIn("unbake 0.5.5 is installed with decomp but", caught.exception.detail)
-        self.assertEqual(self.started, [])
-        self.assertFalse((self.root / "lanes.json").exists())
+        self.assertEqual(len(self.started), 1)
 
     def test_launch_passes_when_the_pins_agree_and_hands_the_runner_the_profile(self):
         ok = Distribution("https://github.com/AbuN64/cake-unbake-64", "a" * 40, version="0.5.11")

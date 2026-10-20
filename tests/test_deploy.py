@@ -132,9 +132,15 @@ class DeployTests(unittest.TestCase):
         moves = {(m["file"], m["pin"]): (m["now"], m["must"]) for m in result["pins_to_move"]}
         self.assertEqual(moves[("abu-decomp-64 pyproject.toml", "unbake")], (U1, U2))
         self.assertEqual(moves[("abu-decomp-64 pyproject.toml", "recipemaker")], (R1, R2))
-        self.assertEqual(moves[(str(self.project / "ci" / "run"), "unbake")], ("0.5.12", "0.5.13"))
+        self.assertFalse([f for f, _ in moves if f.startswith(str(self.project))])  # a project is never a pin
         self.assertNotIn(("recipe-maker-64 pyproject.toml", "unbake"), moves)  # R2 already pins U2
         self.assertTrue(all(f["key"] == "deploy.pin_must_move" and f["blocking"] for f in findings))
+
+    def test_a_project_file_naming_another_tool_version_never_blocks_a_deploy(self):
+        """Game projects build standalone and pin none of our tools: a tool release never asks a project to move."""
+        self.pin_file(unbake="0.4.0")
+        result, code, findings = self.deploy(unbake=U1)
+        self.assertEqual((code, findings, result["pins_to_move"]), (0, [], []))
 
     def test_recipe_pinning_another_unbake_must_move(self):
         result, code, _ = self.deploy(unbake=U2)
