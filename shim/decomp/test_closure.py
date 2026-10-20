@@ -495,14 +495,14 @@ class RouteTests(unittest.TestCase):
         subprocess.run(git + ["mv", "src/SCHED/8023A284_18.CPP", "src/SCHED/Sched_Main.CPP"], check=True)
         subprocess.run(git + ["commit", "-qm", "b"], check=True)
         new = subprocess.run(git + ["rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-        for name, text in [(repin.PIN_FILES[0], json.dumps({"source_pin": old, "sources": ["src/SCHED/8023A284_18.CPP"]})), ("cmake/decomp.cmake", f"{old} x {old} pinned {old[:7]}"),
+        for name, text in [(repin.PIN_FILES[0], json.dumps({"source_pin": old, "sources": ["src/SCHED/8023A284_18.CPP"]})), ("cmake/decomp.cmake", f"GIT_TAG {old}"),
                            (repin.PIN_FILES[2], f"pin {old}")]:
             (root / name).parent.mkdir(parents=True, exist_ok=True)
             (root / name).write_text(text)
         self.assertEqual(repin.repin_files(root, new, rw), old)
         self.assertEqual(json.loads((root / repin.PIN_FILES[0]).read_text()),
                          {"source_pin": new, "sources": ["src/SCHED/Sched_Main.CPP"]}, "RW's unit rename is carried")
-        self.assertEqual((root / "cmake/decomp.cmake").read_text(), f"{new} x {new} pinned {new[:7]}")
+        self.assertEqual((root / "cmake/decomp.cmake").read_text(), f"GIT_TAG {new}")
         self.assertEqual((root / repin.PIN_FILES[2]).read_text(), f"pin {new}")
         self.assertIsNone(repin.repin_files(root, new, rw))
         wl = root / "wl.tsv"
@@ -598,4 +598,47 @@ class LinkAllTests(unittest.TestCase):
         self.assertNotIn("func_80200000_de", effective["stops"], "the archive defines it; the linker pulls the unit")
         self.assertNotIn("platform_call", effective["stops"], "a platform library name is the linker's")
         self.assertEqual(json.loads(manifest.read_text())["stops"], {}, "the committed manifest is untouched")
+    def autogen_tree(self, files, symbols, entry_c, member_c, stops=None):
+        source = self.root / "source"
+        (source / "src/GAME").mkdir(parents=True)
+        (source / "versions/us-rev1").mkdir(parents=True)
+        for name, text in files.items():
+            (source / "src/GAME" / name).write_text(text)
+        (source / "versions/us-rev1/symbol_addrs.txt").write_text(symbols)
+        boot = self.root / "boot"
+        boot.mkdir()
+        entry = self.compile("entry", entry_c)
+        members = [self.compile(n, text) for n, text in member_c.items()]
+        (boot / "linked-objects.txt").write_text(f"{entry}\n")
+        (boot / "image-objects.txt").write_text("")
+        (boot / "image.ld").write_text("")
+        (boot / "image.json").write_text("{}")
+        (self.root / "members.txt").write_text("".join(f"{m}\n" for m in members))
+        (self.root / "plan.txt").write_text("")
+        manifest = self.root / "us_rev1.json"
+        manifest.write_text(json.dumps({"source_pin": "abcdef0" + "0" * 33, "entry": "n64c_entry", "sources": [],
+                                        "data": {}, "bindings": {}, "stops": stops or {}}))
+        out = self.root / "effective.json"
+        linkall.autogen(["--source", str(source), "--manifest", str(manifest), "--boot", str(boot),
+                         "--objdir", str(self.root), "--plan", str(self.root / "plan.txt"),
+                         "--members", str(self.root / "members.txt"), "--output", str(out)])
+        return json.loads(out.read_text()), json.loads(manifest.read_text())
+    def test_autogen_replaces_a_committed_stop_the_pulled_member_defines(self):
+        effective, committed = self.autogen_tree(
+            {"A.CPP": "void func_80200100_de(void) {\n}\n"},
+            "func_80200100_de = 0x80200100; // type:func\n",
+            "void func_80200100_de(void); void n64c_entry(void){func_80200100_de();}\n",
+            {"a": "void func_80200100_de(void){}\n"},
+            stops={"func_80200100_de": "src/GAME/A.CPP defines it; not linked yet (boot frontier)"})
+        self.assertEqual(effective["stops"], {}, "the member defines it: the stop would be a multiple definition")
+        self.assertIn("func_80200100_de", committed["stops"], "the committed manifest is untouched")
+    def test_autogen_pulls_alias_targets_and_routes_their_own_undefined_names(self):
+        effective, _ = self.autogen_tree(
+            {"B.CPP": "void func_80200300_de(void) {\n}\n"},
+            "func_80200300_de = 0x80200300; // type:func\nfunc_80200400_de = 0x80200400; // type:func\n",
+            "extern int D_00200300; int n64c_entry(void){return D_00200300;}\n",
+            {"b": "void func_80200400_de(void); void func_80200300_de(void){func_80200400_de();}\n"})
+        self.assertEqual(effective["bindings"].get("D_00200300"), "func_80200300_de", "the alias binds to its function")
+        self.assertIn("func_80200400_de", effective["stops"],
+                      "the pulled target undefined name is routed (fixpoint), not left as a link failure")
 unittest.main(argv=[sys.argv[0]])
