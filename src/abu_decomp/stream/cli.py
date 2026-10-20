@@ -97,6 +97,8 @@ def run(profile: Any, argv: tuple[str, ...]) -> dict[str, Any]:
     shot.add_argument("--publish", action="store_true")
     commands.add_parser("status")
     commands.add_parser("up")
+    applying = commands.add_parser("apply")
+    applying.add_argument("--watch", action="store_true", help="keep overlay geometry current using window events")
     commands.add_parser("down")
     for name in ("restart", "stop"):
         acting = commands.add_parser(name)
@@ -134,6 +136,10 @@ def run(profile: Any, argv: tuple[str, ...]) -> dict[str, Any]:
         from .up import up
 
         return up(profile)
+    if args.action == "apply":
+        from .apply import apply
+
+        return apply(profile, watch=args.watch)
     if args.action == "role":
         from .up import run_role
 

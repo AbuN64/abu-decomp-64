@@ -15,14 +15,14 @@ HUD_HEIGHT = 50
 
 
 def validate(up: dict[str, Any]) -> tuple[list[str], ...]:
-    """Return the role ids of each column, top to bottom, from a grid of at least two rows and two columns.
+    """Return the role ids of each column, top to bottom, from a nonempty rectangular grid.
 
     A role id repeated in consecutive rows of one column is one tile spanning those rows (a tall tile); any other
     repeat is refused, as is an undefined role or a ragged row.
     """
     rows = up["tiles"]
-    if len(rows) < 2 or len(rows[0]) < 2 or any(len(row) != len(rows[0]) for row in rows):
-        raise LayoutError("tiles must be a grid of at least two rows and two columns of role ids")
+    if not rows or not rows[0] or any(len(row) != len(rows[0]) for row in rows):
+        raise LayoutError("tiles must be a nonempty rectangular grid of role ids")
     columns: list[list[str]] = []
     for column in range(len(rows[0])):
         stack: list[str] = []
@@ -37,6 +37,26 @@ def validate(up: dict[str, Any]) -> tuple[list[str], ...]:
     if missing:
         raise LayoutError("tiles name undefined roles: " + ", ".join(missing))
     return tuple(columns)
+
+
+def rectangles(up: dict[str, Any], area: tuple[int, int, int, int]) -> dict[str, tuple[int, int, int, int]]:
+    """Partition the workspace by configured weights; repeated rows span their combined weight."""
+    from .tiles import weights
+
+    columns = validate(up)
+    rows = up["tiles"]
+    cw = weights(up, "column_weights", len(columns))
+    rw = weights(up, "row_weights", len(rows))
+    ox, oy, aw, ah = area
+    xs = [ox + aw * sum(cw[:i]) // sum(cw) for i in range(len(cw) + 1)]
+    ys = [oy + ah * sum(rw[:i]) // sum(rw) for i in range(len(rw) + 1)]
+    found = {}
+    for col, stack in enumerate(columns):
+        for role in stack:
+            indices = [i for i, row in enumerate(rows) if row[col] == role]
+            start, end = indices[0], indices[-1] + 1
+            found[role] = xs[col], ys[start], xs[col + 1] - xs[col], ys[end] - ys[start]
+    return found
 
 
 def app_id(role: str, prefix: str = "tile-") -> str:
@@ -99,17 +119,67 @@ def overlays(
     terminal prints its overlay text there (see abu_decomp.console.hud).
     """
     ox, oy, aw, ah = area or (0, 0, int(up["output"]["width"]), int(up["output"]["height"]))
-    columns = validate(up)
-    tile_w = aw // len(columns)
     found = []
-    for col, ids in enumerate(columns):
-        tile_h = ah // len(ids)
-        for row, role in enumerate(ids):
-            overlay = up["roles"][role].get("overlay_app_id")
-            if overlay:
-                reserve = int(up["roles"][role]["hud"].get("height", HUD_HEIGHT)) if "hud" in up["roles"][role] else 0
-                found.append((role, overlay, ox + col * tile_w, oy + row * tile_h, tile_w, tile_h - reserve))
+    for role, (x, y, w, h) in rectangles(up, (ox, oy, aw, ah)).items():
+        spec = up["roles"][role]
+        overlay = spec.get("overlay_app_id")
+        if overlay:
+            h -= int(spec["hud"].get("height", HUD_HEIGHT)) if "hud" in spec else 0
+            pixels = spec.get("pixel_size")
+            if pixels is not None:
+                if (
+                    not isinstance(pixels, list)
+                    or len(pixels) != 2
+                    or any(type(v) is not int or v <= 0 for v in pixels)
+                ):
+                    raise LayoutError(f"role {role}: pixel_size requires two positive integers")
+                scale = min(w // pixels[0], h // pixels[1])
+                if scale < 1:
+                    raise LayoutError(f"role {role}: tile cannot fit one integer pixel_size")
+                w, h = pixels[0] * scale, pixels[1] * scale
+            if h < 1:
+                raise LayoutError(f"role {role}: HUD leaves no overlay space")
+            found.append((role, overlay, x, y, w, h))
     return found
+
+
+def size_tiles(ipc: Any, up: dict[str, Any]) -> None:
+    """Set column and row sizes on the tiling containers, then place the floating pictures."""
+    from .sway import _walk
+
+    tree = ipc.tree()
+    area = _workspace_area(tree)
+    if area is None:
+        raise LayoutError("stream workspace is absent")
+    rects = rectangles(up, area)
+    prefix = up.get("app_id_prefix", "tile-")
+    nodes = {node.get("app_id"): node for node in _walk(tree) if node.get("app_id")}
+    columns = validate(up)
+    for stack in columns:
+        top = nodes[app_id(stack[0], prefix)]
+        target = top
+        if len(stack) > 1:
+            target = next(node for node in _walk(tree) if top["id"] in [c["id"] for c in node.get("nodes", [])])
+        ipc.command(f"[con_id={target['id']}] resize set width {rects[stack[0]][2]} px")
+        for role in stack:
+            ipc.command(f"[con_id={nodes[app_id(role, prefix)]['id']}] resize set height {rects[role][3]} px")
+    for command in overlay_fixes(ipc.tree(), up):
+        ipc.command(command)
+
+
+def focus_default(ipc: Any, up: dict[str, Any]) -> None:
+    from .sway import _walk
+
+    role = up.get("focus_role")
+    if not role:
+        return
+    nodes = list(_walk(ipc.tree()))
+    candidates = [up["roles"][role].get("overlay_app_id"), app_id(role, up.get("app_id_prefix", "tile-"))]
+    for candidate in candidates:
+        node = next((node for node in nodes if candidate and node.get("app_id") == candidate), None)
+        if node:
+            ipc.command(f"[con_id={node['id']}] focus")
+            return
 
 
 def _workspace_area(tree: dict[str, Any]) -> tuple[int, int, int, int] | None:

@@ -173,6 +173,8 @@ def up(profile: Any) -> dict[str, Any]:
             group.start(Unit("tile-" + role, argv, {**child_env, "STREAM_READY": str(ready)}))
 
         layout.build_tree(ipc, config, spawn, lambda wanted: wait_window(ipc, wanted))
+        layout.size_tiles(ipc, config)
+        events = ipc.subscribe()
         ready.touch()
         for role, spec in config["roles"].items():
             if spec.get("headless"):
@@ -182,15 +184,17 @@ def up(profile: Any) -> dict[str, Any]:
             if service.get("after_tiles"):
                 start_service(name, service)
         transport.change(stream, "start")
-        events = ipc.subscribe()
 
         def fix_overlays() -> None:
             change = _receive(events)[1]
             if isinstance(change, dict) and change.get("change") != "close":
-                focus = layout.focus_command(change, config)
+                from abu_decomp.config import load_profile
+
+                current = up_config(load_profile(profile.source_file))
+                focus = layout.focus_command(change, current)
                 if focus:
                     ipc.command(focus)
-                for command in layout.overlay_fixes(ipc.tree(), config):
+                for command in layout.overlay_fixes(ipc.tree(), current):
                     ipc.command(command)
 
         group.watch(events.fileno(), fix_overlays)

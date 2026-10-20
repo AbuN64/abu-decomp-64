@@ -27,7 +27,7 @@ class FakeIpc:
 class LayoutTests(unittest.TestCase):
     def test_validate_rejects_bad_grids(self):
         with self.assertRaises(layout.LayoutError):
-            layout.validate({**UP, "tiles": [["a", "b"]]})
+            layout.validate({**UP, "tiles": []})
         with self.assertRaises(layout.LayoutError):
             layout.validate({**UP, "tiles": [["a", "a"], ["c", "d"]]})
         with self.assertRaises(layout.LayoutError):
