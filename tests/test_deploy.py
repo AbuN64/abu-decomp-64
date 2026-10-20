@@ -125,6 +125,23 @@ class DeployTests(unittest.TestCase):
             any(c[:1] == [str(self.root / "venv-a" / "bin" / "python")] and "pip" in c for c in self.commands)
         )
 
+    def test_services_are_restarted_after_the_swap_and_a_failed_restart_rolls_the_link_back(self):
+        seen = []
+        result, code, findings = self.deploy(extra={"restart": lambda live: (seen.append(os.path.realpath(live)) or [], [])})
+        self.assertEqual((code, seen), (0, [str(self.root / f"venv-a.{D1[:12]}")]))  # restarted on the new venv
+        bad = {"key": "deploy.restart_failed", "blocking": True, "message": "sup not back"}
+        calls = []
+
+        def restart(live):
+            calls.append(os.path.realpath(live))
+            return ([], [bad]) if len(calls) == 1 else ([], [])
+
+        result, code, findings = self.deploy(venvs=("venv-b",), extra={"restart": restart})
+        self.assertEqual(code, 1)
+        self.assertIn(bad, findings)
+        self.assertEqual(os.path.realpath(self.root / "venv-b"), str(self.root / "venv-b.old"))  # back on the old venv
+        self.assertEqual(len(calls), 2)  # the units were restarted again onto the old venv
+
     def test_pins_that_disagree_are_named_and_nothing_is_installed(self):
         result, code, findings = self.deploy(unbake=U2, recipe=R2)
         self.assertEqual(code, 1)

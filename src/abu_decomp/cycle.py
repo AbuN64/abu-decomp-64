@@ -38,8 +38,10 @@ from __future__ import annotations
 import json
 import os
 import select
+import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -281,6 +283,12 @@ class Cycle:
         burst: list[str] = []
         landed: list[str] = []
         deadline: float | None = None
+        # SIGTERM (a deploy restarting the service on new code) is graceful: the run in progress finishes first.
+        stop_read, stop_write = os.pipe()
+        os.set_blocking(stop_write, False)
+        main = threading.current_thread() is threading.main_thread()
+        previous = signal.signal(signal.SIGTERM, lambda *_: os.write(stop_write, b"x")) if main else None
+        fds[stop_read] = None
         if self.land_refs:
             self.land_refs.scan()
         if self.refs and self.refs.scan():  # commits that landed while the cycle was down
@@ -292,11 +300,13 @@ class Cycle:
             wakes = [*pulls.values(), *([deadline] if deadline is not None else [])]
             timeout = None if not wakes else max(0.0, min(wakes) - time.monotonic())
             ready = select.select([self.watcher.fd, *fds], [], [], timeout)[0]
+            if stop_read in ready:
+                break
             woke = []
             if self.watcher.fd in ready:
                 woke.extend(self.relevant(self.watcher.read()))
             for fd, source in fds.items():
-                if fd in ready:
+                if fd in ready and source is not None:
                     drain(fd)
                     if source.scan() and source is self.refs:
                         woke.append("landed refs")
@@ -315,6 +325,10 @@ class Cycle:
             elif deadline is not None and time.monotonic() >= deadline:
                 self.run(burst, landed)
                 burst, landed, deadline = [], [], None
+        if main:
+            signal.signal(signal.SIGTERM, previous)
+        os.close(stop_read)
+        os.close(stop_write)
         return self.runs
 
     def close(self) -> None:

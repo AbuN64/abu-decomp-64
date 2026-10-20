@@ -9,12 +9,20 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import audio, cursor, layout, transport
+from . import audio, cursor, layout, services, transport
 from .control import pidfile
 from .inotify import wait_for_path
 from .supervise import FatalUnitExit, Group, RoleRunner, Unit
 from .sway import SwayIPC, _receive
 from .tiles import up_config
+
+
+DEFAULT_RESTART = 5.0  # a service that exits is started again after this many seconds; `"restart_seconds": null` runs it once
+
+
+def restart_seconds(service: dict[str, Any]) -> float | None:
+    value = service.get("restart_seconds", DEFAULT_RESTART)
+    return None if value is None else float(value)
 
 
 def endpoint_url(up: dict[str, Any]) -> str:
@@ -26,7 +34,7 @@ def endpoint_url(up: dict[str, Any]) -> str:
 
 def substitutions(profile: Any, up: dict[str, Any], run_dir: Path, display: str = "") -> dict[str, str]:
     return {
-        "python": sys.executable,
+        "python": services.stable_python(),
         "profile": str(profile.source_file),
         "run_dir": str(run_dir),
         "wayland_display": display,
@@ -104,6 +112,15 @@ def up(profile: Any) -> dict[str, Any]:
         )
     )
     group = Group()
+    unit_dir = services.units_dir(run_dir)
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    for old in unit_dir.glob("*.json"):
+        old.unlink(missing_ok=True)  # records of a previous stream up; every unit writes its own again
+    services.record(run_dir, services.UP, os.getpid(), kind="up", venv=os.path.realpath(sys.prefix), python=services.stable_python())
+    named = set(config.get("services", {}))
+    group.on_spawn = lambda unit: (
+        services.record(run_dir, unit.name, unit.process.pid, kind="service") if unit.name in named else None
+    )
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
         sway_env = {**base_env, **format_env(config.get("compositor_env", {}), substitutions(profile, config, run_dir))}
@@ -126,7 +143,7 @@ def up(profile: Any) -> dict[str, Any]:
                     name,
                     format_command(service["command"], mapping),
                     {**child_env, **format_env(service.get("env", {}), mapping)},
-                    service.get("restart_seconds"),
+                    restart_seconds(service),
                 )
             )
 
@@ -140,7 +157,7 @@ def up(profile: Any) -> dict[str, Any]:
         def spawn(role: str) -> None:
             argv = format_command(terminal, {**mapping, "app_id": layout.app_id(role, prefix)})
             argv += [
-                sys.executable,
+                services.stable_python(),
                 "-m",
                 "abu_decomp",
                 "--profile",
@@ -156,7 +173,7 @@ def up(profile: Any) -> dict[str, Any]:
         ready.touch()
         for role, spec in config["roles"].items():
             if spec.get("headless"):
-                argv = [sys.executable, "-m", "abu_decomp", "--profile", str(profile.source_file)]
+                argv = [services.stable_python(), "-m", "abu_decomp", "--profile", str(profile.source_file)]
                 group.start(Unit("role-" + role, [*argv, "stream", "role", "--id", role], child_env))
         for name, service in config.get("services", {}).items():
             if service.get("after_tiles"):
@@ -203,7 +220,12 @@ def run_role(profile: Any, role: str) -> dict[str, Any]:
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     pid_path.write_text(str(os.getpid()))
     try:
-        RoleRunner(role_command(config, role, mapping), title=spec.get("title", role)).serve()
+        python = services.stable_python()
+        RoleRunner(
+            role_command(config, role, mapping),
+            title=spec.get("title", role),
+            on_start=lambda: services.record(run_dir, role, os.getpid(), kind="role", python=python),
+        ).serve()
     finally:
         pid_path.unlink(missing_ok=True)
     return {"role": role}

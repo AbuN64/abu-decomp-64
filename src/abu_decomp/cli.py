@@ -266,6 +266,9 @@ def _tools_arguments(parser: argparse.ArgumentParser) -> None:
         "deploy", help="install a decomp commit and its tools into venvs from git commits, after the pins agree"
     )
     deploy.add_argument("--sha", required=True, help="the decomp commit (40 hex)")
+    deploy.add_argument(
+        "--no-restart", dest="restart", action="store_false", help="leave running stream units on the old venv"
+    )
     for tool in ("unbake", "recipe", "taste"):
         deploy.add_argument(f"--{tool}", help=f"the {tool} commit to deploy (default: the one decomp pins)")
     deploy.add_argument("--venv", type=Path, required=True, nargs="+", help="live venv paths (symlinks) to deploy to")
@@ -274,14 +277,29 @@ def _tools_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="convert a live venv that is still a real directory (once, needs it idle)",
     )
+    again = actions.add_parser(
+        "restart", help="restart the stream units still running code from an older venv than the live one"
+    )
+    again.add_argument("--venv", type=Path, required=True, nargs=1, help="the live venv path (symlink)")
 
 
 def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import deploy
 
-    commits = {tool: getattr(args, tool) for tool in ("unbake", "recipe", "taste")}
+    profile = _profile(args.profile)
     live = [Path(os.path.abspath(path)) for path in args.venv]  # never resolve: the live path is the symlink
-    return deploy.deploy(_profile(args.profile), args.sha, live, commits, migrate=args.migrate)
+    if args.action == "restart":
+        done, findings = deploy.restart_services(profile, live[0])
+        return {"restarts": done}, int(bool(findings)), findings
+    commits = {tool: getattr(args, tool) for tool in ("unbake", "recipe", "taste")}
+    return deploy.deploy(
+        profile,
+        args.sha,
+        live,
+        commits,
+        migrate=args.migrate,
+        restart=(lambda path: deploy.restart_services(profile, path)) if args.restart else None,
+    )
 
 
 def _probe_arguments(parser: argparse.ArgumentParser) -> None:

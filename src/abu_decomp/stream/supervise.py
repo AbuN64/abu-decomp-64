@@ -41,6 +41,7 @@ class Group:
         self.selector = selectors.DefaultSelector()
         self._popen, self._clock = popen, clock
         self._handlers: dict[int, Callable[[], None]] = {}
+        self.on_spawn: Callable[[Unit], None] | None = None  # called after every (re)start, with unit.process set
 
     def watch(self, fd: int, handler: Callable[[], None]) -> None:
         """Call handler whenever fd is readable, inside the same event loop as process exits."""
@@ -56,6 +57,8 @@ class Group:
         unit.process = self._popen(unit.command, env=env, start_new_session=True)
         unit.starts += 1
         unit.restart_at = None
+        if self.on_spawn:
+            self.on_spawn(unit)
         unit.pidfd = os.pidfd_open(unit.process.pid)
         self.selector.register(unit.pidfd, selectors.EVENT_READ, unit.name)
 
@@ -129,11 +132,17 @@ class RoleRunner:
     """
 
     def __init__(
-        self, command: Sequence[str], *, title: str, out: Any = None, popen: Callable[..., Any] = subprocess.Popen
+        self,
+        command: Sequence[str],
+        *,
+        title: str,
+        out: Any = None,
+        popen: Callable[..., Any] = subprocess.Popen,
+        on_start: Callable[[], None] | None = None,
     ):
         self.command, self.title = list(command), title
         self.out = out or sys.stdout
-        self._popen = popen
+        self._popen, self.on_start = popen, on_start
         self.child: Any = None
         self.starts = 0
 
@@ -143,6 +152,8 @@ class RoleRunner:
     def start(self) -> None:
         self.child = self._popen(self.command, start_new_session=True)
         self.starts += 1
+        if self.on_start:
+            self.on_start()
 
     def terminate(self, grace: float = 5.0) -> None:
         child, self.child = self.child, None

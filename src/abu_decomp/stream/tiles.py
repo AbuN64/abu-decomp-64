@@ -19,10 +19,11 @@ overlay in the bottom rows its window leaves uncovered (abu_decomp.console.hud);
 
 from __future__ import annotations
 
-import sys
 from typing import Any
 
 from abu_decomp import DecompError
+
+from .services import stable_python
 
 DUPLICATED = ("tiles", "roles", "focus_role")
 
@@ -39,7 +40,7 @@ def table(profile: Any) -> dict[str, Any]:
 
 
 def console_command(profile: Any, role: str, action: str = "tile") -> list[str]:
-    return [sys.executable, "-m", "abu_decomp", "--profile", str(profile.source_file), "console", action, role]
+    return [stable_python(), "-m", "abu_decomp", "--profile", str(profile.source_file), "console", action, role]
 
 
 def up_config(profile: Any) -> dict[str, Any]:

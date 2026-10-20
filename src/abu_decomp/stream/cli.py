@@ -119,6 +119,10 @@ def run(profile: Any, argv: tuple[str, ...]) -> dict[str, Any]:
         up_config = tiles.up_config(profile)
         run_dir = profile.resolve_path(up_config["run_dir"])
         control.guard_player(up_config, args.role, args.action, args.owner)
+        if args.action == "restart" and args.role in up_config.get("services", {}):
+            from . import services
+
+            return services.signal_unit(run_dir, up_config, args.role)
         if args.action == "send":
             return control.send(run_dir, up_config, args.role, args.keys)
         return getattr(control, args.action)(run_dir, args.role)
