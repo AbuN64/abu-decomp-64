@@ -446,9 +446,7 @@ def _behave_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cases", type=int, help="input combinations to run, capped (default: profile behave.cases)")
     parser.add_argument("--seed", type=int, default=1, help="seed of the deterministic input set (default 1)")
     parser.add_argument("--depth", type=int, help="calls deep the original callees run; deeper ones are stubs")
-    parser.add_argument(
-        "--no-capture", action="store_true", help="never ask the oracle for run-time memory when strict memory fails"
-    )
+    parser.add_argument("--no-capture", action="store_true", help="compare without the oracle's captured entry state")
     parser.add_argument("--capture-hit", type=int, default=1, help="which entry of the function the capture stops at")
 
 

@@ -1,11 +1,38 @@
 import random
 import unittest
+from typing import ClassVar
 
 from abu_decomp.behave import inputs as i
 from abu_decomp.behave import prototype as p
 
 PROTO = p.parse_declaration("void f(Actor *a, s32 n, f32 x, u8 flag);", "f", {})
 LAYOUT = i.Layout()
+
+
+class AroundTests(unittest.TestCase):
+    ENTRY: ClassVar[dict] = {
+        "name": "seed-f-hit1",
+        "registers": {"r4": "0x80100000", "r5": "0x7", "r6": "0x3f800000", "r7": "0xff", "r29": "0x80200000"},
+        "stub_calls": {"file": "/calls.json", "sha256": "ab" * 32},
+    }
+
+    def test_each_argument_but_the_pointer_moves_off_its_captured_value_in_turn(self):
+        rows = i.around(self.ENTRY, PROTO, 6)
+        self.assertEqual(
+            [r["name"].removeprefix("seed-f-hit1-") for r in rows],
+            ["n-plus1", "x-x2", "flag-plus1", "n-minus1", "x-neg", "flag-minus1"],
+        )
+        self.assertTrue(all(r["registers"]["r4"] == "0x80100000" for r in rows))  # the pointer stays real
+        self.assertEqual(rows[1]["registers"]["r6"], "0x40000000")  # 1.0f doubled, as float bits
+        self.assertEqual(rows[0]["labels"], {"seed": "seed-f-hit1", "n": "plus1"})
+        self.assertTrue(all(r["stub_calls"] == self.ENTRY["stub_calls"] for r in rows))  # same recorded callees
+        self.assertEqual(self.ENTRY["registers"]["r5"], "0x7")  # the entry case itself is untouched
+
+    def test_the_limit_caps_and_a_prototype_of_pointers_only_has_nothing_to_move(self):
+        self.assertEqual(len(i.around(self.ENTRY, PROTO, 2)), 2)
+        only = p.parse_declaration("void g(Actor *a, u8 *b);", "g", {})
+        self.assertEqual(i.around(self.ENTRY, only, 8), [])
+        self.assertEqual(i.around({"name": "e", "registers": {}}, PROTO, 8), [])  # no captured registers
 
 
 class PlanTests(unittest.TestCase):

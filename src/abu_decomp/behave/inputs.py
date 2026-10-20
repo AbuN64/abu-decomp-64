@@ -367,3 +367,49 @@ def seeded_cases(
                 **{name: 0 if number % 5 == 4 else answers[i].base for i, name in enumerate(learned.returns)},
             }
     return cases, regions
+
+
+_ARG_REGISTER = {"a0": "r4", "a1": "r5", "a2": "r6", "a3": "r7"}
+
+
+def _nearby(kind: str, value: int) -> list[tuple[str, int]]:
+    """Values next to a captured argument register value: the bits for a float, the 32-bit word otherwise."""
+    if kind == "float":
+        number = struct.unpack(">f", struct.pack(">I", value & 0xFFFFFFFF))[0]
+        moved = [("x2", number * 2), ("neg", -number), ("zero", 0.0)]
+        return [(label, struct.unpack(">I", struct.pack(">f", x))[0]) for label, x in moved]
+    if kind == "double":
+        number = struct.unpack(">d", struct.pack(">Q", value & 0xFFFFFFFFFFFFFFFF))[0]
+        moved = [("x2", number * 2), ("neg", -number), ("zero", 0.0)]
+        return [(label, struct.unpack(">Q", struct.pack(">d", x))[0]) for label, x in moved]
+    word = value & 0xFFFFFFFF
+    return [("plus1", (word + 1) & 0xFFFFFFFF), ("minus1", (word - 1) & 0xFFFFFFFF), ("zero", 0)]
+
+
+def around(entry: dict[str, Any], proto: Prototype, limit: int) -> list[dict[str, Any]]:
+    """Cases next to the captured entry: its registers and memory, one argument moved off its real value (one more,
+    one less, zero; twice, negated, zero for a float). Pointers stay where the game aimed them (the memory behind them
+    is the real input), stack arguments stay in the captured stack, and every argument gets a turn before any gets a
+    second one, up to `limit` cases."""
+    registers = entry.get("registers", {})
+    per_argument = []
+    for slot in argument_slots(proto):
+        kind, place = slot.param.kind, slot.where[0]
+        if kind in ("pointer", "funcptr", "struct") or len(slot.where) != 1 or place.startswith("stack:"):
+            continue
+        name = _ARG_REGISTER.get(place, place)
+        if name not in registers:
+            continue
+        rows = []
+        for label, value in _nearby(kind, int(str(registers[name]), 0)):
+            rows.append(
+                {
+                    **entry,
+                    "name": f"{entry['name']}-{slot.param.name}-{label}",
+                    "registers": {**registers, name: f"{value:#x}"},
+                    "labels": {"seed": entry["name"], slot.param.name: label},
+                }
+            )
+        per_argument.append(rows)
+    mixed = [row for turn in itertools.zip_longest(*per_argument) for row in turn if row is not None]
+    return mixed[:limit]

@@ -76,6 +76,7 @@ class RunTests(unittest.TestCase):
         )
         self.probes = []
         self.delta = 0
+        self.grab = None
 
     def fake_probe(self, profile, work, name, request, function):
         self.probes.append((name, request))
@@ -100,6 +101,7 @@ class RunTests(unittest.TestCase):
         stdout = io.StringIO()
         with (
             mock.patch.object(run, "probe", self.fake_probe),
+            mock.patch.object(run, "capture_seed", self.grab or (lambda *a: (None, "absent", "config.schema"))),
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             mock.patch.object(run.build_candidate, "build", build or (lambda *a, **k: image)),
             contextlib.redirect_stdout(stdout),
@@ -269,7 +271,9 @@ class RunTests(unittest.TestCase):
         stdout = io.StringIO()
         with (
             mock.patch.object(run, "probe", self.seeded_probe),
-            mock.patch.object(run, "capture_seed", lambda *a: (seed, "" if seed else "no capture section")),
+            mock.patch.object(
+                run, "capture_seed", lambda *a: (seed, "", "") if seed else (None, "none", "config.schema")
+            ),
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             mock.patch.object(
                 run.build_candidate,
@@ -307,11 +311,12 @@ class RunTests(unittest.TestCase):
             self.assertEqual(request["seed"]["memory"][0]["file"], "/ram.bin")
             self.assertEqual(request["sp"], "0x80123400")
             self.assertFalse(request.get("lenient"))
-            self.assertEqual(request["cases"][-1]["name"], "seed-f-hit1")  # the entry registers, one more case
-            self.assertEqual(request["cases"][-1]["registers"]["r4"], "0x80000100")
+            entry = next(c for c in request["cases"] if c["name"] == "seed-f-hit1")  # the entry registers, one case
+            self.assertEqual(entry["registers"]["r4"], "0x80000100")
+            self.assertEqual(request["cases"][-1]["name"], "seed-f-hit1-n-plus1")  # and one around it (8 // 8)
         learn = [r for n, r in self.probes if n == "learn"]
         self.assertTrue(all(r["cases"][-1]["name"] != "seed-f-hit1" for r in learn))
-        self.assertEqual(result["cases"], 9)
+        self.assertEqual(result["cases"], 10)
         self.assertEqual(result["verdict"], "same")
 
     def test_one_case_the_seed_cannot_finish_still_widens_the_memory_so_every_case_is_compared(self):
@@ -324,7 +329,7 @@ class RunTests(unittest.TestCase):
         stdout = io.StringIO()
         with (
             mock.patch.object(run, "probe", probe),
-            mock.patch.object(run, "capture_seed", lambda *a: (self.seed(), "")),
+            mock.patch.object(run, "capture_seed", lambda *a: (self.seed(), "", "")),
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             mock.patch.object(
                 run.build_candidate,
@@ -365,7 +370,7 @@ class RunTests(unittest.TestCase):
         stdout = io.StringIO()
         with (
             mock.patch.object(run, "probe", self.seeded_probe),
-            mock.patch.object(run, "capture_seed", lambda *a: called.append(a) or (None, "")),
+            mock.patch.object(run, "capture_seed", lambda *a: called.append(a) or (None, "", "")),
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             contextlib.redirect_stdout(stdout),
         ):
@@ -383,7 +388,7 @@ class RunTests(unittest.TestCase):
 
         def grab(*a):
             asked.append(a[-1])
-            return {**self.seed(), "capture": {**self.seed()["capture"], "stubs": list(a[-1])}}, ""
+            return {**self.seed(), "capture": {**self.seed()["capture"], "stubs": list(a[-1])}}, "", ""
 
         stdout = io.StringIO()
         with (
@@ -394,6 +399,109 @@ class RunTests(unittest.TestCase):
         ):
             main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6"])
         self.assertEqual(asked, [["g"]])  # asked once with the stubs of the probe, not again for the same set
+
+    def test_a_function_whose_strict_cases_all_ran_is_still_seeded_with_the_entry_and_cases_around_it(self):
+        self.grab = lambda *a: (self.seed(), "", "")
+        _, envelope = self.invoke("--candidate", str(self.candidate), "--cases", "16")
+        self.assertEqual(envelope["result"]["oracle_seed"]["function"], "f")
+        final = [r for n, r in self.probes if n in ("original", "candidate")][-2:]
+        for request in final:
+            self.assertEqual(request["seed"]["memory"][0]["file"], "/ram.bin")
+            names = [c["name"] for c in request["cases"]]
+            entry = names.index("seed-f-hit1")
+            # n (a1 = r5 = 7) moved off its real value; a (a pointer) stays where the game aimed it
+            self.assertEqual(names[entry + 1 :], ["seed-f-hit1-n-plus1", "seed-f-hit1-n-minus1"])
+            self.assertEqual(request["cases"][entry + 1]["registers"]["r5"], "0x8")
+            self.assertEqual(request["cases"][entry + 1]["registers"]["r4"], "0x80000100")
+        self.assertNotIn("behave.lenient", [f["key"] for f in envelope["findings"]])
+
+    def test_a_function_the_oracle_never_reaches_is_a_named_finding_not_a_silent_fallback(self):
+        self.grab = lambda *a: (None, "f entry hit 1 was not reached within 120s", "repro.capture.unreached")
+        _, envelope = self.invoke("--candidate", str(self.candidate), "--cases", "8")
+        found = {f["key"]: f["message"] for f in envelope["findings"]}
+        self.assertIn("behave.unreached", found)
+        self.assertIn("not reached within 120s", found["behave.unreached"])
+        self.assertNotIn("behave.seed", found)
+        self.assertEqual(envelope["result"]["verdict"], "same")
+
+    def test_a_stale_oracle_host_fails_the_command_instead_of_comparing_over_it(self):
+        def stale(*a):
+            raise run.BehaveError("behave.capture_setup", "repro.capture.stale_host: inputs changed")
+
+        self.grab = stale
+        code, envelope = self.invoke("--candidate", str(self.candidate), "--cases", "8")
+        self.assertEqual((code, envelope["findings"][0]["key"]), (1, "behave.capture_setup"))
+
+    def test_a_setup_finding_from_taste_is_raised_and_an_unreached_one_is_returned(self):
+        class Called:
+            def __init__(self, key):
+                self.ok, self.returncode = False, 1
+                self.document = {"findings": [{"key": key, "message": "why"}]}
+
+        profile = mock.Mock()
+        with (
+            mock.patch.object(run, "invoke", lambda *a, **k: Called("repro.capture.stale_host")),
+            self.assertRaises(run.BehaveError) as raised,
+        ):
+            run.capture_seed(profile, "v1", "0x80001000", 1, [])
+        self.assertEqual(raised.exception.key, "behave.capture_setup")
+        with mock.patch.object(run, "invoke", lambda *a, **k: Called("repro.capture.unreached")):
+            self.assertEqual(
+                run.capture_seed(profile, "v1", "0x80001000", 1, []), (None, "why", "repro.capture.unreached")
+            )
+
+    def test_each_process_writes_its_own_request_file_so_parallel_runs_never_swap_requests(self):
+        class Called:
+            ok, returncode = True, 0
+
+            def __init__(self, path):
+                self.document = {"result": {"probe": {"cases_path": str(path)}}}
+
+        seen = []
+        out = self.root / "cases.json"
+        out.write_text("[]")
+
+        def fake_invoke(tool, profile, argv):
+            seen.append(argv[argv.index("--input") + 1])
+            return Called(out)
+
+        with mock.patch.object(run, "invoke", fake_invoke), mock.patch.object(run.os, "getpid", lambda: 4242):
+            run.probe(mock.Mock(), self.root, "original", {"story": {"question": "q"}}, "0x80001000")
+        self.assertEqual(Path(seen[0]).name, "original-4242.json")
+
+    def test_a_candidate_run_holds_its_build_dir_lock_and_its_own_retries_reenter_it(self):
+        import fcntl
+
+        held = []
+
+        def probe(profile, work, name, request, function):
+            lock = next((self.root / "work" / "behave").glob("cand-*.lock"))
+            with lock.open("a+b") as other:
+                try:
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    held.append(False)
+                except BlockingIOError:
+                    held.append(True)
+            return self.seeded_probe(profile, work, name, request, function)
+
+        self.grab = lambda *a: (self.seed(), "", "")  # the seeded retry runs run() again inside the first
+        with mock.patch.object(self, "fake_probe", self.fake_probe), mock.patch.object(run, "probe", probe):
+            stdout = io.StringIO()
+            with (
+                mock.patch.object(run, "capture_seed", self.grab),
+                mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
+                mock.patch.object(
+                    run.build_candidate,
+                    "build",
+                    lambda *a, **k: cand.Image(
+                        self.root / "c.bin", 0x80800000, ({"name": "f", "offset": 0, "size": 0x40},), 0x40, "ab" * 32
+                    ),
+                ),
+                contextlib.redirect_stdout(stdout),
+            ):
+                main(["--profile", str(self.seat), "behave", "--function", "f", "--candidate", str(self.candidate)])
+        self.assertTrue(held and all(held))  # another process could not take it at any probe
+        self.assertEqual(run._HELD, {})  # released at the end
 
     def test_an_unknown_function_is_a_named_refusal(self):
         stdout = io.StringIO()
