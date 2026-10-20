@@ -1,7 +1,7 @@
 """The runner's own continuation: when a closing lane is continued without the orchestrator.
 
-A lane that ends with an unfinished RESULT or a context handoff is continued by `decomp lane continue`, so the
-registry, the ladder and the overlap guard apply exactly as for any launch. A lane whose RESULT says DONE ends.
+A lane that ends with an unfinished RESULT.md or a context handoff is continued by `decomp lane continue`, so the
+registry, the ladder and the overlap guard apply exactly as for any launch. A lane whose RESULT.md says DONE ends.
 """
 
 from __future__ import annotations
@@ -15,13 +15,13 @@ from pathlib import Path
 import abu_decomp
 from abu_decomp import DecompError
 
-# The one done marker: RESULT's (or RESULT.md's) first non-blank line is the word DONE, then end of line, a space or a
+# The one done marker: RESULT.md's first non-blank line is the word DONE, then end of line, a space or a
 # colon. Nothing else counts: "Status: COMPLETE", "RESULT: DONE" and a DONE on a later line are unfinished.
 DONE = re.compile(r"DONE(?:$|[\s:])")
 DONE_MARKER = "DONE"
 DONE_RULE = (
-    "Finished-lane contract: a lane that finished its whole task writes RESULT (or RESULT.md) whose FIRST line is "
-    f"exactly `{DONE_MARKER}`, the summary after it. No other wording ends a lane, so any RESULT without that first "
+    "Finished-lane contract: a lane that finished its whole task writes RESULT.md whose FIRST line is "
+    f"exactly `{DONE_MARKER}`, the summary after it. No other wording ends a lane, so any RESULT.md without that first "
     "line is continued; an unfinished lane must not write it."
 )
 TRAILING = re.compile(r"(\d+)$")
@@ -37,15 +37,12 @@ def next_name(name: str) -> str:
 
 
 def result_text(directory: Path) -> str:
-    for name in ("RESULT", "RESULT.md"):
-        path = directory / name
-        if path.is_file():
-            return path.read_text(errors="replace")
-    return ""
+    path = directory / "RESULT.md"
+    return path.read_text(errors="replace") if path.is_file() else ""
 
 
 def explicit_done(done_when: str, said: str) -> bool:
-    """RESULT ends the chain: `identical` lanes by ` identical `, `result` lanes by the first-line DONE marker."""
+    """RESULT.md ends the chain by the identical rule or the first-line DONE marker."""
     if done_when == "identical":
         return " identical " in said
     first = next((line for line in said.splitlines() if line.strip()), "")
@@ -57,7 +54,7 @@ COMMIT_ID = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b")
 
 
 def reported_commit(said: str) -> bool:
-    """RESULT names a commit it pushed, committed or landed: one line with a 7-40 hex id and one of those words."""
+    """RESULT.md names a commit it pushed, committed or landed: one line with a 7-40 hex id and one of those words."""
     return any(COMMIT_WORD.search(line) and COMMIT_ID.search(line) for line in said.splitlines())
 
 
@@ -89,13 +86,13 @@ def changed_export(exports: list[str], before: dict[str, str], since: float) -> 
 def progress(
     said: str, owns: list[str], since: float, exports: list[str] | None = None, before: dict[str, str] | None = None
 ) -> str:
-    """The evidence this link progressed (RESULT reports a commit, an owned tree gained one, an export changed).
+    """The evidence this link progressed (RESULT.md reports a commit, an owned tree gained one, an export changed).
 
     `exports` are the lane-declared files (under its owned dirs) that carry work instead of commits; `before` is their
     hashes when the link started, which equal the previous link's last ones. "" means no progress.
     """
     if reported_commit(said):
-        return "RESULT reports a commit"
+        return "RESULT.md reports a commit"
     if gained_commits(owns, since):
         return "an owned git tree gained a commit"
     if changed_export(exports or [], before or {}, since):
@@ -115,8 +112,8 @@ def plan(
 ) -> tuple[str, str]:
     """(action, why): `none` (not a closing we continue), `end` (done), `blocked` (no budget) or `continue`.
 
-    A link that closes while `waiting` rig jobs it started still run is not an ended one: it continues whatever RESULT
-    and HANDOFF say, and spends no budget (its successor adopts the jobs).
+    A link closing while its `waiting` rig jobs still run continues whatever RESULT.md and HANDOFF say,
+    and spends no budget (its successor adopts the jobs).
 
     A link that progressed (`progressed` names the evidence) spends no budget and continues; a link without progress
     spends one, and at 0 the chain stops: "budget spent".
@@ -124,12 +121,12 @@ def plan(
     if cancelled:
         return "none", "cancelled"
     if explicit_done(done_when, said):
-        return "end", "RESULT is DONE"
+        return "end", "RESULT.md is DONE"
     if waiting:
         return "continue", f"waiting on {waiting} rig job(s) it started; budget kept at {continues}"
     if not said.strip() and not (context and handoff):
-        return "none", "no RESULT and no context handoff"
-    what = "context handoff" if context and handoff else "unfinished RESULT"
+        return "none", "no RESULT.md and no context handoff"
+    what = "context handoff" if context and handoff else "unfinished RESULT.md"
     if progressed:
         return "continue", f"{what}; progressed ({progressed}), budget kept at {continues}"
     if continues <= 0:

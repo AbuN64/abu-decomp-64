@@ -147,12 +147,12 @@ def cleanup_command():
     return 0 if cleanup_lane(args.dir, args.dry_run) else 1
 
 
-# The stop rule --continues checks against RESULT (in --dir), named explicitly because the two kinds of
-# lane disagree on what "done" means. A function-drafting lane's RESULT keeps saying it is still trying
+# The stop rule --continues checks against RESULT.md (in --dir), named explicitly because the two kinds of
+# lane disagree on what "done" means. A function-drafting lane's RESULT.md keeps saying it is still trying
 # until it either matches (" identical ") or gives up, so anything else there means keep going. A
-# tool/integration lane's RESULT is written once, when the work is finished, so any non-empty RESULT
+# tool/integration lane's RESULT.md is written once, when the work is finished, so any non-empty RESULT.md
 # already means done -- checking for " identical " there told a finished integrator to keep going anyway,
-# four times, because an integrator's RESULT never says that word. DONE_WHEN was refused by name rather
+# four times, because an integrator's RESULT.md never says that word. DONE_WHEN was refused by name rather
 # than guessed because the two rules produce opposite answers on the same file and neither is a safe
 # default for the other kind of lane.
 DONE_WHEN = ("identical", "result")
@@ -168,12 +168,12 @@ class ContextCap:
     notice_template = (
         "CONTEXT HANDOFF: stop starting new work. Finish the current safe operation, preserve all "
         "work/proofs/backups, write HANDOFF.md with state paths, metrics, exact next action and open "
-        "routes, then end this turn. Write HANDOFF.md in the lane output directory; never write RESULT "
-        "for a context handoff. RESULT is reserved for the --done-when completion contract. "
-        "If unfinished, remove any handoff-only RESULT after preserving its contents in HANDOFF.md. "
+        "routes, then end this turn. Write HANDOFF.md in the lane output directory; never write RESULT.md "
+        "for a context handoff. RESULT.md is reserved for the --done-when completion contract. "
+        "If unfinished, remove any handoff-only RESULT.md after preserving its contents in HANDOFF.md. "
         "%s "
         "Do not compact or continue this thread. These lifecycle instructions supersede any "
-        "older instructions to write RESULT on handoff or wait for the owner to relaunch."
+        "older instructions to write RESULT.md on handoff or wait for the owner to relaunch."
     )
 
     def __init__(self):
@@ -249,7 +249,7 @@ class ContextCap:
 
 
 def is_done(done_when, said):
-    """True once RESULT's text (`said`) means this lane's turn is finished, under DONE_WHEN's rule."""
+    """True once RESULT.md's text (`said`) means this lane's turn is finished, under DONE_WHEN's rule."""
     if done_when == "identical":
         return " identical " in said
     if done_when == "result":
@@ -262,7 +262,7 @@ def handoff_only_result(said):
 
     A sole HANDOFF.md pointer (optionally `RESULT: `) or a first line exactly
     CONTEXT HANDOFF / starting ContextHandoff: explicitly declares a handoff.
-    All other RESULT text is passed unchanged to is_done, even if it mentions HANDOFF.
+    All other RESULT.md text is passed unchanged to is_done, even if it mentions HANDOFF.
     New handoffs must write only HANDOFF.md; this bridge preserves old pointer results.
     """
     lines = said.strip().splitlines()
@@ -370,7 +370,7 @@ def self_test():
         (lane / "rw/.git/sentinel").write_text("git protected")
         (lane / "rw/outside").symlink_to(outside, target_is_directory=True)
         (lane / "rw-external").symlink_to(outside, target_is_directory=True)
-        evidence = ("RESULT", "brief.md", "fix.patch", "fix.untracked", "proof.log", "data.json", "draft.c", "draft.h")
+        evidence = ("RESULT.md", "brief.md", "fix.patch", "fix.untracked", "proof.log", "data.json", "draft.c", "draft.h")
         for name in evidence:
             (lane / name).write_text("evidence")
         assert cleanup_lane(lane, dry_run=True)
@@ -529,14 +529,14 @@ def process(client, frame):
         if scenario in ('steer', 'wall', 'cancel') and (current != 'thread-1' or scenario == 'cancel'): return
         if capped:
             if scenario == 'real-completion':
-                (root / 'RESULT').write_text('Completed task; notes in HANDOFF.md')
+                (root / 'RESULT.md').write_text('Completed task; notes in HANDOFF.md')
             if scenario in ('hard', 'nativecap'):
                 event('item/started', item={'type': 'commandExecution', 'id': 'writer'})
             event('thread/tokenUsage/updated', tokenUsage={'last': {'inputTokens': 256000 if scenario in ('hard', 'nativecap') else 230001}})
         else:
             if scenario == 'native': native_job()
-            if scenario not in ('limit',): (root / 'RESULT').write_text('OK: task complete')
-            if scenario == 'identical': (root / 'RESULT').write_text('function identical to reference')
+            if scenario not in ('limit',): (root / 'RESULT.md').write_text('OK: task complete')
+            if scenario == 'identical': (root / 'RESULT.md').write_text('function identical to reference')
             # Old-thread updates queued during rollover cannot trigger a new cap.
             if current != 'thread-1':
                 owner.send({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'thread-1', 'tokenUsage': {'last': {'inputTokens': 256000}}}})
@@ -548,9 +548,9 @@ def process(client, frame):
         if instruction.startswith('CONTEXT HANDOFF:'):
             if scenario not in ('missing', 'stale'):
                 (root / 'HANDOFF.md').write_text('unfinished; state=' + current + '; next: continue exact task')
-            if scenario == 'legacy': (root / 'RESULT').write_text('CONTEXT HANDOFF\nunfinished; see HANDOFF.md')
-            if scenario == 'pointer': (root / 'RESULT').write_text('HANDOFF.md')
-            if scenario == 'identical': (root / 'RESULT').write_text('function not-ready: keep going')
+            if scenario == 'legacy': (root / 'RESULT.md').write_text('CONTEXT HANDOFF\nunfinished; see HANDOFF.md')
+            if scenario == 'pointer': (root / 'RESULT.md').write_text('HANDOFF.md')
+            if scenario == 'identical': (root / 'RESULT.md').write_text('function not-ready: keep going')
             client.send({'id': rid, 'result': {}})
             if scenario in ('nativecap', 'wall-before'): native_job()
             if scenario in ('hard', 'nativecap'):
@@ -560,7 +560,7 @@ def process(client, frame):
         else:
             client.send({'id': rid, 'result': {}})
             (root / 'steer-delivered').write_text(current + ': ' + instruction)
-            (root / 'RESULT').write_text('OK: steered successor complete')
+            (root / 'RESULT.md').write_text('OK: steered successor complete')
             finish()
     elif method == 'turn/interrupt':
         client.send({'id': rid, 'result': {}})
@@ -674,7 +674,7 @@ while True:
                 assert "ORIGINAL TASK" in prompt and "HANDOFF.md contents:" in prompt
                 assert "unfinished; state=thread-%d" % index in prompt
                 assert prompt.endswith("RESUME %d: continue from HANDOFF" % index)
-                assert "never write RESULT" in prompt and "Lane output directory:" in prompt
+                assert "never write RESULT.md" in prompt and "Lane output directory:" in prompt
                 assert "CONDITIONAL CONTEXT POLICY, not an active handoff request" in prompt
                 assert "CONTEXT HANDOFF: stop starting" not in prompt
             assert terminal["status"] == "completed" and terminal["turn_status"] == "completed"
@@ -735,7 +735,7 @@ while True:
         requests, terminal, errors = complete(directory, process)
         assert len([f for f in requests if f.get("method") == "thread/start"]) == 1
         assert not (directory / "ROLLOVERS.jsonl").exists() and terminal["status"] == "completed"
-        print("OK(lane-rollover): real RESULT completion at cap stops without rollover")
+        print("OK(lane-rollover): real RESULT.md completion at cap stops without rollover")
 
         directory, process = launch("limit", continues=1)
         requests, terminal, errors = complete(directory, process)
@@ -808,7 +808,7 @@ for k in ("codex", "model", "effort", "cwd", "brief", "dir", "socket", "name", "
     ap.add_argument("--" + k, required=True)
 ap.add_argument("--fanout", required=True, choices=("enabled", "disabled"))
 ap.add_argument("--max-agents", required=True, type=int)
-# --continues N: after a completed turn whose RESULT (in --dir) is not yet done by --done-when's rule,
+# --continues N: after a completed turn whose RESULT.md (in --dir) is not yet done by --done-when's rule,
 # send up to N more turns telling the lane to keep going, while the wall allows. Lanes otherwise stop on
 # a plateau with most of their time unused.
 # A running pool built its lane command lines before this flag existed, so absence means one turn, as before.
@@ -942,7 +942,7 @@ cmd = [
 ]
 record("launch", {"command": cmd, "cwd": a.cwd, "model": a.model, "name": a.name, "pid": os.getpid()})
 # Detached unified-session workers can outlive their tool item and original parent. Adopt orphaned
-# descendants so the same lifecycle owner can drain them rather than killing them on RESULT/exit.
+# descendants so the same lifecycle owner can drain them rather than killing them on RESULT.md/exit.
 if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
     raise OSError(ctypes.get_errno(), "cannot establish native-job lifecycle ownership")
 server = subprocess.Popen(
@@ -977,7 +977,7 @@ def stop(code, why, cancelled=False):
         "active_actions": sorted(context_cap.active),
         "active_jobs": native_jobs() if "native_jobs" in globals() else [],
         "handoff": os.path.isfile(os.path.join(a.dir, "HANDOFF.md")),
-        "result": os.path.isfile(os.path.join(a.dir, "RESULT")),
+        "result": os.path.isfile(os.path.join(a.dir, "RESULT.md")),
     }
     destination = os.path.join(a.dir, "LIFECYCLE-STATE.json")
     with open(destination + ".new", "w") as output:
@@ -1021,7 +1021,7 @@ def record_rig_jobs():
 
 
 def continue_lane(terminal):
-    """Continue this lane when it closed on an unfinished RESULT or a context handoff (abu_decomp.lanes.relaunch)."""
+    """Continue this lane when it closed on an unfinished RESULT.md or a context handoff (abu_decomp.lanes.relaunch)."""
     if not a.profile:
         return
     from pathlib import Path
@@ -1257,7 +1257,7 @@ def context_notice(state, error=None, terminal=False, work_state="unfinished"):
         "active_actions": sorted(context_cap.active),
         "native_pids": native_jobs(),
         "handoff": os.path.isfile(os.path.join(a.dir, "HANDOFF.md")),
-        "result": os.path.isfile(os.path.join(a.dir, "RESULT")),
+        "result": os.path.isfile(os.path.join(a.dir, "RESULT.md")),
         "next": next_step(),
         "at": time.time(),
     }
@@ -1395,7 +1395,7 @@ def wait_turn():
             )
             last_jobs = jobs
         if draining and jobs:
-            # The wall cannot turn a safe RESULT/context drain into a kill of a native writer.
+            # The wall cannot turn a safe RESULT.md/context drain into a kill of a native writer.
             signal.alarm(0)
         context_signals(jobs)
         if context_cap.handoff_deadline is not None and time.monotonic() >= context_cap.handoff_deadline:
@@ -1546,8 +1546,8 @@ resumes = 0
 
 
 def completion():
-    # Only explicit handoff declarations are migrated; ordinary RESULT stays the sole contract.
-    result = os.path.join(a.dir, "RESULT")
+    # Only explicit handoff declarations are migrated; ordinary RESULT.md stays the sole contract.
+    result = os.path.join(a.dir, "RESULT.md")
     said = open(result).read() if os.path.exists(result) else ""
     if context_cap.requested and handoff_only_result(said):
         archived = os.path.join(a.dir, "HANDOFF-RESULT-%d.txt" % (resumes + 1))
@@ -1560,18 +1560,18 @@ def completion():
 def lifecycle_text():
     return (
         "\n\nCONDITIONAL CONTEXT POLICY, not an active handoff request: "
-        "Continue the original task normally and write RESULT for actual work completion. "
+        "Continue the original task normally and write RESULT.md for actual work completion. "
         "Only when observed thread/tokenUsage/updated inputTokens reaches 230000, or the runner "
         "sends its active context-handoff steer, finish the current safe operation and write "
         "HANDOFF.md with state paths, metrics, exact next action and open routes, then end the turn. "
-        "For that unfinished handoff, never write RESULT; preserve/remove any handoff-only RESULT. "
+        "For that unfinished handoff, never write RESULT.md; preserve/remove any handoff-only RESULT.md. "
         "At 256000 the runner interrupts at a safe action boundary after native writers drain. "
         "A fresh HANDOFF at a drained boundary starts the same runtime60s successor deadline; "
         "rewrites do not reset it and model-summary waiting is interrupted safely. "
         "%s "
         "Steers and STANDING-ORDERS.md carry over into every continuation brief. "
         "Do not compact. These conditional lifecycle rules supersede older instructions to "
-        "handoff immediately, write RESULT on handoff, or wait for an owner relaunch. "
+        "handoff immediately, write RESULT.md on handoff, or wait for an owner relaunch. "
         "Lane output directory: %s. Completion rule: --done-when %s."
         % (successor_text(), a.dir, a.done_when or "result")
     )
@@ -1681,11 +1681,11 @@ run_turn(brief_text())
 KEEP_GOING = {
     "identical": (
         "You still have wall time and the function is not identical. Keep going: take the region with the most "
-        "differing words, fix it change by change with a try after each, log every try, and rewrite RESULT when you stop."
+        "differing words, fix it change by change with a try after each, log every try, and rewrite RESULT.md when you stop."
     ),
     "result": (
-        "You still have wall time and RESULT is not written yet. Continue the brief from where you stopped. "
-        "Re-read the brief if needed, finish the remaining steps, and write RESULT before the wall."
+        "You still have wall time and RESULT.md is not written yet. Continue the brief from where you stopped. "
+        "Re-read the brief if needed, finish the remaining steps, and write RESULT.md before the wall."
     ),
 }[a.done_when or "result"]
 for more in range(a.continues or 0):

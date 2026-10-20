@@ -47,7 +47,7 @@ class RelaunchRuleTests(unittest.TestCase):
 
     def test_progress_keeps_the_budget_and_no_progress_spends_it(self):
         plan = relaunch.plan
-        action, why = plan("result", 0, "partial", False, False, False, "RESULT reports a commit")
+        action, why = plan("result", 0, "partial", False, False, False, "RESULT.md reports a commit")
         self.assertEqual(action, "continue")
         self.assertIn("progressed", why)
         action, why = plan("result", 2, "partial", False, False, False)
@@ -96,9 +96,9 @@ class RelaunchRuleTests(unittest.TestCase):
             )
             self.assertEqual(relaunch.progress("partial", [str(tree)], now + 3600), "")
             self.assertEqual(relaunch.progress("partial", [temp], now + 3600), "")
-            self.assertEqual(relaunch.progress("pushed 3a6b1752d99e", [], now), "RESULT reports a commit")
+            self.assertEqual(relaunch.progress("pushed 3a6b1752d99e", [], now), "RESULT.md reports a commit")
 
-    def test_result_md_is_read_when_there_is_no_result_file(self):
+    def test_result_md_is_the_canonical_result_file(self):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             self.assertEqual(relaunch.result_text(directory), "")
