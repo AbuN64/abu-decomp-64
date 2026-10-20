@@ -47,6 +47,10 @@ async function startAudio() {
 function unlock() { if (blocked) startAudio(); }
 for (const type of ['pointerdown', 'mousedown', 'keydown', 'touchstart'])
   document.addEventListener(type, unlock, {capture: true, passive: true});
+// Touch is not game input: no finger gesture becomes a mouse move, click, scroll or the on-screen keyboard.
+// Pinch-zoom and panning stay with the browser.
+for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel'])
+  document.addEventListener(type, event => event.stopImmediatePropagation(), {capture: true, passive: true});
 function sizeVideo() {
   const video = document.querySelector('video');
   if (!video) return;

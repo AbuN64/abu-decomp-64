@@ -35,6 +35,9 @@ class BrowserTests(unittest.TestCase):
             self.assertIn(".sidebar-overlay{opacity:.15", result)
             self.assertIn("addEventListener('resize', sizeVideo)", result)
             self.assertIn("'keydown'", result)
+            # touch never reaches Moonlight's mouse, scroll and screen-keyboard handlers
+            self.assertIn("['touchstart', 'touchmove', 'touchend', 'touchcancel']", result)
+            self.assertIn("stopImmediatePropagation", result)
             self.assertIn('"width": 1920', result)
             self.assertIn('"bitrate": 40000', result)
 
