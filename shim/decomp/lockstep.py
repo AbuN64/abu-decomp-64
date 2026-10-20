@@ -95,6 +95,10 @@ def read_exe_symbols(path, kinds):
         f = line.split()
         if len(f) == 4 and f[2] in kinds:
             rows.append((int(f[0], 16), int(f[1], 16), f[3], f[2].islower()))
+        elif len(f) == 3 and f[1] in kinds and f[1] in "Tt":
+            # Assembly/linker function aliases may have no ELF size. Their
+            # exact entry address is still authoritative code identity.
+            rows.append((int(f[0], 16), 0, f[2], f[1].islower()))
     return rows
 
 
@@ -260,7 +264,20 @@ class Matcher:
     def same_function(self, oracle_value, port_value):
         if oracle_value not in self.original_functions:
             return False
-        return self.port_function(port_value) == oracle_value
+        i = bisect.bisect_right(self.exe_keys, port_value) - 1
+        if i < 0:
+            return False
+        address, size, _, _ = self.exe[i]
+        if port_value != address and not (size and port_value < address + size):
+            return False
+        # Linker aliases share one native entry but may have distinct guest
+        # addresses (for example a mapped callback label). Preserve every
+        # symbol-proven identity instead of selecting the last equal-address name.
+        while i >= 0 and self.exe[i][0] == address:
+            if self.sym_addr.get(self.exe[i][2]) == oracle_value:
+                return True
+            i -= 1
+        return False
 
     def host_pointer(self, oracle_value, port_value):
         in_ram = RDRAM <= port_value < RDRAM + self.ram
