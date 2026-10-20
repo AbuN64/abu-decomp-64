@@ -229,6 +229,26 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.route("D_80100000"), ("routed", "data 0x80104000"))
         self.assertEqual(self.d["data"]["D_80100000"], "0x80104000")
 
+    def test_tlb_mapped_record_binds_its_virtual_address(self):
+        facts = self.facts.addrs
+        facts["D_0044A850"] = ("0x0044B4A0", "")
+        self.assertEqual(self.route("D_0044A850", frontier=True), ("routed", "data (TLB-mapped) 0x0044B4A0"))
+        self.assertEqual(self.d["data"]["D_0044A850"], "0x0044B4A0")
+        self.assertNotIn("D_0044A850", self.d["stops"])
+        closure.tidy(self.d, self.facts)  # the next round keeps it (tidy used to drop every sub-KSEG0 data row)
+        self.assertEqual(self.d["data"].get("D_0044A850"), "0x0044B4A0")
+
+    def test_advance_routes_an_image_code_pointer_stop(self):
+        # boot-missing names a stop no manifest row has (the data image's generated stop for a KUSEG alias): it
+        # binds to the function and the walk goes on; the manifest gains the binding
+        self.facts.addrs["D_00200000"] = ("0x00200000", "")
+        root = pathlib.Path(self.tmp.name)
+        (root / "decomp-boot").mkdir()
+        (root / "decomp-boot/image.json").write_text(json.dumps({"function_stops": ["D_00200000"]}))
+        _, unchanged, _, closures = self.run_advance((78, "boot-missing: D_00200000"),
+                                                          mock.Mock(returncode=0, stdout="closure: links\n", stderr=""))
+        self.assertEqual((unchanged, closures), (False, 1))
+
     def test_linker_script_binding_target_counts_as_undefined(self):
         log = ("bindings.ld:321: undefined symbol `func_802953FC_us_rev1' referenced in expression\n"
                "a.o: in function `f': undefined reference to `func_80200000_de'\n")

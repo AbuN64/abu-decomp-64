@@ -235,6 +235,17 @@ int main(void) { return n64c_boot_entry(); }
             bad["data"][symbol] = address
             with self.assertRaises(ValueError):
                 self.generate(bad)
+    def test_tlb_mapped_record_binds_its_virtual_address(self):
+        # D_00XXXXXX at a KUSEG address (overlay data the game maps through its TLB) binds below the host image
+        with (self.path / "source/versions/test/symbol_addrs.txt").open("a") as facts:
+            facts.write("D_0044A850 = 0x0044B4A0; //\nD_80900000 = 0x80900000; //\n")
+        self.project["data"]["D_0044A850"] = "0x0044B4A0"
+        self.generate()
+        self.assertIn("D_0044A850 = 0x0044b4a0;", (self.path / "output/bindings.ld").read_text())
+        bad = copy.deepcopy(self.project)
+        bad["data"]["D_80900000"] = "0x80900000"  # past RDRAM, not a TLB record
+        with self.assertRaises(ValueError):
+            self.generate(bad)
     def test_invalid_input_preserves_existing_outputs(self):
         self.generate()
         output = self.path / "output"

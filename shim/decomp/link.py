@@ -12,6 +12,7 @@ import policy  # noqa: E402
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 # The source's address-named data (D_auto_80XXXXXX): the name states its address, the pinned facts may omit it.
+TLB_RECORD = re.compile(r"D_(?:auto_)?00[0-9A-F]{6}\Z")
 NAMED_ADDRESS = re.compile(r"D_auto_(8[0-9A-F]{7})\Z")
 # Byte-order descriptor kinds of a ROM range (n64c_pi.h): raw bytes, an array of 16-bit or 32-bit values, or repeated
 # records described by a field string of widths in bytes ("4 4 2222 444"), or back-to-back records of different sizes
@@ -116,7 +117,10 @@ def generate(manifest, source, output):
         pinned = symbols.get(symbol, int(named[1], 16) if named else None)
         if pinned != value:
             raise ValueError("symbol address differs from pinned facts: " + symbol)
-        if not 0x80000000 <= value <= 0x80000000 + ram:
+        # A D_00XXXXXX record the game reaches through its own TLB mapping sits at its KUSEG virtual address
+        # (below the host image, where the shim's osMapTLB maps guest pages); anything else lives in RDRAM.
+        tlb_mapped = TLB_RECORD.fullmatch(symbol) and 0x10000 <= value < 0x08000000
+        if not tlb_mapped and not 0x80000000 <= value <= 0x80000000 + ram:
             raise ValueError("data outside mapped RDRAM: " + symbol)
         bindings.append(f"{symbol} = 0x{value:08x};")
     # Cartridge-offset names (the game ORs them with the PI base): absolute values inside the ROM image.

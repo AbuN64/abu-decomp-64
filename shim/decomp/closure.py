@@ -124,8 +124,9 @@ def tidy(d, facts, deny=None):
     for sym in drop_unrefused(d, deny) if deny is not None else ():
         print(f"   dropped stale stop {sym} (its unit is not refused at this pin)", flush=True)
     policy.sanitize(d, facts.source, facts.numeric, {n: v[0] for n, v in facts.shim.items()}, facts.shim_src)
-    for sym in [k for k, v in d["data"].items() if int(v, 16) < 0x80000000]:
-        del d["data"][sym]  # a pre-KSEG0 alias bound as data
+    for sym in [k for k, v in d["data"].items() if int(v, 16) < 0x80000000
+                and not (ALIAS.fullmatch(k) and int(v, 16) >= 0x10000 and not facts.function_alias(k))]:
+        del d["data"][sym]  # a pre-KSEG0 function alias bound as data (a TLB-mapped record stays data)
     for sym in [k for k in d["stops"] if k.startswith("D_")]:
         del d["stops"][sym]  # data routed as a function stop
     for sym in [k for k, why in d["stops"].items() if k in facts.game and "(SDK: shim binding decision)" in why]:
@@ -197,6 +198,12 @@ def route(d, sym, facts, deny, pin, frontier, fresh):
             return "routed", "binding " + fn
         d["data"][sym] = "0x" + named.group(1)
         return "routed", "data (named) 0x" + named.group(1)
+    if ALIAS.fullmatch(sym) and sym in addrs and undefined_here and 0x10000 <= int(addrs[sym][0], 16) < 0x80000000:
+        # A D_00XXXXXX record the game reaches through its own TLB mapping (osMapTLB of loaded overlay data, e.g.
+        # D_0044A850 at 0x0044B4A0): no function sits there, so it binds to its pinned virtual address, which the
+        # shim maps for real when the game maps it (an access before that is the game's TLB miss).
+        d["data"][sym] = addrs[sym][0]
+        return "routed", "data (TLB-mapped) " + addrs[sym][0]
     if sym.startswith("D_") and sym in addrs and undefined_here and int(addrs[sym][0], 16) >= 0x80000000:
         d["data"][sym] = addrs[sym][0]
         return "routed", "data " + addrs[sym][0]
