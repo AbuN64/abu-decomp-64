@@ -14,10 +14,10 @@ static N64cTaskFn tasks[3];
 static N64cPresentFn presenter;
 static unsigned char ram[4096];
 static u32 retraces;
-static int scenario;
+static int scenario,dump_test;
 void n64c_set_task_handler(u32 kind,N64cTaskFn fn,void *user) { (void)user;tasks[kind]=fn; }
 void n64c_set_present(N64cPresentFn fn,void *user) { (void)user;presenter=fn; }
-void *n64c_memory_ram(u32 address,u32 size) { return !address && size==sizeof ram ? ram : NULL; }
+void *n64c_memory_ram(u32 address,u32 size) { return ((!address && size==sizeof ram) || (address && address<=sizeof ram && size<=sizeof ram-address)) ? ram+address : NULL; }
 u32 n64c_memory_physical(const void *p) { return (u32)(uintptr_t)p & 0x1fffffffu; }
 /* Renderer stand-in: one handle, tasks counted, the presented colour image (physical 0x300) was
  * rendered unless scenario 4. */
@@ -36,6 +36,7 @@ void n64c_f3d_close(N64cF3d *f) { CHECK(!f || (f==(N64cF3d *)&renderer && render
 int n64c_f3d_run(N64cF3d *f,const N64cGfxMem *m,uint32_t address,N64cDlStats *st)
 {
     CHECK(f==(N64cF3d *)&renderer && m->base==ram && !m->replay && m->mask==sizeof ram-1 && address==0x100);
+    if (dump_test) memset(ram+0x100,0xA5,32); /* completion may recycle the list */
     *st=(N64cDlStats){.commands=4};
     if (scenario==6) { st->unknown=1;st->unknown_op=0x42; }
     return scenario==5 ? -1 : 4;
@@ -115,6 +116,21 @@ int main(int argc,char **argv)
     for (unsigned i=11;i<23;i+=3) CHECK(data[i]==255 && data[i+1]==0 && data[i+2]==0);
     CHECK(!n64c_boot_frame_capture(path,3,2,2)); /* never overwrite accepted evidence */
     CHECK(unlink(path)==0);
+    char dlpath[1024];snprintf(dlpath,sizeof dlpath,"%s/first-%ld.dl",argv[1],(long)getpid());
+    CHECK(setenv("N64C_FIRST_GFX_DL",dlpath,1)==0);
+    uint32_t commands[8]={0xdb060000,0,0xde000000,0x800d0f10,0xdf000000,0,0,0};
+    memcpy(ram+0x100,commands,sizeof commands);dump_test=1;
+    start(0);CHECK(n64c_boot_frame_capture(path,3,2,2));CHECK(unlink(path)==0);
+    FILE *dl=fopen(dlpath,"rb");CHECK(dl!=NULL);
+    unsigned char dumped[33];size_t bytes=fread(dumped,1,sizeof dumped,dl);CHECK(fclose(dl)==0);
+    CHECK(bytes==32);
+    for (unsigned i=0;i<32;i++) CHECK(dumped[i]==(unsigned char)(commands[i/4]>>(8*(i%4))));
+    CHECK(ram[0x100]==0xA5); /* snapshot precedes parsing and only the first task is written */
+    pid_t duplicate=fork();CHECK(duplicate>=0);
+    if (!duplicate) { start(0);(void)n64c_boot_frame_capture(path,3,2,2);_Exit(1); }
+    int duplicate_status;CHECK(waitpid(duplicate,&duplicate_status,0)==duplicate);
+    CHECK(WIFEXITED(duplicate_status) && WEXITSTATUS(duplicate_status)==78);
+    CHECK(unlink(dlpath)==0);CHECK(unsetenv("N64C_FIRST_GFX_DL")==0);dump_test=0;
     for (int mode=1;mode<=4;mode++) {
         start(mode);CHECK(!n64c_boot_frame_capture(path,3,2,2));CHECK(access(path,F_OK)!=0);
         if (mode==3) CHECK(presents==3 && shown==0); /* the VI was blanked: the window shows black */

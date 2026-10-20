@@ -12,10 +12,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <time.h>
 
 static struct {
     u32 tasks,audio_tasks,ram_bytes,shown;
+    u32 submitted,gfx_submitted;
     int closed;
     u64 commands;
     void *presented;
@@ -32,9 +34,39 @@ static void task_stop(const char *subject,const char *message)
     fprintf(stderr,"boot-frame: %s\n",message);
     _Exit(78);
 }
+/* Capture the first submitted list before the renderer or SP completion can release it.
+ * Oracle DL files contain little-endian 32-bit words, including unmodified addresses. */
+static void first_graphics(const OSTask *task)
+{
+    fprintf(stderr,"boot-gfx: first submit seq=%u retrace=%u data=0x%08x bytes=%u audio_before=%u\n",
+            frame.submitted,osViGetRetraceCount(),task ? (u32)(uintptr_t)task->data_ptr : 0,
+            task ? task->data_size : 0,frame.audio_tasks);
+    if (n64c_trace_event) n64c_trace_event("first graphics submission");
+    const char *path=getenv("N64C_FIRST_GFX_DL");
+    if (!path || !*path) return;
+    u32 physical=task ? n64c_memory_physical(task->data_ptr) : 0;
+    const unsigned char *data=task && task->data_ptr && task->data_size && !(task->data_size%8)
+        ? n64c_memory_ram(physical,task->data_size) : NULL;
+    FILE *out=data ? fopen(path,"wbx") : NULL;
+    int ok=out!=NULL;
+    for (u32 i=0;ok && i<task->data_size;i+=4) {
+        u32 word;memcpy(&word,data+i,4);
+        unsigned char le[4]={(unsigned char)word,(unsigned char)(word>>8),
+                            (unsigned char)(word>>16),(unsigned char)(word>>24)};
+        ok=fwrite(le,1,4,out)==4;
+    }
+    if (out && fclose(out)) ok=0;
+    if (!ok) {
+        fprintf(stderr,"boot-frame: first graphics dump failed: %s\n",path);
+        fflush(stderr);
+        _Exit(78);
+    }
+}
 static void graphics(OSTask *task,void *user)
 {
     (void)user;
+    frame.submitted++;
+    if (!frame.gfx_submitted++) first_graphics(task);
     if (!task || !task->data_ptr || !task->data_size || task->data_size%8) {
         task_stop("gfx-task-invalid","invalid graphics task");
         return;
@@ -61,6 +93,7 @@ static void graphics(OSTask *task,void *user)
 static void audio(OSTask *task,void *user)
 {
     (void)user;
+    frame.submitted++;
     u32 list=task && task->data_ptr ? n64c_memory_physical(task->data_ptr) : 0;
     if (!list || !task->data_size || task->data_size%8 || list>frame.ram_bytes ||
         task->data_size>frame.ram_bytes-list) {

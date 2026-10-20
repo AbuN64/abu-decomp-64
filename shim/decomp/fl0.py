@@ -5,6 +5,8 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
+import struct
 from pathlib import Path
 import re
 import subprocess
@@ -13,6 +15,56 @@ import tempfile
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def dl_golden(goldens):
+    manifest = json.loads((goldens / "manifest.json").read_text())
+    entry = manifest["checkpoints"]["boot"]["files"]["dl"]
+    path = (goldens / entry["path"]).resolve()
+    if not path.is_relative_to(goldens.resolve()) or digest(path) != entry["sha256"]:
+        raise ValueError("oracle DL hash/path differs from manifest")
+    data = path.read_bytes()
+    if not data or len(data) % 8 or len(data) != entry["bytes"]:
+        raise ValueError("invalid oracle DL size")
+    return entry, data
+
+
+def compare_dl(native, goldens, boot_log=None):
+    """Exact first-submission comparison; no pointer masking or opcode acceptance."""
+    report = {"accepted": False, "scope": "FL0-a first submitted graphics DL",
+              "word_order": "little-endian32"}
+    try:
+        entry, expected = dl_golden(goldens)
+        report["golden"] = entry
+        actual = native.read_bytes()
+        report.update(native_sha256=digest(native), native_bytes=len(actual))
+        if not actual or len(actual) % 8:
+            raise ValueError("invalid native DL size")
+        offset = next((i for i, (a, b) in enumerate(zip(actual, expected)) if a != b),
+                      min(len(actual), len(expected)) if len(actual) != len(expected) else None)
+        if offset is not None:
+            base = offset // 8 * 8
+            def words(data):
+                return [f"0x{w:08x}" for w in struct.unpack("<II", data[base:base+8])] if base+8 <= len(data) else None
+            report["first_diff"] = {"byte_offset": offset, "command_index": offset // 8,
+                                    "word_index": offset // 4, "native": words(actual),
+                                    "golden": words(expected),
+                                    "kind": "length" if offset == min(len(actual), len(expected)) else "word"}
+        report["accepted"] = offset is None
+        if boot_log is not None:
+            text = boot_log.read_text()
+            match = re.search(r"^boot-gfx: first submit seq=(\d+) retrace=(\d+) data=(0x[0-9a-f]+) bytes=(\d+) audio_before=(\d+)$", text, re.M)
+            if not match:
+                raise ValueError("missing first graphics submission receipt")
+            report["submission"] = dict(zip(["seq", "retrace", "data", "bytes", "audio_before"],
+                                             [int(v, 16 if v.startswith("0x") else 10) for v in match.groups()]))
+            if report["submission"]["bytes"] != len(actual):
+                raise ValueError("first graphics receipt size differs from dump")
+            hits = re.findall(r"^boot-step: (\d+)/(\d+) (\S+)$", text[:match.start()], re.M)
+            report["last_first_hit"] = {"count": int(hits[-1][0]), "name": hits[-1][2]} if hits else None
+    except (ValueError, OSError, KeyError, TypeError, IndexError) as error:
+        report.update(accepted=False, error=str(error))
+    return report
 
 
 def image_metrics():
@@ -52,6 +104,8 @@ def run(binary, rom, project_path, goldens, output):
         report.update(binary_sha256=digest(binary), rom_sha256=digest(rom),
                       project_sha256=digest(project_path), golden_sha256=digest(golden),
                       checkpoint=gate["checkpoint"], retrace=gate["retrace"])
+        dl_golden(goldens)
+        dl = attempt / "first-gfx.dl"
         ppm = attempt / "native.ppm"
         # The game extracts the ROM into a fresh user folder first, as on a player's first run.
         command = [str(binary.resolve()), "--no-dialog", "--user-dir", str((attempt / "user").resolve()),
@@ -59,12 +113,16 @@ def run(binary, rom, project_path, goldens, output):
                    "--fb", "x".join(map(str, gate["framebuffer"])), "--window", "x".join(map(str, gate["output"]))]
         report["command"] = command
         with (attempt / "boot.log").open("w") as log:
-            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=120, check=False)
+            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=120, check=False,
+                                    env={**os.environ, "N64C_FIRST_GFX_DL": str(dl.resolve())})
         report["native_exit"] = result.returncode
+        report["fl0_a"] = compare_dl(dl, goldens, attempt / "boot.log")
+        if not report["fl0_a"]["accepted"]:
+            raise ValueError("first graphics DL failed FL0-a")
         if result.returncode:
             raise ValueError(f"original native boot exited {result.returncode}; no FL0 acceptance")
         log = (attempt / "boot.log").read_text()
-        pattern = rf"^boot-frame: retrace={gate['retrace']} tasks=([1-9][0-9]*) commands=([1-9][0-9]*) surface=0x([0-9a-f]{{8}})$"
+        pattern = rf"^boot-frame: retrace={gate['retrace']} tasks=([1-9][0-9]*) audio=[0-9]+ commands=([1-9][0-9]*) surface=0x([0-9a-f]{{8}})$"
         if not re.search(pattern, log, re.MULTILINE) or not ppm.is_file():
             raise ValueError("native process returned without a rendered presentation")
         metrics = image_metrics()
@@ -102,8 +160,18 @@ def run(binary, rom, project_path, goldens, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ["binary", "rom", "project", "goldens", "output"]:
-        parser.add_argument("--"+name, type=Path, required=True)
+        parser.add_argument("--"+name, type=Path)
+    parser.add_argument("--native-dl", type=Path, help="compare an already captured first task (FL0-a only)")
+    parser.add_argument("--boot-log", type=Path)
     args = parser.parse_args()
+    if args.native_dl:
+        if not args.goldens or not args.boot_log:
+            parser.error("--native-dl requires --goldens and --boot-log")
+        report = compare_dl(args.native_dl, args.goldens, args.boot_log)
+        print(json.dumps(report, sort_keys=True))
+        return 0 if report["accepted"] else 1
+    if not all([args.binary, args.rom, args.project, args.goldens, args.output]):
+        parser.error("frame gate requires --binary --rom --project --goldens --output")
     report = run(args.binary,args.rom,args.project,args.goldens,args.output)
     print(json.dumps(report,sort_keys=True))
     return 0 if report["accepted"] else 1
