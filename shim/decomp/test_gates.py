@@ -137,6 +137,23 @@ class LayoutTests(unittest.TestCase):
 """
         got = {s["expr"]: s for s in gates.dwarf_structs(dump)}
         self.assertEqual(got["union Outer"]["bitfields"], 1)
+    def test_layout_keys_only_boot_units_so_a_no_layout_seed_warms_the_rest(self):
+        def fp(unit, layout):
+            ctx = {"source": "/src", "adapter": gates.HERE, "layout": layout, "boot": {"src/b.c"}, "sdk": set()}
+            return gates.unit_fingerprint(ctx, unit)
+        self.assertEqual(fp("src/a.c", True), fp("src/a.c", False))
+        self.assertNotEqual(fp("src/b.c", True), fp("src/b.c", False))
+    def test_shape_follows_the_type_closure_not_the_rest_of_the_unit(self):
+        base = {s["expr"]: s["shape"] for s in gates.dwarf_structs(DWARF)}
+        unrelated = {s["expr"]: s["shape"] for s in gates.dwarf_structs(DWARF + """ <1><90>: Abbrev Number: 4 (DW_TAG_structure_type)
+    <91>   DW_AT_name        : Other
+    <95>   DW_AT_byte_size   : 8
+""")}
+        self.assertEqual(base["struct Msg"], unrelated["struct Msg"])
+        wider = {s["expr"]: s["shape"] for s in gates.dwarf_structs(DWARF.replace(
+            "<c>   DW_AT_byte_size   : 8", "<c>   DW_AT_byte_size   : 4"))}
+        self.assertNotEqual(base["struct Msg"], wider["struct Msg"])
+        self.assertEqual(base["Bits"], wider["Bits"])
 
     def test_probe_round_trip_and_difference(self):
         s = {"expr": "struct Msg", "members": [{"name": "tag", "bit": False}, {"name": "stamp", "bit": False},
@@ -219,6 +236,36 @@ class BaselineTests(unittest.TestCase):
                 gates.row("gate-return-type", "h", "src/B/b.CPP", "", "p", False, "")]
         text = gates.render_classes(rows, {"units": 3, "boot_units": 2})
         self.assertIn("| gate-return-type | 3 | 2 | 1 | 2 | A 2, B 1 |", text)
+
+
+class CacheTests(unittest.TestCase):
+    def test_depfile_and_dependency_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = pathlib.Path(d)
+            (d / "a.h").write_text("one")
+            (d / "x.d").write_text("x.i: x.c \\\n  %s/a.h\n" % d)
+            self.assertEqual(gates.read_depfile(d / "x.d"), ["%s/a.h" % d, "x.c"])
+            state = {str(d / "a.h"): gates.file_state(str(d / "a.h"))}
+            self.assertTrue(gates.deps_unchanged(state))
+            (d / "a.h").write_text("two")
+            gates._STATE.clear()
+            self.assertFalse(gates.deps_unchanged(state))
+            (d / "a.h").write_text("one")  # same bytes, new mtime: still valid
+            gates._STATE.clear()
+            self.assertTrue(gates.deps_unchanged(state))
+class PrepareTests(unittest.TestCase):
+    def test_cheap_preprocess_is_the_same_unit_as_prepare_py_and_records_its_headers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            (tmp / "include").mkdir()
+            (tmp / "src" / "libgcc").mkdir(parents=True)
+            (tmp / "include" / "h.h").write_text("#define K 3\n")
+            (tmp / "src" / "a.c").write_text('#include "h.h"\nint f(void) { return K; }\n')
+            deps = []
+            fast, _ = gates.prepare_unit("src/a.c", tmp, tmp / "w1", exact=False, deps=deps)
+            exact, _ = gates.prepare_unit("src/a.c", tmp, tmp / "w2")
+            self.assertEqual(fast.read_text(), exact.read_text())
+            self.assertTrue(any(d.endswith("h.h") for d in deps))
 
 
 class FlagTests(unittest.TestCase):

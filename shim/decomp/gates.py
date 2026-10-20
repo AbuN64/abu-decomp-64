@@ -33,6 +33,7 @@ The runtime half is the RAGE_DECOMP_UBSAN flavour in cmake/decomp.cmake (diagnos
 import argparse
 import collections
 import concurrent.futures
+import hashlib
 import json
 import os
 import pathlib
@@ -54,6 +55,8 @@ CLASS_OF_WARNING = {"return-type": "gate-return-type", "implicit-function-declar
                     "uninitialized": "gate-uninit", "maybe-uninitialized": "gate-uninit"}
 INFORMATIONAL = {"gate-knr-extra"}
 TIMEOUT = 180
+SCAN_VERSION = 3  # bump when scan_one's result shape or the checks it runs change (invalidates the cache)
+PROBE_VERSION = 1  # bump when probe_source/probe_unit change what a struct's probe measures
 
 
 # ---------------------------------------------------------------- units
@@ -112,18 +115,92 @@ def run(command, timeout=TIMEOUT):
         return -9, "", "timeout after %ds" % timeout
 
 
-def prepare_unit(unit, source, work, adapter=HERE, build=None):
+def read_depfile(path):
+    """The prerequisites of a make-format depfile (the source and every header the unit read)."""
+    text = pathlib.Path(path).read_text(errors="replace").replace("\\\n", " ")
+    return sorted(set(text.split(":", 1)[-1].split()))
+_STATE = {}
+def file_state(path):
+    """[size, mtime_ns, sha1] of a file, memoised per process; [] when it is gone."""
+    if path not in _STATE:
+        try:
+            st = os.stat(path)
+            _STATE[path] = [st.st_size, st.st_mtime_ns, hashlib.sha1(pathlib.Path(path).read_bytes()).hexdigest()]
+        except OSError:
+            _STATE[path] = []
+    return _STATE[path]
+def deps_unchanged(recorded):
+    """True when every recorded {path: [size, mtime_ns, sha1]} still holds (the stat pair is the fast path, the
+    content hash the fallback, so a touched file with the same bytes stays valid)."""
+    for path, old in recorded.items():
+        try:
+            st = os.stat(path)
+        except OSError:
+            return False
+        if [st.st_size, st.st_mtime_ns] == old[:2]:
+            continue
+        if file_state(path)[2:] != old[2:]:
+            return False
+    return True
+def unit_fingerprint(ctx, unit):
+    """What a cached scan also depends on besides the files it read: flags, the checks, the unit's class."""
+    # Layout adds DWARF structs to boot units only, so a --no-layout seed slice warms every other unit.
+    prep = pathlib.Path(ctx["adapter"]) / "prepare.py"
+    return hashlib.sha1(json.dumps([SCAN_VERSION, HOST_FLAGS, WARNINGS, preprocess_flags(ctx["source"], ctx["adapter"]),
+                                    bool(ctx["layout"]) and unit in ctx["boot"], unit in ctx["boot"], unit in ctx["sdk"], bool(ctx.get("build")),
+                                    file_state(str(prep))[2:]]).encode()).hexdigest()
+def cache_file(ctx, unit):
+    return pathlib.Path(ctx["cache"]) / "u" / (unit + ".json")
+def cache_load(ctx, unit):
+    """The cached scan result of a unit whose files, flags and prepared .i are all unchanged, else None."""
+    try:
+        entry = json.loads(cache_file(ctx, unit).read_text())
+        if entry["fp"] != unit_fingerprint(ctx, unit) or not deps_unchanged(entry["deps"]):
+            return None
+        if not (pathlib.Path(ctx["work"]) / "i" / (unit + ".i")).exists() and not ctx.get("build"):
+            return None
+        result = entry["result"]
+        result["warnings"] = [tuple(w) for w in result["warnings"]]
+        result["cached"] = True
+        return result
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+def cache_store(ctx, unit, deps, result):
+    state = {d: file_state(d) for d in deps}
+    if not all(state.values()):
+        return
+    target = cache_file(ctx, unit)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".%d.tmp" % os.getpid())
+    tmp.write_text(json.dumps({"fp": unit_fingerprint(ctx, unit), "deps": state, "result": result}))
+    tmp.replace(target)
+def prepare_unit(unit, source, work, adapter=HERE, build=None, deps=None, exact=True):
     """The unit's prepared translation unit (prepare.py's output, or the fl build's own .i when it holds one);
-    returns (path, mode) or (None, error)."""
+    returns (path, mode) or (None, error). exact=False is the cheap path: prepare.py's own `gcc -E` and nothing else
+    (no syntax pre-check, marker scan or stubs, which cost ~4x the preprocess); it is the same .i unless the
+    NON_MATCHING C does not compile, which scan_one detects from the warning compile and redoes with exact=True."""
     adapter = pathlib.Path(adapter)
     if build:
         ready = pathlib.Path(build) / "decomp" / (unit + ".i")
         inv = pathlib.Path(build) / "decomp" / (unit + ".json")
         if ready.exists() and inv.exists():
+            if deps is not None:
+                deps += [str(ready), str(inv)]
             return ready, json.loads(inv.read_text()).get("mode", "NON_MATCHING")
     out = pathlib.Path(work) / "i" / (unit + ".i")
     stubs, inv, dep = (out.with_name(out.name + s) for s in (".stubs.c", ".json", ".d"))
     out.parent.mkdir(parents=True, exist_ok=True)
+    if not exact:
+        dep = out.with_name(out.name + ".d")
+        code, text, _ = run(["gcc"] + HOST_FLAGS + preprocess_flags(source, adapter)
+                            + ["-x", "c", "-E", "-MD", "-MF", str(dep), "-MT", str(out), str(pathlib.Path(source) / unit)])
+        if not code:
+            out.write_text(text)
+            if deps is not None and dep.exists():
+                deps += read_depfile(dep)
+            dep.unlink(missing_ok=True)
+            return out, "NON_MATCHING"
+        dep.unlink(missing_ok=True)
     code, _, err = run([sys.executable, "-I", str(adapter / "prepare.py"), "--compiler", "gcc", "--source",
                         str(pathlib.Path(source) / unit), "--output", str(out), "--stubs", str(stubs),
                         "--inventory", str(inv), "--depfile", str(dep), "--"] + HOST_FLAGS
@@ -131,6 +208,8 @@ def prepare_unit(unit, source, work, adapter=HERE, build=None):
     mode = "NON_MATCHING"
     if not code and inv.exists():
         mode = json.loads(inv.read_text()).get("mode", mode)
+    if deps is not None and dep.exists():
+        deps += read_depfile(dep)
     for scratch in (stubs, dep, inv):
         scratch.unlink(missing_ok=True)
     if code:
@@ -355,7 +434,7 @@ def knr_rows(scans, source, pin, boot):
     arguments are harmless on cdecl and only counted as gate-knr-extra). scans: unit -> {defs, calls}."""
     extern_defs, local_defs = collections.defaultdict(set), {}
     for unit, scan in scans.items():
-        for name, (n, static, file, line) in scan["defs"].items():
+        for name, (n, static, file, _line) in scan["defs"].items():
             if static:
                 local_defs[(unit, name)] = n
             else:
@@ -491,8 +570,39 @@ def dwarf_structs(dump):
             wide += w
             if member["attrs"].get("DW_AT_name"):
                 members.append({"name": member["attrs"]["DW_AT_name"], "bit": bit, "wide": w})
-        out.append({"expr": expr, "size": size, "members": members, "wide": wide, "bitfields": bitfields})
+        out.append({"expr": expr, "size": size, "members": members, "wide": wide, "bitfields": bitfields,
+                    "shape": hashlib.sha1(json.dumps(type_shape(dies, off)).encode()).hexdigest()})
     return out
+
+
+def type_shape(dies, off, depth=0):
+    """Everything about a type that its probe can measure, through typedefs, qualifiers, arrays and nested
+    structs/unions (pointers stop the walk: their layout does not depend on the target), so a probe result is
+    reused for a struct whose type closure is unchanged whichever unit or header edit surrounds it.
+    Not seen: an aligned()/packed attribute that moves no host offset or size (DWARF 4 has no DW_AT_alignment)."""
+    die = dies.get(off)
+    if die is None or depth > 16:
+        return None
+    a, tag = die["attrs"], die["tag"]
+    if tag in ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type"):
+        return type_shape(dies, ref(a.get("DW_AT_type")), depth + 1)
+    if tag == "DW_TAG_base_type":
+        return ["b", a.get("DW_AT_name"), number(a.get("DW_AT_byte_size")), a.get("DW_AT_encoding")]
+    if tag in ("DW_TAG_pointer_type", "DW_TAG_subroutine_type"):
+        return ["p", number(a.get("DW_AT_byte_size"))]
+    if tag == "DW_TAG_enumeration_type":
+        return ["e", number(a.get("DW_AT_byte_size"))]
+    if tag == "DW_TAG_array_type":
+        dims = [[dies[c]["attrs"].get("DW_AT_upper_bound"), dies[c]["attrs"].get("DW_AT_count")]
+                for c in die["children"] if dies[c]["tag"] == "DW_TAG_subrange_type"]
+        return ["a", dims, type_shape(dies, ref(a.get("DW_AT_type")), depth + 1)]
+    if tag in ("DW_TAG_structure_type", "DW_TAG_union_type"):
+        members = [[m["attrs"].get(k) for k in ("DW_AT_name", "DW_AT_data_member_location", "DW_AT_bit_size",
+                                               "DW_AT_data_bit_offset", "DW_AT_bit_offset")]
+                   + [type_shape(dies, ref(m["attrs"].get("DW_AT_type")), depth + 1)]
+                   for c in die["children"] for m in [dies[c]] if m["tag"] == "DW_TAG_member"]
+        return [tag[7], number(a.get("DW_AT_byte_size")), "DW_AT_declaration" in a, members]
+    return [tag]
 
 
 def signature(struct):
@@ -663,12 +773,27 @@ def scan_one(args):
     source, work = ctx["source"], ctx["work"]
     result = {"unit": unit, "boot": unit in ctx["boot"], "warnings": [], "prepare_error": None,
               "dwarf_error": None, "structs": [], "defs": {}, "calls": [], "u64": []}
-    path, mode = prepare_unit(unit, source, work, ctx["adapter"], ctx.get("build"))
+    if ctx.get("cache"):
+        hit = cache_load(ctx, unit)
+        if hit is not None:
+            return hit
+    deps = [] if ctx.get("cache") else None
+    path, mode = prepare_unit(unit, source, work, ctx["adapter"], ctx.get("build"), deps, exact=False)
+    if path is not None and not ctx.get("build"):
+        code, _, err = run(["gcc"] + HOST_FLAGS + ["-O1"] + WARNINGS + ["-x", "cpp-output", "-c", str(path), "-o", os.devnull])
+        if code and "error:" in err:  # the fuzzy NON_MATCHING C does not compile: prepare.py's matched-C fallback
+            path, mode = prepare_unit(unit, source, work, ctx["adapter"], None, deps)
+            code = None
+    else:
+        code = None
     if path is None:
         result["prepare_error"] = mode
+        if deps:
+            cache_store(ctx, unit, deps, result)
         return result
     result["mode"] = mode
-    _, _, err = run(["gcc"] + HOST_FLAGS + ["-O1"] + WARNINGS + ["-x", "cpp-output", "-c", str(path), "-o", os.devnull])
+    if code is None:
+        _, _, err = run(["gcc"] + HOST_FLAGS + ["-O1"] + WARNINGS + ["-x", "cpp-output", "-c", str(path), "-o", os.devnull])
     result["warnings"] = parse_warnings(err, source)
     scan = scan_text(pathlib.Path(path).read_text(errors="replace"), unit in ctx["sdk"])
     result["defs"] = scan["defs"]
@@ -685,7 +810,9 @@ def scan_one(args):
         else:
             result["dwarf_error"] = (err.strip().splitlines() or [""])[-1]
         obj.unlink(missing_ok=True)
-    if not result["boot"] and not ctx.get("build"):
+    if ctx.get("cache"):
+        cache_store(ctx, unit, deps, result)
+    elif not result["boot"] and not ctx.get("build"):
         pathlib.Path(path).unlink(missing_ok=True)  # only boot units are read again (layout probes, LTO)
     return result
 
@@ -715,12 +842,46 @@ def layout_rows(boot_scans, pin, ctx, pool):
             users[sig].add(unit)
             first.setdefault(sig, (unit, s))
     by_unit = collections.defaultdict(list)
-    for sig, (unit, s) in sorted(first.items()):
+    for _sig, (unit, s) in sorted(first.items()):
         by_unit[unit].append(s)
     rows, evidence, unprobed = [], [], 0
-    for unit, structs, got in pool.map(probe_one, [(u, ss, ctx) for u, ss in sorted(by_unit.items())], chunksize=2):
+    # A struct's probe result is reused while its type closure (dwarf_structs shape), the flags and the compilers
+    # are unchanged; which unit defines it and how the rest of that unit's .i changed do not matter.
+    store = pathlib.Path(ctx["cache"]) / "probes.json" if ctx.get("cache") else None
+    try:
+        saved = json.loads(store.read_text()) if store else {}
+    except (OSError, ValueError):
+        saved = {}
+    tools = [file_state(shutil.which(c) or c)[2:] for c in ("gcc", ctx["mips_gcc"])]
+    keep = {}
+    def pkey(unit, s):
+        return hashlib.sha1(json.dumps([PROBE_VERSION, HOST_FLAGS, MIPS_FLAGS, tools, signature(s),
+                                        s.get("shape")]).encode()).hexdigest()
+    jobs, cached = [], {}
+    for unit, structs in sorted(by_unit.items()):
+        todo = [s for s in structs if pkey(unit, s) not in saved]
+        for s in structs:
+            if pkey(unit, s) in saved:
+                cached[(unit, signature(s))] = saved[pkey(unit, s)]
+        if todo:
+            jobs.append((unit, todo, ctx))
+    fresh = {}
+    for unit, structs, got in pool.map(probe_one, jobs, chunksize=2):
         for i, s in enumerate(structs):
-            host, aligned, mips = (got[k].get(i, {}) for k in ("host", "aligned", "mips"))
+            fresh[(unit, signature(s))] = {k: got[k].get(i, {}) for k in ("host", "aligned", "mips")}
+            keep[pkey(unit, s)] = fresh[(unit, signature(s))]
+    if store:
+        saved.update(keep)
+        if not ctx.get("partial"):  # a --units slice sees only its own structs: keep the other slices' probes
+            live = {pkey(u, s) for u, ss in by_unit.items() for s in ss}
+            saved = {k: v for k, v in saved.items() if k in live}
+        store.write_text(json.dumps(saved))
+    print("layout: %d structs from cache, %d probed" % (len(cached), len(fresh)), file=sys.stderr, flush=True)
+    for unit, structs in sorted(by_unit.items()):
+        for s in structs:
+            res = fresh.get((unit, signature(s))) or cached[(unit, signature(s))]
+            # JSON turns the int keys of a cached result into strings
+            host, aligned, mips = ({int(a): b for a, b in res[k].items()} for k in ("host", "aligned", "mips"))
             if not host or not mips:
                 unprobed += 1
                 continue
@@ -758,7 +919,7 @@ def decision(evidence, shim_text, unprobed):
             "recommend": "flag" if differ and not residual and not shared else "per-struct"}
 
 
-def lto_rows(boot_scans, work, pin, jobs):
+def lto_rows(boot_scans, work, pin, jobs, cache=None):
     """-flto -Wlto-type-mismatch over the boot link: conflicting declarations of one symbol across units."""
     outdir = pathlib.Path(work) / "lto"
     outdir.mkdir(parents=True, exist_ok=True)
@@ -767,13 +928,25 @@ def lto_rows(boot_scans, work, pin, jobs):
 
     def compile_one(item):
         unit, ipath, obj = item
+        sha = file_state(ipath)[2:]
+        stampf = pathlib.Path(obj + ".sha")
+        if cache and os.path.exists(obj) and stampf.exists() and stampf.read_text() == json.dumps(sha):
+            return obj  # same prepared unit as the last LTO object: reuse it
         code, _, _ = run(["gcc"] + HOST_FLAGS + ["-flto", "-fno-fat-lto-objects", "-O0", "-w", "-x", "cpp-output",
                                                  "-c", ipath, "-o", obj])
+        if code == 0:
+            stampf.write_text(json.dumps(sha))
         return obj if code == 0 else None
     with concurrent.futures.ThreadPoolExecutor(jobs) as tp:
         objs = [o for o in tp.map(compile_one, todo) if o]
     listing = outdir / "objects.txt"
     listing.write_text("\n".join(objs) + "\n")
+    memo = pathlib.Path(cache) / "lto.json" if cache else None
+    link_key = hashlib.sha1(json.dumps([[o, file_state(o + ".sha")[2:]] for o in objs]).encode()).hexdigest()
+    if memo and memo.exists():
+        old = json.loads(memo.read_text())
+        if old["key"] == link_key:
+            return [tuple(r) for r in old["rows"]], old["code"], old["err"]
     code, _, err = run(["gcc", "-m32", "-flto=%d" % jobs, "-flinker-output=nolto-rel", "-r", "-nostdlib",
                         "-Wlto-type-mismatch", "@" + str(listing), "-o", str(outdir / "linked.o")], timeout=3600)
     rows, lines = [], err.splitlines()
@@ -783,6 +956,8 @@ def lto_rows(boot_scans, work, pin, jobs):
             names = QUOTED.findall(m["msg"])
             notes = [x.split("note: ", 1)[1].strip() for x in lines[i + 1:i + 4] if "note:" in x]
             rows.append((names[0] if names else "", m["file"], int(m["line"]), " ".join([m["msg"]] + notes)))
+    if memo:
+        memo.write_text(json.dumps({"key": link_key, "rows": rows, "code": code, "err": err}))
     return rows, code, err
 
 
@@ -804,11 +979,15 @@ def sweep(args):
     sdk = {u for u in units if "/sdk/" in u.lower() or policy.sdk_unit(
         u, (source / u).read_text(errors="replace"), addresses, game)}
     ctx = {"source": str(source), "work": str(work), "adapter": HERE, "boot": boot, "sdk": sdk,
-           "build": args.build, "layout": not args.no_layout, "mips_gcc": args.mips_gcc}
-    scans, rows, evidence, deci = {}, [], [], None
+           "build": args.build, "layout": not args.no_layout, "mips_gcc": args.mips_gcc, "partial": bool(args.units),
+           "cache": None if args.fresh else str(out / "cache")}
+    if args.fresh:
+        shutil.rmtree(out / "cache", ignore_errors=True)
+    scans, rows, evidence, deci, hits = {}, [], [], None, 0
     with concurrent.futures.ProcessPoolExecutor(args.jobs) as pool:
         for i, res in enumerate(pool.map(scan_one, [(u, ctx) for u in units], chunksize=8)):
             scans[res["unit"]] = res
+            hits += bool(res.get("cached"))
             if i % 500 == 0:
                 print("scan %d/%d" % (i, len(units)), file=sys.stderr, flush=True)
         for unit, res in sorted(scans.items()):
@@ -819,6 +998,8 @@ def sweep(args):
             for name, index, param, file, line in res["u64"]:
                 rows.append(row("gate-u64-param", name, unit, "%s:%d" % (relative(file, source), line), pin,
                                 res["boot"], "parameter %d `%s` is a 64-bit integer in non-SDK code" % (index, param)))
+        print("scan: %d of %d units from cache, %d rescanned" % (hits, len(units), len(units) - hits),
+              file=sys.stderr, flush=True)
         rows += knr_rows({u: {"defs": r["defs"], "calls": r["calls"]} for u, r in scans.items()}, source, pin, boot)
         rows += subword_rows(source, version, pin)
         if not args.no_layout:
@@ -828,8 +1009,15 @@ def sweep(args):
             deci = decision(evidence, shim, unprobed)
             (out / "layout-evidence.jsonl").write_text("".join(json.dumps(e, sort_keys=True) + "\n" for e in evidence))
             (out / "align-double.json").write_text(json.dumps(deci, indent=1, sort_keys=True) + "\n")
+    if args.ubsan_units:
+        names = set()
+        for line in (HERE / "boot-trace.tsv").read_text().splitlines()[1:]:
+            names.update(c for c in line.split("\t")[2:4] if c)
+        listed = sorted(u for u, r in scans.items() if names & set(r["defs"]))
+        pathlib.Path(args.ubsan_units).write_text("".join(u + "\n" for u in listed))
+        print("ubsan units: %d of %d define a boot-trace function" % (len(listed), len(scans)), file=sys.stderr)
     if args.lto:
-        lrows, code, err = lto_rows({u: r for u, r in scans.items() if r["boot"]}, work, pin, args.jobs)
+        lrows, code, err = lto_rows({u: r for u, r in scans.items() if r["boot"]}, work, pin, args.jobs, ctx["cache"])
         for symbol, file, line, message in lrows:
             f = relative(file, source)
             rows.append(row("gate-lto-type", symbol, f, "%s:%d" % (f, line), pin, f in boot, message))
@@ -843,8 +1031,11 @@ def sweep(args):
     (out / "meta.json").write_text(json.dumps(meta) + "\n")
     if args.classes_md:
         pathlib.Path(args.classes_md).write_text(render_classes(rows, meta))
-    if not args.keep_work:
+    if args.fresh and not args.keep_work:
         shutil.rmtree(work, ignore_errors=True)
+    else:
+        for scratch in ("o", "probe"):
+            shutil.rmtree(work / scratch, ignore_errors=True)
     return rows
 
 
@@ -859,6 +1050,8 @@ def main(argv=None):
     ap.add_argument("--units", help="a file of src/... paths to sweep instead of every unit")
     ap.add_argument("--no-layout", action="store_true", help="skip the struct layout parity stage")
     ap.add_argument("--lto", action="store_true", help="add the -flto -Wlto-type-mismatch stage over the boot link")
+    ap.add_argument("--ubsan-units", help="write the units that define a boot-trace function here (RAGE_DECOMP_UBSAN_UNITS)")
+    ap.add_argument("--fresh", action="store_true", help="ignore and drop the cache (OUT/cache, OUT/work/i): a cold sweep")
     ap.add_argument("--keep-work", action="store_true", help="keep the prepared units under OUT/work")
     ap.add_argument("--classes-md", help="write the class table (count, boot units, folder split) here")
     ap.add_argument("--baseline", type=pathlib.Path, default=HERE / "gates-baseline.tsv")
