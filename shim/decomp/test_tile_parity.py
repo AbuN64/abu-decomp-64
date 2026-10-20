@@ -32,9 +32,11 @@ class TileParity(unittest.TestCase):
         return path
 
     def test_seat_args_match_and_drift(self):
-        same = self.seat(["{release}/rage_decomp_boot", "--window", "{release}/data/ragewars.z64", "284", "222", "640", "480"])
+        same = self.seat(["{release}/ragewars", "--no-dialog", "--user-dir", "{release}/user", "--rom", "{release}/data/ragewars.z64",
+                          "--fb", "284x222", "--window", "640x480"])
         self.assertEqual(tp.seat_args(same, "x"), tp.TILE_ARGS)
-        moved = self.seat(["{release}/rage_decomp_boot", "--window", "{release}/data/ragewars.z64", "284", "222", "800", "600"])
+        moved = self.seat(["{release}/ragewars", "--no-dialog", "--user-dir", "{release}/user", "--rom", "{release}/data/ragewars.z64",
+                          "--fb", "284x222", "--window", "800x600"])
         self.assertNotEqual(tp.seat_args(moved, "x"), tp.TILE_ARGS)
 
 

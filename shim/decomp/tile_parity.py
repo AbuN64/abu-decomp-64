@@ -5,7 +5,7 @@ tile 75 vs run-on 252 on 2026-10-20). Both boots are run-on boots (N64C_RUN_ON=1
 SDL's offscreen driver; the tile one uses TILE_ARGS, the headless one advance.py's arguments. Fails (exit 1) when the
 tile census is below the headless census. With --seat it also fails (exit 2) when the seat profile's port command no
 longer equals TILE_ARGS, so a changed tile cannot escape the check.
-  python3 -I tile_parity.py --binary rage_decomp_boot --rom ragewars.z64 [--seat seat.json] [--output parity.json]"""
+  python3 -I tile_parity.py --binary ragewars --rom ragewars.z64 [--seat seat.json] [--output parity.json]"""
 import argparse
 import json
 import os
@@ -17,8 +17,9 @@ import tempfile
 
 sys.dont_write_bytecode = True  # the cycle snapshot refuses stray .pyc files
 
-TILE_ARGS = ["--window", "{rom}", "284", "222", "640", "480"]
-HEADLESS_ARGS = ["{rom}", "{picture}", "180", "284", "222", "320", "240"]
+TILE_ARGS = ["--no-dialog", "--user-dir", "{user}", "--rom", "{rom}", "--fb", "284x222", "--window", "640x480"]
+HEADLESS_ARGS = ["--no-dialog", "--user-dir", "{user}", "--rom", "{rom}", "--capture", "{picture}", "--retrace", "180",
+                 "--fb", "284x222", "--window", "320x240"]
 END = re.compile(r"boot-diag: end (\d+) failures \(.*?\), census (\d+)/(\d+)")
 STEP = re.compile(r"boot-step: census (\d+)/(\d+) hit")
 
@@ -35,9 +36,10 @@ def census(stderr):
 
 
 def seat_args(seat_json, rom):
-    """The port role's boot arguments from a seat profile, with the release ROM path replaced by {rom}."""
+    """The port role's boot arguments from a seat profile, with the release ROM and user folder replaced by {rom} and {user}."""
     command = json.loads(pathlib.Path(seat_json).read_text())["supervisor"]["roles"]["port"]["command"][1:]
-    return ["{rom}" if arg.endswith("data/ragewars.z64") else arg for arg in command]
+    return ["{rom}" if arg.endswith("data/ragewars.z64") else "{user}" if arg == "{release}/user" else arg
+            for arg in command]
 
 
 def verdict(headless, tile):
@@ -45,7 +47,7 @@ def verdict(headless, tile):
 
 
 def run(binary, args, rom, seconds, picture):
-    argv = [a.format(rom=rom, picture=picture) for a in args]
+    argv = [a.format(rom=rom, picture=picture, user=pathlib.Path(picture).parent / "user") for a in args]
     env = {**os.environ, "SDL_VIDEODRIVER": "offscreen", "SDL_AUDIODRIVER": "dummy", "N64C_RUN_ON": "1",
            "N64C_RUN_ON_LIMIT": str(max(seconds - 15, 10))}
     r = subprocess.run(["timeout", "-k", "10", str(seconds), str(binary), *argv], env=env, capture_output=True, text=True)
