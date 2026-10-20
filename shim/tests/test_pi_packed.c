@@ -274,6 +274,42 @@ static void registry_count_test(void)
     n64c_pi_close();
     CHECK(remove(path)==0);
 }
+
+static u32 coverage_misses, coverage_bytes;
+void n64c_diag_layout(const char *what,u32 rom,u32 bytes,const void *ram)
+{
+    (void)what; (void)rom; (void)ram;
+    coverage_misses++;
+    coverage_bytes+=bytes;
+}
+static void byte_stream_test(void)
+{
+    const char *path="n64c_byte_stream_test.rom";
+    u8 rom[32], out[32], image[4]={9,8,7,6};
+    for (u32 i=0;i<sizeof rom;i++) rom[i]=(u8)(i+1);
+    FILE *f=fopen(path,"wb");
+    CHECK(f && fwrite(rom,1,sizeof rom,f)==sizeof rom && fclose(f)==0);
+    CHECK(n64c_pi_open(path));
+    CHECK(n64c_pi_register(20,24,N64C_RES_SWAP32,NULL)==0);
+    CHECK(n64c_pi_register(4,28,N64C_RES_BYTE_STREAM,NULL)==0); /* declaration after typed row */
+    CHECK(n64c_pi_register(8,12,N64C_RES_GRAPH,"F:4")==0); /* typed row after declaration */
+    CHECK(n64c_pi_register_image(12,16,image)==0);
+    CHECK(n64c_pi_register(8,12,N64C_RES_RAW,NULL)==-1); /* typed overlap remains an error */
+    CHECK(n64c_pi_register(0,4,N64C_RES_BYTE_STREAM,"4")==-1);
+    coverage_misses=coverage_bytes=0;
+    CHECK(n64c_pi_dma(0,out,sizeof out)==0);
+    CHECK(coverage_misses==2 && coverage_bytes==8); /* only the two undeclared margins */
+    u32 w;
+    memcpy(&w,out+8,4); CHECK(w==0x090A0B0Cu);
+    memcpy(&w,out+20,4); CHECK(w==0x15161718u);
+    CHECK(memcmp(out+12,image,4)==0);
+    CHECK(memcmp(out,rom,8)==0 && memcmp(out+16,rom+16,4)==0 && memcmp(out+24,rom+24,8)==0);
+    coverage_misses=coverage_bytes=0;
+    CHECK(n64c_pi_dma(4,out,24)==0);
+    CHECK(coverage_misses==0);
+    n64c_pi_close();
+    CHECK(remove(path)==0);
+}
 int main(void)
 {
     const char *path="n64c_packed_test.rom";
@@ -329,7 +365,8 @@ int main(void)
     CHECK(n64c_pi_register_packed(MISFIT,MISFIT+(u32)size1,N64C_RES_GRAPH,"X:1;F:4 @0:1")==-1); /* planes: no refs */
     CHECK(n64c_pi_register_packed(PLANES,PLANES+(u32)size4,N64C_RES_GRAPH,"X:1;F:2 4")==0);
     CHECK(n64c_pi_register(UNTYPED,UNTYPED+0x40,N64C_RES_UNTYPED,NULL)==-1);           /* the gate names a blob */
-    CHECK(n64c_pi_register(UNTYPED,UNTYPED+0x40,N64C_RES_UNTYPED,"blob.x")==0);
+    CHECK(n64c_pi_register(UNTYPED,UNTYPED+0x40,N64C_RES_BYTE_STREAM,NULL)==0);
+    CHECK(n64c_pi_register(UNTYPED,UNTYPED+0x40,N64C_RES_UNTYPED,"blob.x")==0); /* still stops under byte declaration */
     CHECK(n64c_pi_register_packed(PLANES2,PLANES2+(u32)size4,N64C_RES_UNTYPED,"blob.y")==0);
     /* the header in host order, the packed bytes raw, also when a DMA cuts the header */
     u32 w; u16 h;
@@ -406,6 +443,7 @@ int main(void)
     CHECK(remove(path)==0);
     sized_tests();
     registry_count_test();
+    byte_stream_test();
     printf("PI packed streams: %d checks; host-order headers (cut DMA), raw packed bytes, origins, method 1 STRUCT, "
            "method 2 GRAPH (pool references, shared and null), ROM GRAPH (tagged variants, head + elements, a nested "
            "stream), "

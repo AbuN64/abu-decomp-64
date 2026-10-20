@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 typedef enum { N64C_RES_RAW, N64C_RES_SWAP16, N64C_RES_SWAP32, N64C_RES_STRUCT, N64C_RES_TAGGED, N64C_RES_ALCTL,
-               N64C_RES_IMAGE, N64C_RES_GRAPH, N64C_RES_PACKED, N64C_RES_UNTYPED } N64cResKind;
+               N64C_RES_IMAGE, N64C_RES_GRAPH, N64C_RES_PACKED, N64C_RES_UNTYPED, N64C_RES_BYTE_STREAM } N64cResKind;
 /* Resolve an original pointer to its native32-bit value. The binding owner
  * supplies function/data identities; PI never guesses from address bit patterns.
  * A zero pointer stays zero without calling the resolver. */
@@ -26,6 +26,9 @@ int n64c_pi_reserve(size_t count);
  * Resources must be disjoint whole records. DMA subranges must contain whole
  * multibyte fields. Failed reads have no completion event; discard their buffer. */
 int n64c_pi_register(u32 lo, u32 hi, N64cResKind kind, const char *fields);
+/* BYTE_STREAM: an opaque transport range (fields NULL). Its bytes need no scalar conversion; typed resources,
+ * packed streams and native images may overlap it and retain their conversions. Unlike RAW, this is a fallback
+ * declaration; it cannot override a typed layout or an UNTYPED gate. DMA coverage diagnostics recognize it. */
 /* UNTYPED (n64c_pi_register, or n64c_pi_register_packed for an RNC stream): fields is the name of a decomp blob fact
  * that no layout types (the manifest byte-order gate, link.py): the first DMA that starts in the range stops the boot
  * with exit 78 and names the blob; with N64C_LAYOUT_GATE=log it is logged once (boot-diag: untyped blob NAME ROM

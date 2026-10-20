@@ -291,7 +291,7 @@ int main(void) { return n64c_boot_entry(); }
                                                      'rom."test" = [[0x780, 0x790]]\n')
         self.generate(streams)
         code = (self.path / "output/bindings.c").read_text()
-        self.assertNotIn('"sample.1"', code)
+        self.assertIn('{"sample.1", 1920u, 0u, 16u, N64C_RES_BYTE_STREAM, 0},', code)
         classes = module.byte_order(streams, self.path / "source")
         self.assertEqual(classes["sample.1"][0], "bytes")
         self.assertEqual(classes["bundle.1"][0], "layout")
@@ -313,6 +313,34 @@ int main(void) { return n64c_boot_entry(); }
             self.generate(bad)
         bad = copy.deepcopy(self.project)                      # a stream overlapping a load
         bad["loads"][0].update(rom="0x500")
+        with self.assertRaises(ValueError):
+            self.generate(bad)
+
+    def test_byte_stream_transport_ranges(self):
+        (self.path / "source/blobs.toml").write_text(
+            '[blob."sequence"]\ncodec = "none"\nformat = "sequence bytes"\n'
+            'rom."test" = [[0x600,0x604], [0x700,0x720]]\n')
+        self.project["resources"] = [{"name": "header", "rom": "0x700", "bytes": 8,
+                                     "kind": "swap32", "evidence": "Fixture native header"}]
+        self.project["byte_streams"] = [
+            {"format": "sequence bytes", "evidence": "Fixture byte reader"},
+            {"name": "code_cache", "rom": "0x500", "bytes": 32, "evidence": "Fixture paging transport"}]
+        self.generate()
+        code = (self.path / "output/bindings.c").read_text()
+        self.assertIn('{"sequence", 1536u, 0u, 4u, N64C_RES_BYTE_STREAM, 0},', code)
+        self.assertIn('{"sequence", 1792u, 0u, 32u, N64C_RES_BYTE_STREAM, 0},', code)
+        self.assertIn('{"header", 1792u, 0u, 8u, N64C_RES_SWAP32, 0},', code)
+        self.assertIn('{"code_cache", 1280u, 0u, 32u, N64C_RES_BYTE_STREAM, 0},', code)
+        for change in [
+                {"bytes": 0}, {"rom": "0xfffffff0", "bytes": 32},
+                {"rom": 4090, "bytes": 16}, {"name": "bad:name"}, {"evidence": ""},
+                {"format": "sequence bytes"}]:
+            bad = copy.deepcopy(self.project)
+            bad["byte_streams"][1].update(change)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.generate(bad)
+        bad = copy.deepcopy(self.project)
+        bad["byte_streams"].append(dict(bad["byte_streams"][1]))
         with self.assertRaises(ValueError):
             self.generate(bad)
 

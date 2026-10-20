@@ -245,6 +245,35 @@ def blob_ranges(source, version):
     return out
 
 
+def byte_stream_ranges(project, blobs):
+    """Declared opaque bytes. Typed descriptors may overlay these transport ranges."""
+    layouts = {r.get("format") for r in project.get("blob_layouts", [])}
+    formats, names, ranges = set(), set(), []
+    for item in project.get("byte_streams", []):
+        if not isinstance(item.get("evidence"), str) or not item["evidence"].strip():
+            raise ValueError("byte stream needs evidence")
+        if set(item) == {"format", "evidence"}:
+            fmt = item["format"]
+            found = [(b, rr) for b, (rr, _, f) in blobs.items() if f == fmt]
+            if not found or fmt in formats or fmt in layouts:
+                raise ValueError("byte stream format names no blob fact (or has a layout): " + str(fmt))
+            formats.add(fmt)
+            ranges.extend((b, lo, hi) for b, rr in found for lo, hi in rr)
+        elif set(item) == {"name", "rom", "bytes", "evidence"}:
+            label = name(item["name"])
+            if label in names:
+                raise ValueError("duplicate byte stream: " + label)
+            names.add(label)
+            lo, size = number(item["rom"]), number(item["bytes"])
+            ranges.append((label, lo, lo + size))
+        else:
+            raise ValueError("byte stream needs a format or named ROM range")
+    for label, lo, hi in ranges:
+        if not BLOB_NAME.fullmatch(label) or lo < 0 or hi <= lo or hi > number(project["rom_bytes"]):
+            raise ValueError("invalid byte stream range: " + label)
+    return formats, ranges
+
+
 def byte_order(project, source):
     """The byte-order class of every blob fact of the project's version: "layout" (a blob_layouts row names it or its
     format), "rows" (a loads/resources row overlaps one of its ranges), "bytes" (its format is declared a byte
@@ -253,14 +282,7 @@ def byte_order(project, source):
     blobs = blob_ranges(source, project["version"])
     named = {row.get("blob") for row in project.get("blob_layouts", [])}
     formats = {row.get("format") for row in project.get("blob_layouts", [])} - {None}
-    streams = set()
-    for item in project.get("byte_streams", []):
-        if set(item) != {"format", "evidence"} or not isinstance(item["evidence"], str) or not item["evidence"].strip():
-            raise ValueError("byte stream needs a format and evidence")
-        if item["format"] in formats or item["format"] in streams or \
-                not any(fmt == item["format"] for _, _, fmt in blobs.values()):
-            raise ValueError("byte stream format names no blob fact (or has a layout): " + str(item["format"]))
-        streams.add(item["format"])
+    streams, opaque = byte_stream_ranges(project, blobs)
     rows = [(number(r["rom"]), number(r["bytes"])) for r in project.get("resources", []) + project.get("loads", [])]
     out = {}
     for blob, (ranges, codec, fmt) in blobs.items():
@@ -268,7 +290,7 @@ def byte_order(project, source):
             kind = "layout"
         elif any(rom < hi and rom + size > lo for lo, hi in ranges for rom, size in rows):
             kind = "rows"
-        elif fmt in streams:
+        elif fmt in streams or all(any(a <= lo and hi <= b for _, a, b in opaque) for lo, hi in ranges):
             kind = "bytes"
         else:
             kind = "untyped"
@@ -418,6 +440,10 @@ def generate(manifest, source, output):
         rom_ranges.append((rom, rom + size, blob))
         code.insert(code.index('    {0},  /* keeps the array non-empty; the count below excludes it */'),
                     f'    {{"{blob}", {rom}u, 0u, {size}u, {KINDS[kind]}, {c_string(fields)}}},')
+    _, opaque = byte_stream_ranges(project, blob_ranges(source, project["version"]))
+    for label, lo, hi in opaque:
+        code.insert(code.index('    {0},  /* keeps the array non-empty; the count below excludes it */'),
+                    f'    {{"{label}", {lo}u, 0u, {hi - lo}u, N64C_RES_BYTE_STREAM, 0}},')
     # The byte-order gate: a blob fact nothing types is registered as UNTYPED, so the first DMA of it stops the boot
     # and names it (n64c_pi.h), instead of a big-endian count crashing a reader later.
     classes = byte_order(project, source)

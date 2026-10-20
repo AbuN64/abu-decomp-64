@@ -358,19 +358,24 @@ int n64c_pi_reserve(size_t count)
 }
 /* Validate a disjoint extent and reserve its slot before allocating any layout-owned data. The boot reserves
  * its generated descriptor count once; individual callers use the same allocator for their next slot. */
-static int reserve_range(u32 lo,u32 hi)
+static int reserve_range(u32 lo,u32 hi,N64cResKind kind)
 {
     if (hi<=lo) return 0;
     for (size_t i=0;i<n_res;i++)
-        if (lo<res[i].hi && hi>res[i].lo) return 0;
+        if (lo<res[i].hi && hi>res[i].lo && kind!=N64C_RES_BYTE_STREAM &&
+            res[i].kind!=N64C_RES_BYTE_STREAM) return 0;
     return n64c_pi_reserve(n_res+1)==0;
 }
 int n64c_pi_register(u32 lo,u32 hi,N64cResKind kind,const char *fields)
 {
-    if (!reserve_range(lo,hi) || ((unsigned)kind>N64C_RES_ALCTL && kind!=N64C_RES_GRAPH && kind!=N64C_RES_UNTYPED))
+    if (!reserve_range(lo,hi,kind) || ((unsigned)kind>N64C_RES_ALCTL && kind!=N64C_RES_GRAPH &&
+                                  kind!=N64C_RES_UNTYPED && kind!=N64C_RES_BYTE_STREAM))
         return -1; /* IMAGE, PACKED: own calls */
     Res entry={.lo=lo,.hi=hi,.kind=kind};
-    if (kind==N64C_RES_UNTYPED) {
+    if (kind==N64C_RES_BYTE_STREAM) {
+        if (fields) return -1;
+        entry.stride=1;
+    } else if (kind==N64C_RES_UNTYPED) {
         if (!fields || !*fields) return -1;
         snprintf(entry.fields,sizeof entry.fields,"%s",fields);
         entry.stride=1;
@@ -423,7 +428,7 @@ int n64c_pi_register(u32 lo,u32 hi,N64cResKind kind,const char *fields)
 }
 int n64c_pi_register_image(u32 lo,u32 hi,const u8 *image)
 {
-    if (!reserve_range(lo,hi) || !image) return -1;
+    if (!reserve_range(lo,hi,N64C_RES_IMAGE) || !image) return -1;
     res[n_res++]=(Res){.lo=lo,.hi=hi,.kind=N64C_RES_IMAGE,.stride=1,.image=image};
     return 0;
 }
@@ -437,8 +442,8 @@ int n64c_pi_register_packed(u32 lo,u32 hi,N64cResKind kind,const char *fields)
 {
     static const u8 header_widths[]={4,4,4,2,2,1,1};
     u8 raw[RNC_HEADER];
-    if (!reserve_range(lo,hi) || !rom || hi-lo<RNC_HEADER || kind==N64C_RES_ALCTL || kind==N64C_RES_IMAGE ||
-        kind==N64C_RES_PACKED) return -1;
+    if (!reserve_range(lo,hi,N64C_RES_PACKED) || !rom || hi-lo<RNC_HEADER || kind==N64C_RES_ALCTL || kind==N64C_RES_IMAGE ||
+        kind==N64C_RES_PACKED || kind==N64C_RES_BYTE_STREAM) return -1;
     if (fseek(rom,(long)lo,SEEK_SET)!=0 || fread(raw,1,RNC_HEADER,rom)!=RNC_HEADER) return -1;
     if (raw[0]!='R' || raw[1]!='N' || raw[2]!='C' || (raw[3]!=1 && raw[3]!=2) ||
         be_value(raw+8,4)>hi-lo-RNC_HEADER) return -1;
@@ -542,6 +547,7 @@ static int fixup(u32 dev,u8 *destination,u32 bytes)
     uint64_t end=(uint64_t)dev+bytes;
     for (size_t i=0;i<n_res;i++) {
         Res *entry=&res[i];
+        if (entry->kind==N64C_RES_BYTE_STREAM) continue; /* typed overlays own conversion; coverage only */
         uint64_t start=dev>entry->lo ? dev : entry->lo;
         uint64_t finish=end<entry->hi ? end : entry->hi;
         if (start>=finish || entry->kind==N64C_RES_RAW) continue;
