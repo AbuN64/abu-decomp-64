@@ -40,20 +40,20 @@ Gates, in order; the first failure stops the run and the rest are reported as sk
                  `land.commit_hook`)
   setup        `unbake setup`, every round: it answers at once when nothing it reads moved and otherwise re-extracts
                exactly the versions whose symbol facts, yaml or ROM changed (unbake stamps each version's extraction
-               in the tree), then builds
-  sync         `unbake sync`
+               in the tree) and writes the generated files (`--no-make`: the check gate builds)
   check        the configured check command as `unbake-run [--work N] -- CHECK -j{j}` (N, the admit answer, caps it),
                then `unbake verify STATUS` with its exit: the project's build never calls our tools, so the verdict
                the report and sync read is recorded here (a refused verify fails the gate)
-  sync_after   `unbake sync` again, after check
-  sync_check   `unbake sync --check`
-  If setup, sync, check, sync_after or sync_check fails with more than one input landed, the failure is bisected by
+  sync_after   `unbake sync --settle` after check: writes the README the verdict moved and refuses as `sync --check`
+               would unless a second sync would write nothing (10-20: sync, sync_after and sync_check were three
+               serial single-core passes, 17 s each, of a 64 s warm ship; setup already writes what the first wrote)
+  If setup, check or sync_after fails with more than one input landed, the failure is bisected by
   input: the tree is rebuilt with growing prefixes of the inputs (warm caches, ceil(log2 n) builds) until the first
   input whose presence breaks the build is found; that input is refused alone (`land.input_build_failed`, the build's
   reason; the result's `refused_inputs`) and the rest are built again. `attempts` lists every build.
   audit        `unbake audit --against BASE` on the final tree: the source rules the landing adds over the base
                (raw-offset, ...) are refused here; the project's own CI runs only its standalone build check, so this
-               gate and sync_check are where those rules hold
+               gate and sync_after are where those rules hold
   markers      no marker line (INCLUDE_ASM, NON_MATCHING, ...) added in a file no applied patch touched
   untracked_s  no untracked assembly file (every one a patch or sync produced is tracked or staged)
   standalone   no line the landing adds (patches and regenerated files, tracked or untracked) names one of our tools
@@ -132,10 +132,8 @@ GATES = (
     "base",
     "apply",
     "setup",
-    "sync",
     "check",
     "sync_after",
-    "sync_check",
     "audit",
     "markers",
     "untracked_s",
@@ -144,7 +142,7 @@ GATES = (
 )
 OPTIONAL_GATES = ("recipe",)
 # A failed build gate that can be the fault of one input (not the admit command or the tree's own state).
-BISECTABLE = frozenset({"land.setup", "land.sync", "land.check", "land.sync_after", "land.sync_check", "land.audit"})
+BISECTABLE = frozenset({"land.setup", "land.check", "land.sync_after", "land.audit"})
 DEFAULT_SUBJECT_LIMIT = 72
 # The header line every file `unbake sync` writes carries: a file with it is generated, never a landing input.
 # The first is the current, project-neutral stamp; the second is the one base copies written before it carry.
@@ -1640,10 +1638,8 @@ class Landing:
         unbake = self.unbake
         return [
             self.setup,
-            lambda: unbake("sync", "sync", "sync"),
             self.check,
-            lambda: unbake("sync_after", "sync_after", "sync"),
-            lambda: unbake("sync_check", "sync_check", "sync", "--check"),
+            lambda: unbake("sync_after", "sync_after", "sync", "--settle"),
             lambda: unbake("audit", "audit", "audit", "--against", str(self.extra.get("base", self.base))),
         ]
 

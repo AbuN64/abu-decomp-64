@@ -155,10 +155,8 @@ class LandTests(unittest.TestCase):
             self.unbake,
             [
                 ("setup", "--no-make"),
-                ("sync",),
                 ("verify", "0"),
-                ("sync",),
-                ("sync", "--check"),
+                ("sync", "--settle"),
                 ("audit", "--against", self.base),
             ],
         )
@@ -359,7 +357,7 @@ class LandTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual([r["status"] for r in result["lanes"]], ["excluded", "applied"])
         self.assertEqual([f["key"] for f in findings if f["blocking"]], ["land.commit_subject"])
-        self.assertEqual(seen, [C_C, C_C])  # the syncs that ran had not seen the refused input's change
+        self.assertEqual(seen, [C_C])  # the sync that ran had not seen the refused input's change
         self.assertEqual([c["lane"] for c in result["commits"]], ["good"])
         self.assertTrue(result["pass"])
 
@@ -1173,9 +1171,9 @@ class LandTests(unittest.TestCase):
 
     def test_unbake_refusal_and_check_failure_stop_the_run_with_a_named_finding(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})
-        self.sync_ok = lambda args: args != ("sync", "--check") and "--check" not in args
+        self.sync_ok = lambda args: "--settle" not in args
         result, code, findings = self.land([one])
-        self.assertEqual((code, findings[0]["key"]), (1, "land.sync_check"))
+        self.assertEqual((code, findings[0]["key"]), (1, "land.sync_after"))
         git(self.tree, "checkout", "-q", "HEAD", "--", ".")
         self.runner = lambda argv, cwd, env, timeout: (
             run_process(argv, cwd, env, timeout)
@@ -1199,7 +1197,7 @@ class LandTests(unittest.TestCase):
         self.assertEqual((code, findings[0]["key"]), (1, "land.check"))
         self.assertIn("unbake verify refused", findings[0]["message"])
         self.assertFalse(self.gates(result)["check"])
-        self.assertEqual(self.unbake[:3], [("setup", "--no-make"), ("sync",), ("verify", "0")])
+        self.assertEqual(self.unbake[:3], [("setup", "--no-make"), ("verify", "0")])
 
     def test_event_writer_failure_fails_the_landing(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})
