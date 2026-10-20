@@ -52,11 +52,19 @@ def reconcile(ipc: Any, config: dict[str, Any], disabled: set[str]) -> None:
     if missing:
         raise layout.LayoutError("enabled tile windows are absent: " + ", ".join(missing))
     first = nodes[layout.app_id(ordered[0], prefix)]
+    focus_role = config.get("focus_role", ordered[0])
+    anchor = nodes.get(config["roles"][focus_role].get("overlay_app_id")) or first
     workspace = next(
         node
         for node in _walk(tree)
-        if node.get("type") == "workspace" and any(child.get("id") == first["id"] for child in _walk(node))
+        if node.get("type") == "workspace" and any(child.get("id") == anchor["id"] for child in _walk(node))
     )
+    if workspace["name"] == "__stream_apply":
+        workspace = next(
+            node
+            for node in _walk(tree)
+            if node.get("type") == "workspace" and not str(node.get("name", "")).startswith("__")
+        )
     for role in sorted(disabled):
         node = nodes.get(layout.app_id(role, prefix))
         if node:
@@ -65,11 +73,11 @@ def reconcile(ipc: Any, config: dict[str, Any], disabled: set[str]) -> None:
     for role in ordered:
         ipc.command(f"[con_id={nodes[layout.app_id(role, prefix)]['id']}] move container to workspace __stream_apply")
     workspace_name = json.dumps(str(workspace["name"]))
-    ipc.command(f"workspace {workspace_name}; layout splith")
+    ipc.command(f"workspace {workspace_name}")
     for stack in columns:
         top = nodes[layout.app_id(stack[0], prefix)]["id"]
         ipc.command(f"[con_id={top}] move container to workspace {workspace_name}")
-        ipc.command(f"[con_id={top}] focus; splith")
+        ipc.command(f"[con_id={top}] focus; layout splith")
     for stack in columns:
         if len(stack) < 2:
             continue
@@ -78,7 +86,6 @@ def reconcile(ipc: Any, config: dict[str, Any], disabled: set[str]) -> None:
         ipc.command(f"[con_id={top}] focus; splitv; mark --add {mark}")
         for role in stack[1:]:
             ipc.command(f"[con_id={nodes[layout.app_id(role, prefix)]['id']}] move container to mark {mark}")
-            ipc.command(f"[con_id={nodes[layout.app_id(role, prefix)]['id']}] move down")
         ipc.command(f"unmark {mark}")
     layout.size_tiles(ipc, config)
     layout.focus_default(ipc, config)

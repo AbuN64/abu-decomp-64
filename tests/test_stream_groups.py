@@ -157,6 +157,49 @@ class GroupTests(unittest.TestCase):
         stop.assert_not_called()
         ipc.command.assert_not_called()
 
+    def test_live_apply_focuses_a_terminal_before_changing_its_layout(self):
+        from unittest.mock import Mock
+
+        ipc = Mock()
+        ipc.tree.side_effect = lambda: self.tree()
+        focused = "floating"
+
+        def command(value):
+            nonlocal focused
+            if value.startswith("workspace "):
+                focused = "floating"
+            if value.startswith("[con_id=5] focus") or value.startswith("[con_id=7] focus"):
+                focused = "terminal"
+            if "layout splith" in value and focused != "terminal":
+                raise RuntimeError("Unable to change layout of floating windows")
+
+        ipc.command.side_effect = command
+        with patch.object(apply, "stop_disabled", return_value=[]):
+            self.assertTrue(apply.apply(self.profile(), client=ipc)["applied"])
+
+    def test_recovery_uses_game_workspace_when_terminals_are_in_staging_workspace(self):
+        from unittest.mock import Mock
+
+        tree = self.tree()
+        workspace = tree["nodes"][0]
+        tree["nodes"].append(
+            {
+                "id": 35,
+                "type": "workspace",
+                "name": "__stream_apply",
+                "nodes": workspace.pop("nodes"),
+                "rect": {"x": 0, "y": 0, "width": 1920, "height": 1056},
+            }
+        )
+        ipc = Mock()
+        ipc.tree.return_value = tree
+        with patch.object(apply, "stop_disabled", return_value=[]):
+            apply.apply(self.profile(), client=ipc)
+        commands = [call.args[0] for call in ipc.command.call_args_list]
+        self.assertIn('workspace "1"', commands)
+        self.assertIn('[con_id=5] move container to workspace "1"', commands)
+        self.assertNotIn('workspace "__stream_apply"', commands)
+
     def test_disabled_runner_identity_is_verified_and_exit_is_event_driven(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory)
