@@ -132,6 +132,8 @@ def port_view(sources: Any, runtime: dict[str, Any], log: str, hide: tuple[str, 
     total = facts.get("total")
     reached = facts.get("hit", facts.get("step"))
     step = f"boot {reached}/{total}" if total else f"boot {runtime.get('phase', 'not started')}"
+    if runtime.get("release"):
+        step = f"{Path(runtime['release']).name} · {step}"
     why = " not linked" if facts.get("missing") else ""
     stop = f"stop {stopped}{why}" if stopped else "running" if runtime.get("phase") == "running" else ""
     when = event_epoch({"time": runtime.get("updated_at")})

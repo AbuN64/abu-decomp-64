@@ -100,6 +100,49 @@ class PanesTests(unittest.TestCase):
             )
             assert (env["WAYLAND_DISPLAY"], env["XDG_RUNTIME_DIR"]) == ("wayland-1", "/run/stream")
 
+    def test_a_pin_change_wakes_a_held_run_but_unrelated_writes_do_not(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            release = root / "runtime/releases/one"
+            release.mkdir(parents=True)
+            other = release.with_name("two")
+            other.mkdir()
+            link = release.with_name("current")
+            link.symlink_to(release)
+            config = {
+                "release_current": str(link),
+                "status_path": "status.json",
+                "runs_root": "runs",
+                "retry_delay_seconds": 30,
+                "watchdog_seconds": 90,
+                "auto_retry": False,
+            }
+            supervisor = Supervisor(Profile(root), "test", config)
+            supervisor.current_release = release
+            watcher = mock.Mock()
+            watcher.read.return_value = [(link, 128)]
+            supervisor.release_changed(watcher)
+            self.assertFalse(supervisor.restart.is_set())
+            pending = link.with_name("pending")
+            pending.symlink_to(other)
+            pending.replace(link)
+            watcher.read.return_value = [(release / "unrelated", 128)]
+            supervisor.release_changed(watcher)
+            self.assertFalse(supervisor.restart.is_set())
+
+            async def scenario():
+                held = asyncio.Event()
+                supervisor.on_change = held.set
+                task = asyncio.create_task(supervisor._countdown())
+                await held.wait()
+                self.assertFalse(task.done())
+                watcher.read.return_value = [(link, 128)]
+                supervisor.release_changed(watcher)
+                self.assertFalse(await task)
+
+            asyncio.run(scenario())
+            self.assertTrue(supervisor.restart.is_set())
+
     def test_without_auto_retry_a_failure_is_held_until_restart_is_requested(self):
         async def scenario(supervisor):
             task = asyncio.create_task(supervisor._countdown())

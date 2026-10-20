@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp.files import atomic_json, sha256_file
+from abu_decomp.stream.inotify import ATTRIB, CREATE, DELETE, MOVED_TO, Watcher
 
 
 def append_event(profile: Any, actor: str, status: str, message: str, evidence: str, payload: dict[str, Any]) -> None:
@@ -63,6 +64,7 @@ class Supervisor:
         self.started_at = ""
         self.run_dir = None
         self.current_command: list[str] = []
+        self.current_release = None
         self.current_binary = None
         self.current_sha = None
         self.last_announced_failure = None
@@ -85,6 +87,7 @@ class Supervisor:
             "retry_delay_seconds": self.retry_delay,
             "paused": self.paused,
             "command": self.current_command,
+            "release": str(self.current_release) if self.current_release else None,
             "binary_sha256": self.current_sha,
             "started_at": self.started_at,
             "terminal_rows_columns": list(self.screen.getmaxyx()) if self.screen else None,
@@ -103,6 +106,7 @@ class Supervisor:
         runtime = Path(self.profile.runtime_root).resolve()
         if not release.is_relative_to(runtime):
             raise ValueError("release resolves outside configured runtime root")
+        self.current_release = release
         mapping = {"release": str(release), "run_dir": str(run_dir), "runtime_root": str(runtime)}
         argv = _fill(self.config["command"], mapping)
         binary = Path(argv[0]).resolve(strict=True)
@@ -326,17 +330,36 @@ class Supervisor:
             return True
         return await self._countdown()
 
+    def release_changed(self, watcher: Watcher) -> None:
+        """A promoted pin wakes even a debugger-held run; unrelated directory writes do nothing."""
+        link = self.profile.resolve_path(self.config["release_current"])
+        if (
+            any(path == link for path, _mask in watcher.read())
+            and self.current_release is not None
+            and link.resolve() != self.current_release
+        ):
+            self.restart.set()
+
     async def manage(self) -> None:
         self.runs_root.mkdir(parents=True, exist_ok=True)
-        while True:
-            try:
-                await self.run_once()
-            except Exception as error:
-                self.phase = "supervisor_error"
-                self.reason = str(error)
-                self.lines.append("[supervisor] " + str(error))
-                self.persist()
-                await self._countdown()
+        link = self.profile.resolve_path(self.config["release_current"])
+        watcher = Watcher()
+        loop = asyncio.get_running_loop()
+        try:
+            watcher.add(link.parent, CREATE | MOVED_TO | DELETE | ATTRIB)
+            loop.add_reader(watcher.fd, self.release_changed, watcher)
+            while True:
+                try:
+                    await self.run_once()
+                except Exception as error:
+                    self.phase = "supervisor_error"
+                    self.reason = str(error)
+                    self.lines.append("[supervisor] " + str(error))
+                    self.persist()
+                    await self._countdown()
+        finally:
+            loop.remove_reader(watcher.fd)
+            watcher.close()
 
 
 def pidfile(status_path: Path) -> Path:
