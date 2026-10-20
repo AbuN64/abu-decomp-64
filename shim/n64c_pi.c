@@ -28,10 +28,12 @@
 
 typedef struct { u32 tag, stride; char fields[64]; } TagLayout;
 typedef struct { u32 offset, width, count; TagLayout layout[16]; } Tagged;
-/* GRAPH types (n64c_pi.h): kind F/L/X/D/E/G/T/R/P; items: F widths (1-8) or references (REF | section << 16 | type),
+/* GRAPH types (n64c_pi.h): kind F/L/X/D/E/G/T/R/P/A/C; items: F widths (1-8) or references (REF | section << 16 | type),
  * L, X and E [type], D section types (NONE: untyped), G/T tag/type pairs; size: F record bytes; tag offset/width:
  * G/T. */
-typedef struct { char kind; u32 size, offset, width, n; u32 *items; } GType;
+/* A size is floor(scale * product(unsigned header fields) / divisor). */
+typedef struct { u32 scale, divisor, n, fields[16]; } GExpr;
+typedef struct { char kind; u32 size, offset, width, n; u32 *items; GExpr count, payload; } GType;
 typedef struct { u32 count; GType *types; } Graph;
 #define GRAPH_REF 0x80000000u
 #define GRAPH_NONE 0xFFFFFFFFu
@@ -39,14 +41,13 @@ typedef struct { u32 count; GType *types; } Graph;
  * TAGGED, the program of GRAPH. */
 typedef struct { N64cResKind kind; char fields[64]; u32 stride; const Tagged *tagged; Graph *graph; u32 root; } Layout;
 #define RNC_HEADER 18u
-#define MAX_RES 1024
 typedef struct {
     u32 lo, hi; N64cResKind kind; char fields[64]; u32 stride; const Tagged *tagged; u8 *widths; const u8 *image;
     int logged; /* UNTYPED (or a PACKED stream whose unpacked kind is UNTYPED): fields is the blob name */
     u8 header[RNC_HEADER]; u32 unpacked_bytes; Layout unpacked; /* PACKED: host-order header, unpacked layout */
 } Res;
-static Res res[MAX_RES];
-static int n_res;
+static Res *res;
+static size_t n_res, cap_res;
 /* RNC streams nested in a GRAPH-typed ROM range (P types): found when the range's graph is walked at registration;
  * their headers are typed by that range's width map, their unpacked bytes by the graph from the P type's target. */
 static Res *nested;
@@ -90,11 +91,13 @@ void n64c_pi_close(void)
     free(nested);
     nested = NULL;
     n_nested = cap_nested = 0;
-    for (int i = 0; i < n_res; i++) {
+    for (size_t i = 0; i < n_res; i++) {
         free(res[i].widths);
         free_graph(res[i].unpacked.graph);
     }
-    n_res = 0;
+    free(res);
+    res = NULL;
+    n_res = cap_res = 0;
     n_tagged = 0;
     pthread_mutex_lock(&origin_lock);
     n_origin = 0;
@@ -149,12 +152,45 @@ static int parse_u32(const char **text,u32 *value)
     *text=end;
     return 1;
 }
+static int parse_gexpr(GExpr *expr,const char **text)
+{
+    const char *p=*text;
+    if (!parse_u32(&p,&expr->scale) || !expr->scale || *p++!='/' ||
+        !parse_u32(&p,&expr->divisor) || !expr->divisor || *p++!=':') return 0;
+    do {
+        u32 offset,width;
+        if (expr->n==8 || !parse_u32(&p,&offset) || *p++!='/' || !parse_u32(&p,&width) ||
+            (width!=1 && width!=2 && width!=4)) return 0;
+        expr->fields[2*expr->n]=offset;
+        expr->fields[2*expr->n+1]=width;
+        expr->n++;
+        if (*p!=',') break;
+        p++;
+    } while (1);
+    *text=p;
+    return 1;
+}
+/* Expressions must read complete scalar fields of their F header, never padding inside a wider field or refs. */
+static int gexpr_fits(const GExpr *expr,const GType *head)
+{
+    for (u32 i=0;i<expr->n;i++) {
+        u32 at=0;
+        int found=0;
+        for (u32 j=0;j<head->n;j++) {
+            u32 item=head->items[j], width=item&GRAPH_REF ? 4 : item;
+            if (at==expr->fields[2*i] && item==expr->fields[2*i+1]) found=1;
+            at+=width;
+        }
+        if (!found) return 0;
+    }
+    return 1;
+}
 /* One GRAPH type (n64c_pi.h) from text up to ';' or the end; references are checked once all types are known. */
 static int parse_gtype(GType *type,const char **text)
 {
     const char *p=*text;
     u32 cap=8;
-    if (!p[0] || !strchr("FLXDEGTRP",p[0]) || p[1]!=':') return 0;
+    if (!p[0] || !strchr("FLXDEGTRPAC",p[0]) || p[1]!=':') return 0;
     type->kind=p[0];
     p+=2;
     if (type->kind=='G' || type->kind=='T') {
@@ -163,6 +199,15 @@ static int parse_gtype(GType *type,const char **text)
     }
     type->items=malloc(cap*sizeof *type->items);
     if (!type->items) return 0;
+    if (type->kind=='A' || type->kind=='C') {
+        type->n=2;
+        if (!parse_u32(&p,&type->items[0]) || *p++!=',' || !parse_u32(&p,&type->items[1]) || *p++!=':' ||
+            !parse_gexpr(&type->count,&p)) return 0;
+        if (type->kind=='C' && (*p++!=':' || !parse_gexpr(&type->payload,&p))) return 0;
+        if (*p && *p!=';') return 0;
+        *text=p;
+        return 1;
+    }
     while (*p && *p!=';') {
         if (type->n+2>cap) {
             u32 *grown=realloc(type->items,(cap*=2)*sizeof *type->items);
@@ -235,6 +280,8 @@ static Graph *parse_graph(const char *text)
             if (!ok) break;
             char kind=graph->types[target].kind;
             if (type->kind=='L') ok=kind=='F' || kind=='T';
+            if (type->kind=='A') ok=kind=='F' || (i==1 && kind=='T');
+            if (type->kind=='C') ok=kind=='F';
             if (type->kind=='T' || type->kind=='R') ok=kind=='F';
             if (type->kind=='X') {
                 const GType *record=&graph->types[target];
@@ -242,6 +289,13 @@ static Graph *parse_graph(const char *text)
                 for (u32 k=0;ok && k<record->n;k++) ok=!(record->items[k]&GRAPH_REF);
             }
             if (type->kind=='T' && graph->types[target].size>type->size) type->size=graph->types[target].size;
+        }
+    }
+    for (u32 t=0;ok && t<graph->count;t++) {
+        GType *type=&graph->types[t];
+        if (type->kind=='A' || type->kind=='C') {
+            ok=gexpr_fits(&type->count,&graph->types[type->items[0]]);
+            if (ok && type->kind=='C') ok=gexpr_fits(&type->payload,&graph->types[type->items[1]]);
         }
     }
     if (!ok) {
@@ -292,16 +346,28 @@ typedef struct { u32 at, unpacked, type; } Stream; /* a P node met by a walk: of
 typedef u32 Planes[3]; /* an X node: records offset, count, F type */
 static u8 *graph_widths(const Graph *graph,u32 root,const u8 *data,u32 bytes,Stream **streams,u32 *n_streams,
                        Planes **planes,u32 *n_planes);
-static int disjoint(u32 lo,u32 hi)
+int n64c_pi_reserve(size_t count)
 {
-    if (n_res>=MAX_RES || hi<=lo) return 0;
-    for (int i=0;i<n_res;i++)
+    if (count>SIZE_MAX/sizeof *res) return -1;
+    if (count<=cap_res) return 0;
+    Res *grown=realloc(res,count*sizeof *grown);
+    if (!grown) return -1;
+    res=grown;
+    cap_res=count;
+    return 0;
+}
+/* Validate a disjoint extent and reserve its slot before allocating any layout-owned data. The boot reserves
+ * its generated descriptor count once; individual callers use the same allocator for their next slot. */
+static int reserve_range(u32 lo,u32 hi)
+{
+    if (hi<=lo) return 0;
+    for (size_t i=0;i<n_res;i++)
         if (lo<res[i].hi && hi>res[i].lo) return 0;
-    return 1;
+    return n64c_pi_reserve(n_res+1)==0;
 }
 int n64c_pi_register(u32 lo,u32 hi,N64cResKind kind,const char *fields)
 {
-    if (!disjoint(lo,hi) || ((unsigned)kind>N64C_RES_ALCTL && kind!=N64C_RES_GRAPH && kind!=N64C_RES_UNTYPED))
+    if (!reserve_range(lo,hi) || ((unsigned)kind>N64C_RES_ALCTL && kind!=N64C_RES_GRAPH && kind!=N64C_RES_UNTYPED))
         return -1; /* IMAGE, PACKED: own calls */
     Res entry={.lo=lo,.hi=hi,.kind=kind};
     if (kind==N64C_RES_UNTYPED) {
@@ -357,7 +423,7 @@ int n64c_pi_register(u32 lo,u32 hi,N64cResKind kind,const char *fields)
 }
 int n64c_pi_register_image(u32 lo,u32 hi,const u8 *image)
 {
-    if (!disjoint(lo,hi) || !image) return -1;
+    if (!reserve_range(lo,hi) || !image) return -1;
     res[n_res++]=(Res){.lo=lo,.hi=hi,.kind=N64C_RES_IMAGE,.stride=1,.image=image};
     return 0;
 }
@@ -371,7 +437,7 @@ int n64c_pi_register_packed(u32 lo,u32 hi,N64cResKind kind,const char *fields)
 {
     static const u8 header_widths[]={4,4,4,2,2,1,1};
     u8 raw[RNC_HEADER];
-    if (!disjoint(lo,hi) || !rom || hi-lo<RNC_HEADER || kind==N64C_RES_ALCTL || kind==N64C_RES_IMAGE ||
+    if (!reserve_range(lo,hi) || !rom || hi-lo<RNC_HEADER || kind==N64C_RES_ALCTL || kind==N64C_RES_IMAGE ||
         kind==N64C_RES_PACKED) return -1;
     if (fseek(rom,(long)lo,SEEK_SET)!=0 || fread(raw,1,RNC_HEADER,rom)!=RNC_HEADER) return -1;
     if (raw[0]!='R' || raw[1]!='N' || raw[2]!='C' || (raw[3]!=1 && raw[3]!=2) ||
@@ -474,7 +540,7 @@ static void untyped(Res *entry,u32 dev)
 static int fixup(u32 dev,u8 *destination,u32 bytes)
 {
     uint64_t end=(uint64_t)dev+bytes;
-    for (int i=0;i<n_res;i++) {
+    for (size_t i=0;i<n_res;i++) {
         Res *entry=&res[i];
         uint64_t start=dev>entry->lo ? dev : entry->lo;
         uint64_t finish=end<entry->hi ? end : entry->hi;
@@ -577,7 +643,7 @@ static void layout_misses(u32 dev,const void *ram,u32 bytes)
     const uint64_t end=(uint64_t)dev+bytes;
     for (uint64_t cursor=dev;cursor<end;) {
         const Res *next=NULL;
-        for (int i=0;i<n_res;i++)
+        for (size_t i=0;i<n_res;i++)
             if (res[i].hi>cursor && res[i].lo<end && (!next || res[i].lo<next->lo)) next=&res[i];
         if (!next) {
             n64c_diag_layout("dma",(u32)cursor,(u32)(end-cursor),(const u8 *)ram+(cursor-dev));
@@ -697,6 +763,21 @@ static u32 *sections(const Walk *walk,u32 at,u32 limit,u32 *count,u32 *table)
     *table=first;
     return starts;
 }
+static int graph_value(const Walk *walk,const GExpr *expr,u32 at,u32 limit,u32 *out)
+{
+    uint64_t value=expr->scale;
+    for (u32 i=0;i<expr->n;i++) {
+        u32 offset=expr->fields[2*i], width=expr->fields[2*i+1];
+        if (at>limit || offset>limit-at || width>limit-at-offset) return 0;
+        u32 factor=be_value(walk->data+at+offset,width);
+        if (factor && value>UINT64_MAX/factor) return 0;
+        value*=factor;
+    }
+    value/=expr->divisor;
+    if (value>UINT32_MAX) return 0;
+    *out=(u32)value;
+    return 1;
+}
 static int walk_type(Walk *walk,u32 type,u32 at,u32 limit,const u32 *bases,u32 n_bases,int depth)
 {
     const GType *t=&walk->graph->types[type];
@@ -758,6 +839,25 @@ static int walk_type(Walk *walk,u32 type,u32 at,u32 limit,const u32 *bases,u32 n
         if (!walk_type(walk,t->items[0],at,limit,bases,n_bases,depth+1)) return 0;
         for (u32 p=at+head->size;p+element->size<=limit;p+=element->size)
             if (!walk_type(walk,t->items[1],p,limit,bases,n_bases,depth+1)) return 0;
+        return 1;
+    }
+    if (t->kind=='A' || t->kind=='C') {
+        const GType *head=&walk->graph->types[t->items[0]], *element=&walk->graph->types[t->items[1]];
+        u32 count, local[2]={at,limit};
+        if (head->size>limit-at || !graph_value(walk,&t->count,at,at+head->size,&count) ||
+            !element->size || count>(limit-at-head->size)/element->size) return 0;
+        /* A owns its reference base: section 0 is the whole array, including its head. C inherits its context. */
+        if (t->kind=='A') { bases=local; n_bases=1; }
+        if (!walk_type(walk,t->items[0],at,at+head->size,bases,n_bases,depth+1)) return 0;
+        u32 p=at+head->size;
+        for (u32 i=0;i<count;i++) {
+            if (element->size>limit-p) return 0;
+            u32 payload=0;
+            if (t->kind=='C' && (!graph_value(walk,&t->payload,p,p+element->size,&payload) ||
+                                payload>limit-p-element->size)) return 0;
+            if (!walk_type(walk,t->items[1],p,p+element->size,bases,n_bases,depth+1)) return 0;
+            p+=element->size+payload; /* payload bytes stay in the order consumed by their byte reader */
+        }
         return 1;
     }
     if (t->kind=='X') { /* a leaf stored as byte planes: plane k holds byte k of every record */
@@ -884,7 +984,7 @@ static const Res *packed_stream(const void *ram,u32 skip)
 {
     u32 dev;
     if (!n64c_pi_origin(ram,&dev) || dev<skip) return NULL;
-    for (int i=0;i<n_res;i++)
+    for (size_t i=0;i<n_res;i++)
         if (res[i].kind==N64C_RES_PACKED && res[i].lo==dev-skip) return &res[i];
     for (int i=0;i<n_nested;i++)
         if (nested[i].lo==dev-skip) return &nested[i];

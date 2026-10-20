@@ -70,6 +70,22 @@ int main(int argc,char **argv)
     }
     N64cConfig config={.rom_path=rom_path};
     n64c_init(&config);
+    const size_t descriptor_counts[]={n64c_boot_load_count,n64c_boot_resource_count,
+                                      n64c_boot_packed_count,n64c_boot_rom_image_count};
+    size_t descriptors=0;
+    for (size_t i=0;i<sizeof descriptor_counts/sizeof *descriptor_counts;i++) {
+        if (descriptor_counts[i]>SIZE_MAX-descriptors) {
+            fprintf(stderr,"boot-input: ROM descriptor count overflow\n");
+            n64c_shutdown();
+            return 2;
+        }
+        descriptors+=descriptor_counts[i];
+    }
+    if (n64c_pi_reserve(descriptors)!=0) {
+        fprintf(stderr,"boot-input: cannot allocate %zu ROM descriptors\n",descriptors);
+        n64c_shutdown();
+        return 2;
+    }
     for (size_t i=0;i<n64c_boot_load_count;i++) {
         const N64cBootLoad *load=&n64c_boot_loads[i];
         if (load->rom>(u32)bytes || load->bytes>(u32)bytes-load->rom ||

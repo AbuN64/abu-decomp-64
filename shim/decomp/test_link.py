@@ -193,6 +193,35 @@ int main(void) { return n64c_boot_entry(); }
                 change(bad["resources"][0])
                 with self.assertRaises(ValueError):
                     self.generate(bad)
+    def test_counted_and_sized_graph(self):
+        expr = {"fields": [[0, 2]], "multiply": 1, "divide": 1}
+        row = {"root": "Array", "types": {
+            "Array": {"counted": {"head": "Head", "element": "Item", "count": expr}},
+            "Head": {"fields": "2 2"},
+            "Item": {"fields": "@0:Chain 1111"},
+            "Chain": {"chain": {"head": "Head", "element": "Block", "count": expr,
+                                "payload": {"fields": [[0, 4], [4, 4]], "multiply": 5, "divide": 2}}},
+            "Block": {"fields": "4 4"}}}
+        self.assertEqual(module.graph_program(row, "fixture"),
+                         "A:3,4:1/1:0/2;F:4 4;C:3,1:1/1:0/2:5/2:0/4,4/4;F:2 2;F:@0:2 1111")
+        for value in [
+                {"fields": [[1, 2]], "multiply": 1, "divide": 1},
+                {"fields": [[0, 4]], "multiply": 1, "divide": 1},
+                {"fields": [], "multiply": 1, "divide": 1},
+                {"fields": [[0, 2]], "multiply": 1, "divide": 0},
+                {"fields": [[0, 2]], "multiply": True, "divide": 1},
+                {"fields": [[0, 2]], "multiply": 0x100000000, "divide": 1},
+                {"fields": [[0, 2]] * 9, "multiply": 1, "divide": 1}]:
+            bad = copy.deepcopy(row)
+            bad["types"]["Array"]["counted"]["count"] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                module.graph_program(bad, "fixture")
+        bad = copy.deepcopy(row)
+        bad["types"]["Block"] = {"variants": {"tag": {"offset": 0, "width": 1},
+                                            "layouts": {"0": "Head"}}}
+        with self.assertRaises(ValueError):
+            module.graph_program(bad, "fixture")
+
     def test_blob_layouts_from_blob_facts(self):
         # every RNC blob fact of the version is a packed stream; blob_layouts rows type an RNC stream's unpacked
         # bytes or an uncompressed blob's ROM bytes (GRAPH programs compiled from named types, root first)

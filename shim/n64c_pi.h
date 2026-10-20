@@ -12,6 +12,10 @@ typedef enum { N64C_RES_RAW, N64C_RES_SWAP16, N64C_RES_SWAP32, N64C_RES_STRUCT, 
  * A zero pointer stays zero without calling the resolver. */
 typedef int (*N64cRelocateFn)(u32 original,u32 *native,void *user);
 void n64c_pi_set_relocator(N64cRelocateFn resolve,void *user);
+/* Reserve space for count ROM descriptors (0 success, -1 allocation/size failure), preserving registrations.
+ * The boot passes the generated load + resource + packed + overlay-image count; close releases the allocation.
+ * Individual registrations reserve their next slot when no batch count was supplied. No fixed descriptor cap. */
+int n64c_pi_reserve(size_t count);
 /* TAGGED fields spec: "offset/width;tag=fields;tag=fields" in decimal (e.g. "14/2;1=4 4 4 2 2;2=..."): back-to-back
  * records of different sizes; the big-endian tag of width 1, 2 or 4 bytes at offset selects the record's field string
  * (its widths sum to the record size). A DMA subrange must start and end inside whole fields of whole records.
@@ -43,6 +47,13 @@ int n64c_pi_register_image(u32 lo, u32 hi, const u8 *image);
  *                           0xFFFFFFFF are null)
  *   T:<offset>/<width>:<tag>=<t>,...  a record whose big-endian tag picks its F variant (its size: the largest)
  *   R:<head>,<element>      F record head, then F element records up to the end of the enclosing extent
+ *   A:<head>,<element>:<count>  a counted array: F head followed by count F/T elements; reference section 0 is
+ *                           the entire array, starting at its head (other enclosing bases are not visible)
+ *   C:<head>,<block>:<count>:<payload>  F head then count sized blocks, each F block header followed by payload
+ *                           raw bytes. Count reads the head; payload reads each block header.
+ *                           Both expressions are scale/divisor:offset/width,... (1-8 unsigned scalar fields,
+ *                           widths 1,2,4): floor(scale * product(fields) / divisor). Checked arithmetic and bounds;
+ *                           expressions must name whole scalar fields of their header. Trailing bytes stay raw.
  *   P:<t>                   an RNC stream (method 1 or 2) nested in the bytes: header fields typed, packed bytes raw;
  *                           in a ROM range (n64c_pi_register) its unpacked bytes get type t (- for raw) when the game
  *                           unpacks it, like a PACKED range's

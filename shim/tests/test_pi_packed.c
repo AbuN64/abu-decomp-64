@@ -5,6 +5,7 @@
  * a directory of a pool and a leaf of records whose offsets type pool records, one shared, one null). A ROM range
  * typed by a GRAPH (an uncompressed container), malformed programs and a layout that does not fit are refused. */
 #include "../n64c_os.h"
+#include "../n64c_internal.h"
 #include "../n64c_pi.h"
 #include "../n64c_rnc.h"
 #include <stdio.h>
@@ -44,7 +45,7 @@ static void emit(unsigned v,int n)
 }
 static int stream1(void)
 {
-    pos1=18;
+    pos1=18; count1=0;
     emit(0,2);
     emit(4,5); emit(1,4); emit(0,4); emit(0,4); emit(1,4);
     emit(1,5); emit(1,4);
@@ -147,6 +148,131 @@ static void misfit(void)
     u8 out[8];
     dma(MISFIT,ram,(u32)pos1);
     n64c_pi_rnc1_unpack(ram+18,out,pos1-18,7);
+}
+
+/* A counted array with out-of-order and shared references, two tag-selected chain layouts, raw payloads,
+ * zero counts, truncated headers/data and hostile counts/sizes. Nonzero directory offset proves the A base. */
+static const char *sized_program=
+    "D:1;A:2,3:1/1:0/2;F:2 2;T:4/1:0=4,1=5;F:@0:6 1111;F:@0:7 1111;"
+    "C:8,9:1/1:0/2,2/2:5/2:0/4,4/4;C:8,9:1/1:0/2,2/2:1/2:0/4,4/4;F:2 2;F:4 4";
+static void sized_fixture(u8 *c)
+{
+    memset(c,0,96);
+    be32(c,1); be32(c+4,12); be32(c+8,96);
+    be16(c+12,3); be16(c+14,0x1234); /* array starts here, not at ROM/directory start */
+    be32(c+16,60); c[20]=1;           /* references array+60, then array+28, then shares array+60 */
+    be32(c+24,28); c[28]=0;
+    be32(c+32,60); c[36]=1;
+    be16(c+40,1); be16(c+42,1);
+    be32(c+44,3); be32(c+48,1);      /* odd product: colour payload 6+1, not rounded up */
+    for (int i=0;i<7;i++) c[52+i]=(u8)(0xA0+i);
+    be16(c+72,1); be16(c+74,2);      /* two differently sized blocks in this chain */
+    be32(c+76,2); be32(c+80,1); c[84]=0xB0;
+    be32(c+85,3); be32(c+89,1); c[93]=0xB1;
+    c[94]=0xCA; c[95]=0xFE;         /* tail bytes are not blocks */
+}
+static int sized_register(const char *path,const u8 *c,u32 bytes,const char *program)
+{
+    n64c_pi_close();
+    FILE *f=fopen(path,"wb");
+    CHECK(f && fwrite(c,1,bytes,f)==bytes && fclose(f)==0);
+    CHECK(n64c_pi_open(path));
+    return n64c_pi_register(0,bytes,N64C_RES_GRAPH,program);
+}
+static void check_sized(const u8 *out)
+{
+    u16 h; u32 w;
+    memcpy(&h,out+12,2); CHECK(h==3);
+    memcpy(&h,out+14,2); CHECK(h==0x1234);
+    memcpy(&w,out+16,4); CHECK(w==60);
+    memcpy(&w,out+24,4); CHECK(w==28);
+    memcpy(&w,out+32,4); CHECK(w==60);
+    memcpy(&h,out+42,2); CHECK(h==1);
+    memcpy(&h,out+74,2); CHECK(h==2);
+    memcpy(&w,out+44,4); CHECK(w==3);
+    memcpy(&w,out+85,4); CHECK(w==3); /* unaligned header after one-byte payload */
+    for (int i=0;i<7;i++) CHECK(out[52+i]==0xA0+i);
+    CHECK(out[84]==0xB0 && out[93]==0xB1 && out[94]==0xCA && out[95]==0xFE);
+}
+static void sized_tests(void)
+{
+    const char *path="n64c_sized_test.rom";
+    u8 c[96], out[96], packed[256];
+    sized_fixture(c);
+    CHECK(sized_register(path,c,sizeof c,sized_program)==0);
+    dma(0,out,sizeof out);
+    check_sized(out);
+    /* Also exercise deferred graph conversion after DMA+unpack, not just registration's width map. */
+    int size=stream2(c,sizeof c);
+    n64c_pi_close();
+    FILE *f=fopen(path,"wb");
+    CHECK(f && fwrite(rnc2,1,(size_t)size,f)==(size_t)size && fclose(f)==0);
+    CHECK(n64c_pi_open(path));
+    CHECK(n64c_pi_register_packed(0,(u32)size,N64C_RES_GRAPH,sized_program)==0);
+    dma(0,packed,(u32)size);
+    n64c_pi_rnc2_unpack(packed,out,size-18,sizeof out);
+    check_sized(out);
+    be16(c+12,0xffff);
+    CHECK(sized_register(path,c,sizeof c,sized_program)==-1);
+    sized_fixture(c); c[20]=2; /* unknown tag */
+    CHECK(sized_register(path,c,sizeof c,sized_program)==-1);
+    sized_fixture(c); be32(c+16,0xfffffff0u);
+    CHECK(sized_register(path,c,sizeof c,sized_program)==-1);
+    sized_fixture(c); be16(c+74,0xffff); /* product count cannot fit even block headers */
+    CHECK(sized_register(path,c,sizeof c,sized_program)==-1);
+    sized_fixture(c); be32(c+44,0xffffffffu); be32(c+48,0xffffffffu);
+    CHECK(sized_register(path,c,sizeof c,sized_program)==-1); /* 64-bit product overflow including scale */
+    sized_fixture(c); be32(c+48,0x10000000u);
+    CHECK(sized_register(path,c,sizeof c,sized_program)==-1); /* payload too large */
+    sized_fixture(c); be32(c+8,93);
+    CHECK(sized_register(path,c,93,sized_program)==-1); /* second payload truncated */
+    sized_fixture(c); be32(c+8,88);
+    CHECK(sized_register(path,c,88,sized_program)==-1); /* second header truncated */
+    sized_fixture(c); be16(c+12,0);
+    CHECK(sized_register(path,c,16,"D:1;A:2,3:1/1:0/2;F:2 2;F:4")==0);
+    CHECK(sized_register(path,c,16,"D:1;A:2,3:1/1:1/2;F:2 2;F:4")==-1); /* partial scalar */
+    CHECK(sized_register(path,c,16,"D:1;A:2,3:1/0:0/2;F:2 2;F:4")==-1);
+    CHECK(sized_register(path,c,16,"D:1;A:2,9:1/1:0/2;F:2 2;F:4")==-1);
+    CHECK(sized_register(path,c,16,"D:1;C:2,3:1/1:0/2:1/1:0/4;F:2 2;L:2")==-1);
+    CHECK(sized_register(path,c,16,"D:1;C:2,3:1/1:0/2:1/1:0/4;F:2 2;F:@0:2")==-1); /* reference is not scalar */
+    n64c_pi_close();
+    remove(path);
+}
+
+static void registry_count_test(void)
+{
+    const char *path="n64c_registry_test.rom";
+    enum { COUNT=1100, PACK=COUNT*4 };
+    u8 rom[PACK+64]={0}, image[4]={0xDE,0xAD,0xBE,0xEF}, out[8];
+    for (u32 i=0;i<COUNT;i++) be32(rom+4*i,0x12340000u+i);
+    int size=stream1();
+    memcpy(rom+PACK,rnc1,(size_t)size);
+    FILE *f=fopen(path,"wb");
+    CHECK(f && fwrite(rom,1,sizeof rom,f)==sizeof rom && fclose(f)==0);
+    CHECK(n64c_pi_open(path));
+    CHECK(n64c_pi_reserve(COUNT+1)==0); /* generated descriptor count, not a new fixed cap */
+    CHECK(n64c_pi_reserve(SIZE_MAX)==-1); /* overflow is refused, earlier allocation preserved */
+    CHECK(n64c_pi_register(0,4,N64C_RES_GRAPH,"F:4")==0);
+    for (u32 i=1;i<COUNT;i++) {
+        if (i==1024) CHECK(n64c_pi_register_image(4*i,4*i+4,image)==0);
+        else CHECK(n64c_pi_register(4*i,4*i+4,N64C_RES_SWAP32,NULL)==0);
+    }
+    CHECK(n64c_pi_register_packed(PACK,PACK+(u32)size,N64C_RES_RAW,NULL)==0);
+    CHECK(n64c_pi_reserve(COUNT+2)==0); /* live layouts survive explicit reserve after registration */
+    CHECK(n64c_pi_register(4,8,N64C_RES_RAW,NULL)==-1); /* still refuses overlaps */
+    u32 word;
+    dma(0,out,4); memcpy(&word,out,4); CHECK(word==0x12340000u);
+    dma((COUNT-1)*4,out,4); memcpy(&word,out,4); CHECK(word==0x12340000u+COUNT-1);
+    dma(1024*4,out,4); CHECK(memcmp(out,image,4)==0);
+    u8 packed[64];
+    dma(PACK,packed,(u32)size);
+    n64c_pi_rnc1_unpack(packed+18,out,size-18,7); CHECK(memcmp(out,"abcdddd",7)==0);
+    n64c_pi_close();
+    CHECK(n64c_pi_open(path));
+    CHECK(n64c_pi_register(0,4,N64C_RES_SWAP32,NULL)==0);
+    dma(0,out,4); memcpy(&word,out,4); CHECK(word==0x12340000u);
+    n64c_pi_close();
+    CHECK(remove(path)==0);
 }
 int main(void)
 {
@@ -278,6 +404,8 @@ int main(void)
     CHECK(unsetenv("N64C_LAYOUT_GATE")==0);
     n64c_shutdown();
     CHECK(remove(path)==0);
+    sized_tests();
+    registry_count_test();
     printf("PI packed streams: %d checks; host-order headers (cut DMA), raw packed bytes, origins, method 1 STRUCT, "
            "method 2 GRAPH (pool references, shared and null), ROM GRAPH (tagged variants, head + elements, a nested "
            "stream), "

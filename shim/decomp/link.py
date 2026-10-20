@@ -23,7 +23,10 @@ NAMED_ADDRESS = re.compile(r"D_auto_(8[0-9A-F]{7})\Z")
 # "directory" (offset table container; a list of section types, {"each": Type} for all, or tag-selected types), a
 # tag-selected record ("variants"), a head record followed by element records to the extent's end ("head_then"), a
 # leaf stored as byte planes that the game transposes into records ("planes": the record type), or an RNC stream
-# nested in the bytes ("packed": the type of its unpacked bytes, or null).
+# nested in the bytes ("packed": the type of its unpacked bytes, or null). Counted arrays ("counted") give a head,
+# element, and count expression; sized chains ("chain") also give a payload-size expression. Each expression is
+# {fields: [[offset,width],...], multiply: n, divide: d}, evaluated on its header before swapping.
+# Array references use section 0 for the whole array (including the head); chain payload bytes remain raw.
 KINDS = {"raw": "N64C_RES_RAW", "swap16": "N64C_RES_SWAP16", "swap32": "N64C_RES_SWAP32", "fields": "N64C_RES_STRUCT",
          "tagged": "N64C_RES_TAGGED", "alctl": "N64C_RES_ALCTL", "u16": "N64C_RES_SWAP16", "u32": "N64C_RES_SWAP32",
          "graph": "N64C_RES_GRAPH", "untyped": "N64C_RES_UNTYPED"}
@@ -94,6 +97,26 @@ def graph_program(item, label):
                 raise ValueError(f"invalid layout tag: {label}: {name}")
             pairs.append(f"{key}={ref(part, 'layout')}")
         return f'{tag["offset"]}/{tag["width"]}:' + ",".join(pairs)
+    def expression(value, header):
+        if not isinstance(value, dict) or set(value) != {"fields", "multiply", "divide"} or \
+                any(type(value[k]) is not int or not 0 < value[k] <= 0xffffffff for k in ("multiply", "divide")):
+            raise ValueError(f"invalid graph size expression: {label}")
+        fields = value["fields"]
+        if not isinstance(fields, list) or not 1 <= len(fields) <= 8:
+            raise ValueError(f"invalid graph size fields: {label}")
+        scalars, offset = set(), 0
+        for token in types[header]["fields"].split():
+            if GRAPH_REF.fullmatch(token):
+                offset += 4
+            else:
+                for width in token:
+                    scalars.add((offset, int(width)))
+                    offset += int(width)
+        for field in fields:
+            if not isinstance(field, list) or len(field) != 2 or \
+                    any(type(n) is not int for n in field) or field[1] not in (1, 2, 4) or tuple(field) not in scalars:
+                raise ValueError(f"graph size must read a scalar header field: {label}")
+        return f'{value["multiply"]}/{value["divide"]}:' + ",".join(f"{o}/{w}" for o, w in fields)
     program = []
     for name in order:
         body = types[name]
@@ -118,6 +141,19 @@ def graph_program(item, label):
             if not isinstance(value, str) or not {"fields", "variants"} & set(types.get(value, {})):
                 raise ValueError(f"graph leaf needs a record type: {label}: {name}")
             program.append("L:" + ref(value, "leaf"))
+        elif shape in ("counted", "chain"):
+            required = {"head", "element", "count"} | ({"payload"} if shape == "chain" else set())
+            if not isinstance(value, dict) or set(value) != required or \
+                    not isinstance(value["head"], str) or "fields" not in types.get(value["head"], {}) or \
+                    not isinstance(value["element"], str) or not \
+                    ({"fields"} if shape == "chain" else {"fields", "variants"}) & set(types.get(value["element"], {})):
+                raise ValueError(f"invalid graph {shape}: {label}: {name}")
+            code = "A" if shape == "counted" else "C"
+            part = code + ":" + ref(value["head"], "head") + "," + ref(value["element"], "element")
+            part += ":" + expression(value["count"], value["head"])
+            if shape == "chain":
+                part += ":" + expression(value["payload"], value["element"])
+            program.append(part)
         elif shape == "planes":
             if not isinstance(value, str) or "fields" not in types.get(value, {}) or "@" in types[value]["fields"]:
                 raise ValueError(f"graph planes needs a record type without references: {label}: {name}")
