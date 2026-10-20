@@ -57,6 +57,15 @@ class ServicesTests(unittest.TestCase):
         assert findings == [] and sent == ["cycle", "sup"]
         assert services.stale(self.run_dir, self.live) == []
 
+    def test_unit_is_back_after_stream_up_wiped_its_record(self):
+        self.put("sup", self.old)
+        self.put("sup", self.old)  # starts 2
+        before = services.read(self.run_dir, "sup")["started"]
+        self.swap()
+        os.remove(self.run_dir / "units" / "sup.json")  # stream up clears every record on start
+        self.put("sup", self.new)  # starts 1 again, newer start time
+        assert services.wait_back(self.run_dir, "sup", before, self.live, timeout=1, settle=0, sleep=lambda s: None)
+
     def test_player_role_is_never_restarted(self):
         self.put("oracle", self.old)
         self.swap()

@@ -170,19 +170,19 @@ def signal_unit(run_dir: Path, up: dict[str, Any], name: str) -> dict[str, Any]:
 def wait_back(
     run_dir: Path,
     name: str,
-    before: int,
+    before: float,
     live: Path,
     timeout: float,
     settle: float,
     clock=time.monotonic,
     sleep=time.sleep,
 ) -> bool:
-    """Wait until `name` has a newer start than `before`, runs from the venv `live` points to, and is still alive."""
+    """Wait until `name` started after `before` (its old `started`), runs from the live venv, and is still alive."""
     deadline = clock() + timeout
     target = os.path.realpath(live)
     while clock() < deadline:
         row = read(run_dir, name)
-        if row and row["starts"] > before and row["venv"] == target and alive(row["pid"]):
+        if row and row["started"] > before and row["venv"] == target and alive(row["pid"]):
             sleep(settle)
             row = read(run_dir, name)
             if row and alive(row["pid"]) and row["venv"] == target:
@@ -230,7 +230,8 @@ def restart_stale(
         if findings:
             return done, findings
         names = [r["name"] for r in rows(run_dir) if r["name"] != UP and alive(r["pid"])]
-        before = {n: (read(run_dir, n) or {}).get("starts", 0) for n in [UP, *names]}
+        # by start time: stream up clears every record when it starts, so `starts` begins at 1 again
+        before = {n: (read(run_dir, n) or {}).get("started", 0.0) for n in [UP, *names]}
         try:
             restart_stream()  # synchronous stop + start; the locks only guard the stop, not the health wait
         finally:
@@ -249,7 +250,7 @@ def restart_stale(
         findings, release = locked()
         if findings:
             return done, findings
-        before = row["starts"]
+        before = row["started"]
         try:
             signal_one(run_dir, up, name)
         finally:
