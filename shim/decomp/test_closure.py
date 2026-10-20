@@ -213,6 +213,9 @@ class RouteTests(unittest.TestCase):
         self.d["stops"]["func_80200000_de"] = "no linked definition at 0000000"
         closure.tidy(self.d, self.facts)
         self.assertEqual(self.d["stops"], {})
+        self.d["stops"]["func_80200000_de"] = "alias target; not linked yet at dc7362a (boot frontier)"
+        closure.tidy(self.d, self.facts)
+        self.assertEqual(self.d["stops"], {})
         # At the frontier the target waits as a frontier stop; a libultra target goes to the shim, never linked.
         self.d["bindings"].clear()
         self.route("D_00200000", frontier=True)

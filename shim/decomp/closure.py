@@ -131,8 +131,10 @@ def tidy(d, facts, deny=None):
         del d["stops"][sym]  # data routed as a function stop
     for sym in [k for k, why in d["stops"].items() if k in facts.game and "(SDK: shim binding decision)" in why]:
         del d["stops"][sym]  # game code in the libultra range (policy.game_code) routes again as game code
-    for sym in [k for k, v in d["stops"].items() if v.startswith("no linked definition")]:
-        del d["stops"][sym]  # an alias target an older closure stopped instead of routing it
+    for sym in [k for k, v in d["stops"].items() if v.startswith(("no linked definition", "alias target;"))]:
+        # an alias target an older closure stopped instead of routing it; "alias target; not linked yet ... (boot
+        # frontier)" names no unit, so advance read the unit as "alias" and halted on a shim binding decision
+        del d["stops"][sym]
     rebind(d, facts)
 
 
