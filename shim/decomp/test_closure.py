@@ -63,6 +63,24 @@ class RouteTests(unittest.TestCase):
     def route(self, sym, frontier=False):
         return closure.route(self.d, sym, self.facts, {}, "abcdef0", frontier, set())
 
+    def test_one_line_body_has_an_owner_and_a_prototype_does_not(self):
+        source = self.facts.source
+        (source / "src/GAME/802A23A4.CPP").write_text(
+            "void func_802A18FC_de(void) { func_80418F8C_de(); }\nextern void func_80418F8C_de(void);\n"
+            "extern void func_80418F90_de(int);\n")
+        self.facts.text = {str(p.relative_to(source)): p.read_text() for p in (source / "src").rglob("*.CPP")}
+        self.assertEqual(self.facts.definers("func_802A18FC_de"), ["src/GAME/802A23A4.CPP"])
+        self.assertEqual(self.facts.definers("func_80418F8C_de"), [])
+        self.assertEqual(self.facts.definers("func_80418F90_de"), [])
+
+    def test_stale_sdk_decision_stop_for_game_code_is_dropped(self):
+        d = {"sources": [], "data": {}, "bindings": {},
+             "stops": {"func_80200000_de": "original SDK unit; clean shim required (SDK: shim binding decision)",
+                       "func_802BADC0_de": "original SDK unit src/AUDIO/802BFEB0.CPP; clean shim required (SDK: shim binding decision)"}}
+        closure.tidy(d, self.facts)
+        self.assertNotIn("func_80200000_de", d["stops"])
+        self.assertEqual(d["bindings"].get("func_802BADC0_de"), "osGetTime")
+
     def test_libultra_binds_to_the_shim_or_stops(self):
         self.assertEqual(self.route("func_802BADC0_de")[0], "routed")
         self.assertEqual(self.d["bindings"]["func_802BADC0_de"], "osGetTime")

@@ -43,6 +43,15 @@ static void failure(int kind,const char *message,int signal_number)
     if (signal_number) CHECK(WIFSIGNALED(status) && WTERMSIG(status)==signal_number);
     else { CHECK(WIFEXITED(status) && WEXITSTATUS(status)==78);CHECK(strcmp(text,message)==0); }
 }
+static void *refuse(void *target, const void *text, s32 count) { (void)target; (void)text; (void)count; return NULL; }
+static s32 call_printf(void *(*emit)(void *, const void *, s32), void *target, const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    s32 count = n64c_printf(emit, target, format, args);
+    va_end(args);
+    return count;
+}
 int main(void)
 {
     char formatted[160];
@@ -54,6 +63,19 @@ int main(void)
     CHECK(strcmp(formatted, expected) == 0 && formatted[written + 1] == 0x5A);
     CHECK(n64c_sprintf(formatted, "%.*s", 0, "unused") == 0 && formatted[0] == 0);
 
+    {
+        char out[600], big[1200];
+        memset(out, 0x5A, sizeof out);
+        va_list none;
+        (void)none;
+        CHECK(call_printf(n64c_printf_copy, out, "%s=%d", "k", 7) == 3 && memcmp(out, "k=7", 3) == 0 && out[3] == 0x5A);
+        CHECK(call_printf(n64c_printf_copy, big, "%1000d", 5) == 1000 && big[999] == '5' && big[0] == ' ');
+        CHECK(call_printf(refuse, out, "x") == -1);
+        CHECK(call_printf(refuse, out, "") == 0);
+        CHECK(strcmp((char *)n64c_string_find((u8 *)"a b", ' '), " b") == 0 && n64c_string_find((u8 *)"ab", 'z') == NULL);
+        u8 word[] = "ab";
+        CHECK(n64c_string_find(word, 0) == word + 2);
+    }
     CHECK(n64c_floatdidf(-4294967298LL)==-4294967298.0 && n64c_floatdidf(0)==0.0 && n64c_floatdidf(INT64_MIN)==-9223372036854775808.0);
     CHECK(n64c_floatdidf(4294967295LL)==4294967295.0 && n64c_floatdidf(1LL<<40)==1099511627776.0);
     {

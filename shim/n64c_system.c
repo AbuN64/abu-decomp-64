@@ -178,6 +178,40 @@ s32 n64c_string_length(const u8 *string)
     while (*end) end++;
     return (s32)(end - string);
 }
+/* The callback form of the same formatting contract (ISO C vsnprintf): the text is formatted once and handed to
+ * the emit callback in one span; the callback returns the next output position, NULL meaning it refused the
+ * span. Result: characters formatted, or -1 when the callback refused. */
+s32 n64c_printf(void *(*emit)(void *, const void *, s32), void *target, const char *format, va_list args)
+{
+    char small[512];
+    char *text = small;
+    va_list again;
+    va_copy(again, args);
+    int count = vsnprintf(small, sizeof small, format, again);
+    va_end(again);
+    if (count >= (int)sizeof small) {
+        text = malloc((size_t)count + 1);
+        if (!text) return -1;
+        vsnprintf(text, (size_t)count + 1, format, args);
+    }
+    if (count > 0 && !emit(target, text, count)) count = -1;
+    if (text != small) free(text);
+    return count;
+}
+/* The emit callback sprintf-style callers pass: copy the span, return the position after it. */
+void *n64c_printf_copy(void *destination, const void *source, s32 count)
+{
+    return (char *)n64c_copy_bytes(destination, source, count) + count;
+}
+/* First byte equal to value in a zero-terminated string; the terminator itself when value is 0; NULL otherwise. */
+u8 *n64c_string_find(u8 *string, u8 value)
+{
+    while (*string != value) {
+        if (!*string) return NULL;
+        string++;
+    }
+    return string;
+}
 static void *dev_handler;
 void n64c_dev_handler_set(void *handler) { dev_handler = handler; }
 void *n64c_dev_handler(void) { return dev_handler; }

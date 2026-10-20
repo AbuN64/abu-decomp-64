@@ -53,7 +53,7 @@ class Facts:
                 self.shim[fn] = (osname, evidence[0] if evidence else "")
 
     def definers(self, sym):
-        fn = re.compile(r"^[A-Za-z_][^;\n=]*\b" + re.escape(sym) + r"\s*\([^;]*$", re.M)
+        fn = re.compile(r"^[A-Za-z_][^;\n=]*\b" + re.escape(sym) + r"\s*\([^;{]*(?:\)\s*\{|$)", re.M)  # a one-line body counts
         asm = re.compile(r"INCLUDE_ASM\([^)]*\b" + re.escape(sym) + r"\s*\)")
         data = re.compile(r"^(?!extern)[A-Za-z_][^(\n]*\b" + re.escape(sym) + r"\b\s*(\[[^\]]*\])*\s*(=|;)", re.M)
         return [u for u, t in self.text.items() if sym in t and (fn.search(t) or asm.search(t) or
@@ -145,6 +145,9 @@ def tidy(d, facts, deny=None, pin=None):
         del d["stops"][sym]  # data routed as a function stop
     for sym in [k for k, why in d["stops"].items() if k in facts.game and "(SDK: shim binding decision)" in why]:
         del d["stops"][sym]  # game code in the libultra range (policy.game_code) routes again as game code
+    for sym in [k for k, why in d["stops"].items() if "(SDK: shim binding decision)" in why
+                and not (facts.sdk(k) or any(facts.sdk_unit(h) for h in facts.definers(k)))]:
+        del d["stops"][sym]  # an older pin filed this game function as libultra; at this pin it is game code (func_8025DACC_de)
     for sym in [k for k, v in d["stops"].items() if v.startswith(("no linked definition", "alias target;"))]:
         # an alias target an older closure stopped instead of routing it; "alias target; not linked yet ... (boot
         # frontier)" names no unit, so advance read the unit as "alias" and halted on a shim binding decision
