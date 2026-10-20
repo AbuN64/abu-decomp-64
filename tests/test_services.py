@@ -44,7 +44,7 @@ class ServicesTests(unittest.TestCase):
             sent.append(name)
             self.put(name, self.new)  # the unit comes back recorded on the new venv
 
-        done, findings = services.restart_stale(
+        _done, findings = services.restart_stale(
             self.run_dir, self.up, self.live, signal_one=signal_one, settle=0, sleep=lambda s: None
         )
         assert findings == [] and sent == ["cycle", "sup"]
@@ -61,7 +61,7 @@ class ServicesTests(unittest.TestCase):
     def test_unit_that_does_not_come_back_is_a_blocking_finding(self):
         self.put("sup", self.old)
         self.swap()
-        done, findings = services.restart_stale(
+        _done, findings = services.restart_stale(
             self.run_dir, self.up, self.live, signal_one=lambda *a: {}, wait=lambda *a: False, settle=0
         )
         assert findings[0]["key"] == "deploy.restart_failed" and findings[0]["blocking"]
@@ -71,14 +71,20 @@ class ServicesTests(unittest.TestCase):
         self.swap()
         up = {**self.up, "restart": {"hold_locks": ["/x"]}}
         ticks = iter(range(0, 1000, 100))
-        done, findings = services.restart_stale(
-            self.run_dir, up, self.live, timeout=150, signal_one=lambda *a: 1 / 0,
-            held_locks=lambda paths: paths, clock=lambda: next(ticks), sleep=lambda s: None,
+        _done, findings = services.restart_stale(
+            self.run_dir,
+            up,
+            self.live,
+            timeout=150,
+            signal_one=lambda *a: 1 / 0,
+            held_locks=lambda paths: paths,
+            clock=lambda: next(ticks),
+            sleep=lambda s: None,
         )
         assert findings[0]["key"] == "deploy.restart_busy"
 
     def test_up_restarts_its_unit_only_when_its_own_code_changed(self):
-        for venv, text in ((self.old, "a"), (self.new, "b")):
+        for venv in (self.old, self.new):
             for rel in services.UP_FILES:
                 path = venv / "lib/python3.12/site-packages/abu_decomp" / rel
                 path.parent.mkdir(parents=True, exist_ok=True)

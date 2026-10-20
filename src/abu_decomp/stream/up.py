@@ -16,8 +16,8 @@ from .supervise import FatalUnitExit, Group, RoleRunner, Unit
 from .sway import SwayIPC, _receive
 from .tiles import up_config
 
-
-DEFAULT_RESTART = 5.0  # a service that exits is started again after this many seconds; `"restart_seconds": null` runs it once
+# A service that exits is started again after this many seconds; `"restart_seconds": null` runs it once.
+DEFAULT_RESTART = 5.0
 
 
 def restart_seconds(service: dict[str, Any]) -> float | None:
@@ -116,7 +116,9 @@ def up(profile: Any) -> dict[str, Any]:
     unit_dir.mkdir(parents=True, exist_ok=True)
     for old in unit_dir.glob("*.json"):
         old.unlink(missing_ok=True)  # records of a previous stream up; every unit writes its own again
-    services.record(run_dir, services.UP, os.getpid(), kind="up", venv=os.path.realpath(sys.prefix), python=services.stable_python())
+    services.record(
+        run_dir, services.UP, os.getpid(), kind="up", venv=os.path.realpath(sys.prefix), python=services.stable_python()
+    )
     named = set(config.get("services", {}))
     group.on_spawn = lambda unit: (
         services.record(run_dir, unit.name, unit.process.pid, kind="service") if unit.name in named else None

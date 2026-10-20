@@ -56,7 +56,9 @@ def units_dir(run_dir: Path) -> Path:
     return run_dir / "units"
 
 
-def record(run_dir: Path, name: str, pid: int, *, kind: str, python: str | None = None, venv: str | None = None) -> None:
+def record(
+    run_dir: Path, name: str, pid: int, *, kind: str, python: str | None = None, venv: str | None = None
+) -> None:
     """Write the unit's record atomically. `python` is the stable path its next start goes through."""
     python = python or stable_python()
     path = units_dir(run_dir) / (name + ".json")
@@ -153,8 +155,16 @@ def signal_unit(run_dir: Path, up: dict[str, Any], name: str) -> dict[str, Any]:
     raise ValueError("unknown stream role or service: " + name)
 
 
-def wait_back(run_dir: Path, name: str, before: int, live: Path, timeout: float, settle: float, clock=time.monotonic,
-              sleep=time.sleep) -> bool:
+def wait_back(
+    run_dir: Path,
+    name: str,
+    before: int,
+    live: Path,
+    timeout: float,
+    settle: float,
+    clock=time.monotonic,
+    sleep=time.sleep,
+) -> bool:
     """Wait until `name` has a newer start than `before`, runs from the venv `live` points to, and is still alive."""
     deadline = clock() + timeout
     target = os.path.realpath(live)
@@ -196,7 +206,13 @@ def restart_stale(
         deadline = clock() + timeout
         while busy := held_locks(list(config.get("hold_locks", []))):
             if clock() > deadline:
-                return [{"key": "deploy.restart_busy", "blocking": True, "message": f"restart waited {timeout:g}s for {busy}"}]
+                return [
+                    {
+                        "key": "deploy.restart_busy",
+                        "blocking": True,
+                        "message": f"restart waited {timeout:g}s for {busy}",
+                    }
+                ]
             sleep(2)
         return []
 

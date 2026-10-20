@@ -127,7 +127,9 @@ class DeployTests(unittest.TestCase):
 
     def test_services_are_restarted_after_the_swap_and_a_failed_restart_rolls_the_link_back(self):
         seen = []
-        result, code, findings = self.deploy(extra={"restart": lambda live: (seen.append(os.path.realpath(live)) or [], [])})
+        _result, code, _findings = self.deploy(
+            extra={"restart": lambda live: (seen.append(os.path.realpath(live)) or [], [])}
+        )
         self.assertEqual((code, seen), (0, [str(self.root / f"venv-a.{D1[:12]}")]))  # restarted on the new venv
         bad = {"key": "deploy.restart_failed", "blocking": True, "message": "sup not back"}
         calls = []
@@ -136,7 +138,7 @@ class DeployTests(unittest.TestCase):
             calls.append(os.path.realpath(live))
             return ([], [bad]) if len(calls) == 1 else ([], [])
 
-        result, code, findings = self.deploy(venvs=("venv-b",), extra={"restart": restart})
+        _result, code, findings = self.deploy(venvs=("venv-b",), extra={"restart": restart})
         self.assertEqual(code, 1)
         self.assertIn(bad, findings)
         self.assertEqual(os.path.realpath(self.root / "venv-b"), str(self.root / "venv-b.old"))  # back on the old venv
