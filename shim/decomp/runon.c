@@ -6,7 +6,7 @@
  * classes: missing (a call into an unlinked function; it returns 0), stop (a shim stop; the site drops the task,
  * reads 0 or leaves the bytes raw), code-pointer (a call through a raw guest code address; it returns 0), fault (a
  * CPU fault; the innermost instrumented function returns 0), layout (guest DMA or RNC bytes no byte-order row
- * covers; they stay big-endian) and hang (no new first hit for N64C_RUN_ON_HANG seconds; the spinning function
+ * covers; they stay big-endian) and hang (no new hit, failure or rendered frame for N64C_RUN_ON_HANG seconds; the spinning function
  * returns 0). A failure with no way on ends the run as before, after the list. The run ends with
  *     boot-diag: end <failures> failures (<per class>), census <n>/<total>
  * Nothing here ships: the acceptance gate (fl0) and the stream tile run fail-fast. Values after a failure are
@@ -45,6 +45,13 @@ static pthread_mutex_t diag_lock = PTHREAD_MUTEX_INITIALIZER;
 static N64cTraceStack *volatile hang_target;
 static unsigned hangs;
 static volatile int hang_broken;
+/* The frame driver is the single producer; only the watchdog reads this count.
+ * Use an atomic counter rather than sharing renderer or scheduler internals. */
+static unsigned rendered_frames;
+NOINST void n64c_diag_rendered_frame(void)
+{
+    __atomic_add_fetch(&rendered_frames,1,__ATOMIC_RELAXED);
+}
 
 NOINST static const char *name_of(const void *address, char *buffer, size_t size)
 {
@@ -446,13 +453,14 @@ NOINST int n64c_diag_code_pointer(u32 address, void *context)
 static int install(void) { return 1; }
 static void break_hang(void) { give_up("a hang (no breaker on this host)"); }
 #endif
-/* No new first hit and no new failure for hang_seconds is a hang; limit_seconds bounds the whole run. */
+/* No new hit, failure or completed rendered frame for hang_seconds is a hang.
+ * The independent time limit still bounds a healthy repeating frame loop. */
 NOINST static void *watchdog(void *unused)
 {
     (void)unused;
     struct timespec start, now;
     clock_gettime(CLOCK_MONOTONIC, &start);
-    unsigned last_hits = 0, last_distinct = 0;
+    unsigned last_hits = 0, last_distinct = 0, last_frames = 0;
     time_t still = start.tv_sec;
     for (;;) {
         struct timespec second = {1, 0};
@@ -461,9 +469,11 @@ NOINST static void *watchdog(void *unused)
         if (limit_seconds && now.tv_sec - start.tv_sec >= (time_t)limit_seconds)
             give_up("time limit");
         const unsigned hits = n64c_trace_position(NULL, NULL), d = distinct;
-        if (hits != last_hits || d != last_distinct) {
+        const unsigned frames = __atomic_load_n(&rendered_frames,__ATOMIC_RELAXED);
+        if (hits != last_hits || d != last_distinct || frames != last_frames) {
             last_hits = hits;
             last_distinct = d;
+            last_frames = frames;
             still = now.tv_sec;
         } else if (now.tv_sec - still >= (time_t)hang_seconds) {
             break_hang();

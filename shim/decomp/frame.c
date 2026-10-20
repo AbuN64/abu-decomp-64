@@ -17,7 +17,7 @@
 
 static struct {
     u32 tasks,audio_tasks,ram_bytes,shown;
-    u32 submitted,gfx_submitted;
+    u32 submitted,gfx_submitted,progress_tasks;
     int closed;
     u64 commands;
     void *presented;
@@ -125,6 +125,12 @@ static void present(void *fb,void *user)
     frame.presented=fb;
     u32 physical=fb ? n64c_memory_physical(fb) : 0;
     if (!n64c_f3d_present(frame.f3d,physical)) frame.closed=1;
+    /* Only new, successfully rendered work across a frame boundary proves
+     * progress. An idle VI repaint must not conceal a blocked game thread. */
+    if (!frame.closed && frame.tasks!=frame.progress_tasks) {
+        frame.progress_tasks=frame.tasks;
+        if (n64c_diag_rendered_frame) n64c_diag_rendered_frame();
+    }
     if (fb && frame.tasks && !frame.shown++)
         fprintf(stderr,"boot-step: first presentation retrace=%u surface=0x%08x tasks=%u\n",
                 osViGetRetraceCount(),physical,frame.tasks);

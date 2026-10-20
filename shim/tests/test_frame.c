@@ -3,12 +3,14 @@
 #include "../decomp/stop.h"
 #include "../fast3d/n64c_f3d.h"
 #include "../n64c_memory.h"
+#include "../n64c_diag.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
-static unsigned checks;
+static unsigned checks,render_progress;
+void n64c_diag_rendered_frame(void) { render_progress++; }
 #define CHECK(x) do { checks++;if (!(x)) { fprintf(stderr,"FAIL:%d:%s\n",__LINE__,#x);exit(1); } } while (0)
 static N64cTaskFn tasks[3];
 static N64cPresentFn presenter;
@@ -93,7 +95,7 @@ int n64c_frame(void)
 }
 static void start(int mode)
 {
-    scenario=mode;retraces=0;presents=0;shown=0;
+    scenario=mode;retraces=0;presents=0;shown=0;render_progress=0;
     CHECK(n64c_boot_frame_start(2,2,sizeof ram,mode==8 ? -1 : 0,window_mode ? 4 : 0,window_mode ? 3 : 0));
 }
 int main(int argc,char **argv)
@@ -164,6 +166,27 @@ int main(int argc,char **argv)
         CHECK(WIFEXITED(status) && WEXITSTATUS(status)==78);
         CHECK(access(path,F_OK)!=0);
     }
+    /* Progress comes from new graphics reaching a host frame boundary. No
+     * sleeps or clock thresholds: idle repaints and audio cannot hide a stall. */
+    start(0);
+    CHECK(n64c_frame()==1 && render_progress==1);
+    presenter((void *)(uintptr_t)0xa0000300,NULL);
+    CHECK(render_progress==1);
+    OSTask more={.type=M_GFXTASK,.data_ptr=(void *)(uintptr_t)0x100,.data_size=32};
+    tasks[M_GFXTASK](&more,NULL);
+    CHECK(render_progress==1); /* rendering alone cannot release the watchdog */
+    CHECK(n64c_frame()==1 && render_progress==2);
+    OSTask sound={.type=M_AUDTASK,.data_ptr=(void *)(uintptr_t)0x200,.data_size=8};
+    tasks[M_AUDTASK](&sound,NULL);
+    presenter((void *)(uintptr_t)0xa0000300,NULL);
+    CHECK(render_progress==2);
+    start(2);
+    CHECK(n64c_frame()==1 && render_progress==0); /* retrace without rendering */
+    start(3);
+    CHECK(n64c_frame()==1 && render_progress==1); /* black VI can still make progress */
+    window_mode=1;start(0);
+    CHECK(n64c_frame()==1 && n64c_frame()==1 && n64c_frame()==1);
+    CHECK(render_progress==2); /* a closed window produces no progress */
     n64c_boot_frame_close();CHECK(!tasks[1] && !tasks[2] && !presenter && !renderer);
     printf("frame checks=%u\n",checks);
     return 0;
