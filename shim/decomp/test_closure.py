@@ -4,6 +4,7 @@ import argparse
 import json
 import importlib.util
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -103,6 +104,15 @@ class RouteTests(unittest.TestCase):
         self.assertTrue(self.d["stops"]["func_80200000_de"].endswith("RW NEEDS one declaration"))
         closure.tidy(self.d, self.facts, deny)
         self.assertIn("func_80200000_de", self.d["stops"])
+
+    def test_no_c_stop_from_an_older_pin_is_routed_again(self):
+        self.d["stops"]["func_8044BFD0"] = "no C definition at dc7362a (pinned 0x8044BFD0 // type:label)"
+        self.d["stops"]["func_80200000_de"] = "no C definition at abcdef0"
+        closure.tidy(self.d, self.facts, {}, "abcdef0")
+        self.assertEqual(list(self.d["stops"]), ["func_80200000_de"], "a stop of this pin stays")
+        closure.tidy(self.d, self.facts, {}, "1234567")
+        self.assertEqual(self.d["stops"], {})
+        self.assertEqual(self.route("func_80200000_de"), ("added", "src/GAME/80200000.CPP"))
 
     def test_game_code_in_the_libultra_range_links_as_game_code(self):
         source = self.facts.source
@@ -447,16 +457,27 @@ class RouteTests(unittest.TestCase):
 
     def test_repin_moves_the_three_pin_files_and_reads_trace_order(self):
         root = pathlib.Path(self.tmp.name) / "ports"
-        old, new = "a" * 40, "b" * 40
-        for name, text in [(repin.PIN_FILES[0], json.dumps({"source_pin": old})), ("cmake/decomp.cmake", f"{old} x {old} pinned {old[:7]}"),
+        rw = pathlib.Path(self.tmp.name) / "rw"
+        (rw / "src/SCHED").mkdir(parents=True)
+        (rw / "src/SCHED/8023A284_18.CPP").write_text("void f(void) {\n}\n")
+        git = ["git", "-C", str(rw), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.hooksPath=/dev/null"]
+        subprocess.run(["git", "init", "-q", str(rw)], check=True)
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ["commit", "-qm", "a"], check=True)
+        old = subprocess.run(git + ["rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        subprocess.run(git + ["mv", "src/SCHED/8023A284_18.CPP", "src/SCHED/Sched_Main.CPP"], check=True)
+        subprocess.run(git + ["commit", "-qm", "b"], check=True)
+        new = subprocess.run(git + ["rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        for name, text in [(repin.PIN_FILES[0], json.dumps({"source_pin": old, "sources": ["src/SCHED/8023A284_18.CPP"]})), ("cmake/decomp.cmake", f"{old} x {old} pinned {old[:7]}"),
                            (repin.PIN_FILES[2], f"pin {old}")]:
             (root / name).parent.mkdir(parents=True, exist_ok=True)
             (root / name).write_text(text)
-        self.assertEqual(repin.repin_files(root, new), old)
-        self.assertEqual(json.loads((root / repin.PIN_FILES[0]).read_text())["source_pin"], new)
+        self.assertEqual(repin.repin_files(root, new, rw), old)
+        self.assertEqual(json.loads((root / repin.PIN_FILES[0]).read_text()),
+                         {"source_pin": new, "sources": ["src/SCHED/Sched_Main.CPP"]}, "RW's unit rename is carried")
         self.assertEqual((root / "cmake/decomp.cmake").read_text(), f"{new} x {new} pinned {new[:7]}")
         self.assertEqual((root / repin.PIN_FILES[2]).read_text(), f"pin {new}")
-        self.assertIsNone(repin.repin_files(root, new))
+        self.assertIsNone(repin.repin_files(root, new, rw))
         wl = root / "wl.tsv"
         wl.write_text("order\tsymbol\n66\tfunc_802B72B0_de\n")
         self.assertEqual(repin.trace_order(wl, "func_802B72B0_de"), 66)

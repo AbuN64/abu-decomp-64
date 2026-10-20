@@ -117,10 +117,24 @@ def drop_unrefused(d, deny):
     return stale
 
 
-def tidy(d, facts, deny=None):
+def drop_old_pin(d, pin):
+    """Drop "no C definition at <pin>" stops an older pin wrote: RW renames a placeholder (func_8044BFD0 ->
+    Items_InitEntryBatch) and nothing references the old name any more, yet its stop kept a fatal stub linked and
+    fed needs.jsonl a "body" row forever. Each is routed again (and stopped at this pin) only if still undefined."""
+    stale = [sym for sym, why in d["stops"].items()
+             if (m := re.match(r"no C definition at ([0-9a-f]{7,40})\b", why)) and not pin.startswith(m.group(1))
+             and not m.group(1).startswith(pin)]
+    for sym in stale:
+        del d["stops"][sym]
+    return stale
+
+
+def tidy(d, facts, deny=None, pin=None):
     """Undo routes an earlier round (or an older closure) got wrong, so this round routes them again."""
     for sym in drop_moved(d, facts):
         print(f"   dropped stale stop {sym} (its unit moved)", flush=True)
+    for sym in drop_old_pin(d, pin) if pin else ():
+        print(f"   dropped stale stop {sym} (no C definition at an older pin)", flush=True)
     for sym in drop_unrefused(d, deny) if deny is not None else ():
         print(f"   dropped stale stop {sym} (its unit is not refused at this pin)", flush=True)
     policy.sanitize(d, facts.source, facts.numeric, {n: v[0] for n, v in facts.shim.items()}, facts.shim_src)
@@ -257,7 +271,7 @@ def main():
     pin = json.loads(args.manifest.read_text())["source_pin"][:7]
     # Sanitize inherited manifests before the first build can consume them.
     initial = json.loads(args.manifest.read_text())
-    tidy(initial, facts, deny)
+    tidy(initial, facts, deny, pin)
     args.manifest.write_text(json.dumps(initial, indent=2) + "\n")
     for round_ in range(args.rounds):
         with log_path.open("w") as log_file:
@@ -266,7 +280,7 @@ def main():
         log = log_path.read_text(errors="replace")
         d = json.loads(args.manifest.read_text())
         built_manifest = json.dumps(d, sort_keys=True)
-        tidy(d, facts, deny)
+        tidy(d, facts, deny, pin)
         refuse(d, deny, log)
         undefined = undefined_symbols(log)
         fresh, out, needs = set(), [], []
