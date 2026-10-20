@@ -127,6 +127,36 @@ int read_table(void) { return table[0]; }
         self.assertFalse(files[0].exists())
         self.assertFalse(files[1].exists())
 
+    def test_cache_serves_another_tree_and_follows_headers(self):
+        cache = self.path / "cache"
+        def tree(name):
+            root = self.path / name
+            (root / "include").mkdir(parents=True)
+            (root / "include" / "h.h").write_text("#define VALUE 5\n")
+            (root / "u.c").write_text('#include "h.h"\nint value(void) { return VALUE; }\nconst char *f = __FILE__;\n')
+            files = [root / n for n in ("u.i", "u.stubs.c", "u.json", "u.d")]
+            def run():
+                return module.prepare(args.compiler, root / "u.c", *files, self.flags + ["-I" + str(root / "include")],
+                                      [(str(root), "tree")], cache)
+            return root, files, run
+        a, files_a, run_a = tree("a")
+        self.assertEqual(run_a(), 0)
+        b, files_b, run_b = tree("b")
+        real = module.subprocess.run
+        module.subprocess.run = lambda *a, **k: self.fail("a cached unit runs no compiler")
+        try:
+            self.assertEqual(run_b(), 0)
+        finally:
+            module.subprocess.run = real
+        self.assertEqual(files_a[0].read_text(), files_b[0].read_text(), "both trees emit the same unit")
+        self.assertNotIn(str(a), files_a[0].read_text())
+        self.assertIn('"tree/u.c"', files_b[0].read_text())
+        self.assertIn(str(b / "include" / "h.h"), files_b[3].read_text(), "the restored depfile names this tree")
+        self.assertEqual(json.loads(files_b[2].read_text())["source"], str(b / "u.c"))
+        (b / "include" / "h.h").write_text("#define VALUE 6\n")
+        self.assertEqual(run_b(), 0)
+        self.assertIn("return 6", files_b[0].read_text(), "a changed header misses the cache")
+
     @unittest.skipUnless(args.m32, "source va_list ABI requires m32")
     def test_native_varargs(self):
         files, data = self.generate("""

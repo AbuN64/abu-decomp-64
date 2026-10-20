@@ -15,8 +15,10 @@ Each round builds ragewars (ninja -k 0) and routes every undefined reference:
 - a function with no definition becomes an explicit stop;
 - a data name never becomes a stop (a stop is a function): one that cannot be bound is a data need
   (WORK/data-needs.txt) and stays undefined.
-With --frontier a defined function is not linked: it becomes a "(boot frontier)" stop that advance.py
-links once the boot reaches it."""
+With --frontier (the legacy walk) a defined function is not linked: it becomes a "(boot frontier)" stop that
+advance.py links once the boot reaches it. Without it the boot executable also links the archive of every compiling
+non-SDK unit (linkall.py): the linker pulls a defined function's unit itself, and every name nothing defines is
+routed at build time into build/decomp-boot/us_rev1.effective.json, so a pin bump needs no link round."""
 import argparse
 import json
 import pathlib
@@ -45,6 +47,7 @@ class Facts:
         self.numeric = {n: int(a, 16) for n, (a, _) in self.addrs.items()}
         self.sdk_units = {}
         self.game = frozenset(game)  # policy.game_code: game functions inside the libultra range
+        self.pool = {}  # name -> the units whose text mentions it, once prime() has indexed it
         self.shim_src = "\n".join(p.read_text(errors="replace") for p in sorted(shim_dir.glob("n64c_*.[ch]")))
         self.shim = {}  # original function -> (libultra name, evidence)
         for line in shim_bindings.read_text().splitlines():
@@ -52,12 +55,20 @@ class Facts:
                 fn, osname, *evidence = line.split(None, 2)
                 self.shim[fn] = (osname, evidence[0] if evidence else "")
 
+    def prime(self, names):
+        """Index which units mention each of names in one pass, so definers() of a long list does not rescan every unit."""
+        wanted = set(names)
+        self.pool.update({name: [] for name in wanted})
+        for unit, text in self.text.items():
+            for name in wanted.intersection(re.findall(r"\w+", text)):
+                self.pool[name].append(unit)
     def definers(self, sym):
         fn = re.compile(r"^[A-Za-z_][^;\n=]*\b" + re.escape(sym) + r"\s*\([^;{]*(?:\)\s*\{|$)", re.M)  # a one-line body counts
         asm = re.compile(r"INCLUDE_ASM\([^)]*\b" + re.escape(sym) + r"\s*\)")
         data = re.compile(r"^(?!extern)[A-Za-z_][^(\n]*\b" + re.escape(sym) + r"\b\s*(\[[^\]]*\])*\s*(=|;)", re.M)
-        return [u for u, t in self.text.items() if sym in t and (fn.search(t) or asm.search(t) or
-                (sym.startswith("D_") and data.search(t)))]
+        units = self.pool[sym] if sym in self.pool else self.text
+        return [u for u in units if sym in self.text[u] and (fn.search(self.text[u]) or asm.search(self.text[u]) or
+                (sym.startswith("D_") and data.search(self.text[u])))]
 
     def function_at(self, address):
         """The one defined function pinned at address, if any."""
@@ -129,8 +140,16 @@ def drop_old_pin(d, pin):
     return stale
 
 
-def tidy(d, facts, deny=None, pin=None):
+def effective_manifest(build, manifest):
+    """The manifest the boot was generated from: the committed one plus the names the build routed itself."""
+    path = pathlib.Path(build) / "decomp-boot" / "us_rev1.effective.json"
+    return path if path.exists() else pathlib.Path(manifest)
+def tidy(d, facts, deny=None, pin=None, frontier=False):
     """Undo routes an earlier round (or an older closure) got wrong, so this round routes them again."""
+    if not frontier:
+        for sym in [k for k, v in d["stops"].items() if v.endswith("(boot frontier)")]:
+            del d["stops"][sym]  # the archive links the unit now; the linker pulls it when something references it
+            print(f"   dropped frontier stop {sym} (the link-all archive pulls its unit)", flush=True)
     for sym in drop_moved(d, facts):
         print(f"   dropped stale stop {sym} (its unit moved)", flush=True)
     for sym in drop_old_pin(d, pin) if pin else ():
@@ -274,7 +293,7 @@ def main():
     pin = json.loads(args.manifest.read_text())["source_pin"][:7]
     # Sanitize inherited manifests before the first build can consume them.
     initial = json.loads(args.manifest.read_text())
-    tidy(initial, facts, deny, pin)
+    tidy(initial, facts, deny, pin, args.frontier)
     args.manifest.write_text(json.dumps(initial, indent=2) + "\n")
     for round_ in range(args.rounds):
         with log_path.open("w") as log_file:
@@ -283,7 +302,7 @@ def main():
         log = log_path.read_text(errors="replace")
         d = json.loads(args.manifest.read_text())
         built_manifest = json.dumps(d, sort_keys=True)
-        tidy(d, facts, deny, pin)
+        tidy(d, facts, deny, pin, args.frontier)
         refuse(d, deny, log)
         undefined = undefined_symbols(log)
         fresh, out, needs = set(), [], []
@@ -303,16 +322,16 @@ def main():
         for n in needs:
             print("   need", n, flush=True)
         if rc == 0 and json.dumps(d, sort_keys=True) == built_manifest:
-            needsfeed.write(args.work, args.manifest, args.worklist)
+            needsfeed.write(args.work, effective_manifest(args.build, args.manifest), args.worklist)
             print("closure: links")
             return 0
         if json.dumps(d, sort_keys=True) != built_manifest:
             continue  # the linked binary must reflect tidy/refuse changes too
         if not out and "multiple definition" not in log and "FAILED: decomp/" not in log:
-            needsfeed.write(args.work, args.manifest, args.worklist)
+            needsfeed.write(args.work, effective_manifest(args.build, args.manifest), args.worklist)
             print(f"closure: stuck, see {log_path}")
             return 1
-    needsfeed.write(args.work, args.manifest, args.worklist)
+    needsfeed.write(args.work, effective_manifest(args.build, args.manifest), args.worklist)
     print("closure: rounds exhausted")
     return 1
 

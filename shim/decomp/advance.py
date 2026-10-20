@@ -115,7 +115,7 @@ def main():
                           closure.policy.game_code(json.loads(args.manifest.read_text())))
 
     def run_closure(why_unit):
-        c = subprocess.run([sys.executable, "-I", str(HERE / "closure.py"), "--frontier", "--rounds", "6",
+        c = subprocess.run([sys.executable, "-I", str(HERE / "closure.py"), "--rounds", "6",
                             "--build", str(args.build), "--source", str(args.source), "--work", str(args.work),
                             "--manifest", str(args.manifest), "--shim-bindings", str(args.shim_bindings),
                             "--jobs", str(args.jobs), *(["--worklist", str(args.worklist)] if args.worklist else [])],
@@ -129,7 +129,7 @@ def main():
     diag = []
 
     def halt(symbol, rc):
-        needsfeed.write(args.work, args.manifest, args.worklist, symbol, diag)
+        needsfeed.write(args.work, closure.effective_manifest(args.build, args.manifest), args.worklist, symbol, diag)
         (args.work / "boot-diag.jsonl").write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in diag))
         return rc
 
@@ -180,7 +180,7 @@ def main():
         d = json.loads(args.manifest.read_text())
         log = args.work / "boot.log"
         text = log.read_text() if not args.fail_fast and log.exists() else ""
-        diag = diag_rows(text, d)
+        diag = diag_rows(text, json.loads(closure.effective_manifest(args.build, args.manifest).read_text()))
         if diag:
             print(f"step {step}: rc={rc} {last}", flush=True)
             got = run_on_step(d, rc)

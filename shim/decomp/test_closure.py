@@ -63,6 +63,15 @@ class RouteTests(unittest.TestCase):
     def route(self, sym, frontier=False):
         return closure.route(self.d, sym, self.facts, {}, "abcdef0", frontier, set())
 
+    def test_tidy_drops_frontier_stops_unless_walking_the_legacy_frontier(self):
+        stop = {"f": "src/GAME/80200000.CPP defines it; not linked yet at abcdef0 (boot frontier)",
+                "g": "no C definition at abcdef0"}
+        self.d["stops"] = dict(stop)
+        closure.tidy(self.d, self.facts, {}, "abcdef0")
+        self.assertEqual(sorted(self.d["stops"]), ["g"], "the link-all archive pulls the unit instead")
+        self.d["stops"] = dict(stop)
+        closure.tidy(self.d, self.facts, {}, "abcdef0", frontier=True)
+        self.assertEqual(sorted(self.d["stops"]), ["f", "g"])
     def test_one_line_body_has_an_owner_and_a_prototype_does_not(self):
         source = self.facts.source
         (source / "src/GAME/802A23A4.CPP").write_text(
@@ -502,4 +511,91 @@ class RouteTests(unittest.TestCase):
         self.assertIsNone(repin.trace_order(wl, "nope"))
 
 
+spec = importlib.util.spec_from_file_location("boot_linkall", ROOT / "linkall.py")
+linkall = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(linkall)
+spec = importlib.util.spec_from_file_location("boot_unitstep", ROOT / "unitstep.py")
+unitstep = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(unitstep)
+class LinkAllTests(unittest.TestCase):
+    """The link-all archive: the linker pulls units, and what nothing defines becomes a generated stop."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir=args.work)
+        self.addCleanup(self.tmp.cleanup)
+        self.root = pathlib.Path(self.tmp.name)
+    def compile(self, name, text):
+        source = self.root / (name + ".c")
+        source.write_text(text)
+        out = self.root / (name + ".o")
+        subprocess.run(["gcc", "-c", str(source), "-o", str(out)], check=True)
+        return out
+    def test_pull_follows_references_through_archive_members(self):
+        defined_by = {"a": ("A", {"a"}, {"b", "lib"}), "b": ("B", {"b"}, set()), "c": ("C", {"c"}, {"x"})}
+        pulled, unresolved = linkall.pull({"a"}, set(), defined_by)
+        self.assertEqual(sorted(pulled), ["A", "B"], "C is not referenced, so it is never pulled")
+        self.assertEqual(unresolved, {"lib"})
+    def test_unit_that_does_not_compile_leaves_empty_objects_and_a_marker(self):
+        base = self.root / "u"
+        bad = [sys.executable, "-c", "import sys; print('x.c:3:5: error: conflicting types', file=sys.stderr); sys.exit(1)"]
+        self.assertEqual(unitstep.unit(["--base", str(base), "--source", "src/X.c", "--", *bad]), 0)
+        self.assertEqual((self.root / "u.failed").read_text(), "src/X.c:3 conflicting types\n")
+        self.assertEqual((self.root / "u.o").stat().st_size, 0)
+        self.assertEqual((self.root / "u.stubs.o").stat().st_size, 0)
+        touch = [sys.executable, "-c", "import pathlib; pathlib.Path('%s').write_text('ok')" % (self.root / "u.o")]
+        self.assertEqual(unitstep.unit(["--base", str(base), "--source", "src/X.c", "--", *touch, "---", *touch]), 0)
+        self.assertFalse((self.root / "u.failed").exists(), "a unit that compiles again drops its marker")
+    def test_archive_holds_the_non_empty_objects_of_the_plan(self):
+        objdir = self.root / "decomp"
+        (objdir / "src").mkdir(parents=True)
+        for unit in ("src/A.c", "src/B.c"):
+            (self.root / "t.c").write_text("int " + pathlib.Path(unit).stem.lower() + "_v = 1;\n")
+            subprocess.run(["gcc", "-c", str(self.root / "t.c"), "-o", str(objdir / (unit + ".o"))], check=True)
+        (objdir / "src/B.c.o").write_bytes(b"")  # B did not compile
+        (self.root / "plan.txt").write_text("src/A.c\nsrc/B.c\n")
+        (self.root / "closure.txt").write_text("/x/boot.o\n")
+        out = self.root / "lib.a"
+        linkall.archive(["--plan", str(self.root / "plan.txt"), "--objdir", str(objdir), "--closure-objects",
+                         str(self.root / "closure.txt"), "--output", str(out), "--members", str(self.root / "m.txt"),
+                         "--linked", str(self.root / "l.txt")])
+        names = subprocess.run(["nm", "-g", "-P", str(out)], capture_output=True, text=True).stdout
+        self.assertIn("a_v", names)
+        self.assertNotIn("b_v", names)
+        self.assertEqual((self.root / "m.txt").read_text().split(), [str(objdir / "src/A.c.o")])
+        self.assertEqual((self.root / "l.txt").read_text().split(), ["/x/boot.o", str(objdir / "src/A.c.o")])
+    def test_autogen_routes_what_nothing_defines_and_pulls_the_rest(self):
+        source = self.root / "source"
+        (source / "src/GAME").mkdir(parents=True)
+        (source / "versions/us-rev1").mkdir(parents=True)
+        (source / "src/GAME/A.CPP").write_text("void func_80200000_de(void) {\n}\n")
+        (source / "versions/us-rev1/symbol_addrs.txt").write_text(
+            "func_80200000_de = 0x80200000; // type:func\nfunc_80200100_de = 0x80200100; // type:func\n"
+            "D_80100000 = 0x80104000; //\n")
+        boot = self.root / "boot"
+        boot.mkdir()
+        entry = self.compile("entry", "void func_80200000_de(void); void n64c_entry(void){func_80200000_de();}\n")
+        a = self.compile("a", "extern int D_80100000; void func_80200100_de(void); extern int platform_call(void);\n"
+                              "void func_80200000_de(void){func_80200100_de(); D_80100000 = platform_call();}\n")
+        b = self.compile("b", "void func_80200300_de(void){}\n")
+        lib = self.compile("lib", "int platform_call(void){return 1;}\n")
+        (boot / "linked-objects.txt").write_text(f"{entry}\n")
+        (boot / "image-objects.txt").write_text("")
+        (boot / "image.ld").write_text("")
+        (boot / "image.json").write_text("{}")
+        (self.root / "members.txt").write_text(f"{a}\n{b}\n")
+        (self.root / "plan.txt").write_text("src/GAME/A.CPP\n")
+        manifest = self.root / "us_rev1.json"
+        manifest.write_text(json.dumps({"source_pin": "abcdef0" + "0" * 33, "entry": "n64c_entry", "sources": [],
+                                        "data": {}, "bindings": {}, "stops": {}}))
+        out = self.root / "effective.json"
+        # the entry object calls func_80200000_de, which only the archive defines; pretend a.o is the member
+        (boot / "linked-objects.txt").write_text(f"{entry}\n")
+        linkall.autogen(["--source", str(source), "--manifest", str(manifest), "--boot", str(boot),
+                         "--objdir", str(self.root), "--plan", str(self.root / "plan.txt"),
+                         "--members", str(self.root / "members.txt"), "--output", str(out), "--libs", str(lib)])
+        effective = json.loads(out.read_text())
+        self.assertIn("func_80200100_de", effective["stops"], "no unit defines it: a generated run-on stop")
+        self.assertEqual(effective["data"], {"D_80100000": "0x80104000"}, "pinned data binds to its address")
+        self.assertNotIn("func_80200000_de", effective["stops"], "the archive defines it; the linker pulls the unit")
+        self.assertNotIn("platform_call", effective["stops"], "a platform library name is the linker's")
+        self.assertEqual(json.loads(manifest.read_text())["stops"], {}, "the committed manifest is untouched")
 unittest.main(argv=[sys.argv[0]])
