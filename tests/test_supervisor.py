@@ -1,6 +1,8 @@
 import asyncio
 import io
 import json
+import os
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -9,7 +11,7 @@ from unittest import mock
 
 from abu_decomp.cli import main as public_main
 from abu_decomp.supervisor.artifact import current, show
-from abu_decomp.supervisor.gdb import exit_code
+from abu_decomp.supervisor.gdb import Bridge, exit_code
 from abu_decomp.supervisor.supervisor import Supervisor
 
 
@@ -127,6 +129,40 @@ class PanesTests(unittest.TestCase):
             staged = show(profile, config, image, "Real probe")
             assert current(profile, config)["sha256"] == staged["artifact"]["sha256"]
             assert Path(staged["artifact"]["display_copy"]).read_bytes() == image.read_bytes()
+
+    def test_gdb_bridge_passes_the_shims_deliberate_signals_before_it_runs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "commands.txt"
+            fake = root / "gdb"
+            fake.write_text(
+                "#!/usr/bin/env python3\nimport sys\n"
+                f"log = open({str(log)!r}, 'w')\n"
+                "for line in sys.stdin:\n"
+                "    log.write(line); log.flush()\n"
+                "    token = line.split('-', 1)[0]\n"
+                "    print(token + '^done', flush=True)\n"
+                "    if '-exec-run' in line:\n"
+                "        print('*stopped,reason=\"exited-normally\"', flush=True)\n"
+                "    if '-gdb-exit' in line:\n"
+                "        break\n"
+            )
+            fake.chmod(0o755)
+            read, write = os.pipe()
+            self.addCleanup(os.close, write)
+            bridge = Bridge(
+                ["prog"], gdb_path=fake, library_dir=None, breakpoint="Failure", reason_expression="x", run_dir=root
+            )
+            with (
+                mock.patch.object(sys, "stdin", os.fdopen(read, "rb", 0)),
+                redirect_stdout(io.StringIO()),
+            ):
+                code = asyncio.run(bridge.run())
+            self.assertEqual(code, 0)
+            sent = log.read_text()
+            for name in ("SIGSEGV", "SIGUSR2"):
+                self.assertIn(f"handle {name} nostop noprint pass", sent)
+                self.assertLess(sent.index(f"handle {name}"), sent.index("-exec-run"))
 
     def test_gdb_exit_code_reads_the_real_exit_code(self):
         assert exit_code('*stopped,reason="exited",exit-code="01"') == 1

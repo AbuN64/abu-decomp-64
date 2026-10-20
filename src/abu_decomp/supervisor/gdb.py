@@ -178,6 +178,11 @@ class Bridge:
                 if response.startswith(str(token) + "^error"):
                     print("[gdb] setup failed: " + response, flush=True)
                     return 125
+            # The shim takes SIGSEGV (guest TLB-miss service) and SIGUSR2 (resume) on purpose and handles them
+            # itself. Without this gdb stops on each one and the bridge reports a crash (tile stuck at 75/932).
+            # A genuine host fault is named at the breakpoint by the shim (host-fault-<addr>) while traced.
+            for body in ("handle SIGSEGV nostop noprint pass", "handle SIGUSR2 nostop noprint pass"):
+                await self.cli(body)
             token = await self.send("-exec-run")
             response = await self.result(token)
             if response.startswith(str(token) + "^error"):
