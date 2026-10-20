@@ -145,3 +145,62 @@ class ShipTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShipBoostTests(unittest.TestCase):
+    """The ship lock and the CPU/IO boost of its holder are one rule: the unit holding the lock outranks the lanes."""
+
+    setUp = ShipTests.setUp
+    landing = ShipTests.landing
+
+    SCOPE = "0::/user.slice/user-1000.slice/user@1000.service/decomp.slice/ssh-1-2.scope\n"
+
+    def boosted(self, weight: Any, cgroup: Any, answer: tuple[int, str, str] = (0, "", "")) -> Any:
+        from abu_decomp import land
+
+        seat = json.loads((self.root / "seat.json").read_text())
+        seat["land"].pop("lock_weight", None)
+        if weight is not None:
+            seat["land"]["lock_weight"] = weight
+        (self.root / "seat.json").write_text(json.dumps(seat))
+        profile, calls = load_profile(self.root / "seat.json"), []
+
+        def run(argv: Any, cwd: Path, env: Any, timeout: Any) -> Any:
+            if argv[0] == "systemctl":
+                calls.append(list(argv))
+                return answer
+            return land.run_process(argv, cwd, env, timeout)
+
+        got = ship(profile, self.tree, [("L", self.root / "l.patch")], landing=self.landing(), run=run, cgroup=cgroup)
+        return got, calls
+
+    def test_the_lock_holder_gets_the_profiles_weight_on_its_own_scope(self) -> None:
+        (result, code, findings), calls = self.boosted(1000, lambda: self.SCOPE)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            calls,
+            [["systemctl", "--user", "set-property", "--runtime", "ssh-1-2.scope", "CPUWeight=1000", "IOWeight=1000"]],
+        )
+        self.assertIn({"step": "boost", "seconds": 0.0, "unit": "ssh-1-2.scope", "weight": 1000}, result["steps"])
+        self.assertFalse([f for f in findings if f["key"] == "ship.boost"])
+        self.assertEqual(os.environ.pop("UNBAKE_PRIORITY"), "1")  # the land's unbake calls take pool slots first
+
+    def test_a_refused_property_call_is_a_finding_and_the_ship_still_runs(self) -> None:
+        (_, code, findings), _ = self.boosted(1000, lambda: self.SCOPE, (1, "", "Failed to connect to bus"))
+        self.assertEqual(code, 0)
+        boost = [f for f in findings if f["key"] == "ship.boost"]
+        self.assertEqual(len(boost), 1)
+        self.assertIn("Failed to connect to bus", boost[0]["message"])
+        self.assertFalse(boost[0]["blocking"])
+
+    def test_no_unit_or_no_weight_is_a_finding_never_a_silent_pass(self) -> None:
+        (_, _, found), calls = self.boosted(1000, lambda: "0::/\n")
+        self.assertEqual(calls, [])
+        self.assertIn("no systemd scope or service", next(f for f in found if f["key"] == "ship.boost")["message"])
+        (_, _, found), calls = self.boosted(None, lambda: self.SCOPE)
+        self.assertEqual(calls, [])
+        self.assertIn("lock_weight is not set", next(f for f in found if f["key"] == "ship.boost")["message"])
+
+    def test_a_weight_out_of_range_is_a_profile_error(self) -> None:
+        with self.assertRaises(DecompError):
+            self.boosted(0, lambda: self.SCOPE)

@@ -83,3 +83,12 @@ class Apply(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_own_unit_is_the_scope_or_service_leaf_of_the_unified_line():
+    from abu_decomp import priority
+
+    assert priority.own_unit("0::/user.slice/user@1000.service/decomp.slice/ssh-9.scope\n") == "ssh-9.scope"
+    assert priority.own_unit("1:name=systemd:/x\n0::/system.slice/decomp-ship.service\n") == "decomp-ship.service"
+    assert priority.own_unit("0::/user.slice/user-1000.slice\n") is None
+    assert priority.own_unit("") is None

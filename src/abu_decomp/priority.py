@@ -91,3 +91,18 @@ def apply(
         warn(f"decomp: priority not set ({exc}); running at nice {now}")
         return None
     return target if target != now else None
+
+
+def own_unit(cgroup: str) -> str | None:
+    """The systemd unit a `/proc/self/cgroup` text places the process in (the leaf of its unified `0::` line) when
+    that is a scope or a service, else None (a bare cgroup no unit owns has no properties to set)."""
+    for line in cgroup.splitlines():
+        if line.startswith("0::"):
+            leaf = line[3:].rstrip("/").rpartition("/")[2]
+            return leaf if leaf.endswith((".scope", ".service")) else None
+    return None
+
+
+def weight_argv(unit: str, weight: int) -> list[str]:
+    """The call that gives a running unit `weight` of CPU and IO against its sibling units, until it ends."""
+    return ["systemctl", "--user", "set-property", "--runtime", unit, f"CPUWeight={weight}", f"IOWeight={weight}"]

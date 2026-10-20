@@ -311,6 +311,7 @@ def settings(profile: Profile) -> dict[str, Any]:
                 "remote",
                 "branch",
                 "author",
+                "lock_weight",
             }
         ),
     )
@@ -335,7 +336,11 @@ def settings(profile: Profile) -> dict[str, Any]:
     limit = table.get("subject_limit", DEFAULT_SUBJECT_LIMIT)
     if type(limit) is not int or limit < 20:
         raise LandError("config.schema", f"{profile.source_file}:land.subject_limit: expected an integer of 20 or more")
+    weight = table.get("lock_weight")
+    if weight is not None and (type(weight) is not int or not 1 <= weight <= 10000):
+        raise LandError("config.schema", f"{profile.source_file}:land.lock_weight: expected an integer 1..10000")
     return {
+        "lock_weight": weight,  # CPUWeight and IOWeight of the unit holding the ship lock
         "subject_limit": limit,
         "check": argv("check"),
         "jobs": argv("jobs"),

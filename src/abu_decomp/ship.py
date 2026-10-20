@@ -11,17 +11,19 @@ from __future__ import annotations
 import fcntl
 import os
 import re
+import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, land
+from abu_decomp import DecompError, events, land, priority
 from abu_decomp.config import Profile
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
 IDENTITY = re.compile(r"^\s*(?P<name>[^<>]+?)\s*<(?P<email>[^<>\s]+)>\s*$")
 LOCK_WAIT_SECONDS = 7200.0
+PRIORITY = "UNBAKE_PRIORITY"  # unbake's pool: a command whose environment says "1" takes host slots first
 
 
 class ShipError(DecompError):
@@ -41,6 +43,7 @@ class Ship:
         append: Callable[[Path, dict[str, Any]], dict[str, Any]] = events.append,
         clock: Callable[[], float] = time.monotonic,
         lock_wait: float = LOCK_WAIT_SECONDS,
+        cgroup: Callable[[], str] = lambda: Path("/proc/self/cgroup").read_text(),
     ) -> None:
         self.profile, self.patches, self.messages = profile, list(patches), dict(messages or {})
         self.tree = tree.expanduser().resolve()
@@ -50,6 +53,7 @@ class Ship:
             raise ShipError("ship.arguments", "ship lands exactly one --patch; batch inputs go through `decomp land`")
         table = land.settings(profile)
         self.remote, self.branch, self.author = table["remote"], table["branch"], table["author"]
+        self.weight, self.cgroup, self.notes = table["lock_weight"], cgroup, []
         self.run, self.landing, self.append, self.clock, self.lock_wait = run, landing, append, clock, lock_wait
         self.steps: list[dict[str, Any]] = []
 
@@ -87,12 +91,42 @@ class Ship:
         while True:
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.boost()
                 return handle
             except BlockingIOError:
                 if self.clock() > deadline:
                     os.close(handle)
                     raise ShipError("ship.busy", f"another ship held {path} for {self.lock_wait:g}s") from None
                 time.sleep(2)
+
+    def boost(self) -> None:
+        """The holder of the ship lock is the job every lane's next tree waits on: its own systemd unit (scope or
+        service, from /proc/self/cgroup) gets `land.lock_weight` CPU and IO weight against the lane units beside it
+        for as long as it runs. Whatever stops that is a printed finding, never a silent pass."""
+        why = ""
+        if self.weight is None:
+            why = "land.lock_weight is not set in the seat profile"
+        else:
+            try:
+                unit = priority.own_unit(self.cgroup())
+            except OSError as exc:
+                unit, why = None, f"cannot read /proc/self/cgroup: {exc}"
+            if unit is None and not why:
+                why = "this process runs in no systemd scope or service"
+            elif unit is not None:
+                try:
+                    code, out, err = self.run(priority.weight_argv(unit, self.weight), self.tree, None, 30)
+                except DecompError as exc:
+                    code, out, err = 1, "", exc.finding().get("message", str(exc))
+                if code:
+                    why = f"systemctl --user set-property {unit} failed: {(err or out).strip()[-300:]}"
+                else:
+                    self.steps.append({"step": "boost", "seconds": 0.0, "unit": unit, "weight": self.weight})
+        os.environ[PRIORITY] = "1"  # unbake admits this job's pool work ahead of every command without it
+        if why:
+            message = f"ship lock held without a CPU/IO boost: {why}"
+            sys.stderr.write(f"decomp: {message}\n")
+            self.notes.append({"key": "ship.boost", "message": message, "blocking": False})
 
     def tip(self) -> str:
         """Fetch the branch and move the tree to its tip: only the files that differ are rewritten, so the build
@@ -176,6 +210,7 @@ class Ship:
         self, result: dict[str, Any], findings: list[dict[str, Any]], base: str, sha: str | None, started: float
     ) -> Result:
         lane = self.patches[0][0]
+        findings = [*self.notes, *findings]
         names = sorted({n for row in result.get("lanes", []) for n in (row.get("functions") or {}).get("names", [])})
         refusal = next((f for f in findings if f.get("blocking")), None)
         shipped = {
