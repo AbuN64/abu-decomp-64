@@ -19,6 +19,7 @@ big-endian bytes and the port native ones, so a word matches when the port's byt
 16-bit halves, as one 32-bit value, as half of a 64-bit value, or as the same function or data object (native address
 vs original: the port keeps game statics in its executable, so a pointer to native D_80123456+8 is 0x8012345e).
 Words that already differ at the first trace function (loader vs shim setup) count only once the game writes them.
+Typed call fields that differ between both references are listed as volatile_calls, not persistent differences.
 Calls of functions without a known prototype (--types) are not compared: their arity is unknown. Guest stack pages
 (from the oracle's stack pointers), words that differ between two oracle runs (--oracle2), ignore.tsv rows (SYMBOL or
 0xSTART-0xEND, then a reason) and, with --rom, oracle words still holding IPL3's boot copy of the ROM (the port runs
@@ -492,6 +493,60 @@ def same_word(matcher, kind, ov, pv, osp, psp):
     return False
 
 
+def oracle_fields(kinds, ret_kind, call, returned):
+    """Typed values in the reference ABI; never inspect unused registers."""
+    fields = {}
+    if call is not None and kinds is not None:
+        where, _ = o32_slots(kinds)
+        words = [int(x, 16) for x in call["a"]]
+        for index, (kind, at) in enumerate(zip(kinds, where)):
+            if kind in ("var", "agg") or at is None:
+                break
+            if at[0] == "f":
+                value = int(call[f"f{at[1]}"], 16)
+                if kind == "float":
+                    value &= 0xFFFFFFFF
+            elif kind in ("double", "int64"):
+                value = words[at[1]] << 32 | words[at[1] + 1]
+            else:
+                value = words[at[1]] & MASKS.get(kind, 0xFFFFFFFF)
+            fields[f"arg{index}"] = (kind, value)
+    if returned is not None and ret_kind not in (None, "void", "agg", "unknown"):
+        if ret_kind in ("float", "double"):
+            value = int(returned["f0"], 16)
+            if ret_kind == "float":
+                value &= 0xFFFFFFFF
+        elif ret_kind == "int64":
+            value = int(returned["r"][0], 16) << 32 | int(returned["r"][1], 16)
+        else:
+            value = int(returned["r"][0], 16) & MASKS.get(ret_kind, 0xFFFFFFFF)
+        fields["return"] = (ret_kind, value)
+    return fields
+
+
+def reference_call_changes(kinds, ret_kind, call, peer, returned=None, peer_returned=None):
+    """Only fields observed and unequal in BOTH references are nondeterministic.
+
+    Missing samples prove nothing. Stack-address differences alone do not make a
+    field volatile, consistent with the call comparator's stack equivalence.
+    """
+    if call is None or peer is None:
+        return {}
+    first = oracle_fields(kinds, ret_kind, call, returned)
+    second = oracle_fields(kinds, ret_kind, peer, peer_returned)
+    sp, peer_sp = int(call["sp"], 16), int(peer["sp"], 16)
+    changes = {}
+    for field in first.keys() & second.keys():
+        kind, a = first[field]
+        _, b = second[field]
+        if a == b:
+            continue
+        if kind in ("ptr", "int32", "unknown") and abs(a - sp) < ORACLE_STACK and abs(b - peer_sp) < ORACLE_STACK:
+            continue
+        changes[field] = {"field": field, "type": kind, "oracle": f"0x{a:x}", "oracle2": f"0x{b:x}"}
+    return changes
+
+
 def compare_call(matcher, kinds, local, oc, pc):
     """All differing arguments of one recorded call, in parameter order."""
     differences = []
@@ -670,6 +725,7 @@ def compare(args):
     for lo, hi, _ in ranges:
         masked_words.update(range((max(lo, RDRAM) - RDRAM) // 4, (min(hi, RDRAM + ram) - RDRAM) // 4))
     volatile = set()
+    other = None
     if args.oracle2:
         other = Side(args.oracle2, lambda r: order_of.get(r.get("fn")) if "fn" in r else None)
         for key in sorted(set(oracle.points) & set(other.points)):
@@ -726,7 +782,7 @@ def compare(args):
                 transient += 1
                 continue
             memory.append((key, index, pair))
-    calls = []
+    calls, volatile_calls = [], []
     for key in common:
         row = names.get(key, ["?"])
         kinds_ret = next((types[n] for n in row if n in types), None)
@@ -739,7 +795,16 @@ def compare(args):
                                      int(oracle.calls[key][i]["sp"], 16), int(port.calls[key][i]["sp"], 16))
                 if why:
                     differences.append(why)
-            calls.extend((key, i, why) for why in differences)
+            changes = reference_call_changes(
+                kinds, ret_kind, oracle.calls[key][i], other.calls.get(key, {}).get(i),
+                oracle.rets.get(key, {}).get(i), other.rets.get(key, {}).get(i)) if other else {}
+            for why in differences:
+                field = why.split()[0]
+                if field in changes:
+                    volatile_calls.append(dict(order=key, function=row[0], call=i, why=why,
+                                               **changes[field]))
+                else:
+                    calls.append((key, i, why))
     first_mem = memory[0][0] if memory else None
     first_call = calls[0][0] if calls else None
     bad = min(x for x in (first_mem, first_call) if x is not None) if memory or calls else None
@@ -749,7 +814,7 @@ def compare(args):
         "compared": len(common), "trace": len(names), "first": None, "memory": [], "calls": [],
         "shim_words": len(shim), "transient_words": transient, "masked": [[f"0x{lo:08x}", f"0x{hi:08x}", why]
                                                                          for lo, hi, why in ranges],
-        "volatile_words": len(volatile), "boot_copy_words": len(boot_words),
+        "volatile_words": len(volatile), "volatile_calls": volatile_calls, "boot_copy_words": len(boot_words),
         "setup_words": len(setup), "fp_ulp_words": len(ulp), "first_memory": None, "first_call": None, "watch": {"oracle": oracle.watch[:50], "port": port.watch[:50]},
     }
     for key, index, (oh, ph) in memory:
@@ -801,6 +866,9 @@ def print_report(report):
             if ("return" if row["why"].startswith("return ") else "argument") == category:
                 print(f"lockstep: {category} order {row['order']} {row['function']} #{row['call']}: "
                       f"{row['why']}" + acceptance_text(row))
+    for row in report.get("volatile_calls", []):
+        print(f"lockstep: volatile call order {row['order']} {row['function']} #{row['call']}: "
+              f"{row['why']} (independent references: {row['oracle']} vs {row['oracle2']})")
     for row in report["unmatched_accepts"]:
         print(f"lockstep: acceptance not observed: {row['kind']} order {row['order']} {row['function']} {row['site']}")
     print(f"lockstep: {len(report['memory'])} persistent memory words, {len(report['calls'])} call divergences listed; "
