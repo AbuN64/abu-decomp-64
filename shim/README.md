@@ -92,3 +92,24 @@ and timers that come due fire and preempt as on the console. Every TLB miss the
 guest's fault service gets is logged as `n64c-fault: TLB-miss-<address> load|store
 at host pc <pc>`, so a wild pointer the guest answers with its crash path names
 its code in the boot log.
+
+### Live controller input
+
+The visible SDL3 window installs `n64c_input` at creation and samples keyboard and
+SDL_Gamepad state after its event pump. SI reads latch the last complete snapshot;
+they never call SDL from a guest thread. Channel zero remains present with or
+without a physical pad because its keyboard fallback is always available.
+Offscreen/dummy video and any `N64C_LOCKSTEP` environment disable the provider.
+No SDL gamepad subsystem is opened in those modes; scripted providers stay usable.
+Closing/resetting the shim unregisters the provider and releases its gamepad.
+
+`n64c_input_config.c` holds the generic mapping table and raw axis thresholds.
+Applications can pass an immutable `N64cInputConfig` to change bindings. Defaults:
+arrows = stick; X/C/Z = A/B/Z; Enter = Start; A/S = L/R; I/K/J/L = C up/down/left/right.
+Gamepad south/east = A/B; west/north = C left/up; right stick = all four C buttons;
+D-pad, Start and shoulders map directly; either trigger = Z. Left stick uses an
+8000-unit axial deadzone and integer rescaling to -80..80 (up is positive Y).
+Keyboard and pad buttons combine; stick contributions add and clamp. Opposing
+arrow keys cancel. Only the focused game window consumes keyboard state.
+The first available gamepad owns channel zero; disconnect releases it and promotes
+an already connected pad, while SDL add/remove events handle subsequent hotplug.

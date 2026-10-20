@@ -1,0 +1,35 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Port-wide input configuration: no game identity or game logic belongs here. */
+#ifdef N64C_INPUT_SDL3
+#include "n64c_input.h"
+static const N64cKeyBinding keys[] = {
+    {SDL_SCANCODE_LEFT, 0, -1, 0}, {SDL_SCANCODE_RIGHT, 0, 1, 0},
+    {SDL_SCANCODE_UP, 0, 0, 1}, {SDL_SCANCODE_DOWN, 0, 0, -1},
+    {SDL_SCANCODE_X, N64C_PAD_A, 0, 0}, {SDL_SCANCODE_C, N64C_PAD_B, 0, 0},
+    {SDL_SCANCODE_Z, N64C_PAD_Z, 0, 0}, {SDL_SCANCODE_RETURN, N64C_PAD_START, 0, 0},
+    {SDL_SCANCODE_A, N64C_PAD_L, 0, 0}, {SDL_SCANCODE_S, N64C_PAD_R, 0, 0},
+    {SDL_SCANCODE_I, N64C_PAD_CUP, 0, 0}, {SDL_SCANCODE_K, N64C_PAD_CDOWN, 0, 0},
+    {SDL_SCANCODE_J, N64C_PAD_CLEFT, 0, 0}, {SDL_SCANCODE_L, N64C_PAD_CRIGHT, 0, 0}
+};
+static const N64cButtonBinding buttons[] = {
+    {SDL_GAMEPAD_BUTTON_SOUTH, N64C_PAD_A}, {SDL_GAMEPAD_BUTTON_EAST, N64C_PAD_B},
+    {SDL_GAMEPAD_BUTTON_WEST, N64C_PAD_CLEFT}, {SDL_GAMEPAD_BUTTON_NORTH, N64C_PAD_CUP},
+    {SDL_GAMEPAD_BUTTON_START, N64C_PAD_START},
+    {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, N64C_PAD_L},
+    {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, N64C_PAD_R},
+    {SDL_GAMEPAD_BUTTON_DPAD_UP, N64C_PAD_UP}, {SDL_GAMEPAD_BUTTON_DPAD_DOWN, N64C_PAD_DOWN},
+    {SDL_GAMEPAD_BUTTON_DPAD_LEFT, N64C_PAD_LEFT}, {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, N64C_PAD_RIGHT}
+};
+static const N64cAxisBinding axes[] = {
+    {SDL_GAMEPAD_AXIS_RIGHTX, -1, N64C_PAD_CLEFT},
+    {SDL_GAMEPAD_AXIS_RIGHTX, 1, N64C_PAD_CRIGHT},
+    {SDL_GAMEPAD_AXIS_RIGHTY, -1, N64C_PAD_CUP},
+    {SDL_GAMEPAD_AXIS_RIGHTY, 1, N64C_PAD_CDOWN},
+    {SDL_GAMEPAD_AXIS_LEFT_TRIGGER, 1, N64C_PAD_Z},
+    {SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, 1, N64C_PAD_Z}
+};
+const N64cInputConfig n64c_input_default_config = {
+    keys, sizeof keys / sizeof *keys, buttons, sizeof buttons / sizeof *buttons,
+    axes, sizeof axes / sizeof *axes, 8000, 16000
+};
+#endif

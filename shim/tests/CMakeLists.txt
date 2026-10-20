@@ -36,3 +36,20 @@ target_compile_options(n64c_test_frame PRIVATE -Wall -Wextra -Werror)
 add_test(NAME n64c_frame_capture COMMAND n64c_test_frame "${CMAKE_CURRENT_BINARY_DIR}")
 
 set_tests_properties(n64c_interrupts PROPERTIES TIMEOUT 10)
+
+# Fake SDL at the device boundary: exercise production mapping and SI without a window.
+if(TARGET SDL3::SDL3-static)
+    add_executable(n64c_test_input_sdl test_input_sdl.c ../n64c_input.c ../n64c_input_config.c ../n64c_cont.c)
+    target_include_directories(n64c_test_input_sdl PRIVATE ..
+        $<TARGET_PROPERTY:SDL3::SDL3-static,INTERFACE_INCLUDE_DIRECTORIES>)
+    target_compile_definitions(n64c_test_input_sdl PRIVATE N64C_INPUT_SDL3)
+    target_compile_options(n64c_test_input_sdl PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(n64c_test_input_sdl PRIVATE Threads::Threads)
+    target_compile_features(n64c_test_input_sdl PRIVATE c_std_11)
+    if(RAGE_N64COMPAT_M32)
+        target_compile_options(n64c_test_input_sdl PRIVATE -m32)
+        target_link_options(n64c_test_input_sdl PRIVATE -m32)
+    endif()
+    add_test(NAME n64c_input_sdl COMMAND n64c_test_input_sdl)
+    set_tests_properties(n64c_input_sdl PROPERTIES TIMEOUT 10)
+endif()

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "f3d_window.h"
+#include "n64c_input.h"
 #include <cstdio>
 #include <cstdlib>
 
@@ -24,6 +25,10 @@ void F3dWindow::Init(const char* gameName, const char*, bool startFullScreen, ui
         mContext = SDL_GL_CreateContext(mWindow);
     if (!mWindow || !mContext) {
         std::fprintf(stderr, "f3d window: %s\n", SDL_GetError());
+        std::exit(1);
+    }
+    if (!n64c_input_start(mWindow, nullptr)) {
+        std::fprintf(stderr, "f3d input: %s\n", SDL_GetError());
         std::exit(1);
     }
     SDL_GL_MakeCurrent(mWindow, mContext);
@@ -84,9 +89,12 @@ Ship::WindowRect F3dWindow::GetPrimaryMonitorRect()
 void F3dWindow::HandleEvents()
 {
     SDL_Event event;
-    while (SDL_PollEvent(&event))
+    while (SDL_PollEvent(&event)) {
+        n64c_input_event(&event);
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
             mIsRunning = false;
+    }
+    n64c_input_update();
 }
 bool F3dWindow::IsFrameReady() { return true; } // the port's VI paces frames
 void F3dWindow::SwapBuffersBegin()
@@ -104,6 +112,7 @@ bool F3dWindow::CanDisableVsync() { return true; }
 bool F3dWindow::IsRunning() { return mIsRunning; }
 void F3dWindow::Destroy()
 {
+    n64c_input_stop();
     if (mContext)
         SDL_GL_DestroyContext(mContext);
     if (mWindow)

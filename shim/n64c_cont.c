@@ -5,6 +5,9 @@
 #include "n64c_internal.h"
 #include "n64c_cont.h"
 #include "n64c_si.h"
+#ifdef N64C_INPUT_SDL3
+#include "n64c_input.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +28,9 @@ void n64c_cont_set_input(N64cInputFn fn, void *user)
 }
 void n64c_cont_reset(const N64cConfig *cfg)
 {
+#ifdef N64C_INPUT_SDL3
+    n64c_input_stop();
+#endif
     memset(latched, 0, sizeof latched);
     memset(serial_packet,0,sizeof serial_packet);
     eeprom_present = cfg && cfg->eeprom_path != NULL;
@@ -38,7 +44,14 @@ void n64c_cont_reset(const N64cConfig *cfg)
     input_fn = NULL;
     n64c_si_reset();
 }
-void n64c_cont_close(void) { input_fn = NULL; }
+void n64c_cont_close(void)
+{
+#ifdef N64C_INPUT_SDL3
+    n64c_input_stop();
+#endif
+    input_fn = NULL;
+    input_user = NULL;
+}
 static int pak_on(int channel) { return channel == 0 && pak_path[0]; }
 int n64c_cont_pak_present(int channel) { return pak_on(channel) != 0; }
 static void query(OSContStatus *s)
