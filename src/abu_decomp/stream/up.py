@@ -116,12 +116,13 @@ def up(profile: Any) -> dict[str, Any]:
     unit_dir.mkdir(parents=True, exist_ok=True)
     for old in unit_dir.glob("*.json"):
         old.unlink(missing_ok=True)  # records of a previous stream up; every unit writes its own again
-    services.record(
-        run_dir, services.UP, os.getpid(), kind="up", venv=os.path.realpath(sys.prefix), python=services.stable_python()
-    )
+    python = services.stable_python()  # the {python} services exec; resolved again at each spawn, after deploys
+    services.record(run_dir, services.UP, os.getpid(), kind="up", venv=os.path.realpath(sys.prefix), python=python)
     named = set(config.get("services", {}))
     group.on_spawn = lambda unit: (
-        services.record(run_dir, unit.name, unit.process.pid, kind="service") if unit.name in named else None
+        services.record(run_dir, unit.name, unit.process.pid, kind="service", python=python)
+        if unit.name in named
+        else None
     )
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:

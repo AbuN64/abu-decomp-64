@@ -33,6 +33,13 @@ class ServicesTests(unittest.TestCase):
         assert services.stable_python(str(self.new / "bin/python")) == str(self.new / "bin/python")  # not live
         assert services.stable_python("/usr/bin/python3") == "/usr/bin/python3"
 
+    def test_service_spawned_after_a_swap_is_recorded_on_the_venv_it_execs(self):
+        python = services.stable_python(str(self.old / "bin/python"))  # stream up started on the old venv
+        self.swap()
+        services.record(self.run_dir, "cycle", self.pid, kind="service", python=python)
+        assert services.read(self.run_dir, "cycle")["venv"] == os.path.realpath(self.new)
+        assert services.stale(self.run_dir, self.live) == []
+
     def test_old_role_is_restarted_and_a_current_one_is_left_alone(self):
         self.put("sup", self.old)
         self.put("cycle", self.old, "service")
