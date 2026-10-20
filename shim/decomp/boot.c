@@ -145,12 +145,14 @@ int main(int argc,char **argv)
     }
     n64c_game_scheduler_attach();
     if (n64c_trace_init) n64c_trace_init();
+    if (n64c_runon_init) n64c_runon_init();
     fprintf(stderr,"boot-entry: original C\n");
     if (live) fprintf(stderr,"boot-step: original C\n");
     fflush(stderr);
     int result=n64c_boot_entry();
     int ok=!result && (live ? n64c_boot_frame_live() : n64c_boot_frame_capture(argv[2],retrace,out_width,out_height));
+    const int rc=n64c_runon_end ? n64c_runon_end(ok ? 0 : 1) : ok ? 0 : 1;
     n64c_boot_frame_close();
     n64c_shutdown();
-    return ok ? 0 : 1;
+    return rc;
 }

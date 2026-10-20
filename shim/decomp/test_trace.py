@@ -95,4 +95,96 @@ class TraceTests(unittest.TestCase):
             "boot-step: out of oracle order: delta (order 4) before gamma_fn (order 3)",
             "boot-step: census 3/6 hit, 4 watched, last delta (order 4), next in oracle order gamma_fn (order 3)",
         ])
+    @unittest.skipUnless(args.m32, "run-on returns from frames on i386 only")
+    def test_run_on_lists_every_failure_and_goes_on(self):
+        # One boot meets an unlinked call, a NULL read, a divide by zero, a spin, an uncovered DMA and a refused
+        # task. Run-on records each once, in boot order, and every caller resumes with its own callee-saved registers.
+        (self.path / "game.c").write_text(RUN_ON_GAME)
+        (self.path / "stub.c").write_text('extern long long n64c_boot_missing(const char *);\n'
+                                          'long long unlinked(void) { return n64c_boot_missing("unlinked"); }\n')
+        (self.path / "table.c").write_text(
+            '#include "trace.h"\nconst N64cTraceEntry n64c_trace_entries[] = {\n'
+            '    {1, 0x80000010u, 0, {"keep"}}, {2, 0x80000020u, 0, {"crash"}}, {3, 0x80000030u, 0, {"spin"}},\n'
+            '    {4, 0x80000040u, 0, {"never"}}};\nconst unsigned n64c_trace_count = 4;\n')
+        (self.path / "shim.c").write_text(RUN_ON_SHIM)
+        shim = ROOT.parent
+        objects = []
+        game = ["-O2", "-finstrument-functions", "-fno-omit-frame-pointer"]
+        for source, extra in [(self.path / "game.c", game), (self.path / "stub.c", game), (ROOT / "trace.c", ["-O2"]),
+                              (ROOT / "runon.c", ["-O2"]), (ROOT / "missing.c", ["-O2"]),
+                              (self.path / "table.c", []), (self.path / "shim.c", [])]:
+            obj = self.path / (source.stem + ".o")
+            subprocess.run([args.compiler, "-m32", "-Wall", "-Werror", *extra, "-I" + str(ROOT), "-I" + str(shim),
+                            "-c", str(source), "-o", str(obj)], check=True, capture_output=True, text=True)
+            objects.append(str(obj))
+        exe = self.path / "runon"
+        subprocess.run([args.compiler, "-m32", "-no-pie", *objects, "-lpthread", "-o", str(exe)],
+                       check=True, capture_output=True, text=True)
+        env = {"N64C_RUN_ON": "1", "N64C_RUN_ON_HANG": "1", "PATH": "/usr/bin:/bin"}
+        result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env=env)
+        lines = [line for line in result.stderr.splitlines() if not line.startswith("boot-step: ")]
+        self.assertEqual(result.returncode, 78, result.stderr)
+        self.assertEqual(result.stdout.split(), ["unlinked=0", "keep=15", "div=0", "spin=0", "after=9"],
+                         result.stderr)
+        got = [" ".join(line.split()[1:3]) for line in lines if line.startswith("boot-diag: ") and " at=" in line]
+        self.assertEqual(got[0], "missing unlinked")
+        self.assertTrue(got[1].startswith("fault SIGSEGV@crash"), got)
+        self.assertTrue(got[2].startswith("fault SIGFPE@divide"), got)
+        self.assertEqual(got[3:], ["hang spin", "layout dma-rom-0x00001000", "stop rdp-buffer"])
+        self.assertIn("in=caller<keep<run", next(line for line in lines if "missing unlinked" in line))
+        self.assertIn("return=crash", result.stderr)
+        self.assertIn("boot-diag: end 6 failures (1 missing, 1 stop, 0 code-pointer, 2 fault, 1 layout, 1 hang), "
+                      "census 3/4", result.stderr)
+        # Without N64C_RUN_ON the same binary stops at the first failure, as the fail-fast walk and the gate need.
+        plain = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env={"PATH": "/usr/bin:/bin"})
+        self.assertEqual(plain.returncode, 78)
+        self.assertIn("boot-missing: unlinked", plain.stderr)
+        self.assertNotIn("boot-diag:", plain.stderr)
+RUN_ON_GAME = r"""
+#include <stdio.h>
+extern long long unlinked(void);
+#define NI __attribute__((noinline))
+volatile int zero;
+NI int caller(void) { return (int)unlinked(); }
+/* Uses every callee-saved register before it faults, so a resumed caller proves they were restored. */
+NI int crash(int *p, int n) { int s = 0; for (int i = 0; i < n; i++) s += p[i] * (i + 1) ^ (s >> 3); return s; }
+NI int keep(int x) { int a = x * 3, b = x + 5, c = x ^ 7; printf("unlinked=%d\n", caller());
+    int r = crash((int *)(long)zero, 40 + x); return a + b + c + r - 9; }
+NI int divide(int a, int b) { return a / b; }
+NI int spin(void) { while (!zero) { } return zero; } /* the breaker makes it return 0 */
+NI int run(void) { int k = keep(4); printf("keep=%d\n", k); printf("div=%d\n", divide(7, zero));
+    printf("spin=%d\n", spin()); return 9; }
+"""
+RUN_ON_SHIM = r"""
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include "n64c_diag.h"
+#include "trace.h"
+/* The n64compat parts runon.c reads, and the SIGSEGV owner (n64c_memory.c) that hands host faults to run-on. */
+int n64c_pi_origin(const void *ram, unsigned *dev) { (void)ram; (void)dev; return 0; }
+unsigned n64c_memory_physical(const void *pointer) { return (unsigned)(unsigned long)pointer; }
+static void segv(int n, siginfo_t *info, void *context)
+{
+    if (!n64c_diag_fault(n, info, context)) signal(SIGSEGV, SIG_DFL);
+}
+extern int run(void);
+int main(void)
+{
+    struct sigaction action;
+    memset(&action, 0, sizeof action);
+    action.sa_sigaction = segv;
+    action.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &action, NULL);
+    n64c_trace_init();
+    n64c_runon_init();
+    int after = run();
+    char buffer[32];
+    n64c_diag_layout("dma", 0x1000, 0x20, buffer);
+    if (n64c_diag_stop && !n64c_diag_stop("rdp-buffer", 1)) return 1;
+    printf("after=%d\n", after);
+    fflush(stdout);
+    return n64c_runon_end(0);
+}
+"""
 unittest.main(argv=[sys.argv[0]])

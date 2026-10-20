@@ -66,8 +66,8 @@ def prepare(compiler, source, output, stubs, inventory, depfile, flags):
     # No definitions are fabricated for data macros. They remain unresolved
     # until the ROM loader has a qualified layout and relocation description.
     declarations = ["/* Generated missing-function stops; no original code. */",
-        "extern void n64c_boot_missing(const char *) __attribute__((noreturn));"]
-    declarations += ['void ' + name + '(void) { n64c_boot_missing("' + name + '"); }'
+        "extern long long n64c_boot_missing(const char *);"]
+    declarations += ['long long ' + name + '(void) { return n64c_boot_missing("' + name + '"); }'
                      for name in missing]
     output.write_text(result.stdout)
     stubs.write_text("\n".join(declarations) + "\n")

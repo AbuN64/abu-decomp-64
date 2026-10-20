@@ -45,7 +45,7 @@ class PrepareTests(unittest.TestCase):
         driver = self.path / "main.c"
         driver.write_text(main)
         exe = self.path / "check"
-        subprocess.run([args.compiler, *self.flags, str(files[0]), str(files[1]),
+        subprocess.run([args.compiler, *self.flags, "-I" + str(ROOT.parent), str(files[0]), str(files[1]),
                         str(ROOT / "missing.c"), str(driver), "-o", str(exe)],
                        check=True, capture_output=True, text=True)
         return exe

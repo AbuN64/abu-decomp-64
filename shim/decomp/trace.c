@@ -30,6 +30,8 @@ static int summarised;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static const char *events[8];
 static unsigned event_count;
+static __thread N64cTraceStack *own;   /* this thread's live instrumented frames */
+static N64cTraceStack *stacks, *last_stack;
 /* The running image's own symbol table (.symtab of /proc/self/exe): a name -> address lookup that needs no
  * dynamic exports, so --gc-sections keeps working. Functions the link dropped are simply absent. */
 static const unsigned char *image;
@@ -153,11 +155,37 @@ NOINST static void first_hit(unsigned i)
     }
     pthread_mutex_unlock(&lock);
 }
-NOINST void __cyg_profile_func_enter(void *fn, void *call_site)
+/* The frame record of one instrumented entry. regs: ebx, esi, edi, ebp (the entered function's frame), the hook's
+ * return address, then the two hook arguments (fn, call_site), as the i386 entry stub below lays them out. */
+NOINST static void push_frame(void *fn, void *call_site, const unsigned long *regs)
 {
-    (void)call_site;
+    N64cTraceStack *mine = own;
+    if (!mine) {
+        if (!(mine = calloc(1, sizeof *mine)))
+            return;
+        mine->thread = (unsigned long)pthread_self();
+        pthread_mutex_lock(&lock);
+        mine->next = stacks;
+        stacks = mine;
+        pthread_mutex_unlock(&lock);
+        own = mine;
+    }
+    if (mine->depth < N64C_TRACE_DEPTH) {
+        N64cTraceFrame *f = &mine->frame[mine->depth];
+        f->fn = fn;
+        f->site = call_site;
+        f->frame = regs ? (void *)regs[3] : NULL;
+        for (int i = 0; i < 3; i++)
+            f->regs[i] = regs ? regs[i] : 0;
+    }
+    mine->depth++;
+    last_stack = mine;
+}
+NOINST static void trace_enter(void *fn, void *call_site, const unsigned long *regs)
+{
     if (!__atomic_load_n(&armed, __ATOMIC_ACQUIRE))
         return;
+    push_frame(fn, call_site, regs);
     for (unsigned s = slot_of(fn) & slot_mask; slots[s].index; s = (s + 1) & slot_mask)
         if (slots[s].fn == fn) {
             const unsigned i = slots[s].index - 1;
@@ -166,10 +194,85 @@ NOINST void __cyg_profile_func_enter(void *fn, void *call_site)
             return;
         }
 }
+#if defined(__i386__)
+/* The entry hook keeps the callee-saved registers as the instrumented function's caller left them: ebx, esi and
+ * edi are not touched by a function before it saves them, and ebp is the function's own frame. */
+NOINST __attribute__((used, force_align_arg_pointer)) void n64c_trace_enter_i386(const unsigned long *regs)
+{
+    trace_enter((void *)regs[5], (void *)regs[6], regs);
+}
+__asm__(".text\n"
+        ".globl __cyg_profile_func_enter\n"
+        ".type __cyg_profile_func_enter, @function\n"
+        "__cyg_profile_func_enter:\n"
+        "    pushl %ebp\n"
+        "    pushl %edi\n"
+        "    pushl %esi\n"
+        "    pushl %ebx\n"
+        "    movl %esp, %eax\n"
+        "    subl $8, %esp\n"
+        "    pushl %eax\n"
+        "    call n64c_trace_enter_i386\n"
+        "    addl $12, %esp\n"
+        "    popl %ebx\n"
+        "    popl %esi\n"
+        "    popl %edi\n"
+        "    popl %ebp\n"
+        "    ret\n"
+        ".size __cyg_profile_func_enter, .-__cyg_profile_func_enter\n");
+#else
+NOINST void __cyg_profile_func_enter(void *fn, void *call_site)
+{
+    trace_enter(fn, call_site, NULL);
+}
+#endif
 NOINST void __cyg_profile_func_exit(void *fn, void *call_site)
 {
-    (void)fn;
     (void)call_site;
+    N64cTraceStack *mine = own;
+    if (!mine || !mine->depth)
+        return;
+    /* A frame entered before the census armed has no record: only the matching record is dropped. */
+    if (mine->depth > N64C_TRACE_DEPTH || mine->frame[mine->depth - 1].fn == fn)
+        mine->depth--;
+}
+NOINST N64cTraceStack *n64c_trace_stack(void)
+{
+    return own;
+}
+NOINST N64cTraceStack *n64c_trace_last_stack(void)
+{
+    return last_stack;
+}
+NOINST N64cTraceStack *n64c_trace_stacks(void)
+{
+    pthread_mutex_lock(&lock);
+    N64cTraceStack *first = stacks;
+    pthread_mutex_unlock(&lock);
+    return first;
+}
+NOINST const char *n64c_trace_symbol(const void *address, unsigned *offset)
+{
+    const uintptr_t at = (uintptr_t)address;
+    for (unsigned i = 0; i < sym_count; i++)
+        if (ELF32_ST_TYPE(syms[i].st_info) == STT_FUNC && syms[i].st_value <= at && syms[i].st_size &&
+            at - syms[i].st_value < syms[i].st_size) {
+            if (offset)
+                *offset = (unsigned)(at - syms[i].st_value);
+            return strings + syms[i].st_name;
+        }
+    return NULL;
+}
+NOINST unsigned n64c_trace_position(unsigned *total, const char **last)
+{
+    pthread_mutex_lock(&lock);
+    const unsigned n = hits;
+    if (last)
+        *last = last_name;
+    pthread_mutex_unlock(&lock);
+    if (total)
+        *total = n64c_trace_count;
+    return n;
 }
 NOINST void n64c_trace_event(const char *kind)
 {

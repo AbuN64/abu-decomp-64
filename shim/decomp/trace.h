@@ -20,4 +20,32 @@ void n64c_trace_init(void) __attribute__((weak));
 void n64c_trace_event(const char *kind) __attribute__((weak));
 /* Where the census stands; prints once (the stop that ends the run calls it). */
 void n64c_trace_summary(void) __attribute__((weak));
+
+/* Call frames for the run-on diagnostics (runon.c). The entry hook also keeps, per thread, the instrumented frames
+ * that are live: the function, its frame pointer (the units are built with -fno-omit-frame-pointer), its return
+ * address, and the callee-saved registers as its caller had them where the function had not saved them yet. */
+enum { N64C_TRACE_DEPTH = 512 };
+typedef struct {
+    void *fn, *frame, *site;
+    unsigned long regs[3]; /* ebx, esi, edi at the entry hook (i386); 0 elsewhere */
+} N64cTraceFrame;
+typedef struct N64cTraceStack {
+    unsigned long thread;   /* pthread_t of the owner */
+    unsigned depth;         /* may exceed N64C_TRACE_DEPTH: deeper frames are counted, not kept */
+    struct N64cTraceStack *next;
+    N64cTraceFrame frame[N64C_TRACE_DEPTH];
+} N64cTraceStack;
+/* The calling thread's stack (NULL before its first instrumented call). */
+N64cTraceStack *n64c_trace_stack(void);
+/* The stack of the thread that entered an instrumented function last (the baton holder), and all stacks. */
+N64cTraceStack *n64c_trace_last_stack(void);
+N64cTraceStack *n64c_trace_stacks(void);
+/* The function symbol containing address (offset into it), or NULL. */
+const char *n64c_trace_symbol(const void *address, unsigned *offset);
+/* Census position: first hits so far, the trace size, and the last function hit (NULL before the first). */
+unsigned n64c_trace_position(unsigned *total, const char **last);
+/* Run-on diagnostics (runon.c, built with the census): init arms them when N64C_RUN_ON=1 (returns 1 then); end prints
+ * the run's failure list and returns the exit code (78 when anything failed, else rc). */
+int n64c_runon_init(void) __attribute__((weak));
+int n64c_runon_end(int rc) __attribute__((weak));
 #endif

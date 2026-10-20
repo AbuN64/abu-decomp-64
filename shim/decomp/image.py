@@ -358,9 +358,9 @@ def build(manifest, source, objects, linked, output):
         asm.append(f'.incbin "{binary}", {cursor}, {len(blob) - cursor}')
     asm.append(".previous")
     code = ["/* Generated original data image: bytes and pointer words of the fetched source objects. */",
-            '#include "boot.h"', 'extern void n64c_boot_missing(const char *) __attribute__((noreturn));',
+            '#include "boot.h"', 'extern long long n64c_boot_missing(const char *);',
             "__asm__(", *[f'    "{line.replace(chr(34), chr(92) + chr(34))}\\n"' for line in asm], ");"]
-    code += [f'void {name}(void) {{ n64c_boot_missing("{name}"); }}' for name in sorted(stops)]
+    code += [f'long long {name}(void) {{ return n64c_boot_missing("{name}"); }}' for name in sorted(stops)]
     code.append("const N64cBootImage n64c_boot_image[] = {")
     code += [f"    {{{start - 0x80000000}u, {base}u, {size}u}}," for start, base, size in extents]
     code += ["    {0u, 0u, 0u}", "};", f"const size_t n64c_boot_image_count = {len(extents)};"]

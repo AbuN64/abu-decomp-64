@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "stop.h"
+#include "n64c_diag.h"
 #include <stdio.h>
 #include <stdlib.h>
 /* The stop that ended the run, for a debugger holding the process in n64c_boot_stopped. */
@@ -12,8 +13,10 @@ __attribute__((noinline, noreturn)) void n64c_boot_stopped(void)
     _Exit(78);
 }
 extern void n64c_trace_summary(void) __attribute__((weak)); /* trace.c, when the census is built in */
-void n64c_boot_missing(const char *symbol)
+long long n64c_boot_missing(const char *symbol)
 {
+    if (n64c_diag_missing && n64c_diag_missing(symbol))
+        return 0; /* run-on: recorded in boot order; the call returns 0 and the boot goes on */
     fprintf(stderr, "boot-missing: %s\n", symbol);
     fflush(stderr);
     if (n64c_trace_summary) n64c_trace_summary();

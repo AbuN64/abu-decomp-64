@@ -2,6 +2,12 @@
 """Follow the boot frontier: run the boot; at a "(boot frontier)" stop link the unit that defines it
 (its own callees become frontier stops through closure.py --frontier) and run again.
 
+Each boot is the run-on diagnostic boot (N64C_RUN_ON=1, decomp/runon.c): it does not end at the first failure but
+lists every unlinked call, shim stop, fault, hang and uncovered byte-order range in boot order (boot-diag: lines).
+One step links every frontier unit that list names. When none is left the walk halts and WORK/boot-diag.jsonl holds
+the whole list, each row routed to its owner class; needs.jsonl gets the same rows. --fail-fast walks one stop per
+boot as before (a build without run-on prints no boot-diag: lines and is walked that way too).
+
 Halts at a stop that is not a frontier stop (compile conflict, no C body, libultra), at a frontier unit in
 the original libultra (it needs a shim binding decision, never a native link), or at any other boot
 result. One line per step on stdout; the last boot's stderr is WORK/boot.log."""
@@ -40,12 +46,47 @@ def next_unit(d, symbol, facts):
     return unit, ""
 
 
-def boot(binary, rom, work):
+DIAG = re.compile(r"boot-diag: (missing|stop|code-pointer|fault|layout|hang) (\S+) at=(\d+)/(\d+) after=(\S+) "
+                  r"in=(\S+)(?: (.*))?")
+# Who acts on each run-on failure class (FL-OPUS-1 classes): the decomp/shim lanes for unlinked calls (by their
+# manifest stop text, as needs.py classifies it), the byte-order lane for data that reaches the game big-endian,
+# the runtime walker for everything only a run shows.
+OWNER = {"layout": "byte-order", "code-pointer": "address-model", "fault": "runtime", "hang": "runtime"}
+
+
+def diag_rows(text, project):
+    """The run-on failures of one boot's stderr, in boot order, each with its owner class."""
+    rows = []
+    for line in text.splitlines():
+        m = DIAG.fullmatch(line)
+        if not m:
+            continue
+        cls, subject = m.group(1), m.group(2)
+        if cls == "missing":
+            why = project.get("stops", {}).get(subject, "")
+            got = needsfeed.classify(why) if why else ("unlisted", needsfeed.unit_of(why) or "", "", "")
+            owner = got[0] if got else "frontier"
+        elif cls == "stop":
+            owner = "byte-order" if subject.startswith(("rnc", "rnc2")) else \
+                "address-model" if subject.startswith(("MMIO-", "TLB-miss", "code-pointer")) else "runtime"
+        else:
+            owner = OWNER[cls]
+        rows.append({"boot_order": len(rows) + 1, "class": cls, "subject": subject, "owner": owner,
+                     "census": int(m.group(3)), "census_total": int(m.group(4)), "after": m.group(5),
+                     "in": m.group(6), "details": m.group(7) or ""})
+    return rows
+
+
+def boot(binary, rom, work, run_on=False, seconds=120):
     picture = work / "boot.ppm"
     picture.unlink(missing_ok=True)
+    env = {**os.environ, "SDL_VIDEODRIVER": "offscreen"}
+    if run_on:
+        # The boot ends itself before the timeout, so the failure list and the census close the log.
+        env.update({"N64C_RUN_ON": "1", "N64C_RUN_ON_LIMIT": str(max(seconds - 15, 10))})
     # -k: the boot catches SIGTERM (SDL/LUS handlers) and a hung boot kept running past it, stalling the walk.
-    r = subprocess.run(["timeout", "-k", "10", "120", str(binary), str(rom), str(picture), "180", "284", "222", "320", "240"],
-                       env={**os.environ, "SDL_VIDEODRIVER": "offscreen"}, capture_output=True, text=True)
+    r = subprocess.run(["timeout", "-k", "10", str(seconds), str(binary), str(rom), str(picture), "180", "284", "222",
+                        "320", "240"], env=env, capture_output=True, text=True)
     (work / "boot.log").write_text(r.stderr)
     lines = [line for line in r.stderr.splitlines() if line.startswith("boot-")]
     stops = [line for line in lines if re.fullmatch(r"boot-missing: \S+", line)]
@@ -63,6 +104,8 @@ def main():
     parser.add_argument("--worklist", type=pathlib.Path, help="worklist-rw.tsv, for trace_order in needs.jsonl")
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--steps", type=int, default=10)
+    parser.add_argument("--seconds", type=int, default=120, help="time limit of one boot")
+    parser.add_argument("--fail-fast", action="store_true", help="walk one stop per boot (no run-on boot)")
     args = parser.parse_args()
     if args.steps < 1 or args.jobs < 1:
         parser.error("--steps and --jobs must be positive")
@@ -82,14 +125,68 @@ def main():
             return False
         return True
 
+    diag = []
+
     def halt(symbol, rc):
-        needsfeed.write(args.work, args.manifest, args.worklist, symbol)
+        needsfeed.write(args.work, args.manifest, args.worklist, symbol, diag)
+        (args.work / "boot-diag.jsonl").write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in diag))
         return rc
 
+    def run_on_step(d, rc):
+        """One run-on boot: link every frontier unit its failure list names. None when the walk goes on, else rc."""
+        owners = {}
+        for r in diag:
+            owners[r["owner"]] = owners.get(r["owner"], 0) + 1
+        print("   run-on:", len(diag), "failures in boot order;",
+              ", ".join(f"{k} {v}" for k, v in sorted(owners.items())), flush=True)
+        missing = [r["subject"] for r in diag if r["class"] == "missing"]
+        if set(missing) & set(closure.drop_moved(d, facts)):
+            print("   dropped stale stops (their units moved)", flush=True)
+            args.manifest.write_text(json.dumps(d, indent=2) + "\n")
+            return None if run_closure("stale stops") else halt(None, 1)
+        image = args.build / "decomp-boot" / "image.json"
+        image_stops = json.loads(image.read_text()).get("function_stops", []) if image.exists() else []
+        deny_path = args.work / "deny.json"
+        deny = json.loads(deny_path.read_text()) if deny_path.exists() else {}
+        moved = []
+        for sym in missing:
+            if sym in image_stops and sym not in d["stops"] and sym not in d["bindings"]:
+                trial = json.loads(json.dumps(d))
+                kind, detail = closure.route(trial, sym, facts, deny, d.get("source_pin", "")[:7], True, set())
+                if kind == "added" or detail.startswith(("binding", "frontier")):
+                    print(f"   routed image stop {sym}: {kind} {detail}", flush=True)
+                    d = trial
+                    moved.append(sym)
+                continue
+            unit, why = next_unit(d, sym, facts)
+            if unit:
+                del d["stops"][sym]
+                unit in d["sources"] or d["sources"].append(unit)
+                moved.append(sym)
+        if moved:
+            print(f"   linking {len(moved)} frontier stops: {' '.join(moved[:12])}{' ...' if len(moved) > 12 else ''}",
+                  flush=True)
+            args.manifest.write_text(json.dumps(d, indent=2) + "\n")
+            return None if run_closure(f"{len(moved)} frontier stops") else halt(moved[0], 1)
+        first = next((r for r in diag if r["owner"] != "frontier"), None)
+        print("halt: no frontier stop left;", "first failure:" if first else "boot clean",
+              f"{first['class']} {first['subject']} ({first['owner']})" if first else "", flush=True)
+        return halt(first["subject"] if first and first["class"] == "missing" else None,
+                    1 if rc in (124, 137) else 0)
+
     for step in range(args.steps):
-        rc, last = boot(args.build / "rage_decomp_boot", args.rom, args.work)
-        m = re.fullmatch(r"boot-missing: (\S+)", last)
+        rc, last = boot(args.build / "rage_decomp_boot", args.rom, args.work, not args.fail_fast, args.seconds)
         d = json.loads(args.manifest.read_text())
+        log = args.work / "boot.log"
+        text = log.read_text() if not args.fail_fast and log.exists() else ""
+        diag = diag_rows(text, d)
+        if diag:
+            print(f"step {step}: rc={rc} {last}", flush=True)
+            got = run_on_step(d, rc)
+            if got is not None:
+                return got
+            continue
+        m = re.fullmatch(r"boot-missing: (\S+)", last)
         print(f"step {step}: rc={rc} {last} :: {d['stops'].get(m.group(1), '') if m else ''}", flush=True)
         if rc == 0 and not m:
             return halt(None, 0)

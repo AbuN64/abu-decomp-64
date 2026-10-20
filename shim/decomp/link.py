@@ -295,12 +295,12 @@ def generate(manifest, source, output):
         bindings.append(f"EXTERN({name(target)})" +
                         (f" {symbol} = {name(target)};" if symbol != target else ""))
     code = ['/* Generated explicit bindings; no original game code. */', '#include "boot.h"',
-            'extern void n64c_boot_missing(const char *) __attribute__((noreturn));']
+            'extern long long n64c_boot_missing(const char *);']
     for symbol, evidence in project["stops"].items():
         claim(symbol)
         if not isinstance(evidence, str) or not evidence.strip():
             raise ValueError("missing stop evidence: " + symbol)
-        code.append(f'void {symbol}(void) {{ n64c_boot_missing("{symbol}"); }}')
+        code.append(f'long long {symbol}(void) {{ return n64c_boot_missing("{symbol}"); }}')
     entry = name(project["entry"])
     code += [f'extern int {entry}(void);', f'int n64c_boot_entry(void) {{ return {entry}(); }}',
              f'const u32 n64c_boot_ram_bytes = {ram}u;', f'const u32 n64c_boot_video_clock = {clock}u;',

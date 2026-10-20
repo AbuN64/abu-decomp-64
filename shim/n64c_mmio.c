@@ -71,7 +71,7 @@ int n64c_mmio_write(u32 physical,u32 value)
         if (offset==0xC) {
             u32 bytes=(value&0x00FFFFFFu)+1;
             void *ram=n64c_memory_ram(pi[0]&0x00FFFFFEu,bytes);
-            if (!ram || n64c_pi_read(pi[1]&0x0FFFFFFFu,ram,bytes)!=0) return 0;
+            if (!ram || n64c_pi_dma(pi[1]&0x0FFFFFFFu,ram,bytes)!=0) return 0;
             pi[offset/4]=value;
             n64c_event_post(OS_EVENT_PI);
             return 1;

@@ -21,6 +21,7 @@ void *n64c_vi_current_fb(void);
 /* n64c_pi.c */
 int n64c_pi_open(const char *rom_path);
 int n64c_pi_read(u32 address,void *destination,u32 bytes);
+int n64c_pi_dma(u32 address,void *destination,u32 bytes); /* a guest DMA: n64c_pi_read + run-on layout check */
 void n64c_pi_close(void);
 /* n64c_cont.c */
 void n64c_cont_reset(const N64cConfig *cfg);

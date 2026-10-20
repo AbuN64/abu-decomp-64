@@ -6,6 +6,7 @@
  * This adapter owns observable globals and the calling thread's initial FPU mode. */
 #define _GNU_SOURCE
 #include "n64c_system.h"
+#include "n64c_diag.h"
 #include <fenv.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -41,7 +42,10 @@ int n64c_system_bind(const N64cSystemGlobals *globals,u32 tv_type,u32 reset_type
 }
 static _Noreturn void stop(const char *reason)
 {
-    fprintf(stderr,"boot-missing: system-%s\n",reason);
+    char subject[64];
+    snprintf(subject,sizeof subject,"system-%s",reason);
+    if (n64c_diag_stop) (void)n64c_diag_stop(subject,0); /* run-on: recorded; no way on */
+    fprintf(stderr,"boot-missing: %s\n",subject);
     fflush(stderr);
     _Exit(78);
 }

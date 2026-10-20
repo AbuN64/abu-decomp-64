@@ -20,6 +20,7 @@
 #include "n64c_pi.h"
 #include "n64c_al.h"
 #include "n64c_rnc.h"
+#include "n64c_diag.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -568,13 +569,39 @@ int n64c_pi_read(u32 address,void *destination,u32 bytes)
     remember(destination,bytes,address & 0x0FFFFFFF);
     return 0;
 }
+/* Run-on diagnostics: the parts of a guest DMA no byte-order row (resources, loads, packed streams, overlay image)
+ * covers. Those bytes reach the game big-endian; the first reader decides whether that is right (texels, ADPCM). */
+static void layout_misses(u32 dev,const void *ram,u32 bytes)
+{
+    if (!n64c_diag_layout || !bytes) return;
+    const uint64_t end=(uint64_t)dev+bytes;
+    for (uint64_t cursor=dev;cursor<end;) {
+        const Res *next=NULL;
+        for (int i=0;i<n_res;i++)
+            if (res[i].hi>cursor && res[i].lo<end && (!next || res[i].lo<next->lo)) next=&res[i];
+        if (!next) {
+            n64c_diag_layout("dma",(u32)cursor,(u32)(end-cursor),(const u8 *)ram+(cursor-dev));
+            return;
+        }
+        if (next->lo>cursor)
+            n64c_diag_layout("dma",(u32)cursor,(u32)(next->lo-cursor),(const u8 *)ram+(cursor-dev));
+        if (next->hi>cursor) cursor=next->hi;
+    }
+}
+/* A DMA the guest starts (osPiStartDma, osPiRawStartDma, the PI registers): the read, then the run-on check. */
+int n64c_pi_dma(u32 address,void *destination,u32 bytes)
+{
+    if (n64c_pi_read(address,destination,bytes)!=0) return -1;
+    layout_misses(address & 0x0FFFFFFF,destination,bytes);
+    return 0;
+}
 extern void n64c_trace_event(const char *kind) __attribute__((weak)); /* boot census, when linked */
 s32 osPiStartDma(OSIoMesg *io, s32 pri, s32 dir, u32 devAddr, void *dram, size_t n, OSMesgQueue *mq)
 {
     (void)pri;
     if (dir != OS_READ || !rom || !dram)
         return -1;
-    if (n>UINT32_MAX || n64c_pi_read(devAddr,dram,(u32)n)!=0) return -1;
+    if (n>UINT32_MAX || n64c_pi_dma(devAddr,dram,(u32)n)!=0) return -1;
     if (n64c_trace_event) n64c_trace_event("first PI DMA");
     if (io)
         io->status = 0;
@@ -587,7 +614,7 @@ s32 osPiStartDma(OSIoMesg *io, s32 pri, s32 dir, u32 devAddr, void *dram, size_t
  * from the PI interrupt it registered with osSetEventMesg; the native read completes in the call. */
 s32 osPiRawStartDma(s32 dir, u32 devAddr, void *dram, u32 n)
 {
-    if (dir != OS_READ || !rom || !dram || n64c_pi_read(devAddr,dram,n)!=0)
+    if (dir != OS_READ || !rom || !dram || n64c_pi_dma(devAddr,dram,n)!=0)
         return -1;
     n64c_event_post(OS_EVENT_PI);
     return 0;
@@ -863,11 +890,21 @@ static const Res *packed_stream(const void *ram,u32 skip)
         if (nested[i].lo==dev-skip) return &nested[i];
     return NULL;
 }
-static void unpacked_layout(const Res *stream,void *dst,s32 unpacked_size)
+static void unpacked_layout(const Res *stream,const void *src,u32 skip,void *dst,s32 unpacked_size)
 {
     n64c_pi_forget(dst,(u32)unpacked_size);
-    if (!stream) return;
+    if (!stream) {
+        /* Run-on: an RNC stream no blob fact names leaves its unpacked bytes big-endian. */
+        u32 dev;
+        if (n64c_diag_layout)
+            n64c_diag_layout("rnc",n64c_pi_origin(src,&dev) && dev>=skip ? dev-skip : 0xFFFFFFFFu,
+                             (u32)unpacked_size,dst);
+        return;
+    }
     if ((u32)unpacked_size!=stream->unpacked_bytes || !apply_layout(&stream->unpacked,dst,(u32)unpacked_size)) {
+        char subject[48];
+        snprintf(subject,sizeof subject,"rnc-layout-0x%08x",stream->lo);
+        if (n64c_diag_stop && n64c_diag_stop(subject,1)) return; /* run-on: the bytes stay as unpacked */
         fprintf(stderr,"boot-input: unpacked layout of the RNC stream at ROM 0x%08x does not fit its %d bytes\n",
                 stream->lo,(int)unpacked_size);
         fflush(stderr);
@@ -878,7 +915,7 @@ void n64c_pi_rnc1_unpack(const void *src,void *dst,s32 packed_size,s32 unpacked_
 {
     const Res *stream=packed_stream(src,RNC_HEADER);
     n64c_rnc1_unpack(src,dst,packed_size,unpacked_size);
-    unpacked_layout(stream,dst,unpacked_size);
+    unpacked_layout(stream,src,RNC_HEADER,dst,unpacked_size);
 }
 void n64c_pi_rnc2_unpack(const void *header,void *dst,s32 packed_size,s32 unpacked_size)
 {
@@ -892,5 +929,5 @@ void n64c_pi_rnc2_unpack(const void *header,void *dst,s32 packed_size,s32 unpack
             memset(raw,0,sizeof raw);
         n64c_rnc2_unpack_parts(raw,(const u8 *)header+RNC_HEADER,dst,packed_size,unpacked_size);
     }
-    unpacked_layout(stream,dst,unpacked_size);
+    unpacked_layout(stream,header,0,dst,unpacked_size);
 }

@@ -2,6 +2,7 @@
 /* n64compat_glue: the host frame driver and RSP task dispatch. This is the only place that ties the
  * adapters together (sched, vi, pi, cont, gfx); every function is a ledger-tracked adapter, no framework. */
 #include "n64c_internal.h"
+#include "n64c_diag.h"
 #include "n64c_audio.h"
 #include "n64c_memory.h"
 #include "n64c_system.h"
@@ -43,6 +44,10 @@ s32 osSpTaskYielded(OSTask *t) { (void)t; return 0; }
 s32 osDpSetNextBuffer(void *buffer, u64 size)
 {
     if (buffer && buffer == (void *)rendered_output) return 0;
+    if (n64c_diag_stop && n64c_diag_stop("rdp-buffer", 1)) { /* run-on: the buffer is dropped, the DP completes */
+        n64c_event_post(OS_EVENT_DP);
+        return 0;
+    }
     fprintf(stderr, "boot-missing: rdp-buffer %p size 0x%llx (no native RDP command interpreter)\n", buffer,
             (unsigned long long)size);
     fflush(stderr);

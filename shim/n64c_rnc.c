@@ -7,6 +7,8 @@
  * (match, literal run) pairs. Code lengths are 4 bits, assigned canonically by
  * (length, symbol index), bit-reversed; symbols >= 2 carry symbol-1 extra bits. */
 #include "n64c_rnc.h"
+#include "n64c_diag.h"
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,11 +17,21 @@ typedef struct { u16 mask, code; u8 bits, symbol; } Leaf;
 typedef struct { Leaf leaf[16]; int count; } Table;
 typedef struct { const u8 *p, *end; u32 buf; int cnt; } Bits;
 
-static _Noreturn void corrupt(const char *why)
+/* Run-on (decomp/runon.c): a corrupt stream is recorded and its unpack returns with dst as far as it got. */
+static _Thread_local jmp_buf *escape;
+static _Noreturn void corrupt_stop(const char *method, const char *why)
 {
-    fprintf(stderr, "boot-missing: rnc-%s\n", why);
+    char subject[48];
+    snprintf(subject, sizeof subject, "%s-%s", method, why);
+    if (escape && n64c_diag_stop && n64c_diag_stop(subject, 1))
+        longjmp(*escape, 1);
+    fprintf(stderr, "boot-missing: %s\n", subject);
     fflush(stderr);
     _Exit(78);
+}
+static _Noreturn void corrupt(const char *why)
+{
+    corrupt_stop("rnc", why);
 }
 static u32 word(const Bits *b)
 {
@@ -72,7 +84,16 @@ static u32 symbol(Bits *b, const Table *t)
     return v;
 }
 
+static void rnc1_unpack(const void *src, void *dst, s32 packed_size, s32 unpacked_size);
 void n64c_rnc1_unpack(const void *src, void *dst, s32 packed_size, s32 unpacked_size)
+{
+    jmp_buf here, *outer = escape;
+    escape = &here;
+    if (!setjmp(here))
+        rnc1_unpack(src, dst, packed_size, unpacked_size);
+    escape = outer;
+}
+static void rnc1_unpack(const void *src, void *dst, s32 packed_size, s32 unpacked_size)
 {
     if (!src || !dst || packed_size < 0 || unpacked_size < 0) corrupt("arguments");
     /* The counted packed size stops one 16-bit word short of the last refill, which
@@ -116,9 +137,7 @@ void n64c_rnc1_unpack(const void *src, void *dst, s32 packed_size, s32 unpacked_
 typedef struct { const u8 *p, *end; u32 buf; int cnt; } Bits2;
 static _Noreturn void corrupt2(const char *why)
 {
-    fprintf(stderr, "boot-missing: rnc2-%s\n", why);
-    fflush(stderr);
-    _Exit(78);
+    corrupt_stop("rnc2", why);
 }
 static u32 byte2(Bits2 *b)
 {
@@ -168,7 +187,16 @@ void n64c_rnc2_unpack(const void *header, void *dst, s32 packed_size, s32 unpack
 {
     n64c_rnc2_unpack_parts(header, header ? (const u8 *)header + 18 : NULL, dst, packed_size, unpacked_size);
 }
+static void rnc2_unpack(const void *header, const void *data, void *dst, s32 packed_size, s32 unpacked_size);
 void n64c_rnc2_unpack_parts(const void *header, const void *data, void *dst, s32 packed_size, s32 unpacked_size)
+{
+    jmp_buf here, *outer = escape;
+    escape = &here;
+    if (!setjmp(here))
+        rnc2_unpack(header, data, dst, packed_size, unpacked_size);
+    escape = outer;
+}
+static void rnc2_unpack(const void *header, const void *data, void *dst, s32 packed_size, s32 unpacked_size)
 {
     const u8 *h = header, *d = data;
     if (!h || !d || !dst || packed_size < 0 || unpacked_size < 0) corrupt2("arguments");

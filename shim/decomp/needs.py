@@ -4,7 +4,10 @@ Row: {symbol, class, unit, file_line, first_error, pin, trace_order, halt}. Clas
 decl (RW needs one declaration), placement (game code filed under the SDK), body (no C definition),
 nm-compile (the unit does not compile for another reason), data-type (data with no pinned address or
 provider), library-name (a libultra function the shim has no identified name for). A "(boot frontier)"
-stop is pending work of the walk, not a need, and is not written."""
+stop is pending work of the walk, not a need, and is not written.
+With a run-on boot's failure list (advance.py diag_rows), stop rows the boot reached carry boot_order, and every other
+failure of that boot is a row too: class byte-order (bytes no byte-order row covers, RNC layouts), address-model (raw
+guest code pointers, MMIO/TLB stops) or runtime (faults, hangs, refused tasks), trace_order its census position."""
 import json
 import pathlib
 import re
@@ -66,12 +69,28 @@ def rows(project, data_needs, pin, order, halt=None):
     return out
 
 
-def write(work, manifest, worklist=None, halt=None):
-    """Write work/needs.jsonl from the manifest's stops and work/data-needs.txt; returns the row count."""
+def diag_needs(got, diag, pin):
+    """Merge one run-on boot's failure list into the need rows (in place)."""
+    by_symbol = {r["symbol"]: r for r in got}
+    for d in diag or []:
+        if d["class"] == "missing" and d["subject"] in by_symbol:
+            by_symbol[d["subject"]].setdefault("boot_order", d["boot_order"])
+            continue
+        if d["owner"] == "frontier":
+            continue
+        got.append({"symbol": d["subject"], "class": d["owner"] if d["class"] != "missing" else "unlisted",
+                    "unit": "", "file_line": "", "first_error": f"{d['class']} {d['subject']} in={d['in']} {d['details']}".strip(),
+                    "pin": pin, "trace_order": d["census"], "halt": False, "boot_order": d["boot_order"]})
+
+
+def write(work, manifest, worklist=None, halt=None, diag=None):
+    """Write work/needs.jsonl from the manifest's stops, work/data-needs.txt and a run-on boot's failure list;
+    returns the row count."""
     work = pathlib.Path(work)
     project = json.loads(pathlib.Path(manifest).read_text())
     path = work / "data-needs.txt"
     data = path.read_text().splitlines() if path.exists() else []
     got = rows(project, data, project.get("source_pin", "")[:7], trace_orders(worklist), halt)
+    diag_needs(got, diag, project.get("source_pin", "")[:7])
     (work / "needs.jsonl").write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in got))
     return len(got)

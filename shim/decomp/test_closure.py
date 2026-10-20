@@ -329,6 +329,48 @@ class RouteTests(unittest.TestCase):
             rc = advance.main()
         return rc, before == manifest.read_text(), boot.call_count, close.call_count
 
+    RUN_ON_LOG = ("boot-diag: run-on: failures are recorded in boot order and the boot goes on (hang 15 s, limit 105 s)\n"
+                  "boot-step: 5/932 func_80201000_de\n"
+                  "boot-diag: missing func_80200000_de at=5/932 after=func_80201000_de in=func_80201000_de<main\n"
+                  "boot-diag: layout dma-rom-0x00100000 at=5/932 after=func_80201000_de in=func_80201000_de "
+                  "bytes=0x10 ram=0x00001000\n"
+                  "boot-diag: missing func_80200100_de at=6/932 after=func_80201004_de in=func_80201004_de\n"
+                  "boot-diag: fault SIGSEGV@func_80201008_de+0x4 at=7/932 after=func_80201008_de in=func_80201008_de "
+                  "addr-00000000 load at host pc 0x8049491 return=func_80201008_de\n"
+                  "boot-diag: end 4 failures (2 missing, 0 stop, 0 code-pointer, 1 fault, 1 layout, 0 hang), census 7/932\n")
+
+    def test_advance_run_on_links_every_frontier_stop_of_one_boot(self):
+        # one run-on boot names two frontier stops past a fault: both units link in one step, one closure
+        for sym, unit in [("func_80200000_de", "src/GAME/80200000.CPP"), ("func_80200100_de", "src/GAME/80200100.CPP")]:
+            self.d["stops"][sym] = unit + " defines it; not linked yet at x (boot frontier)"
+            self.facts.text[unit] = "void " + sym + "(void) {\n}\n"
+        root = pathlib.Path(self.tmp.name)
+        (root / "boot.log").write_text(self.RUN_ON_LOG)
+        ok = mock.Mock(returncode=0, stdout="closure: links\n", stderr="")
+        rc, same, boots, closes = self.run_advance((78, "boot-step: census 7/932 hit"), ok, steps=1)
+        self.assertEqual((rc, same, boots, closes), (0, False, 1, 1))
+        d = json.loads((root / "advance.json").read_text())
+        self.assertEqual(d["sources"][-2:], ["src/GAME/80200000.CPP", "src/GAME/80200100.CPP"])
+        self.assertNotIn("func_80200000_de", d["stops"])
+
+    def test_advance_run_on_halts_with_the_whole_list_routed(self):
+        self.d["stops"]["func_80200000_de"] = "no C definition at abcdef0"
+        self.d["stops"]["func_80200100_de"] = "src/GAME/80200000.CPP:7 conflicting types for 'x'; RW NEEDS one declaration"
+        root = pathlib.Path(self.tmp.name)
+        (root / "boot.log").write_text(self.RUN_ON_LOG)
+        rc, same, boots, closes = self.run_advance((78, "boot-step: census 7/932 hit"))
+        self.assertEqual((rc, same, boots, closes), (0, True, 1, 0))
+        rows = [json.loads(line) for line in (root / "boot-diag.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["boot_order"], r["class"], r["owner"]) for r in rows],
+                         [(1, "missing", "body"), (2, "layout", "byte-order"), (3, "missing", "decl"),
+                          (4, "fault", "runtime")])
+        self.assertEqual(rows[1]["details"], "bytes=0x10 ram=0x00001000")
+        needs = {r["symbol"]: r for r in map(json.loads, (root / "needs.jsonl").read_text().splitlines())}
+        self.assertEqual(needs["func_80200000_de"]["boot_order"], 1)
+        self.assertEqual(needs["dma-rom-0x00100000"]["class"], "byte-order")
+        self.assertEqual(needs["SIGSEGV@func_80201008_de+0x4"]["class"], "runtime")
+        self.assertEqual(needs["SIGSEGV@func_80201008_de+0x4"]["trace_order"], 7)
+
     def test_advance_rejects_abnormal_boot_without_mutating_manifest(self):
         symbol = "func_80200000_de"
         self.route(symbol, frontier=True)

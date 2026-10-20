@@ -2,6 +2,7 @@
 /* n64c_vi: video interface timing. One retrace is one field at 60000/1001 Hz on the virtual 46.875 MHz clock;
  * osViSwapBuffer takes effect at the next retrace, like the hardware latching the origin register. */
 #include "n64c_internal.h"
+#include "n64c_diag.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -36,6 +37,9 @@ void n64c_vi_reset(void)
 }
 static _Noreturn void stop(const char *what, u32 value)
 {
+    char subject[64];
+    snprintf(subject, sizeof subject, "vi-%s", what);
+    if (n64c_diag_stop) (void)n64c_diag_stop(subject, 0); /* run-on: recorded; no way on */
     fprintf(stderr, "boot-missing: vi-%s 0x%x\n", what, (unsigned)value);
     fflush(stderr);
     _Exit(78);

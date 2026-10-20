@@ -7,6 +7,7 @@
 #include "trace.h"
 #include "n64c_f3d.h"
 #include "n64c_memory.h"
+#include "n64c_diag.h"
 #include "audio_abi/n64a_abi.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,22 +25,32 @@ static struct {
     N64cGfxMem memory;
 } frame;
 
+/* A task the native handlers refuse ends the boot; run-on (the walk's diagnostic boot) records it and drops the task. */
+static void task_stop(const char *subject,const char *message)
+{
+    if (n64c_diag_stop && n64c_diag_stop(subject,1)) return;
+    fprintf(stderr,"boot-frame: %s\n",message);
+    _Exit(78);
+}
 static void graphics(OSTask *task,void *user)
 {
     (void)user;
     if (!task || !task->data_ptr || !task->data_size || task->data_size%8) {
-        fprintf(stderr,"boot-frame: invalid graphics task\n");
-        _Exit(78);
+        task_stop("gfx-task-invalid","invalid graphics task");
+        return;
     }
     N64cDlStats stats;
     int commands=n64c_f3d_run(frame.f3d,&frame.memory,(u32)(uintptr_t)task->data_ptr,&stats);
     if (commands<=0) {
-        fprintf(stderr,"boot-frame: graphics renderer refused task\n");
-        _Exit(78);
+        task_stop("gfx-task-refused","graphics renderer refused task");
+        return;
     }
     if (stats.unknown) {
-        fprintf(stderr,"boot-frame: unhandled graphics opcode 0x%02x\n",stats.unknown_op);
-        _Exit(78);
+        char subject[32],message[64];
+        snprintf(subject,sizeof subject,"gfx-opcode-0x%02x",stats.unknown_op);
+        snprintf(message,sizeof message,"unhandled graphics opcode 0x%02x",stats.unknown_op);
+        task_stop(subject,message);
+        return;
     }
     if (!frame.tasks && n64c_trace_event) n64c_trace_event("first graphics task");
     frame.tasks++;
@@ -53,14 +64,14 @@ static void audio(OSTask *task,void *user)
     u32 list=task && task->data_ptr ? n64c_memory_physical(task->data_ptr) : 0;
     if (!list || !task->data_size || task->data_size%8 || list>frame.ram_bytes ||
         task->data_size>frame.ram_bytes-list) {
-        fprintf(stderr,"boot-frame: invalid audio task\n");
-        _Exit(78);
+        task_stop("audio-task-invalid","invalid audio task");
+        return;
     }
     unsigned before=n64a_abi_warnings(frame.audio);
     if (n64a_abi_run(frame.audio,frame.ram,list,task->data_size)!=0 ||
         n64a_abi_warnings(frame.audio)!=before) {
-        fprintf(stderr,"boot-frame: audio ABI refused task\n");
-        _Exit(78);
+        task_stop("audio-task-refused","audio ABI refused task");
+        return;
     }
     if (!frame.audio_tasks && n64c_trace_event) n64c_trace_event("first audio task");
     frame.audio_tasks++;
@@ -68,8 +79,10 @@ static void audio(OSTask *task,void *user)
 static void unsupported_task(OSTask *task,void *user)
 {
     (void)user;
-    fprintf(stderr,"boot-frame: task type %u has no native handler\n",task->type);
-    _Exit(78);
+    char subject[32],message[64];
+    snprintf(subject,sizeof subject,"task-type-%u",(unsigned)task->type);
+    snprintf(message,sizeof message,"task type %u has no native handler",(unsigned)task->type);
+    task_stop(subject,message);
 }
 /* Every retrace the window shows what the VI shows: the colour image it was last given (black while
  * it is blanked or that image was never drawn). */

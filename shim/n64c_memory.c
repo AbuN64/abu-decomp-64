@@ -8,6 +8,7 @@
 #include "n64c_memory.h"
 #include "n64c_internal.h"
 #include "n64c_mmio.h"
+#include "n64c_diag.h"
 
 #if defined(__linux__) && defined(__i386__)
 #include <signal.h>
@@ -100,8 +101,10 @@ static int guest_code_fetch(const ucontext_t *context,uintptr_t address)
 static void signal_handler(int signal_number,siginfo_t *info,void *opaque)
 {
     ucontext_t *context=opaque;
-    if (signal_number==SIGSEGV && guest_code_fetch(context,(uintptr_t)info->si_addr))
+    if (signal_number==SIGSEGV && guest_code_fetch(context,(uintptr_t)info->si_addr)) {
+        if (n64c_diag_code_pointer && n64c_diag_code_pointer((u32)(uintptr_t)info->si_addr,context)) return;
         code_pointer_stop((u32)(uintptr_t)info->si_addr);
+    }
     if (signal_number==RESUME_SIGNAL && transaction.stage==3) {
         *context=transaction.saved;
         transaction.stage=0;
@@ -143,8 +146,11 @@ static void signal_handler(int signal_number,siginfo_t *info,void *opaque)
         return;
     }
     if (signal_number==SIGSEGV && transaction.stage==0 && guest_virtual((uintptr_t)info->si_addr)) {
-        if (!n64c_sched_on_guest() || (context->uc_mcontext.gregs[REG_EFL]&0x100))
+        if (!n64c_sched_on_guest() || (context->uc_mcontext.gregs[REG_EFL]&0x100)) {
+            if (!(context->uc_mcontext.gregs[REG_EFL]&0x100) && n64c_diag_fault &&
+                n64c_diag_fault(signal_number,info,context)) return;
             tlb_miss_stop((u32)(uintptr_t)info->si_addr);
+        }
         transaction.error=errno;
         transaction.physical=(u32)(uintptr_t)info->si_addr; /* the guest virtual address (badvaddr) */
         transaction.write=(context->uc_mcontext.gregs[REG_ERR]&2)!=0;
@@ -153,6 +159,9 @@ static void signal_handler(int signal_number,siginfo_t *info,void *opaque)
         redirect(context);
         return;
     }
+    /* Run-on (the walk's diagnostic boot) records a host fault and returns from the faulting original function. */
+    if (signal_number==SIGSEGV && transaction.stage==0 && !(context->uc_mcontext.gregs[REG_EFL]&0x100) &&
+        n64c_diag_fault && n64c_diag_fault(signal_number,info,context)) return;
     /* Preserve real faults outside the hardware windows. We install only over
      * default handlers; returning retries the fault under the default action. */
     for (unsigned i=0;i<3;i++)
@@ -183,15 +192,34 @@ static _Noreturn void dispatch(void)
          * resolve (a wild pointer it answers with its crash path) names its code in the boot log. */
         fprintf(stderr,"n64c-fault: TLB-miss-%08x %s at host pc %#lx\n",(unsigned)transaction.physical,
                 transaction.write ? "store" : "load",(unsigned long)transaction.saved.uc_mcontext.gregs[REG_EIP]);
-        if (!n64c_sched_fault((transaction.write ? 3u : 2u)<<2,transaction.physical))
-            tlb_miss_stop(transaction.physical);
+        if (!n64c_sched_fault((transaction.write ? 3u : 2u)<<2,transaction.physical)) {
+            /* Run-on: the saved context returns from the faulting original function instead. */
+            siginfo_t miss;
+            memset(&miss,0,sizeof miss);
+            miss.si_signo=SIGSEGV;
+            miss.si_addr=(void *)(uintptr_t)transaction.physical;
+            if (!n64c_diag_fault || !n64c_diag_fault(SIGSEGV,&miss,&transaction.saved))
+                tlb_miss_stop(transaction.physical);
+        }
         transaction.stage=3;
         ok=1;
     } else ok=0;
     if (!ok) {
-        fprintf(stderr,"boot-missing: MMIO-%08x\n",transaction.physical);
-        fflush(stderr);
-        _Exit(78);
+        char subject[32];
+        snprintf(subject,sizeof subject,"MMIO-%08x",transaction.physical);
+        if (!n64c_diag_stop || !n64c_diag_stop(subject,transaction.stage==4 || transaction.stage==5)) {
+            fprintf(stderr,"boot-missing: %s\n",subject);
+            fflush(stderr);
+            _Exit(78);
+        }
+        /* Run-on: a register read the model refuses reads 0, a refused write is dropped. */
+        if (transaction.stage==5 && mprotect(transaction.page,PAGE_BYTES,PROT_READ|PROT_WRITE)==0) {
+            *(volatile u32 *)((u8 *)transaction.page+transaction.offset)=0;
+            transaction.saved.uc_mcontext.gregs[REG_EFL]|=0x100;
+            transaction.stage=2;
+        } else if (transaction.stage==4) {
+            transaction.stage=3;
+        } else fault_stop();
     }
     sigset_t resume;
     sigemptyset(&resume);
