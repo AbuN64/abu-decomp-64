@@ -60,14 +60,16 @@ class LinkTests(unittest.TestCase):
 
 
 class BuildTests(unittest.TestCase):
-    def test_build_compiles_links_and_returns_the_function_table(self):
+    def build_with(self, relocs=""):
+        """build() with fake binutils; `relocs` is what `objdump -r` prints. Returns the image, the link script and
+        the build_context call."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "ld").write_text('#!/bin/sh\necho linked > "$4"\n')
             (root / "objcopy").write_text("#!/bin/sh\nfor a; do last=$a; done\nprintf 'IMAGEBYTES' > \"$last\"\n")
             (root / "objdump").write_text(
                 "#!/bin/sh\ncase \"$1\" in -h) printf '  0 .text 00000040 80800000 80800000 00010000 2**4\\n';;"
-                f" -t) cat <<'EOF'\n{OBJDUMP_T}EOF\n;; esac\n"
+                f" -t) cat <<'EOF'\n{OBJDUMP_T}EOF\n;; -r) cat <<'EOF'\n{relocs}EOF\n;; esac\n"
             )
             for name in ("ld", "objcopy", "objdump"):
                 (root / name).chmod(0o755)
@@ -104,14 +106,42 @@ class BuildTests(unittest.TestCase):
                     project=None,
                     host=None,
                 )
-            name, version, text = api.call_args.args[2]
-            self.assertEqual((api.call_args.args[1], name, version), ("build_context", "func_a", "v1"))
-            self.assertTrue(text.startswith("#define NON_MATCHING 1\n"))
-            script = (root / "work" / "link.ld").read_text()
-            self.assertIn("func_b = 0x80002000;", script)  # a sibling with an original address stays original
             self.assertEqual(image.path.read_bytes(), b"IMAGEBYTES")
-            self.assertEqual(image.spec("func_a")["entry"], "func_a")
-            self.assertEqual([f["name"] for f in image.functions], ["func_a", "func_b", "helper"])
+            return image, (root / "work" / "link.ld").read_text(), api.call_args
+
+    def test_build_compiles_links_and_returns_the_function_table(self):
+        image, script, call = self.build_with()
+        name, version, text = call.args[2]
+        self.assertEqual((call.args[1], name, version), ("build_context", "func_a", "v1"))
+        self.assertTrue(text.startswith("#define NON_MATCHING 1\n"))
+        self.assertIn("func_b = 0x80002000;", script)  # a sibling with an original address stays original
+        self.assertEqual(image.kept, ())
+        self.assertEqual(image.spec("func_a")["entry"], "func_a")
+        self.assertEqual([f["name"] for f in image.functions], ["func_a", "func_b", "helper"])
+
+    def test_a_sibling_branched_to_pc_relative_stays_in_the_image(self):
+        # `b func_b` (R_MIPS_PC16) reaches only +-128 KiB: pinning func_b at 0x80002000 would not link at 0x80800000
+        relocs = (
+            "RELOCATION RECORDS FOR [.text]:\nOFFSET   TYPE              VALUE\n"
+            "00000010 R_MIPS_26         func_b\n00000030 R_MIPS_PC16       func_b\n00000034 R_MIPS_HI16       D_x+0x4\n"
+        )
+        image, script, _ = self.build_with(relocs)
+        self.assertNotIn("func_b = 0x80002000;", script)
+        self.assertIn("PROVIDE(func_b = 0x80002000);", script)  # the object's definition wins over PROVIDE
+        self.assertEqual(image.kept, ("func_b",))
+
+    def test_relocations_parse_offset_type_and_bare_symbol(self):
+        out = "x.o: format\n\nRELOCATION RECORDS FOR [.text]:\nOFFSET   TYPE              VALUE\n" + (
+            "000001f4 R_MIPS_PC16       func_802AD69C_de\n00000034 R_MIPS_LO16       D_x+0x00000010\n"
+            "0000010c R_MIPS_26         .text\n"
+        )
+        with mock.patch.object(cand.subprocess, "run", return_value=mock.Mock(stdout=out)):
+            relocs = cand.relocations("objdump", Path("x.o"))
+        self.assertEqual(
+            relocs,
+            [(0x1F4, "R_MIPS_PC16", "func_802AD69C_de"), (0x34, "R_MIPS_LO16", "D_x"), (0x10C, "R_MIPS_26", ".text")],
+        )
+        self.assertEqual(cand.pc_targets(relocs), {"func_802AD69C_de"})
 
     def test_a_missing_tool_row_is_a_named_error(self):
         with tempfile.TemporaryDirectory() as directory:

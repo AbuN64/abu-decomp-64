@@ -35,6 +35,9 @@ class Image:
     functions: tuple[dict[str, Any], ...]
     size: int
     object_sha256: str
+    # siblings with an original address that still run from the image: code branches to them PC-relative, which
+    # cannot reach their original address (see pc_targets)
+    kept: tuple[str, ...] = ()
 
     def spec(self, entry: str) -> dict[str, Any]:
         return {"image": str(self.path), "vram": self.vram, "functions": list(self.functions), "entry": entry}
@@ -150,15 +153,47 @@ def function_table(objdump: str, elf: Path, text_end: int, base: int) -> list[di
     return table
 
 
-def text_symbols(objdump: str, obj: Path) -> list[str]:
-    """Names of the symbols an object defines in .text."""
+def text_functions(objdump: str, obj: Path) -> list[tuple[str, int, int]]:
+    """(name, offset, size) of each function an object defines in .text, in symbol table order."""
     out = subprocess.run([objdump, "-t", str(obj)], capture_output=True, text=True, check=True).stdout
-    names = []
+    found = []
     for line in out.splitlines():
         match = _SYMBOL.match(line.strip())
         if match and match.group(4) == ".text" and match.group(3) == "F" and not match.group(6).startswith(("$", ".")):
-            names.append(match.group(6))
-    return names
+            found.append((match.group(6), int(match.group(1), 16), int(match.group(5), 16)))
+    return found
+
+
+def text_symbols(objdump: str, obj: Path) -> list[str]:
+    """Names of the symbols an object defines in .text."""
+    return [name for name, _, _ in text_functions(objdump, obj)]
+
+
+_RELOCATION = re.compile(r"^([0-9a-f]{8})\s+(R_\w+)\s+([^\s+-]+)")
+
+
+def relocations(objdump: str, obj: Path) -> list[tuple[int, str, str]]:
+    """(offset, type, symbol) of each relocation of an object's .text."""
+    out = subprocess.run([objdump, "-r", "-j", ".text", str(obj)], capture_output=True, text=True, check=False).stdout
+    return [(int(m[1], 16), m[2], m[3]) for line in out.splitlines() if (m := _RELOCATION.match(line.strip()))]
+
+
+def pc_targets(relocs: list[tuple[int, str, str]]) -> set[str]:
+    """Symbols the code branches to PC-relative (`b`, `beq`, `bal`: R_MIPS_PC16 and kin). Such a branch reaches only
+    +-128 KiB, so its target cannot be pinned to an original address far from the image; the object's own copy runs."""
+    return {symbol for _, kind, symbol in relocs if kind.startswith("R_MIPS_PC")}
+
+
+def referencing(
+    functions: list[tuple[str, int, int]], relocs: list[tuple[int, str, str]], wanted: set[str]
+) -> list[str]:
+    """The object's functions whose code holds a relocation against one of `wanted`, in address order."""
+    hits = {offset for offset, _, symbol in relocs if symbol in wanted}
+    return [
+        name
+        for name, start, size in sorted(functions, key=lambda row: row[1])
+        if any(start <= offset < start + size for offset in hits)
+    ]
 
 
 _UNDEFINED = re.compile(r"\*UND\*\s+[0-9a-f]{8}\s+(\S+)$")
@@ -175,16 +210,35 @@ def version_names(
     profile: Profile,
     *,
     version: str,
-    function: str,
+    functions: list[str],
     wanted: list[str],
     symbols: dict[str, list[Any]],
     project: Path,
     host: Path | None,
 ) -> dict[str, int]:
     """The addresses, in `version`, of names this version's tables lack but another version's code spells: the
-    function's assembly in each version is read side by side (see names.counterparts)."""
+    assembly of each function that uses them is read side by side in every version (see names.counterparts). The
+    first function that resolves a name decides it."""
     tables = all_symbol_tables(profile, project, host)
+    found: dict[str, int] = {}
+    for function in functions:
+        left = [n for n in wanted if n not in found]
+        if not left:
+            break
+        found = {**_function_names(profile, tables, version, function, left, symbols, project, host), **found}
+    return found
 
+
+def _function_names(
+    profile: Profile,
+    tables: dict[str, dict[str, list[Any]]],
+    version: str,
+    function: str,
+    wanted: list[str],
+    symbols: dict[str, list[Any]],
+    project: Path,
+    host: Path | None,
+) -> dict[str, int]:
     def listing(v: str) -> str | None:
         if function not in tables.get(v, {}):
             return None
@@ -277,16 +331,19 @@ def build(
         shown = real_sites(" | ".join(error_lines(done.stderr + done.stdout)), context.get("lines", []))
         raise CandidateError("behave.compile", f"the candidate does not compile: {shown}")
     symbols = symbol_table(profile, version, project, host)
+    defined = text_functions(tools["mips_objdump"], obj)
+    relocs = relocations(tools["mips_objdump"], obj)
     # Sibling functions of the file that have an original address stay the original code: calls to them leave
-    # the candidate. Only the function under test (and helpers with no original symbol) run from the image.
-    siblings = {
-        name: symbols[name][0]
-        for name in text_symbols(tools["mips_objdump"], obj)
-        if name != function and name in symbols and symbols[name][0] is not None
-    }
+    # the candidate. Only the function under test (and helpers with no original symbol) run from the image, and
+    # siblings a PC-relative branch targets, which cannot leave the image.
+    near = pc_targets(relocs)
+    owned = [name for name, _, _ in defined if name != function and name in symbols and symbols[name][0] is not None]
+    siblings = {name: symbols[name][0] for name in owned if name not in near}
+    kept = tuple(name for name in owned if name in near)
     auto = auto_symbols(chosen.project, version)
-    # Names of another version's vocabulary that this version's tables lack resolve through the function's own
-    # assembly in both versions, as the build learns them.
+    # Names of another version's vocabulary that this version's tables lack resolve through the assembly, in both
+    # versions, of the functions that use them (the function under test first, then siblings), as the build learns
+    # them.
     lacking = [
         n for n in undefined_symbols(tools["mips_objdump"], obj) if n not in symbols and n not in auto and n != function
     ]
@@ -298,7 +355,7 @@ def build(
             **version_names(
                 profile,
                 version=version,
-                function=function,
+                functions=[function, *(n for n in referencing(defined, relocs, set(lacking)) if n != function)],
                 wanted=lacking,
                 symbols=symbols,
                 project=chosen.project,
@@ -329,4 +386,4 @@ def build(
     if function not in {row["name"] for row in table}:
         raise CandidateError("behave.function", f"the candidate object defines no function {function}")
     size = flat.stat().st_size
-    return Image(flat, base, tuple(table), size, hashlib.sha256(obj.read_bytes()).hexdigest())
+    return Image(flat, base, tuple(table), size, hashlib.sha256(obj.read_bytes()).hexdigest(), kept)

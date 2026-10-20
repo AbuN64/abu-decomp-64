@@ -56,7 +56,7 @@ class VersionNamesTests(unittest.TestCase):
             found = cand.version_names(
                 None,
                 version="us-rev1",
-                function="f",
+                functions=["f"],
                 wanted=["D_801470C0_de"],
                 symbols=SYMBOLS,
                 project=Path("/nonexistent"),
@@ -64,10 +64,48 @@ class VersionNamesTests(unittest.TestCase):
             )
         self.assertEqual(found, {"D_801470C0_de": 0x8014D340})
 
+    def test_a_name_only_a_sibling_uses_resolves_through_the_sibling(self):
+        # the function under test (`f`) spells no D_801470C0_de; its sibling `g` does
+        tables = {"us-rev1": {"f": [1], "g": [2]}, "de": {"f": [1], "g": [2]}}
+        listings = {
+            "us-rev1-f.s": "glabel f\n    jal func_8028BEAC_de\n",
+            "de-f.s": "glabel f\n    jal func_8028BEAC_de\n",
+            "us-rev1-g.s": REV1,
+            "de-g.s": DE,
+        }
+        asked = []
+
+        def api(profile, function, args, **kw):
+            asked.append(args[1])
+            return f"{args[0]}-{args[1]}.s"
+
+        with (
+            mock.patch.object(cand, "all_symbol_tables", return_value=tables),
+            mock.patch.object(cand, "api_call", side_effect=api),
+            mock.patch.object(Path, "read_text", lambda self, **kw: listings[self.name]),
+        ):
+            found = cand.version_names(
+                None,
+                version="us-rev1",
+                functions=["f", "g"],
+                wanted=["D_801470C0_de"],
+                symbols=SYMBOLS,
+                project=Path("/nonexistent"),
+                host=None,
+            )
+        self.assertEqual(found, {"D_801470C0_de": 0x8014D340})
+        self.assertEqual(asked[0], "f")  # the function under test is read first
+
+    def test_the_functions_holding_a_relocation_against_a_name_use_it(self):
+        functions = [("g", 0x40, 0x20), ("f", 0, 0x40), ("h", 0x60, 0x10)]
+        relocs = [(0x10, "R_MIPS_26", "h"), (0x44, "R_MIPS_HI16", "D_x"), (0x48, "R_MIPS_LO16", "D_x")]
+        self.assertEqual(cand.referencing(functions, relocs, {"D_x"}), ["g"])
+        self.assertEqual(cand.referencing(functions, relocs, {"h", "D_x"}), ["f", "g"])
+
     def test_a_version_with_no_listing_resolves_nothing(self):
         with mock.patch.object(cand, "all_symbol_tables", return_value={"us-rev1": {}}):
             found = cand.version_names(
-                None, version="us-rev1", function="f", wanted=["x"], symbols={}, project=Path("/n"), host=None
+                None, version="us-rev1", functions=["f"], wanted=["x"], symbols={}, project=Path("/n"), host=None
             )
         self.assertEqual(found, {})
 

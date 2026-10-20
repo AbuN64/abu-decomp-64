@@ -354,6 +354,15 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
             )
         except build_candidate.CandidateError as exc:
             return _refused(profile, options, version, address, proto, exc, stages, started, findings)
+        if image.kept:
+            findings.append(
+                {
+                    "key": "behave.sibling",
+                    "blocking": False,
+                    "message": f"{', '.join(image.kept)} run from the candidate, not the original: the file branches "
+                    "to them PC-relative, which cannot reach their original address",
+                }
+            )
         memory_end = max(memory_end, config["candidate_base"] + image.size + 0x1000)
     mark = lap("candidate", mark)
     original = ask(
