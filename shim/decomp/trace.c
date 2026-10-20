@@ -112,7 +112,7 @@ static unsigned ls_pages, ls_points, ls_stored_mask, ls_stored_n, ls_zero_stored
 static uint64_t *ls_last, *ls_stored;
 static unsigned *ls_calls;
 static char *ls_line;
-static unsigned char ls_copy[LS_PAGE];
+static unsigned char *ls_seen; /* RDRAM as of the last point */
 static pthread_mutex_t ls_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile const uint32_t *ls_watch;
 static uint32_t ls_watch_value;
@@ -205,7 +205,8 @@ NOINST static void ls_init(void)
     ls_stored = calloc(ls_stored_mask + 1, sizeof *ls_stored);
     ls_calls = calloc(n64c_trace_count, sizeof *ls_calls);
     ls_line = malloc((size_t)ls_pages * 32 + 1024);
-    if (ls_store < 0 || !ls_last || !ls_stored || !ls_calls || !ls_line) {
+    ls_seen = malloc(bytes ? bytes : 1);
+    if (ls_store < 0 || !ls_last || !ls_stored || !ls_calls || !ls_line || !ls_seen) {
         fprintf(stderr, "boot-lockstep: off (%s)\n", ls_ram ? "cannot write its files" : "no RDRAM");
         return;
     }
@@ -233,15 +234,19 @@ NOINST static void ls_point(unsigned i)
                  n64c_trace_entries[i].order, entry_name(i), ls_tid());
     const char *sep = "";
     for (unsigned pg = 0; pg < ls_pages; pg++) {
-        memcpy(ls_copy, ls_ram + (size_t)pg * LS_PAGE, LS_PAGE);
-        const uint64_t h = n64c_lockstep_hash(ls_copy);
+        /* Only pages whose raw bytes changed since the last point are hashed: a point costs about one memcmp. */
+        unsigned char *copy = ls_seen + (size_t)pg * LS_PAGE;
+        if (ls_points > 1 && memcmp(copy, ls_ram + (size_t)pg * LS_PAGE, LS_PAGE) == 0)
+            continue;
+        memcpy(copy, ls_ram + (size_t)pg * LS_PAGE, LS_PAGE);
+        const uint64_t h = n64c_lockstep_hash(copy);
         if (ls_points > 1 && h == ls_last[pg])
             continue;
         ls_last[pg] = h;
         if (ls_stored_add(h)) {
             uint32_t head[4] = {pg, 0, (uint32_t)h, (uint32_t)(h >> 32)};
             ls_write(ls_store, head, sizeof head);
-            ls_write(ls_store, ls_copy, LS_PAGE);
+            ls_write(ls_store, copy, LS_PAGE);
         }
         p += sprintf(p, "%s[%u,\"%016" PRIx64 "\"]", sep, pg, h);
         sep = ",";
