@@ -6,7 +6,7 @@ from pathlib import Path
 from textual.widgets import Collapsible
 
 from abu_decomp.console.app import ConsoleApp, EvidenceRow, FollowScroll
-from abu_decomp.console.dashboard_model import Dashboard, Row, ago, boot_model, mission_model
+from abu_decomp.console.dashboard_model import Dashboard, Row, ago, mission_model
 
 FIXTURE = Path(__file__).parent / "fixtures" / "console"
 
@@ -15,69 +15,7 @@ def sample(name):
     return json.loads((FIXTURE / (name + ".json")).read_text())
 
 
-def boot(**overrides):
-    values = dict(
-        profile=sample("profile"),
-        status=sample("status"),
-        receipt=sample("receipt"),
-        gate_log=(FIXTURE / "boot.txt").read_text(),
-        runtime=sample("runtime"),
-        events=sample("events"),
-        test_log=(FIXTURE / "ctest.txt").read_text(),
-        plan=(FIXTURE / "plan.md").read_text(),
-        plan_path="BOOT_WINDOW.md",
-        plan_after=["Next:", "Then setup calls"],
-        plan_before="Evidence:",
-        release={"revision": "1f8d01c"},
-    )
-    values.update(overrides)
-    return boot_model(**values)
-
-
 class ConsoleModelTests(unittest.TestCase):
-    def test_real_gate_order_and_expected_failure_are_distinct_from_boot_completion(self):
-        model = boot()
-        expected = [needle for command in sample("profile")["build"]["commands"] for needle in command["expect_all"]]
-        rows = [row for row in model.rows if row.key.startswith("gate-")]
-        self.assertEqual(len(rows), len(expected))
-        self.assertTrue(rows[0].title.startswith("0x80265964"))
-        self.assertEqual(rows[-1].state, "stop")
-        self.assertIn("0x8040F9E0 frontend string bank", rows[-1].title)
-        self.assertTrue(all(row.state == "passed" for row in rows[:-1]))
-        self.assertIn("tests 86/86", model.heading)
-        self.assertIn(f"gate {len(expected)}/{len(expected)}", model.heading)
-        self.assertIn(f"{len(expected) - 1} passed", model.summary)
-        self.assertEqual(model.rows[-1].key, "raw-log")
-        planned = [row for row in model.rows if row.key.startswith("plan-")]
-        self.assertEqual(planned[0].title, "0x8041B5E0 planned owner")
-        self.assertTrue(all(row.state == "planned" for row in planned))
-        self.assertIn("Build commit:", rows[-1].details)
-        self.assertIn("[unknown]", rows[-1].details)
-        self.assertTrue(any("MATH/80297CD0_3.CPP" in row.details for row in rows))
-
-    def test_new_failed_attempt_is_not_replaced_with_last_success(self):
-        status = dict(sample("status"), phase="failed", started_at="2026-10-18T17:00:00+00:00")
-        receipt = dict(sample("receipt"), steps=[{"name": "build", "returncode": 2, "expected_exit_codes": [0]}])
-        model = boot(status=status, receipt=receipt, gate_log="", test_log="", runtime={})
-        self.assertIn("17:00:00 UTC", model.heading)
-        self.assertIn("build FAIL (2)", model.heading)
-        self.assertIn("gate 0/", model.heading)
-        self.assertFalse(any(row.state == "passed" for row in model.rows))
-
-    def test_boot_status_is_three_plain_lines_and_rows_carry_an_age(self):
-        runtime = dict(
-            sample("runtime"), started_at="2026-10-18T17:00:00+00:00", updated_at="2026-10-18T17:02:00+00:00"
-        )
-        model = boot(runtime=runtime)
-        passing, stopped, nxt = model.pinned
-        self.assertRegex(passing, r"^pass \d+/\d+ ✓$")
-        self.assertRegex(stopped, r"^stop .+: no native code$")
-        self.assertTrue(nxt.startswith("next ") and "none" not in nxt)
-        self.assertLessEqual(len(nxt), 86)  # one line, never the raw log fragment in full
-        dated = [row for row in model.rows if row.state in ("passed", "stop")]
-        self.assertTrue(dated and all(row.when for row in dated))
-        self.assertGreater(next(r.when for r in model.rows if r.state == "stop"), dated[0].when)
-
     def test_real_mission_payload_preserves_question_source_and_evidence(self):
         events = sample("events")
         model = mission_model(events, title="ORACLE", frames="123", graphics="45", run_id="run-7", raw_log="raw")
@@ -100,8 +38,8 @@ class ConsoleModelTests(unittest.TestCase):
 
 class ConsoleInteractionTests(unittest.IsolatedAsyncioTestCase):
     async def test_click_and_keyboard_expand_and_refresh_preserves_open_row(self):
-        full = boot()
-        stop = next(row for row in full.rows if row.state == "stop")
+        stop = Row("stop", "func_80256E6C_de  stopped here", "frame  #7", "stop", when=1000.0)
+        full = Dashboard("PORT", "", [stop, Row("raw", "log", "raw", "raw")], stop.key, facts=["boot 60/932"])
 
         class Source:
             current = stop
@@ -192,10 +130,13 @@ class ConsoleFollowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(box.scroll_y, box.max_scroll_y)
             self.assertFalse(app.query_one("#latest").display)
 
-    async def test_pinned_status_and_the_checked_heartbeat_show_in_the_title(self):
+    async def test_title_line_carries_the_facts_and_the_age_of_the_newest_row(self):
+        import time
+
         class Source:
             def read(self):
-                return Dashboard("T", "", [Row("a", "x", "d")], None, pinned=["Passing: 1 of 2 boot steps ✓", "b", "c"])
+                rows = [Row("a", "x", "d", when=time.time() - 12)]
+                return Dashboard("PORT", "", rows, None, pinned=["boot 1/2"], facts=["boot 1/2", "stop f"])
 
             def directories(self):
                 return set()
@@ -203,13 +144,16 @@ class ConsoleFollowTests(unittest.IsolatedAsyncioTestCase):
         app = ConsoleApp(Source())
         async with app.run_test(size=(80, 12)) as pilot:
             await pilot.pause()
-            self.assertEqual(app.query_one("#pinned").region.height, 3)
-            app.checked -= 12
-            app.show_heading()
-            self.assertIn("12s", str(app.query_one("#heading").render()))
+            self.assertEqual(len(app.query("#pinned")), 0)  # no pinned block: the title line carries the values
+            heading = str(app.query_one("#heading").render())
+            self.assertTrue(heading.startswith("PORT · boot 1/2 · stop f · 1"), heading)
+            self.assertIn("12s", heading)
 
-    async def test_every_row_has_a_live_dim_age_column(self):
-        rows = [Row("a", "first", "d", when=1000.0), Row("b", "undated", "d")]
+    async def test_every_row_shows_its_clock_time_and_the_delta_since_the_previous_row(self):
+        import time
+
+        base = time.mktime((2026, 10, 19, 21, 42, 50, 0, 0, -1))
+        rows = [Row("a", "first", "d", when=base), Row("b", "undated", ""), Row("c", "third", "d", when=base + 125)]
 
         class Source:
             def read(self):
@@ -221,13 +165,10 @@ class ConsoleFollowTests(unittest.IsolatedAsyncioTestCase):
         app = ConsoleApp(Source())
         async with app.run_test(size=(80, 12)) as pilot:
             await pilot.pause()
-            first = app.widgets["a"]
-            self.assertIn("[dim]", first.title)
-            first.tick(1000.0 + 125)
-            self.assertIn("2m", first.title)
-            first.tick(1000.0 + 7300)
-            self.assertIn("2h", first.title)
-            self.assertNotIn("0s", app.widgets["b"].title)
+            self.assertIn("[dim]21:42:50     [/dim]", app.widgets["a"].title)  # the first row has no delta
+            self.assertIn("21:44:55  +2m", app.widgets["c"].title)  # counts from the last row that has a time
+            self.assertTrue(app.widgets["b"].title.startswith("[dim]" + " " * 13 + "[/dim]"))
+            self.assertIn("no further detail", str(app.widgets["b"].body.render()))
 
     def test_ago_is_compact(self):
         self.assertEqual([ago(s) for s in (3, 59, 60, 240, 7300, 90000)], ["3s", "59s", "1m", "4m", "2h", "1d"])

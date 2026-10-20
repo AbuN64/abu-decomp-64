@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import glob
 import json
-import time
 from pathlib import Path
 
-from .dashboard_model import Dashboard, Event, EventLog, Row, boot_model, event_epoch, mission_model
+from .dashboard_model import Dashboard, Event, EventLog, Row, mission_model
 from .feed import EventReader, canonical_kind
 from .host_output import HostOutput
 from .panes import PANES, lifecycle_model
+from .port import HARNESS, port_view
 
 
 class Sources:
@@ -78,19 +77,6 @@ class Sources:
             self.errors.append(f"{path}: {error}")
             return {}
 
-    def plan(self) -> tuple[str, str]:
-        pattern = str(self.config.get("boot_plan", ""))
-        if not pattern:
-            return "", ""
-        if glob.has_magic(pattern):
-            base = Path(pattern.split("*", 1)[0]).parent
-            self.watched.add(base / ".console-watch")
-            matches = [Path(path) for path in glob.glob(pattern)]
-            path = max(matches, key=lambda file: file.stat().st_mtime_ns) if matches else None
-        else:
-            path = Path(pattern)
-        return self.text(path), str(path or pattern)
-
     def read(self) -> Dashboard:
         self.errors = []
         self.watched = {reader.path for reader in self.readers}
@@ -120,48 +106,8 @@ class Sources:
         if self.host:
             self.watched.add(self.host_path)
             self.host.read_new()
-        if self.config.get("build_profile"):
-            profile = self.json(self.config["build_profile"])
-            workspace = Path(profile.get("build", {}).get("workspace", "."))
-            status = self.json(workspace / "status.json")
-            receipt = self.json(status.get("receipt"))
-            steps = receipt.get("steps", [])
-            gate_names = {
-                command["name"] for command in profile.get("build", {}).get("commands", []) if command.get("expect_all")
-            }
-            gate_log = "\n".join(self.text(step.get("log")) for step in steps if step["name"] in gate_names)
-            if status.get("gate") in gate_names and not gate_log:
-                gate_log = self.text(status.get("log_path"))
-            test_step = self.config.get("test_step", "ctest")
-            test_log = "\n".join(self.text(step.get("log")) for step in steps if step["name"] == test_step)
-            runtime = self.json(self.config.get("supervisor_status"))
-            raw_path = runtime.get("log")
-            if not raw_path and runtime.get("stack"):
-                raw_path = str(Path(runtime["stack"]).parent / "output.log")
-            plan, plan_path = self.plan()
-            release = (
-                self.json(Path(self.config["release_current"]) / "manifest.json")
-                if self.config.get("release_current")
-                else {}
-            )
-            boot = boot_model(
-                profile,
-                status,
-                receipt,
-                gate_log,
-                runtime,
-                all_events,
-                test_log=test_log,
-                plan=plan,
-                plan_path=plan_path,
-                plan_after=self.config.get("plan_after", ""),
-                plan_before=self.config.get("plan_before", ""),
-                release=release,
-                raw_log=self.text(raw_path),
-                test_step=test_step,
-                build_step=self.config.get("build_step", "build"),
-            )
-            model = self.with_lane(boot, status, receipt, runtime, events) if self.panes else boot
+        if self.config.get("build_profile") or self.config.get("supervisor_status"):
+            model = self.port_model(events)
         elif self.panes:
             model = lifecycle_model(self.panes, self, events, self.title)
         else:
@@ -190,23 +136,18 @@ class Sources:
             model.rows.insert(0, Row(f"source-error-{index}", "Source unavailable", error, "stop"))
         return model
 
-    def boot_is_current(self, status: dict, receipt: dict, runtime: dict) -> bool:
-        """A boot gate is current when its build or run was written within `boot_fresh_seconds` (default 900)."""
-        stamps = [
-            event_epoch({"time": value})
-            for value in (runtime.get("updated_at"), status.get("started_at"), receipt.get("started_at"))
-            if value
-        ]
-        newest = max((s for s in stamps if s), default=None)
-        return newest is not None and time.time() - newest <= float(self.config.get("boot_fresh_seconds", 900))
-
-    def with_lane(self, boot: Dashboard, status: dict, receipt: dict, runtime: dict, events: EventLog) -> Dashboard:
-        """The tile's panes (a lane's live effort) with the boot gate's rows and status lines only while current."""
-        model = lifecycle_model(self.panes, self, events, self.title)
-        if self.boot_is_current(status, receipt, runtime):
-            model.rows.extend(boot.rows)
-            model.pinned.extend(boot.pinned)
-        return model
+    def port_model(self, events: EventLog) -> Dashboard:
+        """The supervised port: boot step and stop on the title line, the game's C stack (port.port_view), then
+        the tile's panes (a lane's own rows) above it, so the stack sits at the tail."""
+        runtime = self.json(self.config.get("supervisor_status"))
+        raw_path = runtime.get("log")
+        if not raw_path and runtime.get("stack"):
+            raw_path = str(Path(runtime["stack"]).parent / "output.log")
+        hide = tuple(self.config.get("stack_hide", HARNESS))
+        facts, pins, stack = port_view(self, runtime, self.text(raw_path), hide)
+        lane = lifecycle_model(self.panes, self, events, self.title) if self.panes else Dashboard(self.title, "")
+        rows = [row for row in lane.rows if not row.key.endswith("-none")] + stack
+        return Dashboard(self.title, "", rows, None, lane.footer, [*pins, *lane.pinned], facts)
 
     def directories(self) -> set[Path]:
         directories = set()

@@ -99,9 +99,12 @@ def run(profile: Any, argv: tuple[str, ...]) -> dict[str, Any]:
     commands.add_parser("up")
     commands.add_parser("down")
     for name in ("restart", "stop"):
-        commands.add_parser(name).add_argument("role")
+        acting = commands.add_parser(name)
+        acting.add_argument("role")
+        acting.add_argument("--owner", action="store_true", help="also act on the viewer's playable role")
     sending = commands.add_parser("send")
     sending.add_argument("role")
+    sending.add_argument("--owner", action="store_true", help="also type into the viewer's playable role")
     sending.add_argument("keys", nargs="+")
     role = commands.add_parser("role")
     role.add_argument("--id", required=True)
@@ -115,6 +118,7 @@ def run(profile: Any, argv: tuple[str, ...]) -> dict[str, Any]:
 
         up_config = tiles.up_config(profile)
         run_dir = profile.resolve_path(up_config["run_dir"])
+        control.guard_player(up_config, args.role, args.action, args.owner)
         if args.action == "send":
             return control.send(run_dir, up_config, args.role, args.keys)
         return getattr(control, args.action)(run_dir, args.role)

@@ -12,7 +12,6 @@ from contextlib import suppress
 from pathlib import Path
 from typing import ClassVar
 
-from rich.markup import escape
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -20,6 +19,7 @@ from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Collapsible, Static
 
+from . import kit
 from .dashboard_model import Dashboard, Row, ago
 from .dashboard_sources import Sources
 from .feed import canonical_kind
@@ -49,36 +49,26 @@ def selected_events(records, kinds: set[str] | None):
 
 
 class EvidenceRow(Collapsible):
-    def __init__(self, row: Row):
-        self.record = row
-        self.body = Static(Text(row.details), classes="details")
+    """One console row, the same in every pane: kit.label collapsed, its detail block expanded."""
+
+    def __init__(self, row: Row, previous: float | None = None):
+        self.record, self.previous = row, previous
+        self.body = Static(Text(row.details or "no further detail"), classes="details")
         super().__init__(
             self.body,
-            title=self.label(row),
+            title=kit.label(row, previous),
             collapsed=not row.open,
             id="row-" + hashlib.sha256(row.key.encode()).hexdigest()[:16],
             classes=row.state,
         )
 
-    @staticmethod
-    def label(row: Row, now: float | None = None) -> str:
-        """Dim fixed-width age column, then the state marker and the title (Collapsible titles take markup)."""
-        marker = {"passed": "✓", "cracked": "★", "stop": "!", "planned": "○", "raw": "≡"}.get(row.state, "•")
-        stamp = ago((now or time.time()) - row.when) if row.when else ""
-        tag = f"  [dim]{escape(row.tag)}[/dim]" if row.tag else ""
-        return f"[dim]{stamp:>4}[/dim] " + escape(f"{marker} {row.title}") + tag
-
-    def update_record(self, row: Row) -> None:
-        if row != self.record:
+    def update_record(self, row: Row, previous: float | None) -> None:
+        if row != self.record or previous != self.previous:
             self.remove_class(self.record.state)
             self.add_class(row.state)
-            self.record = row
-            self.title = self.label(row)
-            self.body.update(Text(row.details))
-
-    def tick(self, now: float) -> None:
-        if self.record.when:
-            self.title = self.label(self.record, now)
+            self.record, self.previous = row, previous
+            self.title = kit.label(row, previous)
+            self.body.update(Text(row.details or "no further detail"))
 
 
 class FollowScroll(VerticalScroll):
@@ -108,8 +98,6 @@ class ConsoleApp(App):
     Screen { background: #101820; color: #d8e2eb; layers: base above; }
     #heading { height: 1; background: #1b2a3a; color: #9fb4c4; padding: 0 1; text-wrap: nowrap;
                text-overflow: ellipsis; }
-    #pinned { height: auto; background: #162330; color: #c3d0db; padding: 0 1; text-wrap: nowrap;
-              text-overflow: ellipsis; }
     #rows { padding: 0 1; }
     #foot { height: 1; background: #1b2a3a; color: #7f93a4; padding: 0 1; text-wrap: nowrap;
             text-overflow: ellipsis; }
@@ -150,7 +138,6 @@ class ConsoleApp(App):
 
     def compose(self) -> ComposeResult:
         yield Static("", id="heading")
-        yield Static("", id="pinned")
         yield FollowScroll(id="rows")
         yield Static("", id="foot")
         yield LatestControl("↓ latest", id="latest")
@@ -164,17 +151,15 @@ class ConsoleApp(App):
             self.manage_task = asyncio.create_task(self.supervisor.manage())
 
     def show_heading(self) -> None:
-        """One title line; `checked Ns ago` shows the console is alive between source changes."""
+        """The title line (kit.heading) and the live age of the newest row, so a quiet console never looks frozen."""
         line = Text(self.heading_text)
-        line.append(f"  · {ago(time.time() - self.checked)}", style="dim")
+        newest = kit.newest(self.model.rows) if self.model else None
+        line.append(f"{kit.SEPARATOR}{ago(time.time() - (newest or self.checked))}", style="dim")
         with suppress(NoMatches):  # a tick can land while the app is starting or closing
             self.query_one("#heading", Static).update(line)
 
     def tick(self) -> None:
-        now = time.time()
         self.show_heading()
-        for widget in self.widgets.values():
-            widget.tick(now)
 
     def source_changed(self) -> None:
         if not self.refresh_pending:
@@ -191,25 +176,23 @@ class ConsoleApp(App):
         model = self.sources.read()
         self.model = model
         self.checked = time.time()
-        self.heading_text = model.heading + (("  " + model.summary) if model.summary else "")
+        self.heading_text = kit.heading(model.heading, [model.summary, *model.facts])
         self.show_heading()
-        pinned = self.query_one("#pinned", Static)
-        pinned.update(Text("\n".join(model.pinned)))
-        pinned.display = bool(model.pinned)
         foot = self.query_one("#foot", Static)
         foot.update(Text(model.footer))
         foot.display = bool(model.footer)
         container = self.query_one("#rows", FollowScroll)
         was_following = container.following
         keys = [row.key for row in model.rows]
+        previous = dict(zip(keys, kit.previous_times(model.rows), strict=True))
         for key in list(self.widgets):
-            if key not in keys:
+            if key not in previous:
                 await self.widgets.pop(key).remove()
         for row in model.rows:
             if row.key in self.widgets:
-                self.widgets[row.key].update_record(row)
+                self.widgets[row.key].update_record(row, previous[row.key])
             else:
-                widget = EvidenceRow(row)
+                widget = EvidenceRow(row, previous[row.key])
                 self.widgets[row.key] = widget
                 await container.mount(widget)
         container.sort_children(key=lambda widget: keys.index(widget.record.key))

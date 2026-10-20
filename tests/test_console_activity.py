@@ -83,10 +83,10 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(
             titles,
             [
-                "func_802BD430: 59.3% match",
-                "func_802BD430: 93.4% match",
-                "func_802BD430: same (3/3)",
-                "func_802BD430: CRACKED!",
+                "func_802BD430_de [1.3 KB] score  59.3% match",
+                "func_802BD430_de [1.3 KB] score  93.4% match",
+                "func_802BD430_de [1.3 KB] probe  same as original 3/3",
+                "func_802BD430_de [1.3 KB] score  CRACKED!",
             ],
         )
         self.assertEqual([r.tag for r in model.rows][:2], ["RW-SOL-A", "RW-SOL-B"])  # a tag, not a pane
@@ -122,7 +122,7 @@ class ActivityTests(unittest.TestCase):
         self.add("cycle", "failed", "cycle build failed", "RUN-FAIL")
         rows = self.model().rows
         self.assertEqual([r.state for r in rows], ["stop"])
-        self.assertIn("cycle: cycle build failed", rows[0].title)
+        self.assertEqual("cycle  cycle build failed", rows[0].title)
 
 
 STAMP = "2026-10-18T12:00:00+00:00"
@@ -175,7 +175,7 @@ class HumanTests(unittest.TestCase):
         self.assertEqual([e["status"] for e in results_only(events)], ["passed"])
         pane = ActivityPane({})
         held = SimpleNamespace(records={"x": events})
-        self.assertEqual([r.title for r in pane.rows(held, [])], ["f1: same (2/2)"])
+        self.assertEqual([r.title for r in pane.rows(held, [])], ["f1 probe  same as original 2/2"])
 
     def test_build_reads_the_receipts_test_count(self):
         with tempfile.TemporaryDirectory() as directory:

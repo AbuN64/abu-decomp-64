@@ -34,6 +34,18 @@ def signal_role(run_dir: Path, role: str, number: int) -> int:
     return pid
 
 
+def guard_player(up: dict[str, Any], role: str, action: str, owner: bool) -> None:
+    """A role marked `"player": true` is the instance the viewer plays: no tool may restart, stop or type into it.
+
+    Only the owner's explicit `--owner` call can; lanes run their own headless instances for captures and checks.
+    """
+    spec = up.get("roles", {}).get(role) or {}
+    if spec.get("player") and not owner:
+        raise ValueError(
+            f"role {role} is the viewer's playable instance; `decomp stream {action}` refuses it without --owner"
+        )
+
+
 def restart(run_dir: Path, role: str) -> dict[str, Any]:
     return {"role": role, "action": "restart", "runner": signal_role(run_dir, role, signal.SIGUSR1)}
 

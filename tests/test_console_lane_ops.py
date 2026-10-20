@@ -65,22 +65,9 @@ class LanePaneTests(unittest.TestCase):
         self.add("L1", "info", "two", op="step")
         self.assertEqual(self.sources().read().pinned, ["step: two"])
 
-    def test_stale_boot_gate_is_dropped_and_a_current_one_kept(self):
-        commands = [{"name": "boot", "expect_all": ["owner 0x80000001 x"]}]
-        profile = {"build": {"workspace": str(self.root), "commands": commands}}
-        (self.root / "profile.json").write_text(json.dumps(profile))
-        self.add("L1", "info", "go", op="step")
-        for age, expect in ((7200, False), (10, True)):
-            started = (datetime.now(UTC) - timedelta(seconds=age)).isoformat()
-            (self.root / "status.json").write_text(json.dumps({"started_at": started}))
-            config = {"build_profile": str(self.root / "profile.json"), "panes": {"lane": {"actor": "L1"}}}
-            model = self.sources(config).read()
-            self.assertEqual(any(r.key.startswith("gate-") or r.key == "raw-log" for r in model.rows), expect, age)
-            self.assertEqual(any(line.startswith("pass ") for line in model.pinned), expect, age)
-
 
 class OpsPaneTests(unittest.TestCase):
-    def test_host_lines_become_rsp_vi_tlb_rows_and_chatty_cadence_is_dropped(self):
+    def test_only_host_faults_and_errors_are_rows_counters_go_to_the_title(self):
         text = "\n".join(
             [
                 "n64host: cut line",
@@ -91,14 +78,7 @@ class OpsPaneTests(unittest.TestCase):
                 "n64host: audio queued_samples=736 nonzero_samples=0",
             ]
         )
-        self.assertEqual(
-            [t for t, _ in ops.host_rows(text)],
-            [
-                "RSP task #75000 dl 0x806D2000 4928 B",
-                "VI swap #152400 · 74984 gfx tasks",
-                "TLB fault va 0x00800004 thread 0x8011F880",
-            ],
-        )
+        self.assertEqual([t for t, _ in ops.host_rows(text)], ["TLB fault va 0x00800004 thread 0x8011F880"])
 
     def test_trace_entries_are_classified_and_repeats_fold(self):
         text = "cut\n5 t osPiStartDma\n5 t osPiStartDma\n6 t osViSwapBuffer\n6 t osCreateThread\n"
@@ -114,14 +94,31 @@ class OpsPaneTests(unittest.TestCase):
             ],
         )
 
-    def test_repro_run_events_become_one_row_per_case(self):
-        text = "case c0\ncall func_8042_de 0 1 2\nret 5 0\nsaved\nend ok\ncase c1\ncall func_8042_de 3\nend ok\n"
-        self.assertEqual(
-            [t for t, _ in ops.case_rows(text, "033222")],
-            ["033222 c0: call func_8042_de(0, 1, 2) -> ret 5 0 ok", "033222 c1: call func_8042_de(3) ok"],
+    def test_a_repro_run_is_one_function_params_output_row_and_nested_calls_never_rows(self):
+        text = "".join(
+            f"case c{i}\ncall behave_func_8044_de 80A00000 0 0 0\ncall func_8029_de 1\ncall func_8029_de 2\n"
+            f"st 80A0 4 1\nrd 80A4 4 0\nret 0 80A03660 0 0\nend ok\n"
+            for i in range(3)
         )
+        cases = ops.parse_cases(text)
+        title, details, state = ops.run_row("20261019T033222441622Z", cases, {"function": "func_8044_de"})
+        self.assertEqual(title, "func_8044_de(80A00000): ret 0 · 3/3 ok")
+        self.assertEqual(state, "passed")
+        self.assertIn("input      a0 80A00000  (c0)", details)
+        self.assertIn("output     v0 0  v1 80A03660", details)
+        self.assertIn("calls      func_8029_de x6", details)
+        self.assertIn("memory     3 stores, 3 reads", details)
+        self.assertIn("each case  c0  (80A00000) -> 0, 80A03660  ok  · 2 calls", details)
+        self.assertIn("(root behave_func_8044_de)", details)
 
-    def test_tile_shows_only_oracle_operations_never_the_decomp_feed(self):
+    def test_a_run_with_a_failed_case_is_a_stop_row_and_says_which_returns_differ(self):
+        text = "case c0\ncall f 1\nret 1\nend ok\ncase c1\ncall f 2\nret 2\nend fault\n"
+        title, details, state = ops.run_row("run", ops.parse_cases(text), {})
+        self.assertEqual(title, "f(1): ret 1 … · 1/2 ok")
+        self.assertEqual(state, "stop")
+        self.assertIn("cases      1 ok, 1 fault", details)
+
+    def test_tile_shows_only_cake_taste_runs_never_the_decomp_feed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             append_event(Profile(root), "git", "info", "rage-ports abc Fix a thing", kind="LAND")
@@ -130,9 +127,11 @@ class OpsPaneTests(unittest.TestCase):
             runs.mkdir(parents=True)
             (runs / "events.txt").write_text("case c0\ncall f 1\nend ok\n")
             config = {"host_log": str(root / "host.log"), "panes": {"ops": {"runs": str(root / "runs")}}}
-            model = Sources(root / "events.jsonl", title="ORACLE", config=config, host_log=root / "host.log").read()
-            titles = [r.title for r in model.rows]
-            self.assertEqual(titles, ["VI swap #60 · 3 gfx tasks", "033222 c0: call f(1) ok"])
+            model = Sources(root / "events.jsonl", title="CAKE TASTE", config=config, host_log=root / "host.log").read()
+            self.assertEqual([r.title for r in model.rows], ["f(1): no return · 1/1 ok"])
+            self.assertEqual(model.heading, "CAKE TASTE")
+            self.assertEqual(model.facts, ["1 run", "vi - · frames 60 · gfx tasks 3"])
+            self.assertTrue(model.rows[0].when)
 
     def test_hud_naming_a_console_shows_only_its_lines_not_the_decomp_attempt(self):
         with tempfile.TemporaryDirectory() as directory:

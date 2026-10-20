@@ -101,7 +101,9 @@ def sentence(event: dict[str, Any]) -> str:
         state = "refused" if payload.get("refused") else "stored" if payload.get("landed_files") else "exact"
         return f"{name}: {state if payload.get('refused') or payload.get('exact') else 'not exact'}"
     if op == "behave":
-        verdict = {"same": "logic same", "differs": "logic differs"}.get(payload.get("verdict"), "logic check failed")
+        verdict = {"same": "same as original", "differs": "differs from original"}.get(
+            payload.get("verdict"), "check could not run"
+        )
         return f"{name}: {verdict}"
     if op == "landed":
         count = len(payload.get("functions") or [])

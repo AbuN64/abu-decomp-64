@@ -358,11 +358,9 @@ def lifecycle_model(panes: dict[str, Any], sources: Any, events: list[dict[str, 
         heading = f"{title} · {waiting} open probe requests"
     footer = ""
     pinned = [line for pane in panes.values() if hasattr(pane, "pins") for line in pane.pins(sources)]
-    if "lane" in panes or "ops" in panes:
-        heading = f"{title} \u00b7 {sum(1 for row in rows if not row.key.endswith('-none'))} rows"
-        first = ""
+    facts = [fact for pane in panes.values() if hasattr(pane, "facts") for fact in pane.facts(sources, rows)]
+    if "lane" in panes or "ops" in panes or "activity" in panes:
+        heading, first = title, ""
     if "activity" in panes:
-        heading = f"{title} · {sum(1 for row in rows if row.key != 'act-none')} events"
-        first = ""
         footer = panes["activity"].footer(sources)
-    return Dashboard(heading, first, rows, rows[0].key if rows else None, footer, pinned)
+    return Dashboard(heading, first, rows, rows[0].key if rows else None, footer, pinned, facts)
