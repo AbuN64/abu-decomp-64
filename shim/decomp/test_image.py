@@ -122,6 +122,17 @@ class ImageTests(unittest.TestCase):
         report = json.loads((self.path / "out" / "image.json").read_text())
         self.assertEqual(report["failed_units"], [str(output)])
 
+    def test_kuseg_alias_of_a_function_is_a_code_pointer(self):
+        # D_00XXXXXX pinned at a function's address without its KSEG0 bit names the function (a word naming it must
+        # bind to the native definition); an alias with no function there, or a high address, stays data
+        (self.source / "versions/test/symbol_addrs.txt").write_text(
+            "func_80239FCC_de = 0x80239FBC; // type:func\nD_00239FCC = 0x00239FBC; //\n"
+            "D_00239FD0 = 0x00239FD0; //\nD_00900000 = 0x00900000; //\nfunc_80900000 = 0x80900000; // type:func\n")
+        table = image.facts(self.source, "test")
+        self.assertEqual(table["D_00239FCC"], (0x00239FBC, "func"))
+        self.assertEqual(table["D_00239FD0"], (0x00239FD0, "data"))
+        self.assertEqual(table["D_00900000"], (0x00900000, "data"))
+
     def test_select_keeps_resident_function_free_units(self):
         self.assertEqual(image.select(self.source, {"src/CODE.CPP"}), ["src/A.CPP", "src/B.CPP"])
 

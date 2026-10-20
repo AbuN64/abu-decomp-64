@@ -26,6 +26,7 @@ FUNCTION = re.compile(r"INCLUDE_ASM|\)\s*\{|^\{", re.M)
 OUTPUT = re.compile(r"^\s*(\.\w+)\s+(0x[0-9A-Fa-f]+)\s*:\s*AT\((0x[0-9A-Fa-f]+)\)")
 INPUT = re.compile(r"^\s*(src/\S+?)\.o\(")
 FACT = re.compile(r"(\w+)\s*=\s*(0x[0-9A-Fa-f]+);(.*)")
+KUSEG_ALIAS = re.compile(r"D_(?:auto_)?00[0-9A-F]{6}(?:_[a-z0-9_]+)?")
 SHT_SYMTAB, SHT_NOBITS, SHT_REL, SHT_RELA = 2, 8, 9, 4
 SHF_ALLOC, SHF_EXEC = 2, 4
 STT_OBJECT, STT_FUNC, STT_SECTION = 1, 2, 3
@@ -70,6 +71,13 @@ def facts(source, version):
             if table.get(symbol, (address, kind))[0] != address:
                 raise ValueError("conflicting pinned address: " + symbol)
             table[symbol] = (address, kind)
+    # A KUSEG alias of a function (D_00XXXXXX pinned at a function's address without its KSEG0 bit, the game's
+    # pointers into TLB-mapped code) is a code pointer: a word naming it binds to the function, never to the raw value.
+    functions = {address for address, kind in table.values() if kind == "func"}
+    for symbol, (address, kind) in table.items():
+        if kind == "data" and KUSEG_ALIAS.fullmatch(symbol) and address < 0x00800000 \
+                and (address | 0x80000000) in functions:
+            table[symbol] = (address, "func")
     return table
 
 
