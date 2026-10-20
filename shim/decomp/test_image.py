@@ -120,6 +120,18 @@ D_blob_0123abcd = 0x80400300; // rom:0x6300
 func_80400400_de = 0x80400400; // rom:0x6400
 target = 0x80001000; //
 """
+# Raw code addresses: the source keeps numbers the cartridge shows to be code addresses (a KUSEG function alias
+# beside a data pointer, a KSEG0 function start), a lone round value, and the same alias typed as bytes.
+RAW = """unsigned int raw[4] = {0x00200010, 0x80001000, 0x80200020, 7};
+unsigned int sizes[4] = {0x00200010, 1, 2, 3};
+unsigned char packed[4] = {0x00, 0x20, 0x00, 0x10};
+"""
+RAW_FACTS = """raw = 0x80001100; // rom:0x1100
+sizes = 0x80001200; // rom:0x1200
+packed = 0x80001300; // rom:0x1300
+func_80200010 = 0x80200010; // type:func
+func_80200020 = 0x80200020; // type:func
+"""
 MISSING = '#include <stdio.h>\n#include <stdlib.h>\nvoid n64c_boot_missing(const char *s) ' \
           '{ printf("boot-missing: %s\\n", s); exit(78); }\n'
 
@@ -163,11 +175,24 @@ class ImageTests(unittest.TestCase):
         # bind to the native definition); an alias with no function there, or a high address, stays data
         (self.source / "versions/test/symbol_addrs.txt").write_text(
             "func_80239FCC_de = 0x80239FBC; // type:func\nD_00239FCC = 0x00239FBC; //\n"
+            "rw_paged_func_80239FCC_de = 0x00239FBC; //\n"
             "D_00239FD0 = 0x00239FD0; //\nD_00900000 = 0x00900000; //\nfunc_80900000 = 0x80900000; // type:func\n")
         table = image.facts(self.source, "test")
         self.assertEqual(table["D_00239FCC"], (0x00239FBC, "func"))
+        self.assertEqual(table["rw_paged_func_80239FCC_de"], (0x00239FBC, "func"))  # any name at a function's alias
         self.assertEqual(table["D_00239FD0"], (0x00239FD0, "data"))
         self.assertEqual(table["D_00900000"], (0x00900000, "data"))
+        # a word naming the alias binds to the function itself (a stop on the function while nothing links it)
+        (self.source / "src" / "ALIAS.CPP").write_text("extern char D_00239FCC[]; unsigned int table[1] = "
+                                                       "{(unsigned int)D_00239FCC};\n")
+        (self.source / "versions/test/symbol_addrs.txt").write_text(
+            "func_80239FCC_de = 0x80239FBC; // type:func\nD_00239FCC = 0x00239FBC; //\n"
+            "table = 0x80001000; // rom:0x1000\n")
+        unit = self.compile(self.source / "src" / "ALIAS.CPP", self.path / "ALIAS.CPP.o", "-x", "c")
+        image.build(self.manifest, self.source, [unit], [], self.path / "alias")
+        report = json.loads((self.path / "alias" / "image.json").read_text())
+        self.assertEqual(report["function_stops"], ["func_80239FCC_de"])
+        self.assertIn(".long func_80239FCC_de", (self.path / "alias" / "image.c").read_text())
 
     def test_select_keeps_resident_function_free_units(self):
         self.assertEqual(image.select(self.source, {"src/CODE.CPP"}), ["src/A.CPP", "src/B.CPP"])
@@ -200,6 +225,50 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(rows[:16], bytes.fromhex("00100080 29573c00 05000000 000010c5"))
         self.assertEqual(rows[16:], bytes(16))
 
+    def cartridge(self, words):
+        rom = bytearray(0x2000)
+        for at, values in words.items():
+            for i, value in enumerate(values):
+                rom[at + 4 * i:at + 4 * i + 4] = value.to_bytes(4, "big")
+        return bytes(rom)
+
+    def test_raw_code_addresses_bind_to_their_functions(self):
+        # with the cartridge, a native word equal to the ROM word that names a function (KSEG0, or a KUSEG alias with
+        # a pointer beside it) is bound like a relocation (a generated stop here: nothing links the function); a lone
+        # KUSEG value and bytes the source types otherwise stay as they are; without the cartridge nothing changes
+        (self.source / "versions/test/symbol_addrs.txt").write_text(RAW_FACTS)
+        (self.source / "src" / "RAW.CPP").write_text(RAW)
+        unit = self.compile(self.source / "src" / "RAW.CPP", self.path / "RAW.CPP.o", "-x", "c")
+        rom = self.cartridge({0x1100: [0x00200010, 0x80001000, 0x80200020, 7], 0x1200: [0x00200010, 1, 2, 3],
+                              0x1300: [0x00200010]})
+        out = self.path / "out"
+        image.build(self.manifest, self.source, [unit], [], out, rom)
+        report = json.loads((out / "image.json").read_text())
+        self.assertTrue(report["rom_checked"])
+        self.assertEqual([(row["address"], row["word"], row["function"]) for row in report["code_words"]],
+                         [("0x80001100", "0x00200010", "func_80200010"), ("0x80001108", "0x80200020", "func_80200020")])
+        self.assertEqual(report["function_stops"], ["func_80200010", "func_80200020"])
+        self.assertIn(".long func_80200010", (out / "image.c").read_text())
+        image.build(self.manifest, self.source, [unit], [], self.path / "plain")
+        report = json.loads((self.path / "plain" / "image.json").read_text())
+        self.assertEqual((report["rom_checked"], report["code_words"], report["function_stops"]), (False, [], []))
+
+    def test_address_scan_lists_code_words_and_guards_commands(self):
+        # addrscan.code_word: a display-list command argument is never a code word; a KUSEG alias needs a pointer
+        # within 6 words; a KUSEG data record (D_00XXXXXX) is tlb-data
+        sys.path.insert(0, str(ROOT))
+        import addrscan
+        table = {"func_80200010": (0x80200010, "func"), "D_0044B4A0": (0x0044B4A0, "data")}
+        targets = addrscan.Targets(table)
+        rom = self.cartridge({0x100: [0x00200010, 0x80001000], 0x200: [0xDE000000, 0x80200010],
+                              0x300: [0x80200010], 0x400: [0x00200010]})
+        self.assertEqual(addrscan.code_word(rom, 0x100, targets), "func_80200010")
+        self.assertIsNone(addrscan.code_word(rom, 0x204, targets))
+        self.assertEqual(addrscan.code_word(rom, 0x300, targets), "func_80200010")
+        self.assertIsNone(addrscan.code_word(rom, 0x400, targets))
+        self.assertEqual(targets.classify(0x0044B4A0), ("tlb-data", "D_0044B4A0"))
+        self.assertIsNone(targets.classify(0x00300000))
+
     def test_layout_condition_refuses_unknown_forms(self):
         (self.source / "RageWars.ld").write_text("#if VERSION_TEST > 1\n#endif\n")
         with self.assertRaises(ValueError):
@@ -217,6 +286,7 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(report["bound"], ["D_table_alias"])
         self.assertIn("overlaps next", report["refused"]["grown"])
         self.assertEqual(report["relocated_words"], 2)
+        self.assertEqual(report["weak_stops"], [])
         self.assertIn("D_table_alias = 0x80001004;", (out / "image.ld").read_text())
         (self.path / "boot.h").write_text(BOOT_H)
         (self.path / "missing.c").write_text(MISSING)

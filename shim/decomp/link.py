@@ -4,6 +4,7 @@ import argparse
 import json
 import pathlib
 import re
+import struct
 import sys
 
 sys.dont_write_bytecode = True
@@ -272,6 +273,33 @@ def byte_stream_ranges(project, blobs):
         if not BLOB_NAME.fullmatch(label) or lo < 0 or hi <= lo or hi > number(project["rom_bytes"]):
             raise ValueError("invalid byte stream range: " + label)
     return formats, ranges
+
+
+def unfacted_streams(rom, project, source):
+    """RNC streams (method 1 or 2: a sane 18-byte header whose packed bytes fit the ROM) that start outside every blob
+    fact range and every loads/resources row of the project's version. link.py registers nothing for them, so the game
+    reads their header raw, its own magic test fails, and it takes the packed bytes for the unpacked resource (resource
+    bank children 6 and 7 at boot 231). n64c_pi stops a DMA that starts on one; this lists them before a boot does.
+    [(rom offset, method, unpacked bytes, packed bytes)]."""
+    spans = sorted([(lo, hi) for ranges, _, _ in blob_ranges(source, project["version"]).values() for lo, hi in ranges]
+                   + [(number(r["rom"]), number(r["rom"]) + number(r["bytes"]))
+                      for r in project.get("resources", []) + project.get("loads", [])])
+    starts, ends, reach = [lo for lo, _ in spans], [], 0
+    for _, hi in spans:  # the furthest end of any span starting at or before each start
+        reach = max(reach, hi)
+        ends.append(reach)
+    import bisect
+    out = []
+    for method in (1, 2):
+        at = rom.find(b"RNC" + bytes([method]))
+        while at != -1:
+            unpacked, packed = struct.unpack_from(">II", rom, at + 4) if at + 12 <= len(rom) else (0, 0)
+            if 0 < unpacked <= 16 << 20 and 0 < packed and at + 18 + packed <= len(rom):
+                i = bisect.bisect_right(starts, at) - 1
+                if i < 0 or ends[i] <= at:
+                    out.append((at, method, unpacked, packed))
+            at = rom.find(b"RNC" + bytes([method]), at + 1)
+    return sorted(out)
 
 
 def byte_order(project, source):

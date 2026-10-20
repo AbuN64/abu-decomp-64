@@ -133,11 +133,15 @@ static void container2(u8 *c)
     be32(c+40,0x11121314u); be16(c+44,0x2122); be16(c+46,0x2324); be16(c+48,0x2526);
 }
 enum { S1=0x100, S2=0x200, BAD=0x400, ROMGRAPH=0x500, MISFIT=0x600, ROMGRAPH2=0x680, NEST=0x740, PLANES=0x7A0,
-       PLANES2=0x800, UNTYPED=0x870 };
+       PLANES2=0x800, UNTYPED=0x870, UNFACTED=0x8B0 };
 static u8 ram[512];
 static void untyped_dma(void)
 {
     dma(UNTYPED,ram,8);
+}
+static void unfacted_dma(void)
+{
+    dma(UNFACTED,ram,4);
 }
 static void untyped_stream(void)
 {
@@ -313,11 +317,12 @@ static void byte_stream_test(void)
 int main(void)
 {
     const char *path="n64c_packed_test.rom";
-    static u8 rom[0x8B0];
+    static u8 rom[0x900];
     u8 c[SIZE];
     int size1=stream1();
     memcpy(rom+S1,rnc1,(size_t)size1);
     memcpy(rom+MISFIT,rnc1,(size_t)size1);
+    memcpy(rom+UNFACTED,rnc1,(size_t)size1);                                         /* no registration at all */
     container(c);
     int size2=stream2(c,SIZE);
     CHECK(S2+size2<=BAD);
@@ -431,6 +436,9 @@ int main(void)
     CHECK(memcmp(ram+8,rom+UNTYPED,8)==0);
     CHECK(exits78(untyped_dma));                                                       /* the byte-order gate */
     CHECK(exits78(untyped_stream));
+    CHECK(exits78(unfacted_dma));                                                      /* an RNC stream, no fact */
+    dma(UNFACTED+4,ram,8);                                                             /* not its start: raw */
+    CHECK(memcmp(ram,rom+UNFACTED+4,8)==0);
     CHECK(setenv("N64C_LAYOUT_GATE","log",1)==0);                                      /* diagnostic: raw */
     dma(UNTYPED,ram,8);
     CHECK(memcmp(ram,rom+UNTYPED,8)==0);
@@ -447,6 +455,6 @@ int main(void)
     printf("PI packed streams: %d checks; host-order headers (cut DMA), raw packed bytes, origins, method 1 STRUCT, "
            "method 2 GRAPH (pool references, shared and null), ROM GRAPH (tagged variants, head + elements, a nested "
            "stream), "
-           "byte-plane leaves, the untyped-blob gate (stop and log), untraced raw, refusals\n",checks);
+           "byte-plane leaves, the untyped-blob gate (stop and log), the unfacted-stream stop, untraced raw, refusals\n",checks);
     return 0;
 }

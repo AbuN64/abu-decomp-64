@@ -660,10 +660,29 @@ static void layout_misses(u32 dev,const void *ram,u32 bytes)
         if (next->hi>cursor) cursor=next->hi;
     }
 }
+/* An RNC stream outside every registered range: its blob fact is missing, so link.py registered nothing (not even
+ * UNTYPED) and the bytes reach the game big-endian. The game's own magic test (the word 'RNC' then the method) then
+ * fails on the raw header, and it copies the packed bytes as if they were the unpacked resource (resource bank children
+ * 6 and 7 at boot 231). A guest DMA that starts on such a header stops naming the ROM offset (run-on: logged, raw). */
+static void unfacted_stream(u32 dev,const void *ram,u32 bytes)
+{
+    const u8 *b=ram;
+    if (bytes<4 || b[0]!='R' || b[1]!='N' || b[2]!='C' || (b[3]!=1 && b[3]!=2)) return;
+    for (size_t i=0;i<n_res;i++)
+        if (res[i].lo<=dev && dev<res[i].hi) return;
+    char subject[48];
+    snprintf(subject,sizeof subject,"unfacted-rnc-0x%08x",dev);
+    if (n64c_diag_stop && n64c_diag_stop(subject,1)) return; /* run-on: served raw */
+    fprintf(stderr,"boot-input: DMA of ROM 0x%08x starts an RNC%d stream no blob fact names (so it has no byte-order "
+            "layout): add its blob fact to the source's blobs.toml and a blob_layouts row to the manifest\n",dev,b[3]);
+    fflush(stderr);
+    _Exit(78);
+}
 /* A DMA the guest starts (osPiStartDma, osPiRawStartDma, the PI registers): the read, then the run-on check. */
 int n64c_pi_dma(u32 address,void *destination,u32 bytes)
 {
     if (n64c_pi_read(address,destination,bytes)!=0) return -1;
+    unfacted_stream(address & 0x0FFFFFFF,destination,bytes);
     layout_misses(address & 0x0FFFFFFF,destination,bytes);
     return 0;
 }

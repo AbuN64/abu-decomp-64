@@ -221,6 +221,23 @@ int main(void) { return n64c_boot_entry(); }
                                             "layouts": {"0": "Head"}}}
         with self.assertRaises(ValueError):
             module.graph_program(bad, "fixture")
+    def test_unfacted_rnc_streams(self):
+        # an RNC stream (sane header, packed bytes inside the ROM) that no blob fact or row covers is listed; streams
+        # inside a fact, a row, or with an impossible header are not
+        (self.path / "source/blobs.toml").write_text('[blob."known"]\ncodec = "rnc1"\nrom."test" = [[0x200, 0x240]]\n')
+        rom = bytearray(0x1000)
+        def stream(at, method, unpacked, packed):
+            rom[at:at + 12] = b"RNC" + bytes([method]) + unpacked.to_bytes(4, "big") + packed.to_bytes(4, "big")
+        stream(0x200, 1, 0x40, 0x20)   # a blob fact covers it
+        stream(0x110, 1, 0x40, 0x20)   # inside the loads row (0x100, 15 bytes)
+        stream(0x300, 1, 0x40, 0x20)   # no fact: listed
+        stream(0x400, 2, 0x80, 0x10)   # no fact: listed
+        stream(0x500, 1, 0, 0x20)      # unpacked size 0: no stream
+        stream(0xFF0, 1, 0x40, 0x20)   # packed bytes past the ROM: no stream
+        project = copy.deepcopy(self.project)
+        project["loads"][0]["bytes"] = 0x20
+        self.assertEqual(module.unfacted_streams(bytes(rom), project, self.path / "source"),
+                         [(0x300, 1, 0x40, 0x20), (0x400, 2, 0x80, 0x10)])
 
     def test_blob_layouts_from_blob_facts(self):
         # every RNC blob fact of the version is a packed stream; blob_layouts rows type an RNC stream's unpacked

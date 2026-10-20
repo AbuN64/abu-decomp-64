@@ -14,6 +14,10 @@ memory it then TLB-maps): its symbols are keyed by their ROM offset instead (sec
 the symbol's offset from the section VMA) and the PI layer writes their native bytes over every
 DMA of that ROM range (n64c_pi_register_image), so the types the source gives them decide the
 byte order the native reads see.
+Raw code addresses (with --rom, the cartridge): a word the source keeps as a plain number that the cartridge shows to
+be a code address (addrscan.code_word: a function's start, or its KUSEG alias with a pointer beside it) holds that
+number natively too, and a call through it faults. The image binds such a word to the function like a relocation
+(its native definition or a generated stop the closure then routes) and lists it in image.json code_words.
 """
 import argparse
 import json
@@ -25,6 +29,7 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import addrscan
 import policy  # noqa: E402
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
@@ -40,7 +45,6 @@ PLACEHOLDER = re.compile(r"D_(?:blob|auto)_\w+|D_d\d+_[0-9a-f]+|func_\w+")
 ROM_FACT = re.compile(r"\brom:(0x[0-9A-Fa-f]+)")
 CONDITION = re.compile(r"^\s*#\s*(if|elif|else|endif)\b(.*)")
 TERM = re.compile(r"(!?)\s*defined\s*\(\s*(\w+)\s*\)")
-KUSEG_ALIAS = re.compile(r"D_(?:auto_)?00[0-9A-F]{6}(?:_[a-z0-9_]+)?")
 SHT_SYMTAB, SHT_NOBITS, SHT_REL, SHT_RELA = 2, 8, 9, 4
 SHF_ALLOC, SHF_EXEC = 2, 4
 STT_OBJECT, STT_FUNC, STT_SECTION = 1, 2, 3
@@ -122,6 +126,16 @@ def overlay_units(source, version):
     return units
 
 
+def resident_units(source, version):
+    """Resident data units of one version: unit -> (VMA, LMA) of the first section holding its initialised data (where
+    its ROM bytes sit, for the raw code address check)."""
+    overlay, units = overlay_keys(source), {}
+    for unit, key, lma, spec in placements(source, version):
+        if key not in overlay and INITIALISED.search(spec) and not re.search(r"bss|COMMON", spec):
+            units.setdefault(unit, (key[1], lma))
+    return units
+
+
 def select(source, exclude, version=None):
     keys = {}
     for unit, key, _, _ in placements(source):
@@ -150,12 +164,12 @@ def facts(source, version):
             if table.get(symbol, (address, kind))[0] != address:
                 raise ValueError("conflicting pinned address: " + symbol)
             table[symbol] = (address, kind)
-    # A KUSEG alias of a function (D_00XXXXXX pinned at a function's address without its KSEG0 bit, the game's
-    # pointers into TLB-mapped code) is a code pointer: a word naming it binds to the function, never to the raw value.
+    # A KUSEG alias of a function (a data name such as D_00XXXXXX or rw_menu_paged_func_804402DC_de pinned at a
+    # function's address without its KSEG0 bit, the game's pointers into TLB-mapped code) is a code pointer: a word
+    # naming it binds to the function, never to the raw value.
     functions = {address for address, kind in table.values() if kind == "func"}
     for symbol, (address, kind) in table.items():
-        if kind == "data" and KUSEG_ALIAS.fullmatch(symbol) and address < 0x00800000 \
-                and (address | 0x80000000) in functions:
+        if kind == "data" and 0x10000 <= address < 0x00800000 and (address | 0x80000000) in functions:
             table[symbol] = (address, "func")
     return table
 
@@ -231,11 +245,12 @@ class Elf:
             and not self.sections[index]["flags"] & SHF_EXEC
 
 
-def build(manifest, source, objects, linked, output):
+def build(manifest, source, objects, linked, output, rom=None):
     project = policy.load_project(manifest, source)
     ram = int(project["rdram_bytes"], 0)
     table = facts(source, project["version"])
     overlays, roms = overlay_units(source, project["version"]), rom_facts(source, project["version"])
+    residents = resident_units(source, project["version"]) if rom is not None else {}
     claimed = set(project["data"]) | set(project["bindings"]) | set(project["stops"])
     linked_defined, linked_undefined = set(), set()
     for path in linked:
@@ -250,6 +265,7 @@ def build(manifest, source, objects, linked, output):
             failed.append(str(path))
             continue
         section_of = next((overlays[unit] for unit in overlays if path.as_posix().endswith("/" + unit + ".o")), None)
+        resident_of = next((residents[unit] for unit in residents if path.as_posix().endswith("/" + unit + ".o")), None)
         elf = Elf(path)
         if any(s["type"] == STT_FUNC and s["shndx"] for s in elf.symbols):
             code_units.append(str(path))  # functions arrive by include; not a data unit
@@ -278,10 +294,15 @@ def build(manifest, source, objects, linked, output):
             if not 0x80000000 <= address or address - 0x80000000 + symbol["size"] > ram:
                 refused[name] = "outside mapped RDRAM"
                 continue
-            placed.append({"name": name, "address": address, "elf": elf, "symbol": symbol})
+            item = {"name": name, "address": address, "elf": elf, "symbol": symbol}
+            if name not in roms and resident_of and address >= resident_of[0]:
+                item["image_rom"] = resident_of[1] + address - resident_of[0]  # its ROM bytes, by its section
+            placed.append(item)
     keep = overlapping(placed, "address", refused)
     keep_overlay = overlapping(overlay_placed, "rom", refused)
     stops, blob, words, extents, rom_extents, imaged = set(), bytearray(), [], [], [], 0
+
+    targets = addrscan.Targets(table, resolved_names)
 
     def resolve(elf, symbol_index, addend):
         """A pointer word's value: an original address, or a native name."""
@@ -296,6 +317,14 @@ def build(manifest, source, objects, linked, output):
         name = target["name"]
         if name in resolved_names:
             return ("sym", name)
+        if name in table and table[name][1] == "func" and table[name][0] < 0x80000000:
+            # a KUSEG alias (D_00XXXXXX) names the function at its KSEG0 address: bind to that function, or stop on
+            # its name so the closure routes the function (a stop named after the alias names no unit to link)
+            function = targets.function(table[name][0] | 0x80000000)
+            if function:
+                if function not in resolved_names:
+                    stops.add(function)
+                return ("sym", function)
         if name in table and table[name][1] == "func":
             stops.add(name)
             return ("sym", name)
@@ -303,16 +332,41 @@ def build(manifest, source, objects, linked, output):
             return ("addr", table[name][0] + addend)
         return None
 
+    code_words = []
+    def raw_code(item, chunk, taken):
+        """Bind the words of chunk the cartridge shows to be code addresses kept as plain numbers."""
+        at = item.get("rom", roms.get(item["name"], item.get("image_rom")))
+        if rom is None or at is None:
+            return []
+        start = item.get("address", item.get("rom"))
+        out = []
+        for offset in range(-start % 4, len(chunk) - 3, 4):
+            if offset in taken or at + offset + 4 > len(rom):
+                continue
+            word, = struct.unpack_from(">I", rom, at + offset)
+            if struct.unpack_from("<I", chunk, offset)[0] != word:
+                continue  # the source types these bytes otherwise (not one native word equal to the cartridge's)
+            name = addrscan.code_word(rom, at + offset, targets)
+            if not name:
+                continue
+            if name not in resolved_names:
+                stops.add(name)
+            out.append((offset, name, 0))
+            code_words.append({"symbol": item["name"], "address": f"0x{start + offset:08x}",
+                               "rom": f"0x{at + offset:x}", "word": f"0x{word:08x}", "function": name})
+        return out
+
     for item in keep + keep_overlay:
         elf, symbol = item["elf"], item["symbol"]
         section = elf.sections[symbol["shndx"]]
         size = symbol["size"]
         chunk = bytearray(section["bytes"][symbol["value"]:symbol["value"] + size]) if section["bytes"] else bytearray(size)
-        patches, failure = [], None
+        patches, failure, taken = [], None, set()
         for where, symbol_index, kind in elf.relocations.get(symbol["shndx"], []):
             if not symbol["value"] <= where < symbol["value"] + size:
                 continue
             offset = where - symbol["value"]
+            taken.add(offset)
             if kind != R_386_32 or offset + 4 > size:
                 failure = "unsupported relocation kind %d" % kind
                 break
@@ -328,6 +382,7 @@ def build(manifest, source, objects, linked, output):
         if failure:
             refused[item["name"]] = failure
             continue
+        patches += raw_code(item, chunk, taken)
         imaged += 1
         base = len(blob)
         blob += chunk
@@ -343,6 +398,12 @@ def build(manifest, source, objects, linked, output):
     for name in sorted(linked_undefined - linked_defined - claimed - stops):
         if name in table and table[name][1] == "data" and covered(table[name][0]):
             binds[name] = table[name][0]
+    # A bound code word makes its function live, and --gc-sections then keeps that function's callees too: an
+    # unnamed game function (func_*) no linked unit defines gets a weak fatal stop (a real definition or a closure
+    # binding still wins). Named callees are left out: libultra names come from the shim library, whose archive
+    # members a weak definition would keep from being pulled in.
+    weak = sorted(name for name in linked_undefined - linked_defined - claimed - stops
+                  if name.startswith("func_") and table.get(name, (0, ""))[1] == "func")
     output.mkdir(parents=True, exist_ok=True)
     (output / "image.bin").write_bytes(bytes(blob))
     binary = (output / "image.bin").resolve()
@@ -361,6 +422,8 @@ def build(manifest, source, objects, linked, output):
             '#include "boot.h"', 'extern long long n64c_boot_missing(const char *);',
             "__asm__(", *[f'    "{line.replace(chr(34), chr(92) + chr(34))}\\n"' for line in asm], ");"]
     code += [f'long long {name}(void) {{ return n64c_boot_missing("{name}"); }}' for name in sorted(stops)]
+    code += [f'__attribute__((weak)) long long {name}(void) {{ return n64c_boot_missing("{name}"); }}'
+             for name in weak]
     code.append("const N64cBootImage n64c_boot_image[] = {")
     code += [f"    {{{start - 0x80000000}u, {base}u, {size}u}}," for start, base, size in extents]
     code += ["    {0u, 0u, 0u}", "};", f"const size_t n64c_boot_image_count = {len(extents)};"]
@@ -374,7 +437,8 @@ def build(manifest, source, objects, linked, output):
               "bytes": len(blob), "extents": len(extents), "relocated_words": len(words),
               "overlay_symbols": sorted(item["name"] for item in keep_overlay if item["name"] not in refused),
               "rom_extents": [[f"0x{start:x}", size] for start, _, size in rom_extents],
-              "failed_units": failed, "code_units": code_units, "function_stops": sorted(stops), "bound": sorted(binds), "refused": dict(sorted(refused.items()))}
+              "failed_units": failed, "code_units": code_units, "function_stops": sorted(stops), "bound": sorted(binds), "refused": dict(sorted(refused.items())),
+              "rom_checked": rom is not None, "code_words": code_words, "weak_stops": weak}
     (output / "image.json").write_text(json.dumps(report, indent=1) + "\n")
 
 
@@ -429,6 +493,7 @@ if __name__ == "__main__":
     make.add_argument("--objects", type=pathlib.Path, required=True, help="file listing image unit objects")
     make.add_argument("--linked", type=pathlib.Path, required=True, help="file listing linked boot objects")
     make.add_argument("--output", type=pathlib.Path, required=True)
+    make.add_argument("--rom", type=pathlib.Path, help="the cartridge: bind raw code addresses it shows")
     args = parser.parse_args()
     try:
         if args.command == "select":
@@ -438,6 +503,7 @@ if __name__ == "__main__":
             flags = args.flags[1:] if args.flags[:1] == ["--"] else args.flags
             compile_unit(args.prepare, args.compiler, args.source, args.output, flags)
         else:
-            build(args.manifest, args.source, lines(args.objects), lines(args.linked), args.output)
+            build(args.manifest, args.source, lines(args.objects), lines(args.linked), args.output,
+                  args.rom.read_bytes() if args.rom else None)
     except (ValueError, KeyError, OSError, struct.error) as error:
         parser.exit(2, f"boot-image: {error}\n")
