@@ -723,6 +723,7 @@ class Landing:
         self.dropped_generated: dict[str, list[str]] = {}
         self.generated_seen: dict[str, bool] = {}  # path -> whether the base holds it as an unbake sync output
         self.regenerated: dict[str, str] = {}  # generated file the sync changed -> the lane whose sources caused it
+        self.written: set[str] = set()  # every path an unbake setup or sync of this land says it wrote
 
     # git -------------------------------------------------------------------------------------------------------
     def git(self, *args: str, ok: bool = True, env: dict[str, str] | None = None) -> str:
@@ -1216,6 +1217,7 @@ class Landing:
     def unbake(self, name: str, gate: str, *args: str) -> bool:
         started = self.clock()
         called = self.invoke("unbake", self.profile, list(args), project=self.tree)
+        self.note_written(called.document)
         if not called.ok:
             findings = called.document.get("findings") or [
                 {"message": f"unbake {' '.join(args)} exited {called.returncode}"}
@@ -1268,8 +1270,29 @@ class Landing:
         return self.gate("check", passed, started, jobs=jobs, command=command)
 
     # post-run gates -----------------------------------------------------------------------------------------------
+    def unbake_quiet(self, verb: str) -> bool:
+        """One unbake verb outside the gates (no gate row, no finding); what it wrote is still noted."""
+        called = self.invoke("unbake", self.profile, [verb], project=self.tree)
+        self.note_written(called.document)
+        return bool(called.ok)
+
+    def note_written(self, document: dict[str, Any]) -> None:
+        """unbake's own account of what it generated: setup's `files` and sync's `written` paths."""
+        result = document.get("result") if isinstance(document, dict) else None
+        if isinstance(result, dict):
+            for key in ("written", "files"):
+                rows = result.get(key)
+                if isinstance(rows, list):
+                    self.written.update(r for r in rows if isinstance(r, str))
+
     def changed_files(self) -> list[str]:
-        return sorted(self.git("diff", "HEAD", "--name-only", "--no-renames").splitlines())
+        """Tracked files the land changed, and the new files unbake declared it wrote (a generated file a newer unbake
+        adds, such as a per-version map, is committed with the land, not left untracked)."""
+        tracked = set(self.git("diff", "HEAD", "--name-only", "--no-renames").splitlines())
+        if self.written:
+            others = set(self.git("ls-files", "--others", "--exclude-standard").splitlines()) - self.start_untracked
+            tracked |= self.written & others
+        return sorted(tracked)
 
     def markers(self) -> bool:
         started = self.clock()
@@ -1641,9 +1664,7 @@ class Landing:
                 skip = {i: "left out of an attribution build" for i in inputs[keep + 1 :]}
                 if not self.replay(skip):
                     raise LandError("land.attribute", "replay failed")
-                if not all(
-                    self.invoke("unbake", self.profile, [*a], project=self.tree).ok for a in (["setup"], ["sync"])
-                ):
+                if not all(self.unbake_quiet(a) for a in ("setup", "sync")):
                     raise LandError("land.attribute", "setup or sync failed")
                 for f in files:
                     path = self.tree / f

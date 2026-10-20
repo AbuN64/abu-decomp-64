@@ -94,9 +94,11 @@ class LandTests(unittest.TestCase):
             document = {"ok": ok, **(result if ok else {}), "findings": [] if ok else [{"message": "no map"}]}
             return SimpleNamespace(ok=ok, returncode=0 if ok else 1, document=document)
         self.unbake.append(tuple(args))
+        written = []
         if args[0] == "sync" and "--check" not in args:
-            self.on_sync()
-        return SimpleNamespace(ok=self.sync_ok(args), returncode=0, document={"ok": True, "findings": []})
+            written = self.on_sync() or []
+        document = {"ok": True, "findings": [], "result": {"written": written}}
+        return SimpleNamespace(ok=self.sync_ok(args), returncode=0, document=document)
 
     def sync_ok(self, args):
         return True
@@ -155,6 +157,22 @@ class LandTests(unittest.TestCase):
         )
         self.assertEqual([e["kind"] for e in self.events], ["LAND"])
         self.assertEqual(self.events[0]["status"], "passed")
+
+    def test_a_new_file_unbake_says_it_wrote_is_committed_with_the_land(self):
+        one = self.patch("L1", {"b.c": "int func_3(void) { return 3; }\n"})
+
+        def sync():
+            (self.tree / "docs").mkdir(exist_ok=True)
+            (self.tree / "docs/map-a.json").write_text("{}\n")
+            (self.tree / "stray.txt").write_text("not unbake's\n")
+            return ["docs/map-a.json"]
+
+        self.on_sync = sync
+        result, code, _ = self.land([one])
+        self.assertEqual(code, 0)
+        self.assertEqual(result["generated"], ["docs/map-a.json"])
+        self.assertEqual(result["commits"][0]["files"], ["b.c", "docs/map-a.json"])
+        self.assertIn("docs/map-a.json", result["commit_commands"][0])
 
     def with_recipe(self, steps):
         document = json.loads((self.root / "seat.json").read_text())
