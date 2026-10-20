@@ -138,9 +138,73 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(raised.exception.key, "ship.dirty")
         self.assertEqual((self.tree / "a.c").read_text(), "work\n")
 
-    def test_two_patches_are_a_batch_and_not_a_ship(self) -> None:
+    def batch(self, split: str | None = None, broken: str | None = None) -> Any:
+        """A land of several inputs: each lane adds its own file and gets its own commit; `split` lands only in part
+        (a file refused), `broken` is the input the land's build bisect refuses."""
+        self.calls: list[list[str]] = []
+
+        def fake(profile: Any, tree: Path, base: str, patches: Any, **_: Any) -> Any:
+            lanes = [lane for lane, _ in patches]
+            self.calls.append(lanes)
+            found = []
+            if split in lanes:
+                found.append({"key": "land.file_refused", "message": "x.c conflicts", "blocking": True, "lane": split})
+            plan, rows, refused = [], [], []
+            for lane in lanes:
+                if lane == broken:
+                    refused.append({"lane": lane, "reason": "land.check: make exited 2", "builds": 3})
+                    rows.append({"lane": lane, "status": "applied", "functions": {"names": []}})
+                    continue
+                (tree / f"{lane}.c").write_text(f"int {lane}_f(void) {{ return 0; }}\n")
+                plan.append({"lane": lane, "files": [f"{lane}.c"], "message": f"Match {lane}_f", "body": None})
+                rows.append({"lane": lane, "status": "applied", "functions": {"names": [f"{lane}_f"]}})
+            if broken:
+                found.append({"key": "land.input_build_failed", "message": "B", "blocking": True, "lane": broken})
+            return {"pass": True, "commits": plan, "lanes": rows, "refused_inputs": refused}, 0, found
+
+        return fake
+
+    def ship_all(self, lanes: list[str], **fake: Any) -> Any:
+        append = lambda path, record: self.events.append(record) or {"ok": True}  # noqa: E731
+        patches = [(lane, self.root / f"{lane}.patch") for lane in lanes]
+        return ship(self.profile, self.tree, patches, landing=self.batch(**fake), append=append)
+
+    def test_every_ready_input_lands_in_one_round_and_one_push_with_a_commit_each(self) -> None:
+        base = self.remote_tip()
+        result, code, _ = self.ship_all(["A", "B", "C"])
+        self.assertEqual((code, self.calls), (0, [["A", "B", "C"]]))  # one land: one setup, one check
+        self.assertEqual(git(self.remote, "log", "--format=%s", f"{base}..main").split("\n")[:3], [
+            "Match C_f", "Match B_f", "Match A_f"])  # fmt: skip
+        self.assertEqual([r["status"] for r in result["inputs"]], ["shipped"] * 3)
+        self.assertEqual(len([s for s in result["steps"] if s["step"] == "push"]), 1)
+        self.assertEqual(self.events[-1]["payload"]["inputs"][1], {"lane": "B", "status": "shipped", "key": None})
+
+    def test_an_input_that_lands_only_in_part_is_refused_whole_and_the_rest_land_again(self) -> None:
+        result, code, findings = self.ship_all(["A", "B", "C"], split="B")
+        self.assertEqual((code, self.calls), (0, [["A", "B", "C"], ["A", "C"]]))
+        self.assertEqual([r["status"] for r in result["inputs"]], ["shipped", "refused", "shipped"])
+        self.assertEqual(result["inputs"][1]["key"], "land.file_refused")
+        self.assertFalse((self.tree / "B.c").exists())
+        self.assertFalse([f for f in findings if f.get("blocking")])
+        self.assertEqual(git(self.tree, "status", "--porcelain"), "")
+
+    def test_the_input_the_build_bisect_refuses_stays_out_and_the_rest_ship(self) -> None:
+        result, code, findings = self.ship_all(["A", "B", "C"], broken="B")
+        self.assertEqual(code, 0)
+        self.assertEqual([r["status"] for r in result["inputs"]], ["shipped", "refused", "shipped"])
+        self.assertEqual(result["inputs"][1]["key"], "land.input_build_failed")
+        self.assertFalse([f for f in findings if f.get("blocking")])
+        self.assertIn("refused B (land.input_build_failed)", self.events[-1]["message"])
+
+    def test_every_input_landing_only_in_part_pushes_nothing(self) -> None:
+        base = self.remote_tip()
+        result, code, _ = self.ship_all(["B"], split="B")
+        self.assertEqual((code, result["pushed"], self.remote_tip()), (1, None, base))
+        self.assertEqual(git(self.tree, "status", "--porcelain"), "")
+
+    def test_two_inputs_with_one_lane_name_are_refused(self) -> None:
         with self.assertRaises(DecompError):
-            ship(self.profile, self.tree, [("A", self.root / "a"), ("B", self.root / "b")], landing=self.landing())
+            ship(self.profile, self.tree, [("A", self.root / "a"), ("A", self.root / "b")], landing=self.landing())
 
 
 if __name__ == "__main__":

@@ -446,7 +446,8 @@ def _ship_arguments(parser: argparse.ArgumentParser) -> None:
         action="append",
         required=True,
         metavar="LANE=PATH[:MESSAGE]",
-        help="the one input to land, commit and push (MESSAGE as for land)",
+        help="an input to land, commit and push; repeat it for every ready input, landed in order in one round with "
+        "one commit each and one push (MESSAGE as for land)",
     )
 
 
@@ -537,7 +538,9 @@ COMMANDS: dict[str, Command] = {
         _run_standalone,
     ),
     "ship": Command(
-        "land one input on the warm tree, commit it and push it fast-forward to the branch", _ship_arguments, _run_ship
+        "land every ready input on the warm tree in one round, commit each and push fast-forward to the branch",
+        _ship_arguments,
+        _run_ship,
     ),
     "behave": Command(
         "run the original and a candidate on the same inputs and compare their behaviour",

@@ -1,9 +1,11 @@
-"""`decomp ship`: one matched input from queue to the remote branch in minutes, on one warm tree.
+"""`decomp ship`: every ready input from queue to the remote branch in minutes, on one warm tree.
 
 The tree stays built at the remote branch: every ship moves it there (git rewrites only the files that changed, so
-setup and make stay incremental), lands the one input with every gate `decomp land` runs, commits the land's plan,
-and pushes fast-forward. One lock per repository serializes ships. A refused input leaves the tree clean at the
-branch; a push the remote refuses because the branch moved lands the input again on the new tip, once.
+setup and make stay incremental), lands all its inputs in one round with every gate `decomp land` runs (one setup, one
+check; a build one input breaks is bisected and only that input is refused), commits the land's plan (one commit per
+input, in order) and pushes fast-forward once. One lock per repository serializes ships. An input that lands only in
+part is refused whole and the others land again without it; a ship with nothing left leaves the tree clean at the
+branch; a push the remote refuses because the branch moved lands the inputs again on the new tip, once.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ from abu_decomp.config import Profile
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
 IDENTITY = re.compile(r"^\s*(?P<name>[^<>]+?)\s*<(?P<email>[^<>\s]+)>\s*$")
 LOCK_WAIT_SECONDS = 7200.0
+# The findings that refuse one input of a ship that pushed the others: blocking for that input only.
+INPUT_REFUSALS = frozenset({"land.file_refused", "land.input_build_failed", "land.function_split", *land.REFUSAL_KEYS})
 PRIORITY = "UNBAKE_PRIORITY"  # unbake's pool: a command whose environment says "1" takes host slots first
 
 
@@ -49,13 +53,16 @@ class Ship:
         self.tree = tree.expanduser().resolve()
         if not (self.tree / ".git").exists():
             raise ShipError("ship.tree", f"{self.tree} is not a git checkout")
-        if len(self.patches) != 1:
-            raise ShipError("ship.arguments", "ship lands exactly one --patch; batch inputs go through `decomp land`")
+        if not self.patches:
+            raise ShipError("ship.arguments", "ship needs at least one --patch")
+        if len({lane for lane, _ in self.patches}) != len(self.patches):
+            raise ShipError("ship.arguments", "two --patch inputs carry one lane name; each input needs its own")
         table = land.settings(profile)
         self.remote, self.branch, self.author = table["remote"], table["branch"], table["author"]
         self.weight, self.cgroup, self.notes = table["lock_weight"], cgroup, []
         self.run, self.landing, self.append, self.clock, self.lock_wait = run, landing, append, clock, lock_wait
         self.steps: list[dict[str, Any]] = []
+        self.refused: list[dict[str, Any]] = []  # inputs the ship refused whole before the land that pushed
 
     # git ----------------------------------------------------------------------------------------------------------
     def git(self, *args: str, ok: bool = True, env: dict[str, str] | None = None) -> tuple[int, str]:
@@ -172,25 +179,43 @@ class Ship:
             raise ShipError("ship.push", f"git push {self.remote} {self.branch}: {text.strip()[-400:]}")
         return True
 
+    def land_all(self, base: str, inputs: list[tuple[str, Path]]) -> Result:
+        """Land the inputs on `base` in one round. An input that lands only in part (`land.file_refused`) is refused
+        whole: the tree goes back to `base` and the others land again without it."""
+        while True:
+            outcome = self.landing(self.profile, self.tree, base, inputs, messages=self.messages)
+            _, code, findings = outcome
+            split = [f for f in findings if f.get("key") == "land.file_refused"]
+            if code or not split:
+                return outcome
+            self.clean(base)
+            lanes = {f.get("lane") for f in split}
+            kept = [row for row in inputs if row[0] not in lanes]
+            if not kept or len(kept) == len(inputs):  # nothing left, or a refusal no input owns: nothing lands
+                return {**outcome[0], "pass": False}, 1, findings
+            for lane in sorted(lane for lane in lanes if lane):
+                reason = "; ".join(f["message"] for f in split if f.get("lane") == lane)
+                self.refused.append({"lane": lane, "key": "land.file_refused", "message": reason})
+                self.notes.append({"key": "ship.input_refused", "message": f"{lane}: {reason}", "blocking": False})
+            inputs = kept
+
     def execute(self) -> Result:
         started = self.clock()
         handle = self.lock()
         try:
             for attempt in (1, 2):
                 base = self.tip()
-                result, code, findings = self.landing(
-                    self.profile, self.tree, base, self.patches, messages=self.messages
-                )
+                self.refused = []
+                result, code, findings = self.land_all(base, list(self.patches))
                 if code:
+                    if any(f.get("key") == "land.file_refused" for f in findings):
+                        self.clean(base)
                     return self.finish(result, findings, base, None, started)
-                if any(f.get("key") == "land.file_refused" for f in findings):  # one input lands whole or not at all
-                    self.clean(base)
-                    return self.finish({**result, "pass": False}, findings, base, None, started)
                 sha = self.commit(result)
-                if sha == base:  # nothing to commit: the branch already holds the input
+                if sha == base:  # nothing to commit: the branch already holds the inputs
                     self.clean(base)
                     findings.append(
-                        {"key": "ship.empty", "message": f"the input changes nothing on {base[:12]}", "blocking": True}
+                        {"key": "ship.empty", "message": f"the inputs change nothing on {base[:12]}", "blocking": True}
                     )
                     return self.finish({**result, "pass": False}, findings, base, None, started)
                 if self.push():
@@ -206,42 +231,78 @@ class Ship:
         finally:
             os.close(handle)
 
+    def inputs(self, result: dict[str, Any], sha: str | None) -> list[dict[str, Any]]:
+        """Each input's outcome, in order: shipped (landed and pushed) or refused with the reason."""
+        refused = {row["lane"]: row for row in self.refused}
+        refused.update(
+            {row["lane"]: {"lane": row["lane"], "key": "land.input_build_failed", "message": row.get("reason", "")}
+             for row in result.get("refused_inputs") or [] if row.get("lane")}
+        )  # fmt: skip
+        rows = {row.get("lane"): row for row in result.get("lanes") or []}
+        out = []
+        for lane, _ in self.patches:
+            row = rows.get(lane) or {}
+            if lane in refused:
+                out.append({"lane": lane, "status": "refused", **refused[lane]})
+            elif row.get("status") == "excluded":
+                out.append({"lane": lane, "status": "refused", "key": "land.patch_excluded", "message": row["reason"]})
+            elif sha:
+                out.append(
+                    {"lane": lane, "status": "shipped", "functions": (row.get("functions") or {}).get("names", [])}
+                )
+            else:
+                out.append({"lane": lane, "status": "refused", "key": "ship.refused", "message": "the ship refused"})
+        return out
+
     def finish(
         self, result: dict[str, Any], findings: list[dict[str, Any]], base: str, sha: str | None, started: float
     ) -> Result:
-        lane = self.patches[0][0]
+        lanes = [lane for lane, _ in self.patches]
         findings = [*self.notes, *findings]
         names = sorted({n for row in result.get("lanes", []) for n in (row.get("functions") or {}).get("names", [])})
         refusal = next((f for f in findings if f.get("blocking")), None)
+        inputs = self.inputs(result, sha)
+        shipped_lanes = [row["lane"] for row in inputs if row["status"] == "shipped"]
         shipped = {
-            "lane": lane,
+            "lane": ", ".join(lanes),
+            "inputs": inputs,
             "base": base,
             "pushed": sha,
             "functions": names,
             "seconds": round(self.clock() - started, 3),
             "steps": self.steps,
-            "refused": None if sha else (refusal or {"key": "ship.refused", "message": "the land refused the input"}),
+            "refused": None if sha else (refusal or {"key": "ship.refused", "message": "the land refused the inputs"}),
             "land": result,
         }
+        lost = [row for row in inputs if row["status"] == "refused"]
         record = {
             "actor": land.settings(self.profile)["actor"],
             "status": "passed" if sha else "failed",
             "message": (
-                f"shipped {lane} as {sha[:12]} to {self.remote}/{self.branch} in {shipped['seconds']:.0f}s"
+                f"shipped {', '.join(shipped_lanes)} as {sha[:12]} to {self.remote}/{self.branch} in "
+                f"{shipped['seconds']:.0f}s"
                 + (f": {', '.join(names)}" if names else "")
+                + (f"; refused {', '.join(f'{r["lane"]} ({r["key"]})' for r in lost)}" if lost else "")
                 if sha
-                else f"ship refused {lane}: {shipped['refused']['key']}"
+                else f"ship refused {', '.join(lanes)}: {shipped['refused']['key']}"
             ),
             "kind": "LAND",
             "subject": {"repo": str(self.tree), "ref": sha or base},
-            "payload": {"op": "shipped", "lane": lane, "functions": names, "base": base, "pushed": sha},
+            "payload": {
+                "op": "shipped",
+                "lane": ", ".join(lanes),
+                "inputs": [{"lane": r["lane"], "status": r["status"], "key": r.get("key")} for r in inputs],
+                "functions": names,
+                "base": base,
+                "pushed": sha,
+            },
         }
         try:
             self.append(events.events_path(self.profile), record)
         except DecompError as exc:
             findings.append({**exc.finding(), "blocking": False})
-        if sha:
-            findings = [{**f, "blocking": False} if f.get("key") == "land.file_refused" else f for f in findings]
+        if sha:  # what refused an input is that input's outcome (`inputs`), not the ship's
+            findings = [{**f, "blocking": False} if f.get("key") in INPUT_REFUSALS else f for f in findings]
         return shipped, int(sha is None), findings
 
 
