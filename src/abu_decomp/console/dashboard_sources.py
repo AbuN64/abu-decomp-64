@@ -36,6 +36,7 @@ class Sources:
         self.errors: list[str] = []
         self.ordered: tuple[EventLog, EventLog] | None = None
         self.last_receipt = None
+        self.landings: dict[str, dict] = {}  # confirmed pushes, retained beyond the display tail
         self.panes = {name: PANES[name](options) for name, options in self.config.get("panes", {}).items()}
 
     def shown(self, event: dict) -> bool:
@@ -88,6 +89,10 @@ class Sources:
                     self.records[reader.path] = []
                 if new or reader.count < previous + len(new):
                     self.ordered = None
+                for event in new:
+                    payload = event.get("payload") or {}
+                    if payload.get("op") == "shipped" and payload.get("pushed") and event.get("status") == "passed":
+                        self.landings[payload["pushed"]] = event
                 self.records[reader.path] = (self.records[reader.path] + [Event(event) for event in new])[-4000:]
             except (ValueError, OSError) as error:
                 self.errors.append(f"{reader.path}: {error}")

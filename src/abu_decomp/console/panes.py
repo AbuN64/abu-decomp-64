@@ -52,16 +52,12 @@ def progress_versions(document: dict[str, Any]) -> dict[str, dict[str, int]]:
         versions[cart["version"]] = {
             "code_matched": cart["code"]["matched"],
             "code_total": cart["code"]["total"],
-            "code_fuzzy": cart["code"]["fuzzy"],
             "data_matched": cart["data"]["matched"],
             "data_total": cart["data"]["total"],
             "functions_matched": cart["functions"]["matched"],
             "functions_total": cart["functions"]["total"],
-            "functions_fuzzy": cart["functions"]["fuzzy"],
             "blobs_decoded": cart["blobs"]["decoded"],
-            "blobs_identified": cart["blobs"]["identified"],
             "blobs_total": cart["blobs"]["total"],
-            "unknown": cart["unknown"],
         }
     return versions
 
@@ -146,12 +142,10 @@ class ProgressPane:
         )
         delta = {key: cart[key] - (base or cart)[key] for key in ("code_matched", "data_matched", "functions_matched")}
         lines = [
-            f"code      {cart['code_matched']}/{cart['code_total']} bytes matched, {cart['code_fuzzy']} fuzzy",
+            f"code      {cart['code_matched']}/{cart['code_total']} bytes matched",
             f"data      {cart['data_matched']}/{cart['data_total']} bytes matched",
-            f"functions {cart['functions_matched']}/{cart['functions_total']} matched, {cart['functions_fuzzy']} fuzzy",
-            f"blobs     {cart['blobs_decoded']} decoded, {cart['blobs_identified']} identified, "
-            f"{cart['blobs_total']} total",
-            f"unknown   {cart['unknown']} bytes",
+            f"functions {cart['functions_matched']}/{cart['functions_total']} matched",
+            f"blobs     {cart['blobs_decoded']} decoded, {cart['blobs_total']} total",
             "since console start: " + ", ".join(f"{key.split('_')[0]} {value:+d}" for key, value in delta.items()),
             f"progress.json written {stamp(written)} ({age(time.time() - written)} ago): {path}",
         ]

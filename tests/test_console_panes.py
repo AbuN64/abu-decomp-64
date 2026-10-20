@@ -35,15 +35,12 @@ class ProgressTests(unittest.TestCase):
             report = REPORT["versions"][version]
             self.assertEqual(row["code_matched"], report["code_matched"], version)
             self.assertEqual(row["code_total"], report["code_total"], version)
-            self.assertEqual(row["code_fuzzy"], report["code_fuzzy"], version)
             self.assertEqual(row["data_matched"], report["data_matched"], version)
             self.assertEqual(row["data_total"], report["data_total"], version)
             self.assertEqual(row["functions_matched"], report["functions_matched"], version)
             self.assertEqual(row["functions_total"], report["functions_total"], version)
             self.assertEqual(row["blobs_decoded"], report["blobs_decoded"], version)
-            self.assertEqual(row["blobs_identified"], report["blobs_identified"], version)
             self.assertEqual(row["blobs_total"], report["blobs_total"], version)
-            self.assertEqual(row["unknown"], report["unknown_total"], version)
 
     def test_other_schemas_are_refused(self):
         with self.assertRaisesRegex(ValueError, "schema 1"):

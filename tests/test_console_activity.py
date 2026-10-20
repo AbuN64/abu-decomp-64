@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -123,6 +124,55 @@ class ActivityTests(unittest.TestCase):
         rows = self.model().rows
         self.assertEqual([r.state for r in rows], ["stop"])
         self.assertEqual("cycle  cycle build failed", rows[0].title)
+
+    def test_daily_footer_counts_confirmed_shipments_beyond_the_display_tail(self):
+        self.add(
+            "land",
+            "passed",
+            "matching words in a commit title are irrelevant",
+            "LAND",
+            op="shipped",
+            pushed="first",
+            functions=["FogDistance", "FrameCallback", "NON_MATCHING"],
+        )
+        self.add(
+            "land",
+            "passed",
+            "duplicate",
+            "LAND",
+            op="shipped",
+            pushed="first",
+            functions=["FogDistance", "FrameCallback", "NON_MATCHING"],
+        )
+        self.add(
+            "land", "passed", "rematched function", "LAND", op="shipped", pushed="second", functions=["FogDistance"]
+        )
+        self.add("land", "passed", "not pushed", "LAND", op="landed", functions=["Unshipped"])
+        self.add("land", "failed", "failed", "LAND", op="shipped", pushed="failed", functions=["Failed"])
+        for i in range(4001):
+            self.add("lane", "info", str(i), "MATCH")
+        # The current progress producer omits retired fuzzy/identified/unknown fields.
+        path = self.root / "progress.json"
+        doc = json.loads(path.read_text())
+        for cart in doc["carts"]:
+            cart["code"].pop("fuzzy", None)
+            cart["functions"].pop("fuzzy", None)
+            cart["blobs"].pop("identified", None)
+            cart.pop("unknown", None)
+        path.write_text(json.dumps(doc))
+        model = self.model()
+        self.assertTrue(model.footer.startswith("landed today 2 · RW us functions"), model.footer)
+        self.assertNotIn("unavailable", model.footer)
+
+    def test_daily_footer_uses_local_dates(self):
+        pane = ActivityPane({})
+        source = SimpleNamespace(
+            landings={
+                "a": {"time": "2000-01-01T12:00:00+00:00", "payload": {"functions": ["Old"]}},
+                "b": {"time": datetime.now().astimezone().isoformat(), "payload": {"functions": ["Current"]}},
+            }
+        )
+        self.assertEqual(pane.landed_today(source), 1)
 
 
 STAMP = "2026-10-18T12:00:00+00:00"

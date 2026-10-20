@@ -13,7 +13,7 @@ original 9/9`: the candidate and the original ran on the same captured inputs an
 with Recipe's proposal, plus Cake Taste probes. Tool failures read `tool verb  failed: reason-key`; identical rows fold
 into the newest with a count (kit.fold). A row's lane is a tag at its end, not a pane. Expanding a row shows the
 operation's values and the function's earlier trials. The footer counts the functions landed today
-(`Fix N ... stand-ins` commit messages) and shows the progress.json function and code figures.
+(successful shipped events, deduplicated by function) and shows the progress.json function and code figures.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from .dashboard_model import Row, event_epoch
 from .feed import canonical_kind
 from .human import block, payload_of, percent_matched, sentence
 
-LANDED = re.compile(r"\bFix (\d+) \S+ stand-ins?\b")
 OPS = ("attempt", "submit", "behave")
 ITEM_VERBS = ("try", "work", "skip")  # recipe verbs that name one function
 REASON = re.compile(r"(?:^|\s)([a-z][\w-]*(?:\.[\w-]+)+):")  # a finding key: score.inactive, land.request
@@ -232,19 +231,19 @@ class ActivityPane:
         return [f"{len(rows)} rows", f"{cracked} cracked" if cracked else "", f"{failing} failures" if failing else ""]
 
     def landed_today(self, sources: Any) -> int:
-        today, total = time.strftime("%Y-%m-%d"), 0
-        for records in sources.records.values():
-            for event in records:
-                if canonical_kind(event) != "LAND":
-                    continue
-                try:
-                    when = datetime.fromisoformat(str(event.get("time"))).astimezone()
-                except ValueError:
-                    continue
-                found = LANDED.search(str(event.get("message", "")).partition(" ")[2].partition(" ")[2])
-                if found and when.strftime("%Y-%m-%d") == today:
-                    total += int(found[1])
-        return total
+        today, functions = time.strftime("%Y-%m-%d"), set()
+        for event in sources.landings.values():
+            try:
+                when = datetime.fromisoformat(str(event.get("time"))).astimezone()
+            except ValueError:
+                continue
+            if when.strftime("%Y-%m-%d") == today:
+                functions.update(
+                    name
+                    for name in payload_of(event).get("functions", [])
+                    if name not in {"NON_MATCHING", "INCLUDE_ASM"}
+                )
+        return len(functions)
 
     def footer(self, sources: Any) -> str:
         parts = [f"landed today {self.landed_today(sources)}"]
@@ -262,6 +261,6 @@ class ActivityPane:
                     f" code {100 * cart['code_matched'] / cart['code_total']:.2f}%"
                     f" ({cart['code_matched']:,} of {cart['code_total']:,} bytes)"
                 )
-            except (KeyError, ValueError, TypeError):
+            except (KeyError, ValueError, TypeError, ZeroDivisionError):
                 parts.append(f"{label} progress unavailable")
         return " · ".join(parts)
