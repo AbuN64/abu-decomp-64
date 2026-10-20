@@ -95,6 +95,75 @@ class TraceTests(unittest.TestCase):
             "boot-step: out of oracle order: delta (order 4) before gamma_fn (order 3)",
             "boot-step: census 3/6 hit, 4 watched, last delta (order 4), next in oracle order gamma_fn (order 3)",
         ])
+    @unittest.skipUnless(args.m32, "lockstep return trampolines on i386 only")
+    def test_lockstep_guest_shutdown_returns_through_host_entry(self):
+        self.generate()
+        (self.path / "game.c").write_text(r"""
+#include "n64c_os.h"
+#include "n64c_internal.h"
+static OSMesgQueue queue;
+static OSMesg slot[1];
+static OSThread threads[3];
+static int returned;
+__attribute__((noinline)) void alpha(void) {
+    OSMesg message;
+    osRecvMesg(&queue, &message, OS_MESG_BLOCK);
+    returned++;
+}
+__attribute__((noinline)) void beta(void) {
+    osDestroyThread(NULL);
+    returned++;
+}
+static void blocked(void *unused) { (void)unused; alpha(); }
+static void destroyed(void *unused) { (void)unused; beta(); }
+int real_main(void) {
+    n64c_sched_reset();
+    osCreateMesgQueue(&queue, slot, 1);
+    osCreateThread(&threads[0], 1, blocked, NULL, NULL, 10);
+    osCreateThread(&threads[1], 2, blocked, NULL, NULL, 20);
+    osStartThread(&threads[0]); osStartThread(&threads[1]);
+    n64c_sched_run_idle();
+    if (n64c_sched_waiting() != 2) return 1;
+    n64c_sched_reset(); /* both live alpha frames have lockstep return hooks */
+    if (returned || n64c_sched_alive()) return 2;
+    osCreateThread(&threads[2], 3, destroyed, NULL, NULL, 10);
+    osStartThread(&threads[2]);
+    n64c_sched_run_idle();
+    n64c_sched_reset(); /* beta destroyed itself through the same host boundary */
+    return returned || n64c_sched_alive();
+}
+""")
+        (self.path / "driver.c").write_text(r"""
+#include "trace.h"
+#include <stdint.h>
+static unsigned char ram[0x400000];
+void *n64c_memory_ram(unsigned physical, unsigned bytes) {
+    return physical <= sizeof ram && bytes <= sizeof ram - physical ? ram + physical : 0;
+}
+unsigned n64c_memory_physical(const void *p) { return (unsigned)(uintptr_t)p; }
+void n64c_fpu_thread_start(void) {}
+void n64c_vi_interrupt(void) {}
+extern int real_main(void);
+int main(void) { n64c_trace_init(); return real_main(); }
+""")
+        objects = []
+        for source, extra in [(self.path / "game.c", ["-finstrument-functions", "-fno-omit-frame-pointer"]),
+                              (self.path / "driver.c", []), (ROOT / "trace.c", []),
+                              (ROOT.parent / "n64c_sched.c", []), (self.path / "out/trace_table.c", [])]:
+            obj = self.path / (source.stem + ".o")
+            subprocess.run([args.compiler, "-m32", "-O1", *extra, "-I" + str(ROOT), "-I" + str(ROOT.parent),
+                            "-c", str(source), "-o", str(obj)], check=True, capture_output=True, text=True)
+            objects.append(str(obj))
+        exe = self.path / "shutdown"
+        subprocess.run([args.compiler, "-m32", "-no-pie", *objects, "-ldl", "-lpthread", "-o", str(exe)],
+                       check=True, capture_output=True, text=True)
+        result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=5,
+                                env={"N64C_LOCKSTEP": "1", "N64C_LOCKSTEP_DIR": str(self.path / "lockstep")})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("boot-lockstep:", result.stderr)
+        points = [json.loads(line) for line in (self.path / "lockstep/lockstep.jsonl").read_text().splitlines()]
+        self.assertEqual([p["order"] for p in points if p["k"] == "call"], [1, 1, 2])
+
     @unittest.skipUnless(args.m32, "run-on returns from frames on i386 only")
     def test_run_on_lists_every_failure_and_goes_on(self):
         # One boot meets an unlinked call, a NULL read, a divide by zero, a spin, an uncovered DMA and a refused

@@ -9,6 +9,7 @@
 #include "n64c_memory.h"
 #include "n64c_system.h"
 #include <pthread.h>
+#include <setjmp.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -17,6 +18,7 @@ typedef struct HostThread {
     OSThread *os;
     pthread_t th;
     pthread_cond_t cv;
+    jmp_buf exit;              /* return to the host entry without unwinding guest frames */
     void (*entry)(void *);
     void *arg;
     int created, finished;
@@ -117,7 +119,7 @@ static void wait_baton(HostThread *h)
         pthread_cond_wait(&h->cv, &big);
     if (quitting) {
         pthread_mutex_unlock(&big);
-        pthread_exit(NULL);
+        longjmp(h->exit, 1);
     }
 }
 static void *thread_main(void *p)
@@ -125,6 +127,11 @@ static void *thread_main(void *p)
     HostThread *h = p;
     pthread_once(&key_once, key_init);
     pthread_setspecific(self_key, h);
+    /* Guest stacks can contain instrumented return trampolines or fault-recovery frames.
+     * pthread_exit forces a host unwind through them. End the guest at this boundary instead,
+     * then return normally so pthread cleanup runs on the host entry frame. */
+    if (setjmp(h->exit))
+        return NULL;
     pthread_mutex_lock(&big);
     wait_baton(h);
     pthread_mutex_unlock(&big);
@@ -383,7 +390,7 @@ void osDestroyThread(OSThread *t)
         trace("destroy-self", t);
         dispatch();
         pthread_mutex_unlock(&big);
-        pthread_exit(NULL);
+        longjmp(h->exit, 1);
     }
     pthread_mutex_unlock(&big);
 }
@@ -582,7 +589,7 @@ void n64c_sched_halt(void)
     trace("halt", h->os);
     baton = NULL;
     pthread_cond_signal(&host_cv);
-    wait_baton(h); /* returns only through quitting (pthread_exit) */
+    wait_baton(h); /* quitting returns through the host entry boundary */
     abort();
 }
 int n64c_sched_halted(void)
