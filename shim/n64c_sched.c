@@ -21,6 +21,7 @@ typedef struct HostThread {
     void *arg;
     int created, finished;
     int faulted;                /* stopped by a CPU fault until osStartThread resumes it */
+    int idle;                   /* the running thread set its own priority to 0: parked off the run queue */
     struct HostThread *runnext; /* run queue link */
 } HostThread;
 
@@ -393,6 +394,32 @@ void osSetThreadPri(OSThread *t, OSPri pri)
     OSThread *tt = t ? t : (cur ? cur->os : NULL);
     if (tt) {
         tt->priority = pri;
+        HostThread *th = hostof(tt);
+        /* OS_PRIORITY_IDLE: a thread that lowers itself to 0 is the console's idle loop. On hardware the retrace
+         * interrupt preempts it; here nothing preempts a host thread, so it would hold the baton against the host
+         * driver for good and no retrace would be posted. It is parked off the run queue instead (it never has
+         * work); raising its priority again makes it runnable. */
+        if (th->idle && pri > 0) {
+            th->idle = 0;
+            runq_insert(th);
+            if (cur && baton == cur && th->os->priority > cur->os->priority) {
+                runq_insert(cur);
+                switch_away(cur);
+            }
+            pthread_mutex_unlock(&big);
+            return;
+        }
+        if (pri == 0 && cur && th == cur && baton == cur) {
+            cur->idle = 1;
+            trace("idle", tt);
+            switch_away(cur);
+            pthread_mutex_unlock(&big);
+            return;
+        }
+        if (th->idle) {
+            pthread_mutex_unlock(&big);
+            return;
+        }
         if (tt->state == OS_STATE_RUNNABLE) {
             runq_remove(hostof(tt));
             runq_insert(hostof(tt));

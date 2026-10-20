@@ -119,6 +119,14 @@ static void after_halt(void *p)
     (void)p;
     L("A%d ", 1);
 }
+static void idle_thread(void *p)
+{
+    (void)p;
+    L("I ", 0);
+    osSetThreadPri(NULL, 0);
+    for (;;) { __asm__ volatile(""); } /* the original's final 'jmp .' */
+}
+static void after_idle(void *p) { (void)p; L("N", 0); }
 int main(void)
 {
     N64cConfig cfg = {0};
@@ -216,6 +224,15 @@ int main(void)
     osStartThread(&sth[1]);
     n64c_run_idle();
     expect("spin_sees_time", "T5 S1 ");
+    /* D: a thread that lowers itself to priority 0 and spins gives the baton back to the host */
+    static OSThread ith[2];
+    osCreateThread(&ith[0], 11, idle_thread, 0, 0, 20);
+    osStartThread(&ith[0]);
+    n64c_run_idle();
+    osCreateThread(&ith[1], 12, after_idle, 0, 0, 5);
+    osStartThread(&ith[1]);
+    n64c_run_idle();
+    expect("idle_loop_yields", "I N");
     /* E: a halting guest parks for good; the host owns the baton and runs nothing again until shutdown */
     static OSThread hth[2];
     L("h%d ", n64c_sched_halted());
