@@ -14,7 +14,7 @@ requires-python = ">=3.13"
 # each installed tool against them, so this table is the only place a pin is written.
 dependencies = [
   "textual==8.2.8",
-  "unbake @ git+https://github.com/AbuN64/cake-unbake-64@cc3c92f5cec299afe8148130753cb6ddbbe64e0d",
+  "unbake @ git+https://github.com/AbuN64/cake-unbake-64@78c6ad35107bde293299b4e16c634aab302c78c6",
   "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@32f0ce9ecc2376f1b40f7ce46d0addff948f00ed",
   "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@3e76dbffb14cf4201030911d667be63fdeee0660",
 ]
