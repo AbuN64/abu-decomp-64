@@ -110,6 +110,8 @@ static void child_failure(int kind,int expected)
         else if (kind==2) osUnmapTLB(32);
         else if (kind==3) (void)*(volatile u32 *)(uintptr_t)0x00800000u; /* unmapped guest virtual page */
         else if (kind==4) { volatile u32 *volatile host=(volatile u32 *)(uintptr_t)0x10u; (void)*host; } /* host null page */
+        else if (kind==5) ((void (*)(void))(uintptr_t)0x00239FBCu)(); /* call through a raw KUSEG code word */
+        else if (kind==6) ((void (*)(void))(uintptr_t)0x80001000u)(); /* call through a raw KSEG0 code word */
         else *(volatile u32 *)(uintptr_t)0xB0000000u=0; /* immutable ROM */
         _Exit(99);
     }
@@ -279,6 +281,8 @@ int main(void)
     child_failure(1,SIGSEGV);
     child_failure(3,78); /* a TLB miss is a named boot stop */
     child_failure(4,SIGSEGV); /* a host fault stays a crash */
+    child_failure(5,78); /* a call into guest memory is a named boot stop (code-pointer-<address>) */
+    child_failure(6,78);
     n64c_shutdown();
     CHECK(n64c_memory_ram(0,1)==NULL);
     struct sigaction action;

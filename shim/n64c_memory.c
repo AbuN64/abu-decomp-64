@@ -81,9 +81,27 @@ static _Noreturn void tlb_miss_stop(u32 address)
     (void)write(STDERR_FILENO,line,sizeof line-1);
     _Exit(78);
 }
+/* The CPU jumped to a guest address: a call through a code pointer the data holds as the original's raw value
+ * (KSEG0 0x80xxxxxx or a KUSEG alias), which is no native function. Native code never runs from guest memory, so
+ * the boot stops by name instead of the fault reaching the guest's own fault service. */
+static _Noreturn void code_pointer_stop(u32 address)
+{
+    char line[]="boot-missing: code-pointer-00000000\n";
+    static const char hex[]="0123456789abcdef";
+    for (int i=0;i<8;i++) line[sizeof line-3-i]=hex[(address>>(4*i))&15u];
+    (void)write(STDERR_FILENO,line,sizeof line-1);
+    _Exit(78);
+}
+static int guest_code_fetch(const ucontext_t *context,uintptr_t address)
+{
+    if ((uintptr_t)context->uc_mcontext.gregs[REG_EIP]!=address || !ram_size) return 0;
+    return guest_virtual(address) || (address>=0x80000000u && address<0xC0000000u);
+}
 static void signal_handler(int signal_number,siginfo_t *info,void *opaque)
 {
     ucontext_t *context=opaque;
+    if (signal_number==SIGSEGV && guest_code_fetch(context,(uintptr_t)info->si_addr))
+        code_pointer_stop((u32)(uintptr_t)info->si_addr);
     if (signal_number==RESUME_SIGNAL && transaction.stage==3) {
         *context=transaction.saved;
         transaction.stage=0;
