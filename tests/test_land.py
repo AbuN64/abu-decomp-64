@@ -483,6 +483,7 @@ class LandTests(unittest.TestCase):
         groups = {g["lane"]: g["files"] for g in result["groups"]}
         self.assertEqual(groups, {"one": ["a.c", sizes], "two": ["b.c"]})
         self.assertEqual(result["generated"], [sizes])
+        self.assertEqual(self.unbake.count(("setup",)), 1)  # the prefixes sync, they never set up again
 
     def test_without_union_paths_the_second_append_conflicts_and_is_refused(self):
         addrs = "versions/us/symbol_addrs.txt"

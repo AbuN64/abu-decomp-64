@@ -18,7 +18,7 @@ Gates, in order; the first failure stops the run and the rest are reported as sk
                are never applied from an input: they are dropped from every patch up front (a non-blocking
                `land.regenerated` finding names them) and `unbake sync` regenerates them. With
                two or more inputs, the regenerated files go in the commit of the input whose sources caused the
-               change (prefix builds of setup + sync find it), the rest (README, SVG) in the last.
+               change (a `unbake sync` per prefix of the inputs finds it), the rest (README, SVG) in the last.
                function counts as converted only when every file of the patch that mentions it landed (otherwise a
                `land.function_split` finding names it). No patch landing at all fails the gate.
                Within a round a function two patches both carry lands once: a later patch's change block that an
@@ -1665,9 +1665,11 @@ class Landing:
         return [f for f in self.changed_files() if f not in named]
 
     def attribute(self) -> bool:
-        """Give each regenerated file to the input whose sources caused the change: the round is rebuilt with growing
-        prefixes of the inputs (setup + sync only, no check build) and a file belongs to the first prefix after which
-        it reads as it does in the end. A failure to do so leaves them with the last input (`land.regenerated_late`)."""
+        """Give each regenerated file to the input whose sources caused the change: the round is synced again with
+        growing prefixes of the inputs and a file belongs to the first prefix after which it reads as it does in the
+        end. Only `unbake sync` runs per prefix: what it writes reads the sources and the ROM, never the extraction or
+        the objects (10-20: a setup per prefix cost a 13-input round 12 setups). A failure to do so leaves them with
+        the last input (`land.regenerated_late`)."""
         files = [f for f in self.generated_files() if self.is_generated(f, "")]  # README, SVG: the check's, the last's
         inputs = self.applied()
         if not files or len(inputs) < 2:
@@ -1682,8 +1684,8 @@ class Landing:
                 skip = {i: "left out of an attribution build" for i in inputs[keep + 1 :]}
                 if not self.replay(skip):
                     raise LandError("land.attribute", "replay failed")
-                if not all(self.unbake_quiet(a) for a in ("setup", "sync")):
-                    raise LandError("land.attribute", "setup or sync failed")
+                if not self.unbake_quiet("sync"):  # what sync writes reads the sources and the ROM, never the build
+                    raise LandError("land.attribute", "sync failed")
                 for f in files:
                     path = self.tree / f
                     if (path.read_bytes() if path.is_file() else None) != wanted[f]:
