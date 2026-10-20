@@ -100,8 +100,13 @@ class Supervisor:
         atomic_json(self.status_path, self.status())
         self.on_change()
 
+    def release_link(self) -> Path:
+        """Resolve the parent, retaining the pin's name so promotions remain observable."""
+        path = Path(self.config["release_current"]).expanduser()
+        return self.profile.resolve_path(str(path.parent)) / path.name
+
     def _command(self, run_dir: Path) -> tuple[list[str], dict[str, str], Path]:
-        link = self.profile.resolve_path(self.config["release_current"])
+        link = self.release_link()
         release = link.resolve(strict=True)
         runtime = Path(self.profile.runtime_root).resolve()
         if not release.is_relative_to(runtime):
@@ -332,7 +337,7 @@ class Supervisor:
 
     def release_changed(self, watcher: Watcher) -> None:
         """A promoted pin wakes even a debugger-held run; unrelated directory writes do nothing."""
-        link = self.profile.resolve_path(self.config["release_current"])
+        link = self.release_link()
         if (
             any(path == link for path, _mask in watcher.read())
             and self.current_release is not None
@@ -342,7 +347,7 @@ class Supervisor:
 
     async def manage(self) -> None:
         self.runs_root.mkdir(parents=True, exist_ok=True)
-        link = self.profile.resolve_path(self.config["release_current"])
+        link = self.release_link()
         watcher = Watcher()
         loop = asyncio.get_running_loop()
         try:

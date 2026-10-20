@@ -143,6 +143,50 @@ class PanesTests(unittest.TestCase):
             asyncio.run(scenario())
             self.assertTrue(supervisor.restart.is_set())
 
+    def test_real_profile_preserves_the_pin_name_after_resolving_its_parent(self):
+        from abu_decomp.config import load_profile
+        from abu_decomp.supervisor import SupervisorProfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            release = root / "runtime/releases/one"
+            release.mkdir(parents=True)
+            other = release.with_name("two")
+            other.mkdir()
+            link = release.with_name("current")
+            link.symlink_to(release)
+            config = {
+                "release_current": "runtime/releases/current",
+                "status_path": "status.json",
+                "runs_root": "runs",
+                "retry_delay_seconds": 30,
+                "watchdog_seconds": 90,
+            }
+            path = root / "seat.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "name": "real",
+                        "supervisor": {"runtime_root": "runtime", "roles": {"test": config}},
+                    }
+                )
+            )
+            profile = SupervisorProfile(load_profile(path))
+            # Ordinary profile paths follow symlinks. Watchers must retain the mutable final component.
+            self.assertEqual(profile.resolve_path(config["release_current"]), release)
+            supervisor = Supervisor(profile, "test", config)
+            self.assertEqual(supervisor.release_link(), link)
+            supervisor.current_release = release
+            replacement = link.with_name("next")
+            replacement.symlink_to(other)
+            replacement.replace(link)
+            watcher = mock.Mock()
+            watcher.read.return_value = [(link, 128)]
+            supervisor.release_changed(watcher)
+            self.assertTrue(supervisor.restart.is_set())
+            self.assertEqual(supervisor.release_link().resolve(), other)
+
     def test_without_auto_retry_a_failure_is_held_until_restart_is_requested(self):
         async def scenario(supervisor):
             task = asyncio.create_task(supervisor._countdown())
