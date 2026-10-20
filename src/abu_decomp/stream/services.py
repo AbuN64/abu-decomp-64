@@ -122,9 +122,21 @@ def up_needs_restart(run_dir: Path, live: Path) -> str | None:
     return None
 
 
-def held(paths: list[str]) -> list[str]:
-    """The lock files among `paths` that another process holds now (non-blocking probe, released at once)."""
-    busy = []
+def take(paths: list[str]) -> tuple[list[str], Callable[[], None]]:
+    """Take every lock file among `paths` at once, or none. (busy paths, release); busy is empty when all are held.
+    Taken, not probed: the holders run back to back (the build cycle's `build once`), so a probe every few seconds
+    almost never sees all of them free; holding them across the restart guarantees the window. Their owners refuse
+    cleanly while held (`build once` returns busy, repin returns 3)."""
+    handles: list[int] = []
+
+    def release() -> None:
+        for handle in handles:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+            finally:
+                os.close(handle)
+        handles.clear()
+
     for value in paths:
         try:
             handle = os.open(value, os.O_RDWR)
@@ -132,12 +144,12 @@ def held(paths: list[str]) -> list[str]:
             continue
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(handle, fcntl.LOCK_UN)
         except BlockingIOError:
-            busy.append(value)
-        finally:
             os.close(handle)
-    return busy
+            release()
+            return [value], release
+        handles.append(handle)
+    return [], release
 
 
 def signal_unit(run_dir: Path, up: dict[str, Any], name: str) -> dict[str, Any]:
@@ -189,7 +201,7 @@ def restart_stale(
     signal_one: Callable[..., dict[str, Any]] = signal_unit,
     restart_stream: Callable[[], None] | None = None,
     wait: Callable[..., bool] = wait_back,
-    held_locks: Callable[[list[str]], list[str]] = held,
+    take_locks: Callable[[list[str]], tuple[list[str], Callable[[], None]]] = take,
     clock=time.monotonic,
     sleep=time.sleep,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -202,26 +214,27 @@ def restart_stale(
     config = up.get("restart", {})
     done: list[dict[str, Any]] = []
 
-    def blocked() -> list[dict[str, Any]]:
+    def locked() -> tuple[list[dict[str, Any]], Callable[[], None]]:
         deadline = clock() + timeout
-        while busy := held_locks(list(config.get("hold_locks", []))):
+        while True:
+            busy, release = take_locks(list(config.get("hold_locks", [])))
+            if not busy:
+                return [], release
             if clock() > deadline:
-                return [
-                    {
-                        "key": "deploy.restart_busy",
-                        "blocking": True,
-                        "message": f"restart waited {timeout:g}s for {busy}",
-                    }
-                ]
-            sleep(2)
-        return []
+                message = f"restart waited {timeout:g}s for {busy}"
+                return [{"key": "deploy.restart_busy", "blocking": True, "message": message}], release
+            sleep(0.1)
 
     if (why := up_needs_restart(run_dir, live)) and restart_stream is not None:
-        if findings := blocked():
+        findings, release = locked()
+        if findings:
             return done, findings
         names = [r["name"] for r in rows(run_dir) if r["name"] != UP and alive(r["pid"])]
         before = {n: (read(run_dir, n) or {}).get("starts", 0) for n in [UP, *names]}
-        restart_stream()
+        try:
+            restart_stream()  # synchronous stop + start; the locks only guard the stop, not the health wait
+        finally:
+            release()
         done.append({"unit": UP, "action": "restart stream unit", "why": why})
         bad = [n for n in [UP, *names] if not wait(run_dir, n, before[n], live, timeout, settle)]
         if bad:
@@ -233,10 +246,14 @@ def restart_stale(
         if up.get("roles", {}).get(name, {}).get("player"):
             done.append({"unit": name, "action": "skipped", "why": "the viewer's playable role"})
             continue
-        if findings := blocked():
+        findings, release = locked()
+        if findings:
             return done, findings
         before = row["starts"]
-        signal_one(run_dir, up, name)
+        try:
+            signal_one(run_dir, up, name)
+        finally:
+            release()
         ok = wait(run_dir, name, before, live, timeout, settle)
         done.append({"unit": name, "action": "restart", "ok": ok})
         if not ok:

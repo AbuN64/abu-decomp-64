@@ -77,11 +77,48 @@ class ServicesTests(unittest.TestCase):
             self.live,
             timeout=150,
             signal_one=lambda *a: 1 / 0,
-            held_locks=lambda paths: paths,
+            take_locks=lambda paths: (paths, lambda: None),
             clock=lambda: next(ticks),
             sleep=lambda s: None,
         )
         assert findings[0]["key"] == "deploy.restart_busy"
+
+    def test_locks_are_taken_around_the_restart_and_released_before_the_health_wait(self):
+        self.put("sup", self.old)
+        self.swap()
+        lock = self.root / "run.lock"
+        lock.write_text("")
+        up = {**self.up, "restart": {"hold_locks": [str(lock)]}}
+        seen = {}
+
+        def busy():
+            return services.take([str(lock)])
+
+        def signal_one(*a):
+            seen["during"], release = busy()
+            release()
+            return {}
+
+        def wait(*a):
+            seen["after"], release = busy()
+            release()
+            return True
+
+        done, findings = services.restart_stale(self.run_dir, up, self.live, signal_one=signal_one, wait=wait, settle=0)
+        assert not findings and done[0]["unit"] == "sup"
+        assert seen == {"during": [str(lock)], "after": []}
+
+    def test_take_is_all_or_none(self):
+        free, held = self.root / "a.lock", self.root / "b.lock"
+        free.write_text("")
+        held.write_text("")
+        busy, release_other = services.take([str(held)])
+        assert busy == []
+        busy, release = services.take([str(free), str(held)])
+        assert busy == [str(held)]
+        release()
+        assert services.take([str(free)])[0] == []  # the partial take of `free` was given back
+        release_other()
 
     def test_up_restarts_its_unit_only_when_its_own_code_changed(self):
         for venv in (self.old, self.new):
