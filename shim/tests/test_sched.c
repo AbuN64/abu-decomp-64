@@ -99,6 +99,15 @@ static void timer_waiter(void *p)
         L("T%d ", (int)m.data32);
     }
 }
+/* spinner: waits 3 ms of Count in a loop that only reads the clock */
+static void spinner(void *p)
+{
+    (void)p;
+    OSTime start = osGetTime();
+    while (osGetTime() - start < (OSTime)OS_CPU_COUNTER * 3 / 1000)
+        ;
+    L("S%d ", 1);
+}
 static void halter(void *p)
 {
     (void)p;
@@ -194,6 +203,19 @@ int main(void)
     expect("vi_and_timers", "V0 c1 T1 T2 V0 V0 T2 V0 ");
     L("t%d", (int)(osGetTime() == ((OSTime)4 * OS_CPU_COUNTER * 1001) / 60000));
     expect("clock_exact", "t1");
+    /* F: a thread spinning on the clock sees time pass; a timer due inside the spin wakes a higher-priority
+     * waiter at once, and the spin then ends (on the console Count never stops for a running thread) */
+    static OSTimer tm_spin;
+    static OSThread sth[2];
+    static RecvArg rt = {"T", 2};
+    osCreateThread(&sth[0], 9, receiver_once, &rt, 0, 30);
+    osStartThread(&sth[0]);
+    n64c_run_idle();
+    osSetTimer(&tm_spin, OS_CPU_COUNTER / 1000, 0, &q[2], m32(5));
+    osCreateThread(&sth[1], 10, spinner, 0, 0, 10);
+    osStartThread(&sth[1]);
+    n64c_run_idle();
+    expect("spin_sees_time", "T5 S1 ");
     /* E: a halting guest parks for good; the host owns the baton and runs nothing again until shutdown */
     static OSThread hth[2];
     L("h%d ", n64c_sched_halted());

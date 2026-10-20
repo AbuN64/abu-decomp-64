@@ -82,3 +82,13 @@ the pending Compare event and replaces its deadline. It does not cancel native
 software timers. The event uses the same CPU mask and deferred delivery as other
 interrupts; no original timer-manager thread is imported. Contract:
 [R4000 User's Manual, Compare register(11), p104](https://www.eecg.utoronto.ca/~moshovos/ACA/R4000.pdf#page=134).
+
+The virtual clock moves when the host advances it (frames, idle), and a guest
+thread holding the CPU keeps the host from running. So a thread that waits on
+the clock in a loop (a delay, or a fault handler's watchdog before it resets)
+would never see time pass: past 1024 `osGetTime`/`osGetCount` reads in one hold
+of the CPU, each read advances Count by 48 (about a microsecond, one loop pass)
+and timers that come due fire and preempt as on the console. Every TLB miss the
+guest's fault service gets is logged as `n64c-fault: TLB-miss-<address> load|store
+at host pc <pc>`, so a wild pointer the guest answers with its crash path names
+its code in the boot log.

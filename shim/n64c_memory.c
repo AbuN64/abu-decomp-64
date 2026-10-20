@@ -178,7 +178,11 @@ static _Noreturn void dispatch(void)
         if (ok) transaction.stage=3;
     } else if (transaction.stage==6) {
         /* TLB miss: MIPS exception code TLBL (2) for a load, TLBS (3) for a store, in Cause bits 2..6. The guest's
-         * fault service maps the page (osMapTLB) and restarts the thread; the access then runs again. */
+         * fault service maps the page (osMapTLB) and restarts the thread; the access then runs again. Every miss
+         * the guest gets is logged with the host instruction that took it, so a fault the guest service cannot
+         * resolve (a wild pointer it answers with its crash path) names its code in the boot log. */
+        fprintf(stderr,"n64c-fault: TLB-miss-%08x %s at host pc %#lx\n",(unsigned)transaction.physical,
+                transaction.write ? "store" : "load",(unsigned long)transaction.saved.uc_mcontext.gregs[REG_EIP]);
         if (!n64c_sched_fault((transaction.write ? 3u : 2u)<<2,transaction.physical))
             tlb_miss_stop(transaction.physical);
         transaction.stage=3;

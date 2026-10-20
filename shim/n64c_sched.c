@@ -55,6 +55,13 @@ static OSTimer *timers;            /* sorted by value (absolute due time) */
 static OSTime clock_now;
 static OSTime compare_deadline;
 static int compare_armed;
+/* A guest thread that keeps reading the clock without giving up the CPU is waiting on it (a delay or a fault
+ * handler's watchdog loop). On the console Count runs on regardless; here it moves only when the host advances
+ * it, and the spinning thread keeps the host from running by holding the baton, so the loop would never end.
+ * Past SPIN_POLLS reads in one hold of the baton, every read costs the time one loop pass takes (SPIN_TICKS of
+ * Count, about a microsecond at 46.875 MHz) and timers that come due fire as they would on the console. */
+enum { SPIN_POLLS = 1024, SPIN_TICKS = 48 };
+static unsigned clock_polls;       /* clock reads by the baton holder since the baton last moved */
 static void (*trace_sink)(const char *, void *);
 static void *trace_user;
 
@@ -91,6 +98,7 @@ static void runq_remove(HostThread *h)
 static void dispatch(void)
 {
     HostThread *n = runq;
+    clock_polls = 0;
     if (n) {
         runq = n->runnext;
         n->os->state = OS_STATE_RUNNING;
@@ -446,8 +454,24 @@ s32 osStopTimer(OSTimer *t)
     pthread_mutex_unlock(&big);
     return found;
 }
-OSTime osGetTime(void) { return clock_now; }
-u32 osGetCount(void) { return (u32)clock_now; }
+static OSTime clock_read(void)
+{
+    HostThread *h = self();
+    if (h) {
+        pthread_mutex_lock(&big);
+        int spinning = baton == h && ++clock_polls > SPIN_POLLS;
+        OSTime t = clock_now + SPIN_TICKS;
+        pthread_mutex_unlock(&big);
+        if (spinning)
+            n64c_clock_advance_to(t);
+    }
+    pthread_mutex_lock(&big);
+    OSTime now = clock_now;
+    pthread_mutex_unlock(&big);
+    return now;
+}
+OSTime osGetTime(void) { return clock_read(); }
+u32 osGetCount(void) { return (u32)clock_read(); }
 OSTime n64c_clock_now(void) { return clock_now; }
 /* R4000 User's Manual, Compare register(11): Count equality raises IP7;
  * writing Compare clears that interrupt. Use the existing virtual Count and
