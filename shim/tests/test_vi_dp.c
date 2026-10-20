@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* VI mode and special features (public osViSetMode/osViSetSpecialFeatures contract) and the RDP buffer handoff. */
+#define _GNU_SOURCE
 #include "../n64c_internal.h"
+#include <fenv.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -27,6 +29,79 @@ static void bad_features(void) { osViSetSpecialFeatures(0x100); }
 static void null_mode(void) { osViSetMode(NULL); }
 static u64 foreign[4];
 static void foreign_buffer(void) { osDpSetNextBuffer(foreign, sizeof foreign); }
+static int native_tasks, native_presentations;
+static unsigned read_mxcsr(void)
+{
+    unsigned value;
+    __asm__ volatile ("stmxcsr %0" : "=m" (value));
+    return value;
+}
+static void write_mxcsr(unsigned value)
+{
+    __asm__ volatile ("ldmxcsr %0" : : "m" (value));
+}
+static void host_defaults(void)
+{
+    CHECK(fegetexcept() == 0);
+    CHECK(fegetround() == FE_TONEAREST);
+    CHECK(fetestexcept(FE_ALL_EXCEPT) == 0);
+    CHECK((read_mxcsr() & ((1u << 15) | (1u << 6))) == 0);
+    /* This would deliver SIGFPE under the guest CPU's invalid-operation trap. */
+    CHECK(feraiseexcept(FE_INVALID | FE_INEXACT) == 0);
+    CHECK(fesetround(FE_UPWARD) == 0);
+}
+static void native_task(OSTask *task, void *user)
+{
+    (void)user;
+    host_defaults();
+    native_tasks++;
+    if (task->type == M_GFXTASK) {
+        OSTask nested = {0};
+        nested.type = M_AUDTASK;
+        osSpTaskStartGo(&nested);
+        CHECK(fegetexcept() == 0);
+        CHECK(fegetround() == FE_UPWARD);
+        CHECK(fetestexcept(FE_INVALID | FE_INEXACT) == (FE_INVALID | FE_INEXACT));
+    }
+}
+static void native_present(void *fb, void *user)
+{
+    (void)fb;
+    (void)user;
+    host_defaults();
+    native_presentations++;
+}
+static void guest_fpu_unchanged(void)
+{
+    CHECK(fegetexcept() == FE_INVALID);
+    CHECK(fegetround() == FE_DOWNWARD);
+    CHECK(fetestexcept(FE_ALL_EXCEPT) == FE_INEXACT);
+    CHECK((read_mxcsr() & ((1u << 15) | (1u << 6))) == ((1u << 15) | (1u << 6)));
+}
+static void callback_fpu_isolation(void)
+{
+    fenv_t saved;
+    CHECK(fegetenv(&saved) == 0);
+    CHECK(fedisableexcept(FE_ALL_EXCEPT) >= 0);
+    CHECK(feclearexcept(FE_ALL_EXCEPT) == 0);
+    CHECK(fesetround(FE_DOWNWARD) == 0);
+    CHECK(feraiseexcept(FE_INEXACT) == 0);
+    CHECK(feenableexcept(FE_INVALID) >= 0);
+    write_mxcsr(read_mxcsr() | (1u << 15) | (1u << 6));
+    n64c_set_task_handler(M_GFXTASK, native_task, NULL);
+    n64c_set_task_handler(M_AUDTASK, native_task, NULL);
+    n64c_set_present(native_present, NULL);
+    OSTask task = {0};
+    task.type = M_GFXTASK;
+    osSpTaskStartGo(&task);
+    CHECK(native_tasks == 2);
+    guest_fpu_unchanged();
+    (void)n64c_frame();
+    CHECK(native_presentations == 1);
+    guest_fpu_unchanged();
+    CHECK(fesetenv(&saved) == 0);
+}
+
 int main(void)
 {
     n64c_init(NULL);
@@ -67,6 +142,7 @@ int main(void)
     CHECK(rendered == 1);
     CHECK(osDpSetNextBuffer(output, output_size) == 0);
     CHECK(child_status(foreign_buffer) == 78);
+    callback_fpu_isolation();
     n64c_shutdown();
     printf("n64c_vi_dp: %s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;

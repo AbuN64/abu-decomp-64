@@ -6,6 +6,7 @@
 #include "n64c_audio.h"
 #include "n64c_memory.h"
 #include "n64c_system.h"
+#include <fenv.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,22 @@ static struct { N64cTaskFn fn; void *user; } handlers[3];
 static N64cPresentFn present_fn;
 static void *present_user;
 static u64 *rendered_output; /* output buffer of the last graphics task the native RSP ran */
+
+/* Native device callbacks execute host code, not guest CPU instructions. An RSP task must
+ * not inherit CPU traps or leak host exception flags back into the CPU. Stack-local state
+ * also preserves the immediate caller when callbacks nest. */
+static void host_fpu_enter(fenv_t *saved)
+{
+    if (fegetenv(saved) == 0 && fesetenv(FE_DFL_ENV) == 0) return;
+    fprintf(stderr, "boot-missing: host-FPU-enter\n");
+    _Exit(78);
+}
+static void host_fpu_leave(const fenv_t *saved)
+{
+    if (fesetenv(saved) == 0) return;
+    fprintf(stderr, "boot-missing: host-FPU-leave\n");
+    _Exit(78);
+}
 
 void n64c_set_task_handler(u32 type, N64cTaskFn fn, void *user)
 {
@@ -32,8 +49,12 @@ void osSpTaskLoad(OSTask *t) { (void)t; }
  * it would after the interrupt. The audio task is handed to the audio adapter, which owns the PCM sink. */
 void osSpTaskStartGo(OSTask *t)
 {
-    if (t->type < 3 && handlers[t->type].fn)
+    if (t->type < 3 && handlers[t->type].fn) {
+        fenv_t saved;
+        host_fpu_enter(&saved);
         handlers[t->type].fn(t, handlers[t->type].user);
+        host_fpu_leave(&saved);
+    }
     if (t->type == M_GFXTASK) {
         rendered_output = t->output_buff;
         n64c_event_post(OS_EVENT_DP);
@@ -86,7 +107,11 @@ int n64c_frame(void)
     n64c_clock_advance_to(n64c_vi_next_retrace_time());
     n64c_vi_retrace();
     n64c_sched_run_idle();
-    if (present_fn)
+    if (present_fn) {
+        fenv_t saved;
+        host_fpu_enter(&saved);
         present_fn(n64c_vi_current_fb(), present_user);
+        host_fpu_leave(&saved);
+    }
     return n64c_sched_alive();
 }
