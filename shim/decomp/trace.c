@@ -348,7 +348,13 @@ NOINST static void ls_call(Slot *slot, void *call_site, const unsigned long *reg
      * ebp is not an argument frame for this function. Never sample or trampoline it.
      * Keep the first-hit memory point and make the missing call coverage explicit. */
     const uintptr_t pc = regs[4] - 1;
-    if (pc < (uintptr_t)slot->fn || pc >= slot->end) {
+    /* Recursive inlining stays inside the same standalone symbol. Its logical
+     * parent still owns the physical frame, so the PC range alone is insufficient.
+     * trace_enter has already pushed this entry onto the logical stack. */
+    const N64cTraceStack *stack = own;
+    const int shared_frame = stack && (stack->depth > N64C_TRACE_DEPTH ||
+        (stack->depth > 1 && stack->frame[stack->depth - 2].frame == (void *)regs[3]));
+    if (shared_frame || pc < (uintptr_t)slot->fn || pc >= slot->end) {
         if (!__atomic_exchange_n(&slot->unframed, 1, __ATOMIC_RELAXED)) {
             char line[160];
             int n = snprintf(line, sizeof line,

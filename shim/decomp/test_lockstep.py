@@ -399,6 +399,17 @@ NI void leave(int n) { if (n > 0) leave(n - 1); if (n <= 0) longjmp(escape, 1); 
 static __attribute__((always_inline)) inline int bump(int x) { return x + 3; }
 static int (*volatile bump_ptr)(int) = bump;
 NI int inline_parent(int x) { return bump(x * 2) + x; }
+/* Mock the hooks emitted for an inlined recursive body: they stay inside
+ * this symbol and reuse its physical frame. Real recursion is tested by depth. */
+extern void __cyg_profile_func_enter(void *, void *);
+extern void __cyg_profile_func_exit(void *, void *);
+NI int recursive_inline(int value) {
+    void *site = __builtin_return_address(0);
+    __cyg_profile_func_enter((void *)recursive_inline, site);
+    int result = value + 3;
+    __cyg_profile_func_exit((void *)recursive_inline, site);
+    return result;
+}
 NI int run(void) {
     printf("add=%d\n", add(2, 3));
     printf("half=%g\n", (double)half(3.0f));
@@ -409,6 +420,9 @@ NI int run(void) {
     int sum = 0;
     for (int i = 0; i < 12; i++) sum += inline_parent(i);
     printf("inline=%d indirect=%d\n", sum, bump_ptr(7));
+    sum = 0;
+    for (int i = 0; i < 12; i++) sum += recursive_inline(i);
+    printf("recursive_inline=%d\n", sum);
     return 0;
 }
 """
@@ -416,8 +430,8 @@ FIXTURE_TABLE = r"""#include "trace.h"
 const N64cTraceEntry n64c_trace_entries[] = {
     {1, 0x80001000u, 0, {"run"}}, {2, 0x80001100u, 0, {"add"}}, {3, 0x80001200u, 0, {"half"}},
     {4, 0x80001300u, 0, {"wide"}}, {5, 0x80001400u, 0, {"depth"}}, {6, 0x80001500u, 0, {"leave"}},
-    {7, 0x80001600u, 0, {"bump"}}, {8, 0x80001700u, 0, {"inline_parent"}}};
-const unsigned n64c_trace_count = 8;
+    {7, 0x80001600u, 0, {"bump"}}, {8, 0x80001700u, 0, {"inline_parent"}}, {9, 0x80001800u, 0, {"recursive_inline"}}};
+const unsigned n64c_trace_count = 9;
 /* This fixture executes original bodies only; no native bindings. */
 const N64cShimEntry n64c_shim_entries[] = {{0, 0}};
 const unsigned n64c_shim_count = 0;
@@ -461,13 +475,13 @@ class PortRecorderTests(unittest.TestCase):
             result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env=env, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.split(), ["add=5", "half=1.5", "wide=900000005", "depth=43", "after=2",
-                                                   "inline=234", "indirect=10"])
+                                                   "inline=234", "indirect=10", "recursive_inline=102"])
             self.assertIn("boot-lockstep: on, 1024 pages", result.stderr)
-            self.assertIn("boot-lockstep: 8 points written", result.stderr)
+            self.assertIn("boot-lockstep: 9 points written", result.stderr)
             self.assertNotIn("boot-shim-bind:", result.stderr)
             self.assertNotIn("boot-shim:", result.stderr)
             side = ls.Side(out, lambda r: r.get("order"))
-            self.assertEqual(sorted(side.points), [1, 2, 3, 4, 5, 6, 7, 8])
+            self.assertEqual(sorted(side.points), [1, 2, 3, 4, 5, 6, 7, 8, 9])
             self.assertEqual(side.meta["bytes"], "native")
             first = side.points[1][0]
             self.assertEqual(side.page(first[2])[:4], b"\x78\x56\x34\x12")
@@ -485,7 +499,7 @@ class PortRecorderTests(unittest.TestCase):
             # call budget or hijack inline_parent's return with fabricated samples.
             records = [json.loads(line) for line in (out / "lockstep.jsonl").read_text().splitlines()]
             skipped = [r for r in records if r["k"] == "unframed"]
-            self.assertEqual([r["order"] for r in skipped], [7])
+            self.assertEqual([r["order"] for r in skipped], [7, 9])
             self.assertEqual(list(side.calls[7]), [0])
             self.assertEqual(side.calls[7][0]["a"][0], "00000007")
             self.assertEqual(side.rets[7][0]["r"][0], "0000000a")
@@ -493,6 +507,10 @@ class PortRecorderTests(unittest.TestCase):
                              [f"{i:08x}" for i in range(8)])
             self.assertEqual([side.rets[8][i]["r"][0] for i in range(8)],
                              [f"{3 * i + 3:08x}" for i in range(8)])
+            self.assertEqual([side.calls[9][i]["a"][0] for i in range(8)],
+                             [f"{i:08x}" for i in range(8)])
+            self.assertEqual([side.rets[9][i]["r"][0] for i in range(8)],
+                             [f"{i + 3:08x}" for i in range(8)])
             self.assertEqual([w["new"] for w in side.watch], ["00000005", "00000028", "00000002"])
             plain = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30,
                                    env={"PATH": "/usr/bin:/bin"}, cwd=path, check=False)
