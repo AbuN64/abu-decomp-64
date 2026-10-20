@@ -2,7 +2,8 @@
 /* Byte-order descriptors of ROM resources (the rows of decomp/us_rev1.json "resources"), exercised through the PI
  * layer with hand-derived goldens: a menu-archive header (21 big-endian words), its 28-byte image records
  * (u32 u32 u16 u16 u16 u16 u16 u16 u32 u32), a resource directory (u32 table), and the menu archive's font records,
- * glyph tables, bitmap offsets, string index, resource map and the audio section table. Bytes outside a descriptor stay
+ * glyph tables, bitmap offsets, string index, resource map, the audio section table and an audio control bank container
+ * (record graph walked for its field widths). Bytes outside a descriptor stay
  * as in the ROM. */
 #include "../n64c_os.h"
 #include "../n64c_pi.h"
@@ -37,7 +38,7 @@ int main(void)
 {
     const char *path="n64c_resources_test.rom";
     enum { HEADER=0x40, IMAGES=0x40+0x54, DIRECTORY=0x140, TEXT=0x180 };
-    u8 rom[0x800]={0};
+    u8 rom[0xC00]={0};
     static const u32 words[21]={0x54,0x15fc,0x1650,0x60,0x16b0,0x58,0x1708,0x900,0x2008,8,0x2010,0x1888,0x3898,
         0x1b0,0x3a48,0x381f4,0x3bc3c,0x4c2b0,0x87eec,0x3358,0xffffffffu};
     for (unsigned i=0;i<21;i++) be32(rom+HEADER+4*i,words[i]);
@@ -81,6 +82,25 @@ int main(void)
         record[0xE]=0x7F;record[0xF]=0x81;
         for (unsigned h=0;h<4;h++) be16(record+0x10+2*h,0x2200+(r<<4)+h);
     }
+    /* an audio control bank container read in place (pointers linked at 0x00800000): header, bank file, bank, one
+     * instrument, one sound with envelope, key map and an ADPCM wave with loop and book; a copy with a misaligned
+     * sound pointer is refused at registration */
+    enum { CTL=0x800, CTL_BYTES=0x130, BADCTL=0xA00 };
+    u8 *c=rom+CTL;
+    be32(c,1);be32(c+4,0x800014);be32(c+8,0x12345678);
+    be16(c+0x14,0x4231);be16(c+0x16,1);be32(c+0x18,0x800020);
+    be16(c+0x20,1);c[0x22]=5;be32(c+0x24,22050);be32(c+0x28,0);be32(c+0x2C,0x800040);
+    c[0x40]=100;c[0x41]=64;be16(c+0x4C,200);be16(c+0x4E,1);be32(c+0x50,0x800060);
+    be32(c+0x60,0x800070);be32(c+0x64,0x800080);be32(c+0x68,0x800090);c[0x6C]=64;c[0x6D]=127;c[0x6E]=2;
+    be32(c+0x70,1000);be32(c+0x74,2000);be32(c+0x78,0x12345678);c[0x7C]=127;c[0x7D]=100;
+    c[0x80]=1;c[0x81]=127;c[0x82]=20;c[0x83]=90;c[0x84]=60;c[0x85]=0xF6;
+    be32(c+0x90,0x4000);be32(c+0x94,9000);c[0x98]=0;c[0x99]=1;be32(c+0x9C,0x8000B0);be32(c+0xA0,0x8000E0);
+    be32(c+0xB0,16);be32(c+0xB4,4000);be32(c+0xB8,3);
+    for (unsigned i=0;i<16;i++) be16(c+0xBC+2*i,0xFF00u+i);
+    be32(c+0xE0,2);be32(c+0xE4,2);
+    for (unsigned i=0;i<32;i++) be16(c+0xE8+2*i,(i*257u-4000u)&0xFFFFu);
+    memcpy(rom+BADCTL,c,CTL_BYTES);
+    be32(rom+BADCTL+0x50,0x800062);
     FILE *file=fopen(path,"wb");
     CHECK(file && fwrite(rom,1,sizeof rom,file)==sizeof rom && fclose(file)==0);
     N64cConfig config={.rom_path=path};
@@ -239,12 +259,52 @@ int main(void)
     memcpy(&w32,cue+56+0x1C,4);CHECK(w32==2);
     memcpy(&w16,cue+56+0x20,2);CHECK(w16==0x1110);
     memcpy(&w16,cue+56+0x38+0xC,2);CHECK(w16==0x1126);
+    CHECK(n64c_pi_register(CTL,CTL+CTL_BYTES,N64C_RES_ALCTL,"4")==-1);
+    CHECK(n64c_pi_register(BADCTL,BADCTL+CTL_BYTES,N64C_RES_ALCTL,NULL)==-1);
+    CHECK(n64c_pi_register(CTL,CTL+CTL_BYTES,N64C_RES_ALCTL,NULL)==0);
+    u8 ctlA[0x80],ctlB[CTL_BYTES-0x80];           /* two page-like reads split between records */
+    CHECK(osPiStartDma(NULL,0,OS_READ,CTL,ctlA,sizeof ctlA,&queue)==0);
+    event(1);
+    CHECK(osPiStartDma(NULL,0,OS_READ,CTL+0x80,ctlB,sizeof ctlB,&queue)==0);
+    event(1);
+    s16 h16;
+    memcpy(&w32,ctlA,4);CHECK(w32==1);
+    memcpy(&w32,ctlA+4,4);CHECK(w32==0x800014);
+    memcpy(&w32,ctlA+8,4);CHECK(w32==0x12345678);
+    memcpy(&h16,ctlA+0x14,2);CHECK(h16==0x4231);
+    memcpy(&w32,ctlA+0x18,4);CHECK(w32==0x800020);
+    memcpy(&h16,ctlA+0x20,2);CHECK(h16==1);
+    CHECK(ctlA[0x22]==5);
+    memcpy(&w32,ctlA+0x24,4);CHECK(w32==22050);
+    memcpy(&w32,ctlA+0x2C,4);CHECK(w32==0x800040);
+    CHECK(ctlA[0x40]==100 && ctlA[0x41]==64);
+    memcpy(&h16,ctlA+0x4C,2);CHECK(h16==200);
+    memcpy(&h16,ctlA+0x4E,2);CHECK(h16==1);
+    memcpy(&w32,ctlA+0x68,4);CHECK(w32==0x800090);
+    CHECK(ctlA[0x6C]==64 && ctlA[0x6D]==127 && ctlA[0x6E]==2);
+    memcpy(&w32,ctlA+0x78,4);CHECK(w32==0x12345678);
+    CHECK(ctlA[0x7C]==127 && ctlA[0x7D]==100);
+    CHECK(ctlB[0]==1 && ctlB[2]==20 && ctlB[5]==0xF6);   /* the key map stays bytes */
+    memcpy(&w32,ctlB+0x10,4);CHECK(w32==0x4000);
+    memcpy(&w32,ctlB+0x14,4);CHECK(w32==9000);
+    CHECK(ctlB[0x18]==0 && ctlB[0x19]==1);
+    memcpy(&w32,ctlB+0x20,4);CHECK(w32==0x8000E0);
+    memcpy(&w32,ctlB+0x38,4);CHECK(w32==3);
+    memcpy(&h16,ctlB+0x3C,2);CHECK(h16==(s16)0xFF00);
+    memcpy(&h16,ctlB+0x3C+30,2);CHECK(h16==(s16)0xFF0F);
+    memcpy(&w32,ctlB+0x64,4);CHECK(w32==2);
+    memcpy(&h16,ctlB+0x68,2);CHECK(h16==-4000);
+    memcpy(&h16,ctlB+0x68+62,2);CHECK(h16==31*257-4000);
+    CHECK(osPiStartDma(NULL,0,OS_READ,CTL+0x92,cut,4,&queue)==-1);   /* starts inside the wave length */
+    event(0);
+    CHECK(osPiStartDma(NULL,0,OS_READ,CTL+0x90,cut,6,&queue)==-1);   /* ends inside it */
+    event(0);
     u8 cueTail[0x20];
     CHECK(osPiStartDma(NULL,0,OS_READ,CUE+56+0x20,cueTail,sizeof cueTail,&queue)==0);  /* starts at the second container's records */
     event(1);
     memcpy(&w16,cueTail,2);CHECK(w16==0x1110);
     n64c_shutdown();
     CHECK(remove(path)==0);
-    printf("PI resource descriptors: %d checks; swap32 header, image and font records, glyphs, offsets, map, audio table, directory, raw text, tagged widget pages, refusals\n",checks);
+    printf("PI resource descriptors: %d checks; swap32 header, image and font records, glyphs, offsets, map, audio table, directory, raw text, tagged widget pages, audio control bank, refusals\n",checks);
     return 0;
 }

@@ -112,6 +112,11 @@ ALBankFile *n64c_al_bnkf_read(ALHeap *heap, const u8 *ctl, s32 len, u32 fileOffs
 /* The container header: a count, then per file an offset (flag bits included) and one auxiliary word. Returns the
  * count (0 when malformed) and stores the n-th file's byte offset in *fileOffset (may be NULL). */
 s32 n64c_al_ctl_file(const u8 *ctl, s32 len, s32 n, u32 *fileOffset);
+/* Byte-order map of a whole container used in place (the PI layer turns its fields to host order on DMA): widths[i]
+ * is 2 or 4 where a multibyte field of a header, bank file, bank, instrument, sound, envelope, wave table, ADPCM loop,
+ * ADPCM book or raw loop starts, else 0. Every record reachable from the header is visited once. Returns 0 when the
+ * container is malformed (an offset, count or field outside [0, len), misaligned, or two widths at one byte). */
+int n64c_al_ctl_widths(const u8 *ctl, s32 len, u8 *widths);
 /* ---- synthesizer driver ---- */
 typedef s32 (*ALDMAproc)(s32 addr, s32 len, void *state);
 typedef ALDMAproc (*ALDMANew)(void **state);

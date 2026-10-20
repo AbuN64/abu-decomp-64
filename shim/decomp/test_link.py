@@ -193,6 +193,18 @@ int main(void) { return n64c_boot_entry(); }
                 change(bad["resources"][0])
                 with self.assertRaises(ValueError):
                     self.generate(bad)
+    def test_audio_control_bank_descriptor(self):
+        # a control bank container read in place: the PI layer walks its record graph, so the row has no fields
+        self.project["resources"] = [{"name": "banks", "rom": "0x440", "bytes": 6, "kind": "alctl",
+                                      "evidence": "Fixture control bank"}]
+        self.generate()
+        code = (self.path / "output/bindings.c").read_text()
+        self.assertIn('{"banks", 1088u, 0u, 6u, N64C_RES_ALCTL, 0},', code)
+        bad = copy.deepcopy(self.project)
+        bad["resources"][0]["fields"] = "4"
+        with self.assertRaises(ValueError):
+            self.generate(bad)
+
     def test_system_globals_and_rejections(self):
         fields = ["initialized", "tv_type", "reset_type", "memory_size", "video_clock", "clock_rate", "nmi_buffer"]
         facts = self.path / "source/versions/test/symbol_addrs.txt"

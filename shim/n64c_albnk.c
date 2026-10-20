@@ -224,3 +224,104 @@ s32 n64c_al_ctl_file(const u8 *ctl, s32 len, s32 n, u32 *fileOffset)
     if (fileOffset) *fileOffset = o;
     return count;
 }
+
+/* ---- byte-order map of a control bank used in place ----
+ * Games that map the container straight into their address space (pointers already linked, high flag bits set)
+ * read its records natively, so the PI layer must turn every multibyte field to host order on the way in. The walk
+ * visits the same records as the reader above and marks each field start with its width (2 or 4); bytes left 0 are
+ * single bytes, padding or unreferenced data and stay as in the ROM. */
+typedef struct {
+    Rd r;
+    u8 *widths;
+    u8 *done; /* one flag per 4-byte record slot */
+} Wm;
+static void mark(Wm *m, u32 o, u32 width, u32 count)
+{
+    for (u32 i = 0; i < count && !m->r.bad; i++, o += width) {
+        if (o > m->r.len || m->r.len - o < width || (o & (width - 1u)) || (m->widths[o] && m->widths[o] != width)) {
+            m->r.bad = 1;
+            return;
+        }
+        m->widths[o] = (u8)width;
+    }
+}
+/* True the first time the record at o is walked; records sit on 4-byte boundaries. */
+static int fresh(Wm *m, u32 o)
+{
+    if (o >= m->r.len || (o & 3u)) { m->r.bad = 1; return 0; }
+    if (m->done[o >> 2]) return 0;
+    m->done[o >> 2] = 1;
+    return 1;
+}
+static void map_wave(Wm *m, u32 o)
+{
+    if (!o || !fresh(m, o)) return;
+    mark(m, o, 4, 2);                       /* base, len */
+    u32 type = u8at(&m->r, o + 8), lo = offat(&m->r, o + 12);
+    if (type == AL_ADPCM_WAVE) {
+        u32 bk = offat(&m->r, o + 16);
+        mark(m, o + 12, 4, 2);              /* loop, book */
+        if (lo && fresh(m, lo)) {
+            mark(m, lo, 4, 3);              /* start, end, count */
+            mark(m, lo + 12, 2, 16);        /* state */
+        }
+        if (bk && fresh(m, bk)) {
+            s32 order = s32at(&m->r, bk), np = s32at(&m->r, bk + 4);
+            if (order < 0 || np < 0 || order > 16 || np > 64) { m->r.bad = 1; return; }
+            mark(m, bk, 4, 2);
+            mark(m, bk + 8, 2, (u32)(order * np * 8));
+        }
+    } else {
+        mark(m, o + 12, 4, 1);              /* loop */
+        if (lo && fresh(m, lo)) mark(m, lo, 4, 3);
+    }
+}
+static void map_sound(Wm *m, u32 o)
+{
+    if (!o || !fresh(m, o)) return;
+    mark(m, o, 4, 3);                       /* envelope, keyMap, wavetable */
+    u32 env = offat(&m->r, o), wave = offat(&m->r, o + 8);
+    if (env && fresh(m, env)) mark(m, env, 4, 3); /* attack, decay, release times */
+    map_wave(m, wave);                      /* the key map is all single bytes */
+}
+static void map_inst(Wm *m, u32 o)
+{
+    if (!o || !fresh(m, o)) return;
+    s32 n = s16at(&m->r, o + 14);
+    if (n < 0 || n > 4096) { m->r.bad = 1; return; }
+    mark(m, o + 12, 2, 2);                  /* bendRange, soundCount */
+    mark(m, o + 16, 4, (u32)n);
+    for (s32 i = 0; i < n && !m->r.bad; i++) map_sound(m, offat(&m->r, o + 16 + 4 * (u32)i));
+}
+static void map_bank(Wm *m, u32 o)
+{
+    if (!o || !fresh(m, o)) return;
+    s32 n = s16at(&m->r, o);
+    if (n < 0 || n > 4096) { m->r.bad = 1; return; }
+    mark(m, o, 2, 1);                       /* instCount */
+    mark(m, o + 4, 4, 2 + (u32)n);          /* sampleRate, percussion, instArray */
+    map_inst(m, offat(&m->r, o + 8));
+    for (s32 i = 0; i < n && !m->r.bad; i++) map_inst(m, offat(&m->r, o + 12 + 4 * (u32)i));
+}
+int n64c_al_ctl_widths(const u8 *ctl, s32 len, u8 *widths)
+{
+    s32 count = n64c_al_ctl_file(ctl, len, 0, NULL);
+    if (!count || !widths) return 0;
+    Wm m = {.r = {.c = ctl, .len = (u32)len}, .widths = widths};
+    m.done = calloc((size_t)len / 4 + 1, 1);
+    if (!m.done) return 0;
+    memset(widths, 0, (size_t)len);
+    mark(&m, 0, 4, 1 + 2 * (u32)count);    /* count, then offset and auxiliary word per file */
+    for (s32 f = 0; f < count && !m.r.bad; f++) {
+        u32 o = 0;
+        n64c_al_ctl_file(ctl, len, f, &o);
+        if (!fresh(&m, o)) continue;
+        s32 n = s16at(&m.r, o + 2);
+        if (n < 0 || n > 256) { m.r.bad = 1; break; }
+        mark(&m, o, 2, 2);                  /* revision, bankCount */
+        mark(&m, o + 4, 4, (u32)n);
+        for (s32 i = 0; i < n && !m.r.bad; i++) map_bank(&m, offat(&m.r, o + 4 + 4 * (u32)i));
+    }
+    free(m.done);
+    return !m.r.bad;
+}

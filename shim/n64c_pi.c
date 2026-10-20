@@ -11,13 +11,14 @@
  * A DMA may cover any sub-range of a resource; alignment is taken relative to the resource start. */
 #include "n64c_internal.h"
 #include "n64c_pi.h"
+#include "n64c_al.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 typedef struct { u32 tag, stride; char fields[64]; } TagLayout;
 typedef struct { u32 offset, width, count; TagLayout layout[16]; } Tagged;
-typedef struct { u32 lo, hi; N64cResKind kind; char fields[64]; u32 stride; const Tagged *tagged; } Res;
+typedef struct { u32 lo, hi; N64cResKind kind; char fields[64]; u32 stride; const Tagged *tagged; u8 *widths; } Res;
 static Res res[256];
 static int n_res;
 static Tagged tagged_pool[8];
@@ -44,6 +45,8 @@ void n64c_pi_close(void)
     if (rom)
         fclose(rom);
     rom = NULL;
+    for (int i = 0; i < n_res; i++)
+        free(res[i].widths);
     n_res = 0;
     n_tagged = 0;
     n64c_pi_set_relocator(NULL,NULL);
@@ -88,7 +91,7 @@ static int parse_tagged(Tagged *out,const char *spec)
 }
 int n64c_pi_register(u32 lo,u32 hi,N64cResKind kind,const char *fields)
 {
-    if (n_res>=256 || hi<=lo || (unsigned)kind>N64C_RES_TAGGED) return -1;
+    if (n_res>=256 || hi<=lo || (unsigned)kind>N64C_RES_ALCTL) return -1;
     for (int i=0;i<n_res;i++)
         if (lo<res[i].hi && hi>res[i].lo) return -1;
     Res entry={.lo=lo,.hi=hi,.kind=kind};
@@ -111,6 +114,15 @@ int n64c_pi_register(u32 lo,u32 hi,N64cResKind kind,const char *fields)
             entry.stride+=width;
         }
         if (!count) return -1;
+    } else if (kind==N64C_RES_ALCTL) {
+        if (fields || !rom || hi-lo>0x01000000u) return -1;
+        u8 *bytes=malloc(hi-lo), *widths=malloc(hi-lo);
+        int ok=bytes && widths && fseek(rom,(long)lo,SEEK_SET)==0 && fread(bytes,1,hi-lo,rom)==hi-lo &&
+            n64c_al_ctl_widths(bytes,(s32)(hi-lo),widths);
+        free(bytes);
+        if (!ok) { free(widths); return -1; }
+        entry.widths=widths;
+        entry.stride=1;
     } else {
         entry.stride=kind==N64C_RES_SWAP16 ? 2 : kind==N64C_RES_SWAP32 ? 4 : 1;
         entry.fields[0]=(char)('0'+entry.stride);
@@ -174,6 +186,19 @@ static int fix_tagged(const Res *entry,uint64_t start,uint64_t finish,u32 dev,u8
     }
     return 1;
 }
+/* Swap each mapped field inside [start, finish); a field cut by either end refuses the read. */
+static int fix_widths(const Res *entry,uint64_t start,uint64_t finish,u32 dev,u8 *destination)
+{
+    for (uint64_t at=start>entry->lo+3 ? start-3 : entry->lo;at<start;at++)
+        if (at+entry->widths[at-entry->lo]>start) return 0;
+    for (uint64_t at=start;at<finish;at++) {
+        u32 width=entry->widths[at-entry->lo];
+        if (!width) continue;
+        if (at+width>finish) return 0;
+        convert_field(destination+(size_t)(at-dev),(char)('0'+width));
+    }
+    return 1;
+}
 static int fixup(u32 dev,u8 *destination,u32 bytes)
 {
     uint64_t end=(uint64_t)dev+bytes;
@@ -184,6 +209,10 @@ static int fixup(u32 dev,u8 *destination,u32 bytes)
         if (start>=finish || entry->kind==N64C_RES_RAW) continue;
         if (entry->kind==N64C_RES_TAGGED) {
             if (!fix_tagged(entry,start,finish,dev,destination)) return 0;
+            continue;
+        }
+        if (entry->kind==N64C_RES_ALCTL) {
+            if (!fix_widths(entry,start,finish,dev,destination)) return 0;
             continue;
         }
         uint64_t record=entry->lo+(start-entry->lo)/entry->stride*entry->stride;

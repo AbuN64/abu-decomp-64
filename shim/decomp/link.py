@@ -15,10 +15,12 @@ IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 NAMED_ADDRESS = re.compile(r"D_auto_(8[0-9A-F]{7})\Z")
 # Byte-order descriptor kinds of a ROM range (n64c_pi.h): raw bytes, an array of 16-bit or 32-bit values, or repeated
 # records described by a field string of widths in bytes ("4 4 2222 444"), or back-to-back records of different sizes
-# whose tag (1, 2 or 4 bytes, big-endian, at a fixed offset) picks a field string ("tagged"). u16/u32 are the older spellings.
+# whose tag (1, 2 or 4 bytes, big-endian, at a fixed offset) picks a field string ("tagged"), or an audio control bank
+# container the game reads in place, whose record graph the PI layer walks for its field widths ("alctl").
+# u16/u32 are the older spellings.
 KINDS = {"raw": "N64C_RES_RAW", "swap16": "N64C_RES_SWAP16", "swap32": "N64C_RES_SWAP32", "fields": "N64C_RES_STRUCT",
-         "tagged": "N64C_RES_TAGGED", "u16": "N64C_RES_SWAP16", "u32": "N64C_RES_SWAP32"}
-WIDTHS = {"raw": 1, "swap16": 2, "swap32": 4, "u16": 2, "u32": 4, "tagged": 1}
+         "tagged": "N64C_RES_TAGGED", "alctl": "N64C_RES_ALCTL", "u16": "N64C_RES_SWAP16", "u32": "N64C_RES_SWAP32"}
+WIDTHS = {"raw": 1, "swap16": 2, "swap32": 4, "u16": 2, "u32": 4, "tagged": 1, "alctl": 1}
 MAX_LAYOUTS = 16  # n64c_pi.c keeps 16 layouts per tagged resource
 FIELD_WIDTH = re.compile(r"[1-8]")
 MAX_FIELDS = 63  # n64c_pi.c keeps a 64-byte field string

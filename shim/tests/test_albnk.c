@@ -97,6 +97,26 @@ static void synthetic(void)
     CHECK(!n64c_al_bnkf_read(&heap, c, LEN, LEN - 2, 0));
     alHeapInit(&heap, heapmem, 64);
     CHECK(!n64c_al_bnkf_read(&heap, c, LEN, FILE_, 0));
+    /* byte-order map of the same container: field starts carry their width, bytes and the key map stay 0 */
+    u8 wm[LEN];
+    CHECK(!n64c_al_ctl_widths(c, LEN, wm));  /* the 2x2 book above runs into the raw wave record: two widths */
+    w32(c, BOOK + 4, 1);                      /* one predictor: the book ends at BOOK + 40 */
+    CHECK(n64c_al_ctl_widths(c, LEN, wm));
+    CHECK(wm[0] == 4 && wm[4] == 4 && wm[8] == 4 && wm[12] == 0);
+    CHECK(wm[FILE_] == 2 && wm[FILE_ + 2] == 2 && wm[FILE_ + 4] == 4);
+    CHECK(wm[BANK] == 2 && wm[BANK + 2] == 0 && wm[BANK + 4] == 4 && wm[BANK + 8] == 4 && wm[BANK + 16] == 4);
+    CHECK(wm[INST0] == 0 && wm[INST0 + 12] == 2 && wm[INST0 + 14] == 2 && wm[INST0 + 20] == 4 && wm[INST1 + 16] == 4);
+    CHECK(wm[SND0 + 8] == 4 && wm[SND0 + 12] == 0 && wm[ENV + 8] == 4 && wm[ENV + 12] == 0);
+    for (int i = 0; i < 6; i++) CHECK(wm[KEY + i] == 0);
+    CHECK(wm[WAVE0 + 4] == 4 && wm[WAVE0 + 8] == 0 && wm[WAVE0 + 16] == 4 && wm[LOOP + 12] == 2 && wm[LOOP + 42] == 2);
+    CHECK(wm[BOOK + 4] == 4 && wm[BOOK + 8] == 2 && wm[BOOK + 38] == 2 && wm[BOOK + 40] == 0);
+    CHECK(wm[WAVE1 + 12] == 4 && wm[WAVE1 + 16] == 0 && wm[RLOOP + 8] == 4 && wm[RLOOP + 12] == 0);
+    memcpy(bad, c, LEN);
+    w32(bad, INST1 + 16, SND0 + 2);
+    CHECK(!n64c_al_ctl_widths(bad, LEN, wm));
+    memcpy(bad, c, LEN);
+    w32(bad, SND1 + 8, LEN - 8);  /* wave record running past the end */
+    CHECK(!n64c_al_ctl_widths(bad, LEN, wm));
 }
 
 static int cmp(const void *a, const void *b)
@@ -166,6 +186,15 @@ static void game_bank(const char *romPath)
     /* counts from lanes/DATA-4/ctlmap.py, an independent walk of the same offset graph */
     CHECK(cI == 22 && cS == 356 && cE == 356 && cK == 79);
     CHECK(cW == 251 && cL == 38 && cB == 251);
+    u8 *wm = malloc(LEN);
+    CHECK(wm && n64c_al_ctl_widths(c, LEN, wm));
+    if (wm) {
+        size_t fields = 0;
+        for (u32 i = 0; i < LEN; i++) fields += wm[i] != 0;
+        printf("game bank byte-order map: %zu multibyte fields\n", fields);
+        CHECK(wm[0] == 4 && wm[0x14] == 2 && wm[0x18] == 4 && wm[0x38EC] == 2);
+    }
+    free(wm);
     free(c);
 }
 
