@@ -1250,8 +1250,9 @@ class Landing:
     def setup(self) -> bool:
         """`unbake setup` every time: it answers at once when nothing it reads moved (its own state stamp), and
         re-extracts exactly the versions whose symbol facts, yaml or ROM did, so no extracted assembly outlives the
-        facts it was made from."""
-        return self.unbake("setup", "setup", "setup")
+        facts it was made from. `--no-make`: the check gate builds and records the verdict right after, so setup's
+        own `make check` was a second build per round and per bisect or credit build (10-20)."""
+        return self.unbake("setup", "setup", "setup", "--no-make")
 
     def check(self) -> bool:
         started = self.clock()

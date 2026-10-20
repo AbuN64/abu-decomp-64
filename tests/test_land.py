@@ -153,7 +153,14 @@ class LandTests(unittest.TestCase):
         self.assertTrue(self.commands[1][1])  # UNBAKE_HOST reaches the check command
         self.assertEqual(
             self.unbake,
-            [("setup",), ("sync",), ("verify", "0"), ("sync",), ("sync", "--check"), ("audit", "--against", self.base)],
+            [
+                ("setup", "--no-make"),
+                ("sync",),
+                ("verify", "0"),
+                ("sync",),
+                ("sync", "--check"),
+                ("audit", "--against", self.base),
+            ],
         )
         self.assertEqual([e["kind"] for e in self.events], ["LAND"])
         self.assertEqual(self.events[0]["status"], "passed")
@@ -393,7 +400,7 @@ class LandTests(unittest.TestCase):
         self.unbake.clear()
         result, code, _ = self.land([one])  # the same pin: unbake setup itself answers at once when nothing moved
         self.assertEqual(code, 0)
-        self.assertIn(("setup",), self.unbake)
+        self.assertIn(("setup", "--no-make"), self.unbake)
         self.assertEqual([g["gate"] for g in result["gates"]][:3], ["base", "apply", "setup"])
         self.assertFalse(result["gates"][2].get("skipped"))
         self.assertFalse((self.tree / ".git" / "abu-decomp-land.json").exists())
@@ -483,7 +490,7 @@ class LandTests(unittest.TestCase):
         groups = {g["lane"]: g["files"] for g in result["groups"]}
         self.assertEqual(groups, {"one": ["a.c", sizes], "two": ["b.c"]})
         self.assertEqual(result["generated"], [sizes])
-        self.assertEqual(self.unbake.count(("setup",)), 1)  # the prefixes sync, they never set up again
+        self.assertEqual(self.unbake.count(("setup", "--no-make")), 1)  # the prefixes sync, they never set up again
 
     def test_without_union_paths_the_second_append_conflicts_and_is_refused(self):
         addrs = "versions/us/symbol_addrs.txt"
@@ -1192,7 +1199,7 @@ class LandTests(unittest.TestCase):
         self.assertEqual((code, findings[0]["key"]), (1, "land.check"))
         self.assertIn("unbake verify refused", findings[0]["message"])
         self.assertFalse(self.gates(result)["check"])
-        self.assertEqual(self.unbake[:3], [("setup",), ("sync",), ("verify", "0")])
+        self.assertEqual(self.unbake[:3], [("setup", "--no-make"), ("sync",), ("verify", "0")])
 
     def test_event_writer_failure_fails_the_landing(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})
