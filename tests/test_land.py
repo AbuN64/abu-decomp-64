@@ -490,6 +490,34 @@ class LandTests(unittest.TestCase):
         self.assertEqual(result["generated"], [sizes])
         self.assertEqual(self.unbake.count(("setup", "--no-make")), 1)  # the prefixes sync, they never set up again
 
+    def test_gitattributes_merge_union_marks_a_union_file_without_union_paths(self):
+        aliases = "versions/us/aliases.txt"
+        (self.tree / ".gitattributes").write_text("versions/*/aliases.txt merge=union\n")
+        self.seed({aliases: "a = 0x1;\nb = 0x2;\n"}, union=False)
+        one = self.patch("one", {aliases: "a = 0x1;\nb = 0x2;\nc = 0x3;\n"})
+        two = self.patch("two", {aliases: "a = 0x1;\nb = 0x2;\nd = 0x4;\n", "b.c": "int func_3(void) { return 3; }\n"})
+        result, code, _findings = self.land([one, two])
+        self.assertEqual(code, 0)
+        self.assertEqual([r["status"] for r in result["lanes"]], ["applied", "applied"])
+        self.assertEqual([r["refused"] for r in result["lanes"]], [[], []])
+        self.assertEqual((self.tree / aliases).read_text(), "a = 0x1;\nb = 0x2;\nc = 0x3;\nd = 0x4;\n")
+        self.assertEqual(git(self.tree, "ls-files", "-u"), "")
+
+    def test_gitattributes_union_file_drops_removed_rows_and_a_real_conflict_still_refuses(self):
+        aliases = "versions/us/aliases.txt"
+        (self.tree / ".gitattributes").write_text("versions/*/aliases.txt merge=union\n")
+        self.seed({aliases: "a = 0x1;\nb = 0x2;\n"}, union=False)
+        drop = self.patch("drop", {aliases: "a = 0x1;\nz = 0x9;\n"})
+        clash = self.patch("clash", {"a.c": "totally different\n", "b.c": "int func_3(void) { return 3; }\n"})
+        (self.tree / "a.c").write_text("moved on\n")
+        git(self.tree, "commit", "-qam", "moved")
+        moved = git(self.tree, "rev-parse", "HEAD").strip()
+        result, code, _findings = self.land([drop, clash], base=moved)
+        self.assertEqual(code, 0)
+        self.assertEqual((self.tree / aliases).read_text(), "a = 0x1;\nz = 0x9;\n")
+        self.assertEqual([r["file"] for r in result["lanes"][1]["refused"]], ["a.c"])
+        self.assertEqual(git(self.tree, "ls-files", "-u"), "")
+
     def test_without_union_paths_the_second_append_conflicts_and_is_refused(self):
         addrs = "versions/us/symbol_addrs.txt"
         self.seed({addrs: "base = 0x1;\n"}, union=False)
