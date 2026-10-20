@@ -812,6 +812,28 @@ class LandTests(unittest.TestCase):
         self.assertEqual([r["lane"] for r in result["refused_inputs"]], ["C"])
         self.assertEqual([r["status"] for r in result["lanes"]], ["applied", "applied", "excluded"])
 
+    def test_a_refused_land_keeps_the_warm_build_state_but_not_its_dependency_files(self):
+        (self.tree / ".gitignore").write_text("build/\nasm/\n")
+        git(self.tree, "add", ".gitignore")
+        git(self.tree, "commit", "-qm", "ignore")
+        base = git(self.tree, "rev-parse", "HEAD").strip()
+        for name in ("asm/v/f.s", "build/v/a.o", "build/v/a.d"):
+            (self.tree / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.tree / name).write_text("old\n")
+        bad = self.patch("L1", {"b.c": "BAD\n"})
+
+        def build():
+            for name in ("asm/v/f.s", "asm/v/new.s", "build/v/a.o", "build/v/a.d"):
+                (self.tree / name).write_text("rewritten by the land\n")
+            return 1, "", "ld: BAD"
+
+        self.check_result = build
+        _, code, _ = self.land([bad], base=base)
+        self.assertEqual(code, 1)
+        self.assertEqual((self.tree / "b.c").read_text(), B_C)
+        self.assertTrue((self.tree / "asm/v/f.s").exists() and (self.tree / "asm/v/new.s").exists())
+        self.assertFalse((self.tree / "build/v/a.d").exists() or (self.tree / "build/v/a.o").exists())
+
     def test_union_paths_must_be_a_list_of_globs(self):
         seat = json.loads((self.root / "seat.json").read_text())
         seat["land"]["union_paths"] = "versions/*"

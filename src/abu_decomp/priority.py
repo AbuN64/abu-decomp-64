@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence
 
 PROOF_NICE = -5  # landing, full proof builds, setup of a tree: what the other jobs queue behind
 TRIAL_NICE = 5  # score, try, recipe, behave: many small jobs a lane repeats
-PROOF_COMMANDS = frozenset({"land", "make"})
+PROOF_COMMANDS = frozenset({"land", "ship", "make"})
 PROOF_VERBS = frozenset({("unbake", "setup"), ("unbake", "land")})
 TRIAL_COMMANDS = frozenset({"unbake", "recipe", "taste", "behave", "probe"})
 _IOPRIO_SET = {"x86_64": 251, "aarch64": 30}

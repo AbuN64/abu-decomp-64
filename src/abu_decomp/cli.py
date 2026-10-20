@@ -437,6 +437,26 @@ def _run_land(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     )
 
 
+def _ship_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--tree", type=Path, required=True, help="the warm tree: a checkout the ship keeps at the branch"
+    )
+    parser.add_argument(
+        "--patch",
+        action="append",
+        required=True,
+        metavar="LANE=PATH[:MESSAGE]",
+        help="the one input to land, commit and push (MESSAGE as for land)",
+    )
+
+
+def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp.land import parse_messages, parse_patches
+    from abu_decomp.ship import ship
+
+    return ship(_profile(args.profile), args.tree, parse_patches(args.patch), messages=parse_messages(args.patch))
+
+
 def _behave_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", type=Path, help="the project tree to act on (default: the profile's project)")
     parser.add_argument("--host", type=Path, help="the unbake host file for that tree (default: the profile's host)")
@@ -498,6 +518,9 @@ COMMANDS: dict[str, Command] = {
     "stream": Command("serve, supervise, control and capture the headless tile stream", _passthrough, _run_stream),
     "port": Command("generate a native port repository skeleton", _port_arguments, _run_port),
     "land": Command("apply lane patches to a proof tree and run the landing gates", _land_arguments, _run_land),
+    "ship": Command(
+        "land one input on the warm tree, commit it and push it fast-forward to the branch", _ship_arguments, _run_ship
+    ),
     "behave": Command(
         "run the original and a candidate on the same inputs and compare their behaviour",
         _behave_arguments,

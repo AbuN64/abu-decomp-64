@@ -302,6 +302,9 @@ def settings(profile: Profile) -> dict[str, Any]:
                 "recipe",
                 "recipe_suffixes",
                 "subject_limit",
+                "remote",
+                "branch",
+                "author",
             }
         ),
     )
@@ -340,6 +343,9 @@ def settings(profile: Profile) -> dict[str, Any]:
         if "recipe" in table
         else [],
         "recipe_suffixes": tuple(table.get("recipe_suffixes", proposals.SUFFIXES)),
+        "remote": str(table.get("remote", "origin")),  # where `decomp ship` pushes
+        "branch": str(table.get("branch", "main")),
+        "author": str(table["author"]) if table.get("author") else None,  # "Name <email>" of shipped commits
     }
 
 
@@ -1705,15 +1711,20 @@ class Landing:
 
     def restore(self) -> None:
         """The tree exactly as check_base found it: tracked files and index back to the base tree, and the files the
-        inputs and builds added (not ignored) removed."""
+        inputs and builds added (not ignored) removed. Of the ignored build state only make's dependency files the
+        land wrote go, each with the object beside it: one can name a header only an input added, which make cannot
+        rebuild without. The rest stays, so the tree stays warm: make rebuilds what the restored sources (newer than
+        their objects) need, and unbake re-extracts by its own key and manifest (10-20: deleting every rewritten
+        ignored file gutted the extracted assembly after one refused input, and the next land rebuilt everything)."""
         self.git("read-tree", "-u", "--reset", self.base_tree)
         for name in sorted(
             set(self.git("ls-files", "--others", "--exclude-standard").splitlines()) - self.start_untracked
         ):
             (self.tree / name).unlink(missing_ok=True)
         for name, stamp in self.ignored_state().items():
-            if self.start_ignored.get(name) != stamp:
+            if name.endswith(".d") and self.start_ignored.get(name) != stamp:
                 (self.tree / name).unlink(missing_ok=True)
+                (self.tree / f"{name[:-2]}.o").unlink(missing_ok=True)
 
     def ignored_state(self) -> dict[str, tuple[int, int]]:
         """Every ignored file in the tree with its size and mtime: what a later restore compares against."""
