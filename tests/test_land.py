@@ -218,9 +218,28 @@ class LandTests(unittest.TestCase):
         self.assertEqual([f["key"] for f in findings], ["land.commit_message"])
         self.assertEqual(
             result["commit_commands"][0],
-            "git add -- a.c && git commit -m 'Fix 1 INCLUDE_ASM stand-in by matching func_1 as C' -- a.c",
+            "git update-index --add --remove -- a.c "
+            "&& git commit -m 'Fix 1 INCLUDE_ASM stand-in by matching func_1 as C' -- a.c",
         )
         self.assertEqual(len(result["commit_commands"]), 2)
+
+    def test_commit_command_records_a_staged_deletion_and_an_edit(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR") or None) as root:
+            root = Path(root)
+            git(root, "init", "-q")
+            (root / "gone.c").write_text("int gone(void) { return 1; }\n")
+            (root / "kept.c").write_text("int kept(void) { return 1; }\n")
+            git(root, "add", ".")
+            git(root, "commit", "-q", "-m", "base")
+            git(root, "rm", "-q", "gone.c")  # land already staged it: `git add -- gone.c` fails here
+            (root / "kept.c").write_text("int kept(void) { return 2; }\n")
+            files = "gone.c kept.c"
+            command = f"git update-index --add --remove -- {files} && git commit -q -m 'Split gone' -- {files}"
+            env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t"}
+            env["GIT_COMMITTER_EMAIL"] = "t@t"
+            subprocess.run(command, shell=True, cwd=root, env=env, check=True, capture_output=True)
+            shown = git(root, "show", "--name-status", "--format=", "HEAD").split()
+            self.assertEqual(shown, ["D", "gone.c", "M", "kept.c"])
 
     def test_subject_is_capped_with_the_function_list_in_the_body(self):
         names = [f"func_{8025522 + i}_us" for i in range(10)]
@@ -713,6 +732,37 @@ class LandTests(unittest.TestCase):
         self.assertEqual(code, 1)  # the stray assembly of the last build is the untracked_s gate's finding
         self.assertEqual([r["lane"] for r in result["refused_inputs"]], ["L2"])
         self.assertEqual(result["untracked_other"], [])
+
+    def test_a_bisect_subset_does_not_inherit_the_dependency_files_of_the_full_build(self):
+        self.seed(
+            {".gitignore": "build/\n", "d1.c": "int d1(void) { return 0; }\n", "d3.c": "int d3(void) { return 0; }\n"}
+        )
+        one = self.patch("A", {"d1.c": "int d1(void) { return 1; }\n"})
+        (self.tree / "inc.h").write_text("int inc;\n")  # unit B adds a header
+        git(self.tree, "add", "-N", "inc.h")
+        header = self.root / "B.patch"
+        header.write_text(git(self.tree, "diff", "HEAD"))
+        git(self.tree, "rm", "-qf", "--cached", "inc.h")
+        (self.tree / "inc.h").unlink()
+        bad = self.patch("C", {"d3.c": "BAD\n"})
+        deps = self.tree / "build" / "deps.d"
+        seen = []
+
+        def build():
+            if deps.exists():  # make: a dependency file naming a missing header stops the build
+                missing = [n for n in deps.read_text().split() if not (self.tree / n).exists()]
+                if missing:
+                    seen.append(missing)
+                    return 1, "", f"No rule to make target {missing[0]}, needed by d1.o"
+            deps.parent.mkdir(exist_ok=True)
+            deps.write_text(" ".join(p.name for p in self.tree.glob("*.h")))  # generated state, ignored by git
+            return (1, "", "ld: d3.c: BAD") if "BAD" in (self.tree / "d3.c").read_text() else (0, "built\n", "")
+
+        self.check_result = build
+        result, _, _ = self.landing_with([one, ("B", header), bad]).execute()
+        self.assertEqual(seen, [])  # the subset {A} never saw the full run's inc.h dependency
+        self.assertEqual([r["lane"] for r in result["refused_inputs"]], ["C"])
+        self.assertEqual([r["status"] for r in result["lanes"]], ["applied", "applied", "excluded"])
 
     def test_union_paths_must_be_a_list_of_globs(self):
         seat = json.loads((self.root / "seat.json").read_text())

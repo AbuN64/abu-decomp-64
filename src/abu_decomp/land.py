@@ -699,6 +699,7 @@ class Landing:
         self.splat_file_check = splat_file_check or self.run_splat_file_check
         self.base_tree = ""  # the tree of the base commit: what a replay starts from
         self.start_untracked: set[str] = set()
+        self.start_ignored: dict[str, tuple[int, int]] = {}  # ignored files as check_base found them: size, mtime
         self.base_failed = True  # until check_base passes
         self.apply_mark: int | None = None  # findings from here on are the apply gate's, made again by each replay
         self.dropped: dict[int, str] = {}  # patch index -> why the build refused that input
@@ -740,6 +741,7 @@ class Landing:
         self.extra.update(head=head, base=wanted or self.base)
         self.base_tree = self.snapshot()
         self.start_untracked = set(self.git("ls-files", "--others", "--exclude-standard").splitlines())
+        self.start_ignored = self.ignored_state()
         if not wanted:
             self.fail("land.base", f"base ref {self.base} does not exist in {self.tree}")
         elif head != wanted:
@@ -1561,7 +1563,9 @@ class Landing:
 
     def replay(self, skip: dict[int, str]) -> bool:
         """The tree back to the base, then the inputs not in `skip` (and not refused before) applied again in order.
-        Files the earlier builds left that are not ignored go too; ignored build output stays, so the build is warm."""
+        Files the earlier builds left that are not ignored go too, and so does ignored build state the earlier builds
+        made or rewrote (generated Makefiles, .d dependency files, stamps): a subset build sees exactly base + its
+        inputs. Ignored files the tree had before the land (caches, toolchains, extracted assembly) stay."""
         self.restore()
         return self.apply_patches(skip)
 
@@ -1573,6 +1577,20 @@ class Landing:
             set(self.git("ls-files", "--others", "--exclude-standard").splitlines()) - self.start_untracked
         ):
             (self.tree / name).unlink(missing_ok=True)
+        for name, stamp in self.ignored_state().items():
+            if self.start_ignored.get(name) != stamp:
+                (self.tree / name).unlink(missing_ok=True)
+
+    def ignored_state(self) -> dict[str, tuple[int, int]]:
+        """Every ignored file in the tree with its size and mtime: what a later restore compares against."""
+        state: dict[str, tuple[int, int]] = {}
+        for name in self.git("ls-files", "--others", "--ignored", "--exclude-standard").splitlines():
+            try:
+                info = (self.tree / name).lstat()
+            except OSError:
+                continue
+            state[name] = (info.st_size, info.st_mtime_ns)
+        return state
 
     def probe(self, everyone: Sequence[int], keep: int) -> tuple[bool, list[dict[str, Any]]]:
         """Build with only the first `keep` of `everyone` (the inputs that landed) in the tree; (passed, the blocking
@@ -1684,7 +1702,7 @@ class Landing:
         if any(f["blocking"] and f["key"].startswith("land.commit_") for f in self.findings[planned:]):
             result["pass"] = False  # a message that passed as one input breaks as grouped for its commit
         result["commit_commands"] = [
-            f"git add -- {(files := ' '.join(shlex.quote(f) for f in c['files']))} "
+            f"git update-index --add --remove -- {(files := ' '.join(shlex.quote(f) for f in c['files']))} "
             f"&& git commit -m {shlex.quote(c['message'])}"
             f"{f' -m {shlex.quote(c["body"])}' if c['body'] else ''} -- {files}"
             for c in result["commits"]
