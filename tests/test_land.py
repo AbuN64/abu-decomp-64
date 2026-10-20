@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -278,6 +279,10 @@ class LandTests(unittest.TestCase):
         subject, _ = commit_message("INCLUDE_ASM", names, many[:5], 72)
         self.assertEqual(subject, "Fix 10 INCLUDE_ASM stand-ins in DIR0, DIR1 and 3 more dirs by matching C")
         self.assertEqual(commit_message("INCLUDE_ASM", names, many, 30)[0], "Fix 10 INCLUDE_ASM stand-ins")
+        refuses_ai = lambda subject, body: not re.search(r"\bAI\b", f"{subject} {body}")  # noqa: E731
+        subject, body = commit_message("INCLUDE_ASM", names, ["AI", "ANIM"], 72, refuses_ai)
+        self.assertEqual(subject, "Fix 10 INCLUDE_ASM stand-ins in 2 dirs by matching C")
+        self.assertEqual(commit_message("INCLUDE_ASM", ["a"], ["ANIM"], 72, refuses_ai)[1], None)
         self.assertEqual(commit_message("INCLUDE_ASM", names, [], 72)[0], "Fix 10 INCLUDE_ASM stand-ins by matching C")
 
     def test_subject_of_exactly_the_limit_keeps_the_names(self):
@@ -529,6 +534,41 @@ class LandTests(unittest.TestCase):
         self.assertEqual((self.tree / aliases).read_text(), "a = 0x1;\nz = 0x9;\n")
         self.assertEqual([r["file"] for r in result["lanes"][1]["refused"]], ["a.c"])
         self.assertEqual(git(self.tree, "ls-files", "-u"), "")
+
+    def test_regenerated_paths_are_dropped_from_a_patch_instead_of_conflicting(self):
+        self.seed({"progress.json": "{}\n"}, union=False)
+        seat = json.loads((self.root / "seat.json").read_text())
+        seat["land"]["regenerated_paths"] = ["README.md", "progress.json"]
+        (self.root / "seat.json").write_text(json.dumps(seat))
+        self.profile = load_profile(self.root / "seat.json")
+        stale = README.format(a="40.00", b="60.00")
+        one = self.patch(
+            "one", {"README.md": stale, "progress.json": "{1}\n", "b.c": "int func_3(void) { return 3; }\n"}
+        )
+        (self.tree / "README.md").write_text(README.format(a="45.00", b="60.00"))
+        (self.tree / "progress.json").write_text("{2}\n")
+        git(self.tree, "commit", "-qam", "regen")
+        moved = git(self.tree, "rev-parse", "HEAD").strip()
+        result, code, findings = self.land([one], base=moved)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["lanes"][0]["status"], "applied")
+        self.assertEqual(result["lanes"][0]["refused"], [])
+        self.assertEqual(result["lanes"][0]["files"], ["b.c"])
+        self.assertEqual((self.tree / "progress.json").read_text(), "{2}\n")
+        regenerated = [f for f in findings if f["key"] == "land.regenerated"]
+        self.assertEqual(regenerated[0]["files"], ["README.md", "progress.json"])
+        self.assertEqual(git(self.tree, "ls-files", "-u"), "")
+
+    def test_without_regenerated_paths_a_readme_conflict_is_refused(self):
+        self.seed({"seed.txt": "x\n"}, union=False)
+        one = self.patch(
+            "one", {"README.md": README.format(a="40.00", b="60.00"), "b.c": "int func_3(void) { return 3; }\n"}
+        )
+        (self.tree / "README.md").write_text(README.format(a="45.00", b="60.00"))
+        git(self.tree, "commit", "-qam", "regen")
+        moved = git(self.tree, "rev-parse", "HEAD").strip()
+        result, _code, _findings = self.land([one], base=moved)
+        self.assertEqual([r["file"] for r in result["lanes"][0]["refused"]], ["README.md"])
 
     def test_without_union_paths_the_second_append_conflicts_and_is_refused(self):
         addrs = "versions/us/symbol_addrs.txt"
