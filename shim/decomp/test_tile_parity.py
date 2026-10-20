@@ -7,6 +7,8 @@ import sys
 import tempfile
 import unittest
 
+sys.dont_write_bytecode = True  # the cycle snapshot refuses stray .pyc files
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import tile_parity as tp
 

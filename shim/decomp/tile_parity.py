@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 
+sys.dont_write_bytecode = True  # the cycle snapshot refuses stray .pyc files
+
 TILE_ARGS = ["--window", "{rom}", "284", "222", "640", "480"]
 HEADLESS_ARGS = ["{rom}", "{picture}", "180", "284", "222", "320", "240"]
 END = re.compile(r"boot-diag: end (\d+) failures \(.*?\), census (\d+)/(\d+)")
