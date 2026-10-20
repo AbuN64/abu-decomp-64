@@ -43,7 +43,8 @@ def next_unit(d, symbol, facts):
 def boot(binary, rom, work):
     picture = work / "boot.ppm"
     picture.unlink(missing_ok=True)
-    r = subprocess.run(["timeout", "120", str(binary), str(rom), str(picture), "180", "284", "222", "320", "240"],
+    # -k: the boot catches SIGTERM (SDL/LUS handlers) and a hung boot kept running past it, stalling the walk.
+    r = subprocess.run(["timeout", "-k", "10", "120", str(binary), str(rom), str(picture), "180", "284", "222", "320", "240"],
                        env={**os.environ, "SDL_VIDEODRIVER": "offscreen"}, capture_output=True, text=True)
     (work / "boot.log").write_text(r.stderr)
     lines = [line for line in r.stderr.splitlines() if line.startswith("boot-")]
@@ -92,6 +93,9 @@ def main():
         print(f"step {step}: rc={rc} {last} :: {d['stops'].get(m.group(1), '') if m else ''}", flush=True)
         if rc == 0 and not m:
             return halt(None, 0)
+        if rc in (124, 137):  # timeout: TERM honoured (124) or the kill after -k (137)
+            print(f"halt: boot hung (no exit in 120 s) after {last}; see {args.work / 'boot.log'}", flush=True)
+            return halt(None, 1)
         if rc != 78 or not m:
             print(f"halt: unexpected boot result rc={rc}; see {args.work / 'boot.log'}", flush=True)
             return halt(None, 1)
@@ -102,6 +106,25 @@ def main():
             if not run_closure("a stale stop"):
                 return halt(m.group(1), 1)
             continue
+        sym = m.group(1)
+        image = args.build / "decomp-boot" / "image.json"
+        image_stops = json.loads(image.read_text()).get("function_stops", []) if image.exists() else []
+        if sym in image_stops and sym not in d["stops"] and sym not in d["bindings"]:
+            # A stop no manifest row names: the data image's generated stop for a code pointer (image.py
+            # function_stops, e.g. a KUSEG alias D_00XXXXXX in a callback table). It routes like an undefined link
+            # symbol: an alias binds to its function, a function's unit is added or becomes a frontier stop.
+            deny_path = args.work / "deny.json"
+            deny = json.loads(deny_path.read_text()) if deny_path.exists() else {}
+            trial = json.loads(json.dumps(d))
+            kind, detail = closure.route(trial, sym, facts, deny, d.get("source_pin", "")[:7], True, set())
+            # Only a binding, a linked unit or a frontier moves the walk; any other route result (a no-C stop) halts
+            # below exactly as before, with the manifest untouched.
+            if kind == "added" or detail.startswith(("binding", "frontier")):
+                print(f"   routed image stop {sym}: {kind} {detail}", flush=True)
+                args.manifest.write_text(json.dumps(trial, indent=2) + "\n")
+                if not run_closure(sym):
+                    return halt(sym, 1)
+                continue
         unit, why = next_unit(d, m.group(1), facts)
         if not unit:
             print("halt:", why, flush=True)
