@@ -79,6 +79,7 @@ class RunTests(unittest.TestCase):
 
     def fake_probe(self, profile, work, name, request, function):
         self.probes.append((name, request))
+        self.targets = [*getattr(self, "targets", []), function]
         delta = self.delta if request.get("candidate") else 0
         record = {
             "sp": 0x80400000,
@@ -312,6 +313,44 @@ class RunTests(unittest.TestCase):
         self.assertTrue(all(r["cases"][-1]["name"] != "seed-f-hit1" for r in learn))
         self.assertEqual(result["cases"], 9)
         self.assertEqual(result["verdict"], "same")
+
+    def test_one_case_the_seed_cannot_finish_still_widens_the_memory_so_every_case_is_compared(self):
+        def probe(profile, work, name, request, function):
+            done = self.fake_probe(profile, work, name, request, function)
+            if not request.get("lenient"):  # one generated case chases a garbage pointer outside RDRAM
+                done["cases"][0].update(status="unmapped", detail="unmapped 0000B402 4 last 0")
+            return done
+
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(run, "probe", probe),
+            mock.patch.object(run, "capture_seed", lambda *a: (self.seed(), "")),
+            mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
+            mock.patch.object(
+                run.build_candidate,
+                "build",
+                lambda *a, **k: cand.Image(
+                    self.root / "c.bin", 0x80800000, ({"name": "f", "offset": 0, "size": 0x40},), 0x40, "ab" * 32
+                ),
+            ),
+            contextlib.redirect_stdout(stdout),
+        ):
+            main(["--profile", str(self.seat), "behave", "--function", "f", "--candidate", str(self.candidate)])
+        envelope = json.loads(stdout.getvalue())
+        keys = [f["key"] for f in envelope["findings"]]
+        self.assertIn("behave.seed", keys)
+        self.assertIn("behave.lenient", keys)
+        self.assertEqual(envelope["result"]["verdict"], "same")
+        self.assertNotIn("0000B402", json.dumps(envelope["result"]["cases_detail"]))  # compared, not left unmapped
+        final = [r for n, r in self.probes if n in ("original", "candidate")][-2:]
+        for request in final:
+            self.assertTrue(request["lenient"])
+            self.assertEqual(request["seed"]["memory"][0]["file"], "/ram.bin")  # lenient over the captured memory
+
+    def test_the_tools_are_asked_for_the_address_never_the_name_the_oracle_may_spell_otherwise(self):
+        self.invoke("--candidate", str(self.candidate), "--cases", "4")
+        self.assertTrue(self.targets)
+        self.assertEqual(set(self.targets), {"0x80001000"})
 
     def test_without_a_capture_the_lenient_fallback_still_runs_and_says_why_there_is_no_seed(self):
         envelope = self.seeded_run(None)

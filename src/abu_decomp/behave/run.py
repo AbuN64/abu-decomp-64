@@ -37,6 +37,22 @@ DEFAULTS: dict[str, Any] = {
 PROBE_KEYS = ("closure", "stubs", "spilled", "statuses", "wall_seconds", "cached", "event_budget", "events_max")
 
 
+NULL_PAGE = 0x1000  # reads below this are null-pointer dereferences
+
+
+def _unmapped(case: dict[str, Any], floor: int = 0) -> bool:
+    """The case stopped on memory it was not given: a read at or above `floor`, or a call through such a pointer."""
+    if "indirect-call" in case["detail"]:
+        return True
+    if case["status"] != "unmapped":
+        return False
+    words = case["detail"].split()
+    try:
+        return int(words[1], 16) >= floor
+    except (IndexError, ValueError):
+        return True
+
+
 class BehaveError(DecompError):
     pass
 
@@ -222,25 +238,27 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         request = dict(request, event_budget=budget, **({"lenient": True} if options.lenient else {}))
         if options.seeded:  # real run-time memory under every generated case, the entry stack where it was
             request = dict(request, seed={"memory": options.seeded["memory"]}, sp=options.seeded["sp"])
-        done = probe(profile, work, name, request, options.function)
+        done = probe(profile, work, name, request, target)
         waited += done["record"].get("lock_wait_seconds", 0.0)
         for _ in range(2):
             spent = [i for i, c in enumerate(done["cases"]) if out_of_budget(c)]
             if not spent or hopeless or budget >= config["event_budget_cap"]:
                 break
             pilot = dict(request, cases=[request["cases"][spent[0]]], event_budget=config["event_budget_cap"])
-            alone = probe(profile, work, name + "-measure", pilot, options.function)
+            alone = probe(profile, work, name + "-measure", pilot, target)
             waited += alone["record"].get("lock_wait_seconds", 0.0)
             if out_of_budget(alone["cases"][0]):
                 hopeless = True
                 break
             budget = min(config["event_budget_cap"], max(budget, 2 * alone["cases"][0].get("events_written", budget)))
             request = dict(request, event_budget=budget)
-            done = probe(profile, work, name, request, options.function)
+            done = probe(profile, work, name, request, target)
             waited += done["record"].get("lock_wait_seconds", 0.0)
         stages["lock_wait"] = round(waited, 3)
         return done
 
+    # the oracle's table can name a function otherwise than the project does (a rename the oracle has not seen), so the
+    # tools are always asked for the address the project's own symbol facts gave
     chosen = settings(profile, options.project, options.host)
     version = options.version or _project_version(chosen.project)
     if not version:
@@ -253,6 +271,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
     if fact is None or fact[0] is None:
         raise BehaveError("behave.function", f"{options.function} is not a symbol of version {version}")
     address = fact[0]
+    target = f"0x{address:08X}"
     mark = lap("symbols", mark)
     candidate_file = options.candidate.resolve() if options.candidate else None
     proto = prototype.find(chosen.project, options.function, tuple(config["headers"]), candidate_file)
@@ -352,16 +371,20 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
     mark = lap("original", mark)
     record = original["record"]
     cut = [name for name, why in record.get("stubs", {}).items() if why == "boundary"]
-    starved = (
-        not options.lenient
-        and not any(c["status"] == "ok" for c in original["cases"])
-        and any(c["status"] == "unmapped" or "indirect-call" in c["detail"] for c in original["cases"])
+    # a case the original could not finish for want of memory is not compared. Widening the memory leaves the cases
+    # that ran unchanged (they never read what it adds), so it is done when no case ran, or when a case chased a
+    # pointer that is not a null one (garbage built from the input, a function pointer the game filled in): a null
+    # dereference is a crash on the console and stays untestable with that reason.
+    starved = not options.lenient and (
+        (not any(c["status"] == "ok" for c in original["cases"]) and any(_unmapped(c) for c in original["cases"]))
+        or any(_unmapped(c, floor=NULL_PAGE) for c in original["cases"])
     )
     if starved and options.capture and options.seeded is None:
-        # strict memory completes no case: the function reads state the game built at run time. The real ROM is run
+        # strict memory leaves a case unfinished: the function reads state the game built at run time. The real ROM is
+        # run
         # to its entry and both bodies run again over that memory (and its entry registers as one more case); only
         # when that is not available does the lenient memory below stand in.
-        seed, why = capture_seed(profile, version, options.function, options.hit, sorted(record.get("stubs", {})))
+        seed, why = capture_seed(profile, version, target, options.hit, sorted(record.get("stubs", {})))
         if seed is None:
             findings.append(
                 {"key": "behave.seed", "blocking": False, "message": f"no oracle capture to seed memory: {why}"}
@@ -384,7 +407,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         # the probe's call): a probe with other stubs (another depth) needs its own capture
         asked = set(options.seeded["capture"].get("stubs", []))
         if set(record.get("stubs", {})) - asked:
-            seed, why = capture_seed(profile, version, options.function, options.hit, sorted(record["stubs"]))
+            seed, why = capture_seed(profile, version, target, options.hit, sorted(record["stubs"]))
             if seed is None:
                 findings.append(
                     {"key": "behave.seed", "blocking": False, "message": f"no oracle capture for these stubs: {why}"}
@@ -394,15 +417,16 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
                 again, code, more = run(profile, replace(options, seeded=seed, recaptured=True))
                 return again, code, [*findings, *more]
     if starved:
-        # no case got through: the input memory lacks state the program built at run time (null pointers and
-        # function pointers the original dereferences). Both bodies run again over a memory where unmapped reads
-        # answer zero, so what each does with the same garbage is still compared.
+        # a case did not get through: the input memory lacks state the program built at run time (null pointers,
+        # garbage pointers and function pointers the original dereferences), even over the captured memory. Both
+        # bodies run again over a memory where unmapped reads answer zero, so what each does with the same
+        # garbage is still compared.
         again, code, more = run(profile, replace(options, lenient=True))
         more.append(
             {
                 "key": "behave.lenient",
                 "blocking": False,
-                "message": "no case ran with strict memory; compared over a lenient memory (unmapped reads zero)",
+                "message": "a case ran out of mapped memory; compared over a lenient memory (unmapped reads zero)",
             }
         )
         if again.get("probe") is not None:
