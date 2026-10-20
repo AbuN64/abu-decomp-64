@@ -32,6 +32,27 @@ class StatusLineTests(unittest.TestCase):
             assert "[git/INFO] m" in out.getvalue()
 
 
+class StatusButtonTests(unittest.TestCase):
+    def test_bar_speaks_i3bar_blocks_and_a_click_runs_the_button_command(self):
+        buttons = [{"label": "RESTART GAME", "command": ["stream", "restart", "port-supervisor"]}]
+        ran = []
+        with tempfile.TemporaryDirectory() as tmp:
+            out = io.StringIO()
+            clicks = ['[\n', '{"name":"event","button":1},\n', '{"name":"button-0","button":1}\n']
+            follow(Path(tmp) / "e.jsonl", out, iterations=1, buttons=buttons, run=ran.append, clicks=clicks)
+            lines = out.getvalue().splitlines()
+            assert json.loads(lines[0]) == {"version": 1, "click_events": True}
+            assert lines[1] == "["
+            row = json.loads(lines[2].rstrip(","))
+            assert [block["name"] for block in row] == ["button-0", "event"]
+            assert row[0]["full_text"] == " RESTART GAME "
+            deadline = 50
+            while not ran and deadline:
+                threading.Event().wait(0.02)
+                deadline -= 1
+        assert ran == [["stream", "restart", "port-supervisor"]]
+
+
 def git(repo, *args):
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 

@@ -15,6 +15,8 @@ Nothing is generated: the tile process reads the profile directly.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +26,7 @@ from .feed import events_path, parse_kinds
 
 PATH_KEYS = ("build_profile", "supervisor_status", "release_current", "run_status", "host_log", "boot_plan")
 CONSOLE_KEYS = frozenset({"title", "feed", "kinds", "actors", "host_log", "sources", "panes"})
-SECTION_KEYS = frozenset({"max_lines", "git_refs"})
+SECTION_KEYS = frozenset({"max_lines", "git_refs", "buttons"})
 
 
 def _path(profile: Any, value: str) -> str:
@@ -90,7 +92,21 @@ def run_follower(profile: Any, action: str) -> dict[str, Any]:
     if action == "status-line":
         from .statusline import follow
 
-        follow(path)
+        buttons = profile.section("console").get("buttons", [])
+        for button in buttons:
+            if not (isinstance(button.get("label"), str) and isinstance(button.get("command"), list)):
+                raise DecompError("config.schema", "console.buttons: each needs a label and a command list")
+
+        def run(command: list[str]) -> None:
+            subprocess.Popen(
+                [sys.executable, "-m", "abu_decomp", "--profile", str(profile.source_file), *command],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+        follow(path, buttons=buttons, run=run)
     else:
         from .gitrefs import RefSource
 
