@@ -384,6 +384,34 @@ def _command(tool: str, chosen: Settings | TasteSettings, given: tuple[str, ...]
     return [*command, *given[1:]]
 
 
+# The verbs that write the project tree (unbake and Recipe Maker), alone or as `group verb`.
+WRITING_VERBS = frozenset({"sync", "setup", "submit", "land", "apply", "move"})
+WRITING_PAIRS = frozenset({("structure", "apply"), ("name", "submit")})
+
+
+def writes_tree(given: Sequence[str]) -> bool:
+    """A call that writes the project tree; `sync --check` and text calls only read."""
+    words = [arg for arg in given if not arg.startswith("-")][:2]
+    if not words or is_text_call(given) or "--check" in given:
+        return False
+    return words[0] in WRITING_VERBS or tuple(words) in WRITING_PAIRS
+
+
+def require_named_tree(profile: Profile, tool: str, given: Sequence[str], project: Path | None) -> None:
+    """Refuse a lane's writing call that names no --project: it would write the seat's project tree, which no lane
+    owns and the seat's pin commits come from."""
+    if project or tool == "taste" or not os.environ.get("DECOMP_LANE"):
+        return
+    if writes_tree(given):
+        seat = _table(profile).get("project")
+        raise DependencyError(
+            "dependency.seat_tree",
+            f"lane {os.environ['DECOMP_LANE']}: `{tool} {' '.join(given[:2])}` writes the tree and names no --project, "
+            f"so it would run in the seat project tree ({seat}), which no lane owns; "
+            f"pass `--project <your tree>` (read-only verbs keep the default)",
+        )
+
+
 def ready(profile: Profile, project: Path) -> None:
     """Refuse, before anything runs on `project`, when the installed tools are not the pinned ones or the project's
     own pin file names other versions: the checks every invoke on another tree makes, for a caller that writes to that
@@ -415,6 +443,7 @@ def invoke(
         given = given[1:]
     if not given or any("\0" in arg for arg in given):
         raise DependencyError("dependency.arguments", "provide a public command followed by its arguments")
+    require_named_tree(profile, tool, given, project)
     chosen: Settings | TasteSettings = taste_settings(profile) if tool == "taste" else settings(profile, project, host)
     require_checkouts(profile, [tool])
     if isinstance(chosen, Settings) and project:
