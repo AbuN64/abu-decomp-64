@@ -37,6 +37,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import link
 import policy
 
+HERE = pathlib.Path(__file__).resolve().parent
 KSEG0, KUSEG_END, KUSEG_LOW, RDRAM_END = 0x80000000, 0x00800000, 0x10000, 0x80800000
 NEAR = tuple(k for k in range(-6, 7) if k)
 # F3DEX2 command opcodes (the top byte of a display-list command's first word): geometry 0x01-0x07, the rest 0xD3-0xFF
@@ -190,6 +191,13 @@ def main():
                           "state": state, "container": container})
     for (kind, state), count in sorted(counts.items()):
         print("COUNT", kind, state, count, sep="\t")
+    import closure  # a D_00XXXXXX name the closure cannot bind to its function routes as zeroed data
+    facts = closure.Facts(args.source, HERE.parent, HERE / "shim-bindings.txt", policy.game_code(project))
+    for sym, address, names in facts.unbound_aliases():
+        print("ADDRESS", "-", f"0x{address:08x}", "-", "alias", names[0], "unbound", sym, sep="\t")
+        counts["alias", "unbound"] = counts.get(("alias", "unbound"), 0) + 1
+        needs.append({"kind": "address", "rom": "-", "address": f"0x{address:08x}", "word": "-", "target": names[0],
+                      "state": "alias-unbound", "container": sym})
     if args.needs:
         args.needs.write_text("".join(json.dumps(row) + "\n" for row in needs))
     return 1 if needs else 0

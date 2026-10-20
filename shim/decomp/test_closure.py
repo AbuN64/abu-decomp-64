@@ -244,6 +244,17 @@ class RouteTests(unittest.TestCase):
         kind, detail = self.route("D_00200000_us_rev1")
         self.assertEqual(self.d["bindings"].get("D_00200000_us_rev1"), "func_80200000_de")
         self.assertNotIn("D_00200000_us_rev1", self.d["data"], "zeroed data would be executed as code")
+    def test_alias_of_a_renamed_function_binds_and_an_unbindable_one_is_listed(self):
+        # A table of callbacks stores (s32) &D_00203AD8; the function there was renamed (no func_ prefix).
+        self.facts.text["src/GAME/80203AD8.CPP"] = "void Turret_Code_IDLE(void) {\n}\nextern char D_00203AD8[];\n" \
+            "extern char D_00203B00[];\nextern char D_00203B20[];\nu32 tbl[] = {(u32)D_00203AD8, (u32)D_00203B00};\n"
+        self.facts.addrs["Turret_Code_IDLE"] = ("0x80203AD8", " // type:func")
+        self.facts.addrs["Turret_Gone"] = ("0x80203B00", " // type:func")  # pinned function nothing defines
+        self.facts.addrs["D_00203B20"] = ("0x00203B20", "")  # a TLB data record: nothing pinned as a function there
+        self.assertEqual(self.facts.function_alias("D_00203AD8"), "Turret_Code_IDLE")
+        self.assertEqual(self.route("D_00203AD8")[0], "added")
+        self.assertEqual(self.d["bindings"]["D_00203AD8"], "Turret_Code_IDLE")
+        self.assertEqual([(s, n) for s, _, n in self.facts.unbound_aliases()], [("D_00203B00", ["Turret_Gone"])])
     def test_alias_target_links_its_unit(self):
         # D_00XXXXXX takes a function's address; the function's unit is linked like a direct call would link it.
         kind, detail = self.route("D_00200000")

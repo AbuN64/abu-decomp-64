@@ -36,6 +36,7 @@ ALIAS = re.compile(r"D_(?:auto_)?00([0-9A-F]{6})")
 # The same name with a version suffix (D_0024B52C_us_rev1: ACTOR_TABLE_A, the entry the setup stores as a behaviour):
 # the pinned value is still a function address without its KSEG0 bit.
 FUNCTION_ALIAS = re.compile(r"D_(?:auto_)?00([0-9A-F]{6})(?:_[a-z][a-z0-9_]*)?")
+FUNCTION_ALIAS_REF = re.compile(r"\bD_(?:auto_)?00[0-9A-F]{6}(?:_[a-z][a-z0-9_]*)?\b")
 
 
 class Facts:
@@ -75,9 +76,23 @@ class Facts:
 
     def function_at(self, address):
         """The one defined function pinned at address, if any."""
-        exact = [n for n, (a, _) in self.addrs.items()
-                 if n.startswith("func_") and int(a, 16) == address and self.definers(n)]
-        return exact[0] if len(exact) == 1 else None
+        exact = [n for n, (a, c) in self.addrs.items()
+                 if (n.startswith("func_") or "type:func" in c) and int(a, 16) == address and self.definers(n)]
+        return exact[0] if len(exact) == 1 else None  # a renamed function (Turret_Code_IDLE) is still the target
+    def unbound_aliases(self):
+        """[(alias, function address, names)] of the D_00XXXXXX names the source references whose address a pinned
+        function holds and that function_alias cannot bind: they would route as zeroed data and the first call
+        through them (a callback or function table) would fault (addrscan.py lists them)."""
+        refs = sorted({m for t in self.text.values() for m in FUNCTION_ALIAS_REF.findall(t)})
+        out = []
+        for sym in refs:
+            m = FUNCTION_ALIAS.fullmatch(sym)
+            target = int(self.addrs[sym][0], 16) | 0x80000000 if sym in self.addrs else int("80" + m.group(1), 16)
+            names = sorted(n for n, (a, c) in self.addrs.items()
+                           if (n.startswith("func_") or "type:func" in c) and int(a, 16) == target)
+            if names and not self.function_alias(sym):
+                out.append((sym, target, names))
+        return out
 
     def function_alias(self, sym):
         """D_00XXXXXX / D_auto_00XXXXXX name a function's address without its KSEG0 bit
