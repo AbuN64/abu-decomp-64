@@ -27,8 +27,13 @@ class TileParity(unittest.TestCase):
         self.assertFalse(tp.verdict(252, 75)["ok"])
 
     def seat(self, command):
-        path = pathlib.Path(tempfile.mkdtemp()) / "seat.json"
-        path.write_text(json.dumps({"supervisor": {"roles": {"port": {"command": command}}}}))
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = pathlib.Path(directory.name) / "seat.json"
+        release = path.parent / "release"
+        release.mkdir()
+        path.write_text(json.dumps({"supervisor": {"runtime_root": str(path.parent), "roles": {
+            "port": {"command": command, "release_current": str(release)}}}}))
         return path
 
     def test_seat_args_match_and_drift(self):

@@ -37,9 +37,22 @@ def census(stderr):
 
 def seat_args(seat_json, rom):
     """The port role's boot arguments from a seat profile, with the release ROM and user folder replaced by {rom} and {user}."""
-    command = json.loads(pathlib.Path(seat_json).read_text())["supervisor"]["roles"]["port"]["command"][1:]
-    return ["{rom}" if arg.endswith("data/ragewars.z64") else "{user}" if arg == "{release}/user" else arg
-            for arg in command]
+    path = pathlib.Path(seat_json)
+    supervisor = json.loads(path.read_text())["supervisor"]
+    role = supervisor["roles"]["port"]
+    release = pathlib.Path(role["release_current"])
+    if not release.is_absolute():
+        release = path.parent / release
+    release = release.resolve(strict=True)
+    mapping = {"release": str(release), "runtime_root": supervisor["runtime_root"],
+               "run_dir": str(path.parent / "parity-run")}
+    command = [arg.format_map(mapping) for arg in role["command"]][1:]
+
+    out = list(command)
+    for flag, value in (("--rom", "{rom}"), ("--user-dir", "{user}")):
+        out[out.index(flag) + 1] = value
+    return out
+
 
 
 def verdict(headless, tile):
