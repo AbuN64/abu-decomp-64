@@ -130,6 +130,29 @@ int main(void)
     check("removed_client_silent", osRecvMesg(&cq2, &m, OS_MESG_NOBLOCK) == -1);
     check("remaining_client_hears", osRecvMesg(&cq, &m, OS_MESG_NOBLOCK) == 0);
     check("list_after_remove", sc.clientList == &client && client.next == NULL);
+    /* A queued swap and the displayed framebuffer both exclude rendering.
+     * Audio still completes; the original task stays queued exactly once and
+     * resumes on the retrace that releases its buffer. */
+    char fbc[4];
+    osViSwapBuffer(fbb);
+    OSScTask pending = task(M_GFXTASK, OS_SC_NEEDS_RSP | OS_SC_NEEDS_RDP | OS_SC_LAST_TASK, fbb);
+    OSScTask audio = task(M_AUDTASK, OS_SC_NEEDS_RSP, NULL);
+    submit(&pending);
+    submit(&audio);
+    n64c_run_idle();
+    expect("audio_bypasses_pending_framebuffer", "a");
+    check("pending_buffer_keeps_task_queued", sc.gfxListHead == &pending && sc.gfxListTail == &pending && !pending.next);
+    check("blocked_graphics_has_no_completion", drain_done() == 200);
+    n64c_frame();
+    expect("displayed_buffer_remains_blocked", "");
+    check("displayed_buffer_still_owned", osViGetCurrentFramebuffer() == fbb && sc.gfxListHead == &pending);
+    osViSwapBuffer(fbc);
+    n64c_frame();
+    expect("retrace_releases_waiting_graphics", "g");
+    check("released_task_completes_once", drain_done() == 101 && !sc.gfxListHead && !sc.gfxListTail);
+    n64c_frame();
+    expect("released_task_not_replayed", "");
+    check("no_duplicate_completion", drain_done() == 0);
     n64c_shutdown();
     return fails ? 1 : 0;
 }

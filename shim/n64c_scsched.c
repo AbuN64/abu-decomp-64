@@ -15,10 +15,12 @@ static void (*retrace_hook)(void);
 static int (*pre_retrace_hook)(void);
 static void (*task_hook)(OSSched *, OSScTask *, N64cScTaskEvent);
 static void (*prenmi_hook)(OSSched *);
+static int (*task_ready_hook)(const OSScTask *);
 void n64c_sc_set_retrace_hook(void (*hook)(void)) { retrace_hook = hook; }
 void n64c_sc_set_pre_retrace_hook(int (*hook)(void)) { pre_retrace_hook = hook; }
 void n64c_sc_set_task_hook(void (*hook)(OSSched *, OSScTask *, N64cScTaskEvent)) { task_hook = hook; }
 void n64c_sc_set_prenmi_hook(void (*hook)(OSSched *)) { prenmi_hook = hook; }
+void n64c_sc_set_task_ready_hook(int (*hook)(const OSScTask *)) { task_ready_hook = hook; }
 
 #if __SIZEOF_POINTER__ == 4
 /* The offsets the game's own code addresses. */
@@ -105,7 +107,19 @@ static OSScTask *pop(OSScTask **head, OSScTask **tail)
     return t;
 }
 
-/* Start the next task when the RSP is free: audio first, then graphics once the RDP it needs is free. */
+/* A graphics buffer remains owned by the VI while displayed or awaiting a swap.
+ * Leave its task at the head of the list until retrace releases it. Game frame
+ * rings can retain additional buffers through the same admission boundary. */
+static int graphics_ready(const OSScTask *t)
+{
+    if (t->framebuffer && (t->framebuffer == osViGetCurrentFramebuffer() ||
+                           t->framebuffer == osViGetNextFramebuffer()))
+        return 0;
+    return !task_ready_hook || task_ready_hook(t);
+}
+
+/* Start the next task when the RSP is free: audio first, then graphics once its
+ * RDP and framebuffer are free. Blocked graphics must not hold up audio. */
 static void schedule(OSSched *sc)
 {
     OSScTask *t;
@@ -115,7 +129,8 @@ static void schedule(OSSched *sc)
         t = pop(&sc->audioListHead, &sc->audioListTail);
         if (!sc->audioListHead)
             sc->doAudio = 0;
-    } else if (sc->gfxListHead && !((sc->gfxListHead->state & OS_SC_NEEDS_RDP) && sc->curRDPTask)) {
+    } else if (sc->gfxListHead && !((sc->gfxListHead->state & OS_SC_NEEDS_RDP) && sc->curRDPTask) &&
+               graphics_ready(sc->gfxListHead)) {
         t = pop(&sc->gfxListHead, &sc->gfxListTail);
     } else
         return;

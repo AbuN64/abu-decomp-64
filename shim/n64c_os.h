@@ -306,6 +306,9 @@ typedef enum { N64C_SC_TASK_START, N64C_SC_RSP_DONE, N64C_SC_RDP_DONE } N64cScTa
 /* Called on the scheduler thread: at start (just before the RSP is given the task) and as each unit reports.
  * RSP_DONE and RDP_DONE arrive before the task's owner is told. NULL: none. */
 void n64c_sc_set_task_hook(void (*hook)(OSSched *sc, OSScTask *task, N64cScTaskEvent event));
+/* Additional game framebuffer ownership: zero defers the head graphics task
+ * until a later scheduler event. Audio bypasses this hook. NULL: VI ownership only. */
+void n64c_sc_set_task_ready_hook(int (*hook)(const OSScTask *task));
 /* Called when the pre-reset interrupt message arrives. NULL: the message is ignored. */
 void n64c_sc_set_prenmi_hook(void (*hook)(OSSched *sc));
 typedef void (*N64cTaskFn)(OSTask *task, void *user);
