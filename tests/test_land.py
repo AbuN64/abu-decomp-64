@@ -1386,3 +1386,21 @@ class LandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnionMergeDeletionTests(unittest.TestCase):
+    def test_a_deleted_fact_is_gone_and_a_line_main_added_nearby_stays(self):
+        tree = "a = 0x10;\ndata_unresolved_802C15D0 = 0x802C15D0; // rom:0xC21D0\nmain_added = 0x20;\n"
+        merged, conflicts = union_merge(tree, [], ["data_unresolved_802C15D0 = 0x802C15D0;"])
+        self.assertEqual(merged, "a = 0x10;\nmain_added = 0x20;\n")
+        self.assertEqual(conflicts, [])
+
+    def test_a_deleted_fact_goes_even_when_the_tree_renamed_its_line(self):
+        tree = "a = 0x10;\nrenamed_by_main = 0x802C15D0;\n"
+        merged, _ = union_merge(tree, [], ["data_unresolved_802C15D0 = 0x802C15D0;"])
+        self.assertEqual(merged, "a = 0x10;\n")
+
+    def test_a_line_the_patch_puts_back_at_that_address_stays(self):
+        tree = "old = 0x802C15D0;\n"
+        merged, _ = union_merge(tree, ["new = 0x802C15D0;"], ["old = 0x802C15D0;"])
+        self.assertEqual(merged, "new = 0x802C15D0;\n")

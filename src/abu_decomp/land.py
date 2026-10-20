@@ -33,7 +33,9 @@ Gates, in order; the first failure stops the run and the rest are reported as sk
                carries both addresses. A symbol line splat itself rejects (the host's splat parses it alone) is not
                added either: a blocking `land.symbol_invalid` finding carries its reason, so a symbol line never
                fails `unbake setup`. A symbol line a patch removes (a move or a rename) and the tree still holds
-               exactly is retracted before the patch's lines are added; other removed lines in a union file stay.
+               exactly is retracted before the patch's lines are added, and so is the tree's line at an address
+               the patch
+               removes and does not add again, whatever its name; other removed lines in a union file stay.
                Each input is checked against the state the earlier inputs left, before any build, and is refused
                alone (the tree goes back to before it; `land.patch_excluded` plus the reason's own finding) when
                - a symbol fact of it conflicts (`land.symbol_conflict`) or splat rejects it (`land.symbol_invalid`),
@@ -543,7 +545,11 @@ def union_merge(existing: str, added: Sequence[str], removed: Sequence[str] = ()
     being the address the patch itself removed that name from (None when it removed none), so a conflict whose base is
     not the tree's address says the tree moved the symbol after the patch was made."""
     retract = {s for x in removed if (s := symbol_line(x))}
-    lines = [x for x in existing.splitlines() if symbol_line(x) not in retract]
+    # A symbol the patch deletes outright is gone at its address whatever name the tree gives it by now (a retarget or
+    # an earlier input renamed the line): an address the patch removes and adds no line at loses the tree's line too.
+    returned = {s[1] for x in added if (s := symbol_line(x))}
+    gone = {address for _, address in retract} - returned
+    lines = [x for x in existing.splitlines() if (s := symbol_line(x)) not in retract and not (s and s[1] in gone)]
     bases = {name: address for name, address in retract}
     seen = set(lines)
     names: dict[str, int] = {}
