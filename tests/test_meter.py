@@ -8,34 +8,47 @@ import unittest
 
 from abu_decomp import meter
 
-BURN = "import time; end = time.process_time() + 0.4\nwhile time.process_time() < end: pass"
+SPIN = "import time\nend = time.process_time() + {seconds}\nwhile time.process_time() < end: pass\n{after}"
 
 
-class OrphanCpuTests(unittest.TestCase):
-    def setUp(self) -> None:
-        if not meter.adopt():
-            self.skipTest("the kernel has no child subreaper")
-
-    def test_an_orphan_that_used_cpu_after_its_parent_left_is_counted(self) -> None:
+class MeterTests(unittest.TestCase):
+    def test_a_running_child_counts_before_anyone_waits_for_it(self) -> None:
         before = meter.cpu()
-        # the child starts a grandchild that burns CPU and exits at once: the grandchild is an orphan below us
-        code = f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', {BURN!r}])"
-        subprocess.run([sys.executable, "-c", code], check=True)
-        end = time.monotonic() + 10
-        while meter.cpu() - before < 0.3 and time.monotonic() < end:
-            time.sleep(0.05)
-        self.assertGreaterEqual(meter.cpu() - before, 0.3)
+        child = subprocess.Popen([sys.executable, "-c", SPIN.format(seconds=0.5, after="time.sleep(30)")])
+        try:
+            end = time.monotonic() + 20
+            while meter.cpu() - before < 0.4 and time.monotonic() < end:
+                time.sleep(0.05)
+            self.assertGreaterEqual(meter.cpu() - before, 0.4)
+        finally:
+            child.kill()
+            child.wait()
 
-    def test_kill_descendants_ends_a_worker_the_tool_left_running(self) -> None:
-        code = "import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])"
-        subprocess.run([sys.executable, "-c", code], check=True)
-        deadline = time.monotonic() + 5
-        while not meter.descendants() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        mine = meter.descendants()
-        self.assertTrue(mine)
-        self.assertEqual(meter.kill_descendants(), len(mine))
-        self.assertEqual([pid for pid in mine if os.path.exists(f"/proc/{pid}")], [])
+    def test_the_workers_a_stopped_tool_left_behind_are_read_and_ended(self) -> None:
+        marker = f"ABU_DECOMP_CALL={os.getpid()}.{time.time_ns()}"
+        worker = SPIN.format(seconds=0.5, after="time.sleep(60)")
+        tool = f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', {worker!r}])"
+        subprocess.run(
+            [sys.executable, "-c", tool], check=True, env={**os.environ, "ABU_DECOMP_CALL": marker.split("=")[1]}
+        )
+        deadline = time.monotonic() + 20
+        spent = 0.0
+        while (
+            spent < 0.4 and time.monotonic() < deadline
+        ):  # the worker is an orphan now; wait until it has used its CPU
+            time.sleep(0.1)
+            rows = meter._table()
+            spent = sum(rows[pid][2] for pid in rows if pid != os.getpid() and self.marked(pid, marker))
+        self.assertGreaterEqual(meter.stop_marked(marker.encode()), 0.4)
+        self.assertFalse([pid for pid in meter._table() if self.marked(pid, marker) and not meter._zombie(pid)])
+
+    @staticmethod
+    def marked(pid: int, marker: str) -> bool:
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as handle:
+                return marker.encode() in handle.read().split(b"\0")
+        except OSError:
+            return False
 
 
 if __name__ == "__main__":

@@ -283,7 +283,7 @@ class ToolResult:
     context: dict[str, str]
     text: bytes | None = None  # the tool's own stdout when it printed text (--version, --help), not a JSON document
     seconds: float = 0.0  # wall time of the tool's process (monotonic clock), reported on the call's event
-    cpu: float = 0.0  # CPU seconds of the tool and everything it ran, orphans adopted (abu_decomp.meter)
+    cpu: float = 0.0  # CPU seconds of the tool and everything it ran (abu_decomp.meter)
 
     @property
     def ok(self) -> bool:
@@ -477,7 +477,8 @@ def invoke(
     if isinstance(chosen, Settings):
         environment["UNBAKE_HOST"] = str(chosen.host)
     environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + environment.get("PATH", "")
-    meter.adopt()
+    marker = f"ABU_DECOMP_CALL={os.getpid()}.{time.time_ns()}"
+    environment[marker.partition("=")[0]] = marker.partition("=")[2]
     started, cpu_before = time.monotonic(), meter.cpu()
     stop = _on_terminate()
     try:
@@ -491,16 +492,15 @@ def invoke(
             env=environment,
         )
     except subprocess.TimeoutExpired as exc:
-        meter.kill_descendants()  # the tool's workers outlive it otherwise and burn CPU no meter reads
-        spent = meter.cpu() - cpu_before
+        spent = meter.cpu() - cpu_before + meter.stop_marked(marker.encode())  # its workers outlive it otherwise
         raise DependencyError(
             "dependency.timeout", f"{tool} exceeded {chosen.timeout_seconds:g}s and used {spent:.1f} CPU s"
         ) from exc
     except OSError as exc:
         raise DependencyError("dependency.process", f"cannot execute {tool}: {exc}") from exc
     except (KeyboardInterrupt, SystemExit):  # a cap (`timeout`) or ^C: the workers die with the tool, read their CPU
-        meter.kill_descendants()
-        print(f"decomp: {tool} stopped after {meter.cpu() - cpu_before:.1f} CPU s", file=sys.stderr)
+        spent = meter.cpu() - cpu_before + meter.stop_marked(marker.encode())
+        print(f"decomp: {tool} stopped after {spent:.1f} CPU s", file=sys.stderr)
         raise
     finally:
         stop()

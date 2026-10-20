@@ -1,63 +1,27 @@
-"""The CPU every process under this one used, descendants that were never waited for included.
+"""The CPU every process under this one used, workers that outlived the tool that started them included.
 
-`getrusage(RUSAGE_CHILDREN)` counts a child only when its parent waits for it. A tool that is killed (a cap, a timeout)
-leaves its workers and their compilers behind: they reparent to init, finish unseen and their CPU is in no meter, so a
-killed `recipe work` read as a few seconds while its workers had used a hundred. This process becomes the subreaper of
-its tree (`prctl(PR_SET_CHILD_SUBREAPER)`): an orphan reparents here, and `cpu()` waits for the ones that already ended
-before it reads the meter. `kill_descendants()` ends whatever still runs under this process after its tool was
-stopped, so the CPU stops growing unseen and is then counted.
+`getrusage(RUSAGE_CHILDREN)` counts a child only when its parent waited for it. A tool that is stopped (a cap, a
+timeout, ^C) leaves its workers and their compilers behind: they reparent to init, finish unseen and their CPU is in no
+meter, so a stopped `recipe work` read as a few seconds while its workers had used a hundred. Two readings close the
+gap, and neither waits for a child (a wait here could take the exit status of a child another thread watches): `cpu()`
+adds the CPU of the processes still running below this one to the reaped total, and `stop_marked()` finds the workers a
+stopped tool left behind by the mark its environment carried, reads their CPU and ends them.
 """
 
 from __future__ import annotations
 
 import contextlib
-import ctypes
 import os
 import resource
 import signal
 import time
 
-PR_SET_CHILD_SUBREAPER = 36
-_adopted = False
+_TICKS = os.sysconf("SC_CLK_TCK")
 
 
-def adopt() -> bool:
-    """Make this process the parent of every orphan below it; False where the kernel cannot (the meter then counts what
-    it always did). Idempotent."""
-    global _adopted
-    if not _adopted:
-        try:
-            _adopted = ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0
-        except (OSError, AttributeError):
-            _adopted = False
-    return _adopted
-
-
-def reap() -> int:
-    """Wait for every child that already ended (the orphans adopted above among them) so its CPU is in the meter. Call
-    it only where no subprocess of this process is running: it would take the exit status of one the caller waits
-    for."""
-    count = 0
-    while True:
-        try:
-            pid, _ = os.waitpid(-1, os.WNOHANG)
-        except ChildProcessError:
-            return count
-        if not pid:
-            return count
-        count += 1
-
-
-def cpu() -> float:
-    """CPU seconds (user+system) of every finished descendant, orphans included."""
-    reap()
-    used = resource.getrusage(resource.RUSAGE_CHILDREN)
-    return used.ru_utime + used.ru_stime
-
-
-def descendants() -> list[int]:
-    """Pids of every process below this one, read from /proc (parents before their children)."""
-    parents: dict[int, list[int]] = {}
+def _table() -> dict[int, tuple[int, int, float]]:
+    """pid -> (parent, process group, CPU seconds the process and the children it waited for used), from /proc."""
+    rows: dict[int, tuple[int, int, float]] = {}
     for name in os.listdir("/proc"):
         if not name.isdigit():
             continue
@@ -67,30 +31,62 @@ def descendants() -> list[int]:
         except OSError:
             continue
         fields = text.rpartition(")")[2].split()  # the name may hold spaces: the fields after its `)` are fixed
-        if len(fields) > 1:
-            parents.setdefault(int(fields[1]), []).append(int(name))
+        if len(fields) > 15:
+            rows[int(name)] = (int(fields[1]), int(fields[2]), sum(int(f) for f in fields[11:15]) / _TICKS)
+    return rows
+
+
+def below(root: int, rows: dict[int, tuple[int, int, float]]) -> list[int]:
+    """Pids of every process below `root`, parents before their children."""
+    children: dict[int, list[int]] = {}
+    for pid, (parent, _, _) in rows.items():
+        children.setdefault(parent, []).append(pid)
     found: list[int] = []
-    queue = [os.getpid()]
+    queue = [root]
     while queue:
-        for child in parents.get(queue.pop(0), ()):
+        for child in children.get(queue.pop(0), ()):
             found.append(child)
             queue.append(child)
     return found
 
 
-def kill_descendants(wait: float = 5.0) -> int:
-    """SIGKILL everything still running below this process and wait for it, so its CPU is counted; how many it killed.
-    For a tool this process stopped itself: a worker left running would burn CPU nobody reads."""
-    victims = descendants()
-    killed = len(victims)
+def cpu() -> float:
+    """CPU seconds (user+system) of every finished child and of everything still running below this process."""
+    used = resource.getrusage(resource.RUSAGE_CHILDREN)
+    rows = _table()
+    return used.ru_utime + used.ru_stime + sum(rows[pid][2] for pid in below(os.getpid(), rows))
+
+
+def stop_marked(marker: bytes, wait: float = 5.0) -> float:
+    """SIGKILL every process whose environment holds `marker` (the call this process started marks the environment it
+    gives the tool, and every descendant inherits it, the workers an exited tool left behind among them) and return
+    the CPU they had used. A tool that was stopped leaves them running, burning CPU no meter reads."""
+    rows = _table()
+    victims = []
+    for pid in rows:
+        if pid == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as handle:
+                if marker in handle.read().split(b"\0"):
+                    victims.append(pid)
+        except OSError:
+            continue
+    spent = sum(rows[pid][2] for pid in victims)
     for pid in victims:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.kill(pid, signal.SIGKILL)
     end = time.monotonic() + wait
     while victims and time.monotonic() < end:
-        reap()
-        victims = [pid for pid in victims if os.path.exists(f"/proc/{pid}")]
+        victims = [pid for pid in victims if os.path.exists(f"/proc/{pid}") and not _zombie(pid)]
         if victims:
             time.sleep(0.02)
-    reap()
-    return killed
+    return spent
+
+
+def _zombie(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            return handle.read().decode(errors="replace").rpartition(")")[2].split()[0] == "Z"
+    except (OSError, IndexError):
+        return True

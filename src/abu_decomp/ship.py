@@ -62,7 +62,6 @@ class Ship:
         self.weight, self.cgroup, self.notes = table["lock_weight"], cgroup, []
         self.run, self.landing, self.append, self.clock, self.lock_wait = run, landing, append, clock, lock_wait
         self.steps: list[dict[str, Any]] = []
-        meter.adopt()
         self.cpu_mark = meter.cpu()
         self.refused: list[dict[str, Any]] = []  # inputs the ship refused whole before the land that pushed
 

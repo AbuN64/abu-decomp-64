@@ -780,7 +780,6 @@ class Landing:
         self.union_seen: dict[str, bool] = {}  # path -> whether gitattributes say merge=union
         self.regenerated: dict[str, str] = {}  # generated file the sync changed -> the lane whose sources caused it
         self.written: set[str] = set()  # every path an unbake setup or sync of this land says it wrote
-        meter.adopt()
         self.cpu_start = self.cpu_mark = meter.cpu()  # descendants' CPU at the land's start
         self.proof: dict[str, Any] | None = None  # the rename proof of the tree as it is (prove stage)
 
