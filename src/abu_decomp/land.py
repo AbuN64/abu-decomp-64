@@ -774,6 +774,7 @@ class Landing:
         self.union_seen: dict[str, bool] = {}  # path -> whether gitattributes say merge=union
         self.regenerated: dict[str, str] = {}  # generated file the sync changed -> the lane whose sources caused it
         self.written: set[str] = set()  # every path an unbake setup or sync of this land says it wrote
+        self.proof: dict[str, Any] | None = None  # the rename proof of the tree as it is (prove stage)
 
     # git -------------------------------------------------------------------------------------------------------
     def git(self, *args: str, ok: bool = True, env: dict[str, str] | None = None) -> str:
@@ -1303,7 +1304,16 @@ class Landing:
         re-extracts exactly the versions whose symbol facts, yaml or ROM did, so no extracted assembly outlives the
         facts it was made from. `--no-make`: the check gate builds and records the verdict right after, so setup's
         own `make check` was a second build per round and per bisect or credit build (10-20)."""
+        started = self.clock()
+        if self.proof is not None:  # a proved pure rename changes no object: no extraction to bring up to date
+            return self.gate("setup", True, started, skipped="pure rename proved before setup")
         return self.unbake("setup", "setup", "setup", "--no-make")
+
+    def prove(self) -> bool:
+        """The rename proof, before setup: it reads the tree and the base, never the extraction, and a pure rename
+        then skips both setup (a 5-version re-extract, ~150 s CPU) and the build."""
+        self.proof = self.rename_proof()
+        return True
 
     def rename_proof(self) -> dict[str, Any] | None:
         """The landed change proved a pure rename by `unbake renameproof` (the tree over the base, one rename map,
@@ -1337,7 +1347,7 @@ class Landing:
                 )
                 return self.gate("check", False, started)
             jobs = int(text)
-        proof = self.rename_proof()
+        proof = self.proof
         if proof is not None:
             return self.gate("check", True, started, jobs=jobs, rename_proof=proof)
         command = build_command(self.config["check"], jobs)
@@ -1723,6 +1733,7 @@ class Landing:
     def build_stages(self) -> list[Callable[[], bool]]:
         unbake = self.unbake
         return [
+            self.prove,
             self.setup,
             self.check,
             lambda: unbake("sync_after", "sync_after", "sync", "--settle"),

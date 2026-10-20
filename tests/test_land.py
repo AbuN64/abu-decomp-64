@@ -174,8 +174,8 @@ class LandTests(unittest.TestCase):
         self.assertEqual(
             self.unbake,
             [
-                ("setup", "--no-make"),
                 ("renameproof", "--against", self.base),
+                ("setup", "--no-make"),
                 ("verify", "0"),
                 ("sync", "--settle"),
                 ("audit", "--against", self.base),
@@ -190,6 +190,11 @@ class LandTests(unittest.TestCase):
         result, code, _ = self.land([one])
         self.assertEqual(code, 0)
         self.assertEqual([c[0] for c in self.commands], [("admit", "8")])  # no make
+        self.assertNotIn(("setup", "--no-make"), self.unbake)  # the proof runs first: no extraction either
+        self.assertEqual(self.unbake[:2], [("renameproof", "--against", self.base), ("verify", "0")])
+        setup = next(g for g in result["gates"] if g["gate"] == "setup")
+        self.assertTrue(setup["pass"])
+        self.assertIn("proved before setup", setup["skipped"])
         row = next(g for g in result["gates"] if g["gate"] == "check")
         self.assertTrue(row["pass"])
         self.assertEqual(row["rename_proof"]["map"], [["a", "b"]])
@@ -1330,7 +1335,7 @@ class LandTests(unittest.TestCase):
         self.assertIn("unbake verify refused", findings[0]["message"])
         self.assertFalse(self.gates(result)["check"])
         self.assertEqual(
-            self.unbake[:3], [("setup", "--no-make"), ("renameproof", "--against", self.base), ("verify", "0")]
+            self.unbake[:3], [("renameproof", "--against", self.base), ("setup", "--no-make"), ("verify", "0")]
         )
 
     def test_event_writer_failure_fails_the_landing(self):
