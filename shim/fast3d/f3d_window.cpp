@@ -20,7 +20,7 @@ void F3dWindow::Init(const char* gameName, const char*, bool startFullScreen, ui
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     mFullScreen = startFullScreen;
     mWindow = SDL_CreateWindow(gameName, (int)width, (int)height,
-                               SDL_WINDOW_OPENGL | (startFullScreen ? SDL_WINDOW_FULLSCREEN : 0));
+                               SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | (startFullScreen ? SDL_WINDOW_FULLSCREEN : 0));
     if (mWindow)
         mContext = SDL_GL_CreateContext(mWindow);
     if (!mWindow || !mContext) {
