@@ -5,8 +5,11 @@ import json
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
+
+from textual.markup import to_content
 
 from abu_decomp.console import kit, port
 from abu_decomp.console.activity import ActivityPane
@@ -53,10 +56,22 @@ class KitTests(unittest.TestCase):
         row = Row("k", "func_8027CCA0_eu [1.9 KB] score  CRACKED!", "", "cracked", when=base + 3, tag="L1", count=2)
         self.assertEqual(
             kit.label(row, base),
-            "[dim]21:42:53  +3s[/dim] ★ func_8027CCA0_eu [1.9 KB] score  CRACKED! x2  [dim]L1[/dim]",
+            "[dim]21:42:53  +3s[/dim] ★ func_8027CCA0_eu \\[1.9 KB] score  CRACKED! x2  [dim]L1[/dim]",
         )
         self.assertEqual(kit.label(Row("u", "frame", ""), base), "[dim]" + " " * 13 + "[/dim] • frame")
         self.assertEqual(kit.label(Row("m", "a[b]", "", when=base), None), "[dim]21:42:50     [/dim] • a\\[b]")
+
+    def test_row_label_with_unclosed_brackets_parses_and_shows_the_text(self):
+        # the 10:05:12 stream crash: a title cut mid-list ended in "[112, 113, 114, 1" before the dim tag
+        title = "build  failed exit 2: AssertionError: ('uninterpreted nonzero component bytes', [112, 113, 114, 1"
+        row = Row("k", title, "", "stop", when=time.time(), tag="BLOBS-ASTRA-1")
+        self.assertIn("! " + title + "  BLOBS-ASTRA-1", to_content(kit.label(row, None)).plain)
+        self.assertIn(title, to_content(kit.safe_label(row, None)).plain)
+
+    def test_unparseable_label_falls_back_to_plain_text(self):
+        row = Row("k", "x\\", "", "stop", when=time.time())
+        with unittest.mock.patch.object(kit, "label", return_value="[dim]a[/dim][/dim]"):
+            self.assertIn("x", to_content(kit.safe_label(row, None)).plain)
 
     def test_sizes_cells_heading_and_blocks(self):
         self.assertEqual([kit.size(n) for n in (None, 812, 1964, 20480)], ["", "[812 B]", "[1.9 KB]", "[20.0 KB]"])

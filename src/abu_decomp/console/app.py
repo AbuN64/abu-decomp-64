@@ -56,7 +56,7 @@ class EvidenceRow(Collapsible):
         self.body = Static(Text(row.details or "no further detail"), classes="details")
         super().__init__(
             self.body,
-            title=kit.label(row, previous),
+            title=kit.safe_label(row, previous),
             collapsed=not row.open,
             id="row-" + hashlib.sha256(row.key.encode()).hexdigest()[:16],
             classes=row.state,
@@ -67,7 +67,7 @@ class EvidenceRow(Collapsible):
             self.remove_class(self.record.state)
             self.add_class(row.state)
             self.record, self.previous = row, previous
-            self.title = kit.label(row, previous)
+            self.title = kit.safe_label(row, previous)
             self.body.update(Text(row.details or "no further detail"))
 
 

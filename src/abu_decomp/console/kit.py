@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 
-from rich.markup import escape
+from textual.markup import MarkupError, to_content
 
 from .dashboard_model import Row, ago
 
@@ -68,6 +68,12 @@ def block(*pairs: tuple[str, object]) -> str:
     return "\n".join(lines)
 
 
+def escape(text: str) -> str:
+    """Text that Textual markup shows literally: every `[` is escaped, not only the ones that look like a tag
+    (a bare `[112, 113, 1` cut mid-list was read as an open tag and broke the closing `[/dim]` after it)."""
+    return text.replace("[", "\\[")
+
+
 def label(row: Row, previous: float | None) -> str:
     """The collapsed row as Collapsible markup: dim clock and delta, marker, title, fold count, dim tag."""
     stamp = clock(row.when)
@@ -76,6 +82,19 @@ def label(row: Row, previous: float | None) -> str:
     count = f" x{row.count}" if row.count > 1 else ""
     tag = f"  [dim]{escape(row.tag)}[/dim]" if row.tag else ""
     return f"[dim]{stamp:>{CLOCK_WIDTH}} {since:>{DELTA_WIDTH}}[/dim] " + escape(f"{marker} {row.title}{count}") + tag
+
+
+def safe_label(row: Row, previous: float | None) -> str:
+    """`label`, or when its markup still does not parse, the same row as plain escaped text: one bad row never
+    takes the console down."""
+    text = label(row, previous)
+    try:
+        to_content(text)
+    except MarkupError:
+        stamp = clock(row.when)
+        since = delta(row.when - previous) if row.when and previous else ""
+        return escape(f"{stamp} {since} {MARKERS.get(row.state, '•')} {row.title}".strip())
+    return text
 
 
 def previous_times(rows: list[Row]) -> list[float | None]:
