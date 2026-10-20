@@ -19,6 +19,8 @@
 typedef struct {
     void *fn;
     unsigned index; /* entry index + 1; 0 marks a free slot */
+    uintptr_t end; /* end of the standalone function, for real call-frame sampling */
+    unsigned unframed;
 } Slot;
 static Slot *slots;
 static unsigned slot_mask;
@@ -71,12 +73,14 @@ NOINST static void symbols_open(void)
         return;
     }
 }
-NOINST static void *symbol_address(const char *name)
+NOINST static void *symbol_address(const char *name, uintptr_t *end)
 {
     for (unsigned i = 0; i < sym_count; i++)
         if (ELF32_ST_TYPE(syms[i].st_info) == STT_FUNC && syms[i].st_value && strings[syms[i].st_name] == name[0] &&
-            !strcmp(strings + syms[i].st_name, name))
+            !strcmp(strings + syms[i].st_name, name)) {
+            *end = syms[i].st_value + syms[i].st_size;
             return (void *)(uintptr_t)syms[i].st_value;
+        }
     return NULL;
 }
 NOINST static unsigned slot_of(const void *fn)
@@ -328,10 +332,27 @@ __asm__(".text\n"
         ".size n64c_lockstep_return_i386, .-n64c_lockstep_return_i386\n");
 #endif
 /* A call of entry i: its argument words (the frame's caller-pushed area) and, through the trampoline, its return. */
-NOINST static void ls_call(unsigned i, void *call_site, const unsigned long *regs)
+NOINST static void ls_call(Slot *slot, void *call_site, const unsigned long *regs)
 {
+    if (!regs)
+        return;
+    const unsigned i = slot->index - 1;
+    /* GCC instruments inlined bodies too. Their hook runs inside the caller, whose
+     * ebp is not an argument frame for this function. Never sample or trampoline it.
+     * Keep the first-hit memory point and make the missing call coverage explicit. */
+    const uintptr_t pc = regs[4] - 1;
+    if (pc < (uintptr_t)slot->fn || pc >= slot->end) {
+        if (!__atomic_exchange_n(&slot->unframed, 1, __ATOMIC_RELAXED)) {
+            char line[160];
+            int n = snprintf(line, sizeof line,
+                             "{\"k\":\"unframed\",\"order\":%u,\"pc\":\"%08lx\"}\n",
+                             n64c_trace_entries[i].order, (unsigned long)pc);
+            ls_line_out(line, n);
+        }
+        return;
+    }
     const unsigned call = __atomic_fetch_add(&ls_calls[i], 1, __ATOMIC_RELAXED);
-    if (call >= LS_CALLS || !regs)
+    if (call >= LS_CALLS)
         return;
     unsigned long *frame = (unsigned long *)regs[3];
     char line[400];
@@ -371,9 +392,10 @@ NOINST void n64c_trace_init(void)
             continue;
         }
         void *fn = NULL;
+        uintptr_t end = 0;
         const char *name = NULL;
         for (int k = 0; e->names[k] && !fn; k++)
-            if ((fn = symbol_address(e->names[k])) != NULL)
+            if ((fn = symbol_address(e->names[k], &end)) != NULL)
                 name = e->names[k];
         unsigned s = slot_of(fn) & slot_mask;
         while (fn && slots[s].index && slots[s].fn != fn)
@@ -383,6 +405,7 @@ NOINST void n64c_trace_init(void)
             continue;
         }
         slots[s].fn = fn;
+        slots[s].end = end;
         slots[s].index = i + 1;
         resolved[i] = 1;
         found[i] = name;
@@ -454,7 +477,7 @@ NOINST static void trace_enter(void *fn, void *call_site, const unsigned long *r
             if (!__atomic_load_n(&hit[i], __ATOMIC_RELAXED))
                 first_hit(i);
             if (ls_on)
-                ls_call(i, call_site, regs);
+                ls_call(&slots[s], call_site, regs);
             break;
         }
 }

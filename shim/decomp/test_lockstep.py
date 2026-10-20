@@ -396,6 +396,9 @@ NI float half(float x) { return x * 0.5f; }
 NI long long wide(int a) { return ((long long)a << 32) | 5; }
 NI int depth(int n) { return n ? depth(n - 1) + 1 : add(n, 40); }
 NI void leave(int n) { if (n > 0) leave(n - 1); if (n <= 0) longjmp(escape, 1); }
+static __attribute__((always_inline)) inline int bump(int x) { return x + 3; }
+static int (*volatile bump_ptr)(int) = bump;
+NI int inline_parent(int x) { return bump(x * 2) + x; }
 NI int run(void) {
     printf("add=%d\n", add(2, 3));
     printf("half=%g\n", (double)half(3.0f));
@@ -403,14 +406,18 @@ NI int run(void) {
     printf("depth=%d\n", depth(3));
     if (!setjmp(escape)) leave(2);
     printf("after=%d\n", add(1, 1));
+    int sum = 0;
+    for (int i = 0; i < 12; i++) sum += inline_parent(i);
+    printf("inline=%d indirect=%d\n", sum, bump_ptr(7));
     return 0;
 }
 """
 FIXTURE_TABLE = r"""#include "trace.h"
 const N64cTraceEntry n64c_trace_entries[] = {
     {1, 0x80001000u, 0, {"run"}}, {2, 0x80001100u, 0, {"add"}}, {3, 0x80001200u, 0, {"half"}},
-    {4, 0x80001300u, 0, {"wide"}}, {5, 0x80001400u, 0, {"depth"}}, {6, 0x80001500u, 0, {"leave"}}};
-const unsigned n64c_trace_count = 6;
+    {4, 0x80001300u, 0, {"wide"}}, {5, 0x80001400u, 0, {"depth"}}, {6, 0x80001500u, 0, {"leave"}},
+    {7, 0x80001600u, 0, {"bump"}}, {8, 0x80001700u, 0, {"inline_parent"}}};
+const unsigned n64c_trace_count = 8;
 """
 FIXTURE_DRIVER = r"""#include <stdio.h>
 #include <string.h>
@@ -450,11 +457,12 @@ class PortRecorderTests(unittest.TestCase):
                    "PATH": "/usr/bin:/bin"}
             result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env=env, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.split(), ["add=5", "half=1.5", "wide=900000005", "depth=43", "after=2"])
+            self.assertEqual(result.stdout.split(), ["add=5", "half=1.5", "wide=900000005", "depth=43", "after=2",
+                                                   "inline=234", "indirect=10"])
             self.assertIn("boot-lockstep: on, 1024 pages", result.stderr)
-            self.assertIn("boot-lockstep: 6 points written", result.stderr)
+            self.assertIn("boot-lockstep: 8 points written", result.stderr)
             side = ls.Side(out, lambda r: r.get("order"))
-            self.assertEqual(sorted(side.points), [1, 2, 3, 4, 5, 6])
+            self.assertEqual(sorted(side.points), [1, 2, 3, 4, 5, 6, 7, 8])
             self.assertEqual(side.meta["bytes"], "native")
             first = side.points[1][0]
             self.assertEqual(side.page(first[2])[:4], b"\x78\x56\x34\x12")
@@ -468,6 +476,18 @@ class PortRecorderTests(unittest.TestCase):
             self.assertEqual([side.rets[5][i]["r"][0] for i in range(4)],
                              ["0000002b", "0000002a", "00000029", "00000028"])
             self.assertNotIn(6, side.rets)  # longjmp left every leave frame without a return
+            # Twelve inlined entries have no bump frame. They must not consume its
+            # call budget or hijack inline_parent's return with fabricated samples.
+            records = [json.loads(line) for line in (out / "lockstep.jsonl").read_text().splitlines()]
+            skipped = [r for r in records if r["k"] == "unframed"]
+            self.assertEqual([r["order"] for r in skipped], [7])
+            self.assertEqual(list(side.calls[7]), [0])
+            self.assertEqual(side.calls[7][0]["a"][0], "00000007")
+            self.assertEqual(side.rets[7][0]["r"][0], "0000000a")
+            self.assertEqual([side.calls[8][i]["a"][0] for i in range(8)],
+                             [f"{i:08x}" for i in range(8)])
+            self.assertEqual([side.rets[8][i]["r"][0] for i in range(8)],
+                             [f"{3 * i + 3:08x}" for i in range(8)])
             self.assertEqual([w["new"] for w in side.watch], ["00000005", "00000028", "00000002"])
             plain = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30,
                                    env={"PATH": "/usr/bin:/bin"}, cwd=path, check=False)
