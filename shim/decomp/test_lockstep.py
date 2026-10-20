@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """lockstep.py on synthetic oracle/port recordings, and the port recorder (trace.c, N64C_LOCKSTEP=1) on a fixture."""
 import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import pathlib
 import struct
@@ -126,6 +128,71 @@ class CompareTests(unittest.TestCase):
                 str(self.path / "trace.tsv"), "--symbols", str(self.path / "symbols.txt"), "--pak", "5", *extra]
         return ls.compare(ls.build_parser().parse_args(argv))
 
+    def test_all_memory_arguments_and_returns_are_listed_with_exact_acceptance(self):
+        self.both(1)
+        # More than both former display limits (10 text, 200 JSON).
+        for i in range(210):
+            self.ram.u32(0x80001800 + i * 4, 1, port_value=2)
+        self.both(2)
+        self.both(3)
+        self.both(4)
+        (self.path / "types.tsv").write_text("name\treturn\tparams\nfn_three\tint32\tint32,int32\n")
+        self.oracle.call("fn_three", 0, [3, 4, 0, 0], 0x80003EC0)
+        self.port.call(3, 0, [7, 8, 0, 0, 0, 0, 0, 0], 0xFFFFD000)
+        self.oracle.ret("fn_three", 0, [5, 0])
+        self.port.ret(3, 0, [9, 0])
+        accepts = self.path / "accept.tsv"
+        header = "\t".join(ls.ACCEPT_FIELDS) + "\n"
+        accepts.write_text(header + "memory\t2\tfn_two\t0x80001800\t00000001/00000002\tfixture reason\tfixture review\n")
+        report = self.run_compare("--types", str(self.path / "types.tsv"), "--accept", str(accepts))
+        self.assertEqual(len(report["memory"]), 210)
+        self.assertEqual(len(report["calls"]), 3)
+        self.assertEqual([r["why"].split()[0] for r in report["calls"]], ["arg0", "arg1", "return"])
+        self.assertEqual(report["first"]["address"], "0x80001800")
+        self.assertEqual(report["first_after_accepted"]["address"], "0x80001804")
+        self.assertEqual(report["accepted"][0]["acceptance"]["reason"], "fixture reason")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            ls.print_report(report)
+        self.assertEqual(output.getvalue().count("lockstep: memory order"), 210)
+        self.assertEqual(output.getvalue().count("lockstep: argument order"), 2)
+        self.assertEqual(output.getvalue().count("lockstep: return order"), 1)
+        self.assertIn("first after accepted rows: order 2", output.getvalue())
+        self.assertIn("fixture reason", output.getvalue())
+
+    def test_acceptance_advances_only_reviewed_exact_values(self):
+        self.both(1)
+        self.ram.u32(0x80001800, 1, port_value=2)
+        self.both(2)
+        self.both(3)
+        self.ram.u32(0x80001804, 3, port_value=4)
+        self.both(4)
+        self.both(5)
+        report = self.run_compare()
+        review = dict(zip(ls.ACCEPT_FIELDS, ["memory", 2, "fn_two", "0x80001800", "00000001/00000002", "known", "reviewer"]))
+        ls.apply_acceptances(report, [review], [1, 2, 3, 4, 5])
+        self.assertEqual(report["matched_through"], 1)
+        self.assertEqual(report["matched_through_after_accepted"], 3)
+        self.assertEqual(report["first_after_accepted"]["order"], 4)
+        review["detail"] = "00000001/00000009"
+        ls.apply_acceptances(report, [review], [1, 2, 3, 4, 5])
+        self.assertEqual(report["matched_through_after_accepted"], 1)
+        self.assertEqual(len(report["unmatched_accepts"]), 1)
+        self.assertEqual(report["accepted"], [])
+        self.assertNotIn("acceptance", report["memory"][0])
+
+    def test_accept_file_requires_reason_reviewer_and_unique_exact_rows(self):
+        path = self.path / "accept.tsv"
+        header = "\t".join(ls.ACCEPT_FIELDS) + "\n"
+        good = "memory\t2\tfn_two\t0x80001800\t00000001/00000002\treason\treviewer\n"
+        for bad in [good.replace("reason", ""), good.replace("reviewer", ""),
+                    good.replace("00000001/00000002", "*"), good + good,
+                    good.replace("0x80001800", "0x80001800-0x80001900")]:
+            with self.subTest(row=bad):
+                path.write_text(header + bad)
+                with self.assertRaises(ValueError):
+                    ls.read_acceptances(path)
+
     def test_layouts_that_agree_are_not_divergences(self):
         self.ram.u32(0x80000100, 0x12345678)
         self.ram.u16(0x80000104, 0xBEEF)
@@ -216,9 +283,9 @@ class CompareTests(unittest.TestCase):
               "f14": "0", "sp": "80003f00"}
         lo, hi = struct.unpack("<II", struct.pack("<d", 2.0))
         pc = {"a": [f"{lo:08x}", f"{hi:08x}"] + ["0"] * 6, "sp": "ffffd000"}
-        self.assertIsNone(ls.compare_call(matcher, ["double"], False, oc, pc))
+        self.assertEqual(ls.compare_call(matcher, ["double"], False, oc, pc), [])
         pc["a"][0] = "00000001"
-        self.assertIn("arg0 double", ls.compare_call(matcher, ["double"], False, oc, pc))
+        self.assertIn("arg0 double", ls.compare_call(matcher, ["double"], False, oc, pc)[0])
 
     def test_function_pointers_match_by_original_address(self):
         matcher = ls.Matcher(PAGES * 4096, ls.read_symbols(self.path / "symbols.txt"),
@@ -244,8 +311,8 @@ class CompareTests(unittest.TestCase):
         matcher = ls.Matcher(PAGES * 4096, ([], {}), [])
         oc = {"a": ["1", "2", "3", "4"], "f12": "0", "f14": "0", "sp": "80003f00"}
         pc = {"a": ["9"] * 8, "sp": "ffffd000"}
-        self.assertIsNone(ls.compare_call(matcher, None, False, oc, pc))
-        self.assertIn("arg0 int32", ls.compare_call(matcher, ["int32"], False, oc, pc))
+        self.assertEqual(ls.compare_call(matcher, None, False, oc, pc), [])
+        self.assertIn("arg0 int32", ls.compare_call(matcher, ["int32"], False, oc, pc)[0])
 
     def test_returned_stack_pointers_and_other_threads_stacks_match(self):
         matcher = ls.Matcher(PAGES * 4096, ([], {}), [])

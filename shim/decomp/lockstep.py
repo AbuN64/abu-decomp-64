@@ -10,6 +10,9 @@ changed pages' bytes, and the arguments and return of the first 8 calls of each 
                         [--port-exe rage_decomp_boot] [--types types.tsv] [--ignore ignore.tsv] [--oracle2 DIR]
                         [--rom baserom.z64] [--json out.json]
 
+compare lists every persistent memory, argument, and return divergence, in order within each category.
+The reviewed --accept file marks exact known differences without hiding them; first_after_accepted and
+matched_through_after_accepted describe the remaining differences. Raw first/matched_through remain unchanged.
 compare prints the first diverging (function, page, symbol+offset, words) and the matched-through number: the largest
 first-hit order up to which neither memory nor any recorded call diverges persistently. The oracle keeps canonical
 big-endian bytes and the port native ones, so a word matches when the port's bytes are the oracle's as bytes, as
@@ -27,6 +30,7 @@ import argparse
 import array
 import bisect
 import concurrent.futures
+import csv
 import json
 import os
 import pathlib
@@ -469,13 +473,14 @@ def same_word(matcher, kind, ov, pv, osp, psp):
 
 
 def compare_call(matcher, kinds, local, oc, pc):
-    """The first differing argument of one call, or None."""
+    """All differing arguments of one recorded call, in parameter order."""
+    differences = []
     a = [int(x, 16) for x in oc["a"]]
     f = {12: int(oc["f12"], 16), 14: int(oc["f14"], 16)}
     words = [int(x, 16) for x in pc["a"]]
     osp, psp = int(oc["sp"], 16), int(pc["sp"], 16)
     if kinds is None:  # no prototype: the arity is unknown, so registers past it hold anything
-        return None
+        return differences
     where, port_at = o32_slots(kinds)
     for index, (k, at, pos) in enumerate(zip(kinds, where, port_at)):
         if k in ("var", "agg") or at is None or pos + (8 if k in ("double", "int64") else 4) > 32:
@@ -490,10 +495,10 @@ def compare_call(matcher, kinds, local, oc, pc):
         else:
             ov, pv = a[at[1]], lo
         if k in ("double", "int64", "float") and ov != pv:
-            return f"arg{index} {k} 0x{ov:x} vs port 0x{pv:x}"
+            differences.append(f"arg{index} {k} 0x{ov:x} vs port 0x{pv:x}")
         if k not in ("double", "int64", "float") and not same_word(matcher, k, ov, pv, osp, psp):
-            return f"arg{index} {k} 0x{ov:08x} vs port 0x{pv:08x}"
-    return None
+            differences.append(f"arg{index} {k} 0x{ov:08x} vs port 0x{pv:08x}")
+    return differences
 
 
 def compare_return(matcher, ret_kind, oret, pret, osp=0, psp=-PORT_STACK * 4):
@@ -569,7 +574,67 @@ def words_text(data, w, big):
     return " ".join(out)
 
 
+ACCEPT_FIELDS = ("kind", "order", "function", "site", "detail", "reason", "reviewed_by")
+
+
+def read_acceptances(path):
+    """Strict exact-value review records; no range, wildcard, or silent masking."""
+    with pathlib.Path(path).open() as stream:
+        reader = csv.DictReader((line for line in stream if line.strip() and not line.startswith("#")), delimiter="\t")
+        if reader.fieldnames != list(ACCEPT_FIELDS):
+            raise ValueError("accept file must have columns: " + "\t".join(ACCEPT_FIELDS))
+        rows, seen = [], set()
+        for row in reader:
+            if set(row) != set(ACCEPT_FIELDS) or any(not v or not v.strip() for v in row.values()):
+                raise ValueError("accept row needs exact fields, a reason, and a reviewer")
+            row["order"] = int(row["order"])
+            if row["order"] < 1 or row["kind"] not in ("memory", "call"):
+                raise ValueError("invalid accept kind or order")
+            if row["kind"] == "memory":
+                if not re.fullmatch(r"0x[0-9a-f]{8}", row["site"]) or not re.fullmatch(r"[0-9a-f]{8}/[0-9a-f]{8}", row["detail"]):
+                    raise ValueError("memory acceptance needs an address and exact oracle/port words")
+            elif not row["site"].isdigit():
+                raise ValueError("call acceptance needs a call index")
+            key = tuple(row[k] for k in ACCEPT_FIELDS[:5])
+            if key in seen:
+                raise ValueError("duplicate accept row")
+            seen.add(key)
+            rows.append(row)
+    return rows
+
+
+def apply_acceptances(report, reviews, common):
+    lookup = {tuple(r[k] for k in ACCEPT_FIELDS[:5]): r for r in reviews}
+    remaining, accepted, observed = [], [], set()
+    for kind, rows in (("memory", report["memory"]), ("call", report["calls"])):
+        for row in rows:
+            row.pop("acceptance", None)
+            site = row["address"] if kind == "memory" else str(row["call"])
+            detail = row["oracle"].split()[0] + "/" + row["port"].split()[0] if kind == "memory" else row["why"]
+            key = (kind, row["order"], row["function"], site, detail)
+            review = lookup.get(key)
+            if review:
+                row["acceptance"] = {k: review[k] for k in ("reason", "reviewed_by")}
+                accepted.append(dict(row, kind=kind))
+                observed.add(key)
+            else:
+                remaining.append(dict(row, kind=kind))
+    # Call before memory on a tie matches the existing raw-first rule.
+    remaining.sort(key=lambda r: (r["order"], r["kind"] != "call"))
+    report["first_after_accepted"] = remaining[0] if remaining else None
+    bad = remaining[0]["order"] if remaining else None
+    report["matched_through_after_accepted"] = max((k for k in common if bad is None or k < bad), default=0)
+    report["accepted"] = sorted(accepted, key=lambda r: (r["order"], r["kind"] != "call"))
+    report["unmatched_accepts"] = [r for key, r in lookup.items() if key not in observed]
+
+
+def acceptance_text(row):
+    review = row.get("acceptance")
+    return f" [accepted: {review['reason']}; reviewed by {review['reviewed_by']}]" if review else ""
+
+
 def compare(args):
+    reviews = read_acceptances(args.accept)
     names, order_of = read_trace(args.trace)
     oracle = Side(args.oracle, lambda r: order_of.get(r.get("fn")) if "fn" in r else None)
     port = Side(args.port, lambda r: r.get("order"))
@@ -648,12 +713,13 @@ def compare(args):
         ret_kind, kinds = kinds_ret if kinds_ret else (None, None)
         local = matcher.is_local(row)
         for i in sorted(set(oracle.calls.get(key, {})) & set(port.calls.get(key, {}))):
-            why = compare_call(matcher, kinds, local, oracle.calls[key][i], port.calls[key][i])
-            if why is None and i in oracle.rets.get(key, {}) and i in port.rets.get(key, {}):
+            differences = compare_call(matcher, kinds, local, oracle.calls[key][i], port.calls[key][i])
+            if i in oracle.rets.get(key, {}) and i in port.rets.get(key, {}):
                 why = compare_return(matcher, ret_kind, oracle.rets[key][i], port.rets[key][i],
                                      int(oracle.calls[key][i]["sp"], 16), int(port.calls[key][i]["sp"], 16))
-            if why:
-                calls.append((key, i, why))
+                if why:
+                    differences.append(why)
+            calls.extend((key, i, why) for why in differences)
     first_mem = memory[0][0] if memory else None
     first_call = calls[0][0] if calls else None
     bad = min(x for x in (first_mem, first_call) if x is not None) if memory or calls else None
@@ -666,14 +732,14 @@ def compare(args):
         "volatile_words": len(volatile), "boot_copy_words": len(boot_words),
         "setup_words": len(setup), "fp_ulp_words": len(ulp), "first_memory": None, "first_call": None, "watch": {"oracle": oracle.watch[:50], "port": port.watch[:50]},
     }
-    for key, index, (oh, ph) in memory[:args.limit]:
+    for key, index, (oh, ph) in memory:
         address = RDRAM + index * 4
         w = index % WORDS
         report["memory"].append({
             "order": key, "function": names.get(key, ["?"])[0], "page": f"0x{address & ~(PAGE - 1):08x}",
             "address": f"0x{address:08x}", "symbol": matcher.symbol(address),
             "oracle": words_text(oracle.page(oh), w, True), "port": words_text(port.page(ph), w, False)})
-    for key, i, why in calls[:args.limit]:
+    for key, i, why in calls:
         report["calls"].append({"order": key, "function": names.get(key, ["?"])[0], "call": i, "why": why})
     report["first_memory"] = dict(report["memory"][0], kind="memory") if report["memory"] else None
     report["first_call"] = dict(report["calls"][0], kind="call") if report["calls"] else None
@@ -682,6 +748,7 @@ def compare(args):
             report["first"] = dict(report["calls"][0], kind="call")
         else:
             report["first"] = dict(report["memory"][0], kind="memory")
+    apply_acceptances(report, reviews, common)
     return report
 
 
@@ -701,11 +768,21 @@ def print_report(report):
     if first is not None and first["kind"] == "memory" and report["first_call"]:
         c = report["first_call"]
         print(f"lockstep: first call divergence at order {c['order']} {c['function']} call {c['call']}: {c['why']}")
-    for row in report["memory"][:10]:
+    after = report["first_after_accepted"]
+    print("lockstep: first after accepted rows: " +
+          (f"order {after['order']} {after['function']} {after.get('symbol', after.get('why', ''))}"
+           if after else "none"))
+    print(f"lockstep: matched-through after accepted rows {report['matched_through_after_accepted']}/{report['of']}")
+    for row in report["memory"]:
         print(f"lockstep: memory order {row['order']} {row['function']} {row['symbol']} ({row['address']}): "
-              f"oracle {row['oracle']} | port {row['port']}")
-    for row in report["calls"][:10]:
-        print(f"lockstep: call order {row['order']} {row['function']} #{row['call']}: {row['why']}")
+              f"oracle {row['oracle']} | port {row['port']}" + acceptance_text(row))
+    for category in ("argument", "return"):
+        for row in report["calls"]:
+            if ("return" if row["why"].startswith("return ") else "argument") == category:
+                print(f"lockstep: {category} order {row['order']} {row['function']} #{row['call']}: "
+                      f"{row['why']}" + acceptance_text(row))
+    for row in report["unmatched_accepts"]:
+        print(f"lockstep: acceptance not observed: {row['kind']} order {row['order']} {row['function']} {row['site']}")
     print(f"lockstep: {len(report['memory'])} persistent memory words, {len(report['calls'])} call divergences listed; "
           f"{report['shim_words']} shim-owned words, {report['transient_words']} transient, "
           f"{report['volatile_words']} volatile, {report['boot_copy_words']} boot-copy masked, "
@@ -734,7 +811,8 @@ def build_parser():
     c.add_argument("--rom", help="the ROM, to mask IPL3's boot copy the port never makes")
     c.add_argument("--persist", type=int, default=2)
     c.add_argument("--pak", type=int, default=708)
-    c.add_argument("--limit", type=int, default=200)
+    c.add_argument("--accept", default=str(pathlib.Path(__file__).with_name("lockstep-accept.tsv")),
+                   help="reviewed exact differences with reasons (kept visible in the report)")
     c.add_argument("--json")
     return parser
 
@@ -753,7 +831,7 @@ def main(argv=None):
     print_report(report)
     if args.json:
         pathlib.Path(args.json).write_text(json.dumps(report, indent=1) + "\n")
-    return 1 if report["first"] else 0
+    return 1 if report["first_after_accepted"] else 0
 
 
 if __name__ == "__main__":
