@@ -18,13 +18,22 @@ NAMED_ADDRESS = re.compile(r"D_auto_(8[0-9A-F]{7})\Z")
 # records described by a field string of widths in bytes ("4 4 2222 444"), or back-to-back records of different sizes
 # whose tag (1, 2 or 4 bytes, big-endian, at a fixed offset) picks a field string ("tagged"), or an audio control bank
 # container the game reads in place, whose record graph the PI layer walks for its field widths ("alctl").
-# u16/u32 are the older spellings.
+# u16/u32 are the older spellings. Unpacked RNC streams may also be a "graph" (n64c_pi.h GRAPH): named types, each a
+# record ("fields": widths and "@<section>:<Type>" offset references), a "leaf" (stride, count, records), or a
+# "directory" (offset table container; a list of section types, {"each": Type} for all, or tag-selected types), a
+# tag-selected record ("variants"), a head record followed by element records to the extent's end ("head_then"), or
+# an RNC stream nested in the bytes ("packed": the type of its unpacked bytes, or null).
 KINDS = {"raw": "N64C_RES_RAW", "swap16": "N64C_RES_SWAP16", "swap32": "N64C_RES_SWAP32", "fields": "N64C_RES_STRUCT",
-         "tagged": "N64C_RES_TAGGED", "alctl": "N64C_RES_ALCTL", "u16": "N64C_RES_SWAP16", "u32": "N64C_RES_SWAP32"}
-WIDTHS = {"raw": 1, "swap16": 2, "swap32": 4, "u16": 2, "u32": 4, "tagged": 1, "alctl": 1}
+         "tagged": "N64C_RES_TAGGED", "alctl": "N64C_RES_ALCTL", "u16": "N64C_RES_SWAP16", "u32": "N64C_RES_SWAP32",
+         "graph": "N64C_RES_GRAPH"}
+WIDTHS = {"raw": 1, "swap16": 2, "swap32": 4, "u16": 2, "u32": 4, "tagged": 1, "alctl": 1, "graph": 1}
+UNPACKED_KINDS = {"raw", "swap16", "swap32", "fields", "tagged", "graph"}
 MAX_LAYOUTS = 16  # n64c_pi.c keeps 16 layouts per tagged resource
 FIELD_WIDTH = re.compile(r"[1-8]")
 MAX_FIELDS = 63  # n64c_pi.c keeps a 64-byte field string
+GRAPH_REF = re.compile(r"@(\d+):([A-Za-z_][A-Za-z_0-9]*)\Z")
+BLOB_NAME = re.compile(r"[A-Za-z0-9_.-]+\Z")
+RNC_CODECS = ("rnc1", "rnc2")
 
 
 def name(value):
@@ -60,11 +69,84 @@ def tagged_spec(item, label):
             raise ValueError("layout shorter than its tag: " + label)
         parts.append(f"{key}={text.strip()}")
     return ";".join(parts)
-def descriptor(item, label):
+def graph_program(item, label):
+    """The n64c_pi GRAPH program of a "graph" row: its root type first, the others in name order."""
+    types, root = item.get("types"), item.get("root")
+    if item.get("fields") is not None or not isinstance(types, dict) or root not in types:
+        raise ValueError("invalid graph: " + label)
+    order = [root] + sorted(name for name in types if name != root)
+    index = {name: i for i, name in enumerate(order)}
+
+    def ref(name, what):
+        if name not in index:
+            raise ValueError(f"graph {what} names no type: {label}: {name}")
+        return str(index[name])
+    def tag_pairs(value, label, name):
+        tag, layouts = value.get("tag"), value.get("layouts")
+        if set(value) != {"tag", "layouts"} or not isinstance(tag, dict) or set(tag) != {"offset", "width"} or \
+                tag["width"] not in (1, 2, 4) or type(tag["offset"]) is not int or tag["offset"] < 0 or \
+                not isinstance(layouts, dict) or not layouts:
+            raise ValueError(f"invalid tag selection: {label}: {name}")
+        pairs = []
+        for key, part in layouts.items():
+            if not key.isdecimal() or int(key) > 0xffffffff or str(int(key)) != key:
+                raise ValueError(f"invalid layout tag: {label}: {name}")
+            pairs.append(f"{key}={ref(part, 'layout')}")
+        return f'{tag["offset"]}/{tag["width"]}:' + ",".join(pairs)
+    program = []
+    for name in order:
+        body = types[name]
+        if not isinstance(body, dict) or len(body) != 1:
+            raise ValueError(f"invalid graph type: {label}: {name}")
+        (shape, value), = body.items()
+        if shape == "fields":
+            items = value.split() if isinstance(value, str) else []
+            if not items:
+                raise ValueError(f"empty graph record: {label}: {name}")
+            out = []
+            for token in items:
+                match = GRAPH_REF.fullmatch(token)
+                if match:
+                    out.append(f"@{int(match[1])}:{ref(match[2], 'reference')}")
+                elif FIELD_WIDTH.fullmatch(token) or re.fullmatch(r"[1-8]+", token):
+                    out.append(token)
+                else:
+                    raise ValueError(f"invalid graph field: {label}: {name}: {token}")
+            program.append("F:" + " ".join(out))
+        elif shape == "leaf":
+            if not isinstance(value, str) or not {"fields", "variants"} & set(types.get(value, {})):
+                raise ValueError(f"graph leaf needs a record type: {label}: {name}")
+            program.append("L:" + ref(value, "leaf"))
+        elif shape == "packed" and (value is None or isinstance(value, str)):
+            program.append("P:" + ("-" if value is None else ref(value, "packed")))
+        elif shape == "head_then" and isinstance(value, list) and len(value) == 2 and \
+                all("fields" in types.get(part, {}) for part in value if isinstance(part, str)):
+            program.append("R:" + ",".join(ref(part, "record") for part in value))
+        elif shape == "variants" and isinstance(value, dict) and set(value) == {"tag", "layouts"} and \
+                all("fields" in types.get(part, {}) for part in value["layouts"].values() if isinstance(part, str)):
+            program.append("T:" + tag_pairs(value, label, name))
+        elif shape == "directory" and isinstance(value, list) and value:
+            program.append("D:" + ",".join("-" if part is None else ref(part, "section") for part in value))
+        elif shape == "directory" and isinstance(value, dict) and set(value) == {"each"}:
+            program.append("E:" + ref(value["each"], "section"))
+        elif shape == "directory" and isinstance(value, dict):
+            program.append("G:" + tag_pairs(value, label, name))
+        else:
+            raise ValueError(f"invalid graph type: {label}: {name}")
+    return ";".join(program)
+
+
+def descriptor(item, label, unpacked=False):
     """The (kind, fields, record bytes) of a loads/resources row; raises on anything the PI layer cannot fix up."""
     kind = item["kind"]
-    if kind not in KINDS:
+    if kind not in KINDS or kind == "graph" and not unpacked:
         raise ValueError("unsupported untyped/pointer layout: " + label)
+    if unpacked and kind not in UNPACKED_KINDS:
+        raise ValueError("unsupported unpacked layout: " + label)
+    if kind == "graph":
+        return kind, graph_program(item, label), 1
+    if item.get("root") is not None or item.get("types") is not None:
+        raise ValueError("root/types given for a " + kind + " descriptor: " + label)
     if kind == "tagged":
         return kind, tagged_spec(item, label), 1
     if item.get("layouts") is not None or item.get("tag") is not None:
@@ -81,6 +163,30 @@ def descriptor(item, label):
             not re.fullmatch(r"[1-8]+( [1-8]+)*", text.strip()):
         raise ValueError("invalid field widths: " + label)
     return kind, text.strip(), sum(int(c) for c in widths)
+
+
+def blob_facts(source, version):
+    """{blob name: (rom, bytes, codec, format)} of the blobs the decomp's blob facts (blobs.toml) place in this
+    version's ROM as one range."""
+    import tomllib  # Python 3.11+, only where blob facts are read
+
+    path = source / "blobs.toml"
+    if not path.exists():
+        return {}
+    facts = {}
+    for blob, row in tomllib.loads(path.read_text()).get("blob", {}).items():
+        ranges = row.get("rom", {}).get(version)
+        if not ranges:
+            continue
+        if len(ranges) != 1 or len(ranges[0]) != 2:
+            if row.get("codec") in RNC_CODECS:
+                raise ValueError("invalid RNC blob fact: " + blob)
+            continue
+        lo, hi = (number(value) for value in ranges[0])
+        if row.get("codec") in RNC_CODECS and (not BLOB_NAME.fullmatch(blob) or hi - lo < 18):
+            raise ValueError("invalid RNC blob fact: " + blob)
+        facts[blob] = (lo, hi - lo, row.get("codec"), row.get("format"))
+    return facts
 
 
 def number(value):
@@ -193,6 +299,50 @@ def generate(manifest, source, output):
         code.append(f'    {{"{label}", {rom}u, 0u, {size}u, {KINDS[kind]}, {c_string(fields)}}},')
     code += ['    {0},  /* keeps the array non-empty; the count below excludes it */', '};',
              'const size_t n64c_boot_resource_count = sizeof n64c_boot_resources / sizeof n64c_boot_resources[0] - 1;']
+    # Blob layouts, keyed by the decomp's blob facts (blobs.toml): an RNC stream's row types its unpacked bytes (the PI
+    # layer serves every stream's header in host order; streams without a row unpack raw), an uncompressed blob's row
+    # types its ROM bytes like a resources row.
+    # A row names one blob ("blob") or every blob of a format ("format", the blob facts' format string).
+    facts = blob_facts(source, project["version"])
+    streams = {blob: (rom, size) for blob, (rom, size, codec, _) in facts.items() if codec in RNC_CODECS}
+    layouts = {}
+    for item in project.get("blob_layouts", []):
+        if ("blob" in item) == ("format" in item):
+            raise ValueError("blob layout needs one of blob or format")
+        label = item.get("blob") or item["format"]
+        if not isinstance(item.get("evidence"), str) or not item["evidence"].strip():
+            raise ValueError("missing layout evidence: " + str(label))
+        named = [item["blob"]] if "blob" in item else sorted(b for b, fact in facts.items() if fact[3] == item["format"])
+        if not named or any(blob not in facts or blob in layouts for blob in named):
+            raise ValueError(f"blob layout names no single-range blob fact of {project['version']} (or twice): {label}")
+        layout = descriptor({k: v for k, v in item.items() if k not in ("blob", "format")}, str(label), unpacked=True)
+        for blob in named:
+            layouts[blob] = layout
+    for blob in sorted(layouts, key=lambda name: facts[name][0]):
+        if blob in streams:
+            continue
+        rom, size, _, _ = facts[blob]
+        kind, fields, width = layouts[blob]
+        if not BLOB_NAME.fullmatch(blob) or rom + size > rom_bytes or size % width:
+            raise ValueError("invalid blob range: " + blob)
+        for old_lo, old_hi, old_name in rom_ranges:
+            if rom < old_hi and rom + size > old_lo:
+                raise ValueError(f"overlapping resource range: {blob} and {old_name}")
+        rom_ranges.append((rom, rom + size, blob))
+        code.insert(code.index('    {0},  /* keeps the array non-empty; the count below excludes it */'),
+                    f'    {{"{blob}", {rom}u, 0u, {size}u, {KINDS[kind]}, {c_string(fields)}}},')
+    code.append('const N64cBootLoad n64c_boot_packed[] = {')
+    for blob, (rom, size) in sorted(streams.items(), key=lambda pair: pair[1]):
+        if rom + size > rom_bytes:
+            raise ValueError("RNC blob outside the cartridge: " + blob)
+        for old_lo, old_hi, old_name in rom_ranges:
+            if rom < old_hi and rom + size > old_lo:
+                raise ValueError(f"overlapping resource range: {blob} and {old_name}")
+        rom_ranges.append((rom, rom + size, blob))
+        kind, fields, _ = layouts.get(blob, ("raw", None, 1))
+        code.append(f'    {{"{blob}", {rom}u, 0u, {size}u, {KINDS[kind]}, {c_string(fields)}}},')
+    code += ['    {0},  /* keeps the array non-empty; the count below excludes it */', '};',
+             'const size_t n64c_boot_packed_count = sizeof n64c_boot_packed / sizeof n64c_boot_packed[0] - 1;']
     system = project.get("system")
     if system:
         fields = {"initialized": ("u32", 4), "tv_type": ("u32", 4), "reset_type": ("u32", 4),

@@ -30,6 +30,10 @@ extern const size_t n64c_boot_load_count;
 /* ROM ranges the game DMAs later: PI byte-order descriptors only (ram is 0, nothing is copied). */
 extern const N64cBootLoad n64c_boot_resources[];
 extern const size_t n64c_boot_resource_count;
+/* RNC streams the decomp's blob facts name (blobs.toml codec rnc1/rnc2): the PI layer serves their headers in host
+ * order and types their unpacked bytes by kind/fields (n64c_pi_register_packed; RAW when the manifest gives none). */
+extern const N64cBootLoad n64c_boot_packed[];
+extern const size_t n64c_boot_packed_count;
 extern const u32 n64c_boot_ram_bytes, n64c_boot_video_clock;
 extern const u32 n64c_boot_rom_bytes;
 extern const char n64c_boot_rom_sha256[];

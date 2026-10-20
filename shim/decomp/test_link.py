@@ -193,6 +193,74 @@ int main(void) { return n64c_boot_entry(); }
                 change(bad["resources"][0])
                 with self.assertRaises(ValueError):
                     self.generate(bad)
+    def test_blob_layouts_from_blob_facts(self):
+        # every RNC blob fact of the version is a packed stream; blob_layouts rows type an RNC stream's unpacked
+        # bytes or an uncompressed blob's ROM bytes (GRAPH programs compiled from named types, root first)
+        (self.path / "source/blobs.toml").write_text(
+            '[blob."pack.a"]\ncodec = "rnc1"\nrom."test" = [[0x500, 0x540]]\n'
+            '[blob."pack.b"]\ncodec = "rnc2"\nrom."test" = [[0x540, 0x560]]\nrom."other" = [[0x10, 0x20]]\n'
+            '[blob."plain"]\ncodec = "none"\nrom."test" = [[0x600, 0x640]]\n'
+            '[blob."bundle.1"]\ncodec = "none"\nformat = "bundle"\nrom."test" = [[0x680, 0x6a0]]\n'
+            '[blob."bundle.2"]\ncodec = "none"\nformat = "bundle"\nrom."test" = [[0x6a0, 0x6c0]]\n'
+            '[blob."split"]\ncodec = "none"\nrom."test" = [[0x700, 0x710], [0x720, 0x730]]\n'
+            '[blob."elsewhere"]\ncodec = "rnc1"\nrom."other" = [[0x700, 0x740]]\n')
+        graph = {"blob": "pack.a", "kind": "graph", "root": "Box", "evidence": "Fixture container",
+                 "types": {"Box": {"directory": [None, "Items"]}, "Items": {"leaf": "Item"},
+                           "Item": {"fields": "2 2 @0:Pair"}, "Pair": {"fields": "4 2 2"}}}
+        tagged = {"blob": "plain", "kind": "graph", "root": "Dir", "evidence": "Fixture tagged directory",
+                  "types": {"Dir": {"directory": {"tag": {"offset": 0, "width": 4}, "layouts": {"0": "A", "3": "B"}}},
+                            "A": {"fields": "4 4"}, "B": {"directory": {"each": "C"}}, "C": {"fields": "2 2"}}}
+        bundles = {"format": "bundle", "kind": "graph", "root": "Outer", "evidence": "Fixture nested streams",
+                   "types": {"Outer": {"directory": {"each": "Stream"}}, "Stream": {"packed": "Inner"},
+                             "Inner": {"leaf": "Half"}, "Half": {"fields": "2"}}}
+        self.project["blob_layouts"] = [graph, tagged, bundles]
+        self.generate()
+        code = (self.path / "output/bindings.c").read_text()
+        self.assertIn('{"pack.a", 1280u, 0u, 64u, N64C_RES_GRAPH, "D:-,2;F:2 2 @0:3;L:1;F:4 2 2"},', code)
+        self.assertIn('{"pack.b", 1344u, 0u, 32u, N64C_RES_RAW, 0},', code)
+        self.assertIn('{"plain", 1536u, 0u, 64u, N64C_RES_GRAPH, "G:0/4:0=1,3=2;F:4 4;E:3;F:2 2"},', code)
+        self.assertIn('{"bundle.1", 1664u, 0u, 32u, N64C_RES_GRAPH, "E:3;F:2;L:1;P:2"},', code)
+        self.assertIn('{"bundle.2", 1696u, 0u, 32u, N64C_RES_GRAPH, "E:3;F:2;L:1;P:2"},', code)
+        self.assertIn("n64c_boot_packed_count", code)
+        self.assertNotIn('"split"', code)
+        self.assertNotIn('"elsewhere"', code)
+        packed = code[code.index("n64c_boot_packed[]"):]
+        self.assertNotIn('"plain"', packed)                     # an uncompressed blob is a resource, not a stream
+        for index, change in enumerate([
+                lambda rows: rows[0].update(blob="missing"),
+                lambda rows: rows[0].update(blob="split"),
+                lambda rows: rows[0].update(blob="elsewhere"),
+                lambda rows: rows.append(dict(rows[0])),
+                lambda rows: rows[0].update(evidence=""),
+                lambda rows: rows[0].update(kind="alctl", root=None, types=None),
+                lambda rows: rows[0].update(root="Nowhere"),
+                lambda rows: rows[0]["types"].update(Item={"fields": "2 2 @0:Nowhere"}),
+                lambda rows: rows[0]["types"].update(Items={"leaf": "Box"}),
+                lambda rows: rows[0]["types"].update(Item={"fields": "2 p"}),
+                lambda rows: rows[0]["types"].update(Item={"fields": ""}),
+                lambda rows: rows[0]["types"].update(Box={"directory": []}),
+                lambda rows: rows[0]["types"].update(Box={"tree": [None]}),
+                lambda rows: rows[1]["types"]["Dir"]["directory"].update(tag={"offset": 0, "width": 3}),
+                lambda rows: rows[1]["types"]["Dir"]["directory"].update(layouts={"01": "A"}),
+                lambda rows: rows[2].update(format="no such format"),
+                lambda rows: rows[2].update(blob="plain"),                       # blob and format
+                lambda rows: rows[2]["types"].update(Stream={"packed": 3}),
+                lambda rows: rows.append(dict(rows[2], format="bundle"))]):
+            with self.subTest(case=index):
+                bad = copy.deepcopy(self.project)
+                change(bad["blob_layouts"])
+                with self.assertRaises((ValueError, TypeError, KeyError)):
+                    self.generate(bad)
+        bad = copy.deepcopy(self.project)                      # a graph is no layout for a plain ROM resource row
+        bad["resources"] = [{"name": "box", "rom": "0x400", "bytes": 16, "kind": "graph", "root": "Box",
+                             "types": graph["types"], "evidence": "Fixture"}]
+        with self.assertRaises(ValueError):
+            self.generate(bad)
+        bad = copy.deepcopy(self.project)                      # a stream overlapping a load
+        bad["loads"][0].update(rom="0x500")
+        with self.assertRaises(ValueError):
+            self.generate(bad)
+
     def test_audio_control_bank_descriptor(self):
         # a control bank container read in place: the PI layer walks its record graph, so the row has no fields
         self.project["resources"] = [{"name": "banks", "rom": "0x440", "bytes": 6, "kind": "alctl",

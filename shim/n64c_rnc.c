@@ -166,12 +166,16 @@ static u32 be(const u8 *p, int n)
 }
 void n64c_rnc2_unpack(const void *header, void *dst, s32 packed_size, s32 unpacked_size)
 {
-    const u8 *h = header;
-    if (!h || !dst || packed_size < 0 || unpacked_size < 0) corrupt2("arguments");
+    n64c_rnc2_unpack_parts(header, header ? (const u8 *)header + 18 : NULL, dst, packed_size, unpacked_size);
+}
+void n64c_rnc2_unpack_parts(const void *header, const void *data, void *dst, s32 packed_size, s32 unpacked_size)
+{
+    const u8 *h = header, *d = data;
+    if (!h || !d || !dst || packed_size < 0 || unpacked_size < 0) corrupt2("arguments");
     if (h[0] != 'R' || h[1] != 'N' || h[2] != 'C' || h[3] != 2) corrupt2("header");
     if (be(h + 4, 4) != (u32)unpacked_size || be(h + 8, 4) != (u32)packed_size) corrupt2("sizes");
-    if (n64c_rnc_crc16(h + 18, (u32)packed_size) != be(h + 14, 2)) corrupt2("packed-crc");
-    Bits2 b = {h + 18, h + 18 + packed_size, 0, 0};
+    if (n64c_rnc_crc16(d, (u32)packed_size) != be(h + 14, 2)) corrupt2("packed-crc");
+    Bits2 b = {d, d + packed_size, 0, 0};
     u8 *out = dst, *const out_end = out + unpacked_size;
     u32 len, dist;
     bit2(&b); /* lock and key flags */
