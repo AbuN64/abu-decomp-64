@@ -503,6 +503,18 @@ class LandTests(unittest.TestCase):
         self.assertEqual((self.tree / aliases).read_text(), "a = 0x1;\nb = 0x2;\nc = 0x3;\nd = 0x4;\n")
         self.assertEqual(git(self.tree, "ls-files", "-u"), "")
 
+    def test_gitattributes_union_file_is_a_row_set_where_rows_share_an_address(self):
+        aliases = "versions/us/aliases.txt"
+        (self.tree / ".gitattributes").write_text("versions/*/aliases.txt merge=union\n")
+        self.seed({aliases: "a = 0x1;\nb = 0x1;\n"}, union=False)
+        one = self.patch("one", {aliases: "a = 0x1;\nb = 0x1;\nc = 0x1;\n"})
+        two = self.patch("two", {aliases: "a = 0x1;\nb = 0x1;\nd = 0x1;\n"})
+        result, code, findings = self.land([one, two])
+        self.assertEqual(code, 0)
+        self.assertEqual([r["status"] for r in result["lanes"]], ["applied", "applied"])
+        self.assertEqual((self.tree / aliases).read_text(), "a = 0x1;\nb = 0x1;\nc = 0x1;\nd = 0x1;\n")
+        self.assertEqual([f["key"] for f in findings if f["blocking"]], [])
+
     def test_gitattributes_union_file_drops_removed_rows_and_a_real_conflict_still_refuses(self):
         aliases = "versions/us/aliases.txt"
         (self.tree / ".gitattributes").write_text("versions/*/aliases.txt merge=union\n")

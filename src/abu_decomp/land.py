@@ -501,6 +501,18 @@ def conflict_steps(conflict: dict[str, Any]) -> str:
     return " (the patch adds a name the tree holds: remove its old line in the patch too, as a move does)"
 
 
+def row_union(existing: str, added: Sequence[str], removed: Sequence[str] = ()) -> str:
+    """A row-set file after a patch: the rows it had without the rows the patch removed, plus the added rows it lacks,
+    each row once. A file that was sorted stays sorted; otherwise new rows are appended in patch order."""
+    rows = existing.splitlines()
+    dropped = set(removed)
+    kept = list(dict.fromkeys(x for x in rows if x not in dropped))
+    kept += [x for x in dict.fromkeys(added) if x not in set(kept)]
+    if rows == sorted(rows):
+        kept.sort()
+    return "\n".join(kept) + "\n" if kept else ""
+
+
 def union_merge(existing: str, added: Sequence[str], removed: Sequence[str] = ()) -> tuple[str, list[dict[str, Any]]]:
     """`existing` plus the added lines it lacks, appended in patch order; nothing is reordered. A symbol line the
     patch removed (a move or a rename) and the tree still holds exactly is retracted first, so the line that replaces it
@@ -821,10 +833,15 @@ class Landing:
             raise LandError("land.splat_check", f"the splat symbol check failed: {done.stderr.strip()[-300:]}")
         return json.loads(done.stdout)
 
+    def is_fact_file(self, name: str) -> bool:
+        """A symbol fact file: it matches `land.union_paths`, so its lines are `name = 0xADDR;` facts that splat reads."""
+        return any(fnmatch.fnmatchcase(name, glob) for glob in self.config["union_paths"])
+
     def is_union(self, name: str) -> bool:
-        """A file merged as a line union: it matches `land.union_paths`, or the tree's gitattributes say
-        `merge=union` for it (read per path, so a project's attribute line is the whole rule)."""
-        if any(fnmatch.fnmatchcase(name, glob) for glob in self.config["union_paths"]):
+        """A file merged as a line union: a fact file, or one the tree's gitattributes mark `merge=union` (read per
+        path, so a project's attribute line is the whole rule). The latter is a plain row set (aliases): no symbol
+        checks, since rows there may share an address."""
+        if self.is_fact_file(name):
             return True
         if name not in self.union_seen:
             out = self.git("check-attr", "merge", "--", name, ok=False)
@@ -924,6 +941,10 @@ class Landing:
             target = self.tree / name
             old = target.read_text(errors="replace") if target.is_file() else ""
             target.parent.mkdir(parents=True, exist_ok=True)
+            if not self.is_fact_file(name):
+                target.write_text(row_union(old, section_additions(text), section_removals(text)))
+                self.git("add", "--", name)
+                continue
             added = section_additions(text)
             have = set(old.splitlines())
             looks = [x for x in dict.fromkeys(added) if _SYMBOLISH.match(x) and x not in have]
@@ -1217,7 +1238,7 @@ class Landing:
             return f"{symbol[0]['message']}" + (
                 f" (and {len(symbol) - 1} more symbol facts)" if len(symbol) > 1 else ""
             )
-        facts = sorted(n for n, (added, _) in changed.items() if self.is_union(n) and any(map(symbol_line, added)))
+        facts = sorted(n for n, (added, _) in changed.items() if self.is_fact_file(n) and any(map(symbol_line, added)))
         bad = (self.splat_file_check(facts) or {}) if facts else {}
         for name, why in sorted(bad.items()):
             message = f"lane {lane}: {name} is not a valid symbol file with this input: {why}"
