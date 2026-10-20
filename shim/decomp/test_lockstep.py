@@ -418,6 +418,9 @@ const N64cTraceEntry n64c_trace_entries[] = {
     {4, 0x80001300u, 0, {"wide"}}, {5, 0x80001400u, 0, {"depth"}}, {6, 0x80001500u, 0, {"leave"}},
     {7, 0x80001600u, 0, {"bump"}}, {8, 0x80001700u, 0, {"inline_parent"}}};
 const unsigned n64c_trace_count = 8;
+/* This fixture executes original bodies only; no native bindings. */
+const N64cShimEntry n64c_shim_entries[] = {{0, 0}};
+const unsigned n64c_shim_count = 0;
 """
 FIXTURE_DRIVER = r"""#include <stdio.h>
 #include <string.h>
@@ -461,6 +464,8 @@ class PortRecorderTests(unittest.TestCase):
                                                    "inline=234", "indirect=10"])
             self.assertIn("boot-lockstep: on, 1024 pages", result.stderr)
             self.assertIn("boot-lockstep: 8 points written", result.stderr)
+            self.assertNotIn("boot-shim-bind:", result.stderr)
+            self.assertNotIn("boot-shim:", result.stderr)
             side = ls.Side(out, lambda r: r.get("order"))
             self.assertEqual(sorted(side.points), [1, 2, 3, 4, 5, 6, 7, 8])
             self.assertEqual(side.meta["bytes"], "native")

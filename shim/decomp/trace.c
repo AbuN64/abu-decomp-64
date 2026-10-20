@@ -24,6 +24,13 @@ typedef struct {
 } Slot;
 static Slot *slots;
 static unsigned slot_mask;
+typedef struct {
+    void *fn;
+    unsigned index;
+    unsigned entered;
+} ShimSlot;
+static ShimSlot *shim_slots;
+static unsigned shim_mask;
 static unsigned char *resolved; /* per entry: 1 once a body was found */
 static const char **found;      /* per entry: the name that resolved */
 static unsigned char *hit;
@@ -385,6 +392,25 @@ NOINST void n64c_trace_init(void)
         return;
     slot_mask = size - 1;
     symbols_open();
+    unsigned shim_size = 1024;
+    while (shim_size < n64c_shim_count * 4)
+        shim_size <<= 1;
+    shim_slots = calloc(shim_size, sizeof *shim_slots);
+    if (!shim_slots)
+        return;
+    shim_mask = shim_size - 1;
+    for (unsigned i = 0; i < n64c_shim_count; i++) {
+        fprintf(stderr, "boot-shim-bind: %s %s\n", n64c_shim_entries[i].native, n64c_shim_entries[i].bound);
+        uintptr_t end = 0;
+        void *fn = symbol_address(n64c_shim_entries[i].native, &end);
+        if (!fn)
+            continue;
+        unsigned s = slot_of(fn) & shim_mask;
+        while (shim_slots[s].index)
+            s = (s + 1) & shim_mask;
+        shim_slots[s].fn = fn;
+        shim_slots[s].index = i + 1;
+    }
     for (unsigned i = 0; i < total; i++) {
         const N64cTraceEntry *e = &n64c_trace_entries[i];
         if (e->shim_bound) {
@@ -468,6 +494,18 @@ NOINST static void trace_enter(void *fn, void *call_site, const unsigned long *r
 {
     if (!__atomic_load_n(&armed, __ATOMIC_ACQUIRE))
         return;
+    for (unsigned s = slot_of(fn) & shim_mask; shim_slots[s].index; s = (s + 1) & shim_mask) {
+        if (shim_slots[s].fn != fn || __atomic_load_n(&shim_slots[s].entered, __ATOMIC_RELAXED))
+            continue;
+        pthread_mutex_lock(&lock);
+        if (!shim_slots[s].entered) {
+            __atomic_store_n(&shim_slots[s].entered, 1, __ATOMIC_RELAXED);
+            const N64cShimEntry *e = &n64c_shim_entries[shim_slots[s].index - 1];
+            fprintf(stderr, "boot-shim: %s %s\n", e->native, e->bound);
+            fflush(stderr);
+        }
+        pthread_mutex_unlock(&lock);
+    }
     push_frame(fn, call_site, regs);
     if (ls_watch)
         ls_watch_check(fn, "enter");

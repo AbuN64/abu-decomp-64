@@ -15,6 +15,14 @@ typedef struct {
 } N64cTraceEntry;
 extern const N64cTraceEntry n64c_trace_entries[];
 extern const unsigned n64c_trace_count;
+/* Effective link bindings grouped by native entry point. The hook logs the first
+ * actual entry, independently of the original-code census and lockstep. */
+typedef struct {
+    const char *native;
+    const char *bound;
+} N64cShimEntry;
+extern const N64cShimEntry n64c_shim_entries[];
+extern const unsigned n64c_shim_count;
 /* Resolve the entries and arm the hook. Call before the original entry runs. */
 void n64c_trace_init(void) __attribute__((weak));
 /* First occurrence of a runtime milestone (thread start, PI DMA, gfx task, audio task). */

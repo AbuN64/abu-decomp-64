@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 parser = argparse.ArgumentParser()
 parser.add_argument("--compiler", required=True)
 parser.add_argument("--work", type=pathlib.Path, required=True)
@@ -26,8 +27,16 @@ void beta(void) { alpha(); }
 void gamma_fn(void) {}
 void delta(void) {}
 void shimmed(void) {}
+void host_shim(void) {}
+void native_api(void) {}
+void never_shim(void) {}
+volatile int take_shim;
 int real_main(void) {
     n64c_trace_event("first thread start");
+    host_shim();
+    host_shim();
+    native_api();
+    if (take_shim) never_shim();
     n64c_trace_event("first thread start");
     beta();  /* beta, then alpha: the oracle saw alpha first */
     beta();
@@ -36,7 +45,8 @@ int real_main(void) {
 }
 '''
 TRACE = "order\taddress\tsymbol\tdecomp_name\n1\t0x80000010\talpha\n2\t0x80000020\tbeta_old\tbeta\n" \
-        "3\t0x80000030\tgamma_fn\n4\t0x80000040\tdelta\n5\t0x80000050\tshimmed\n6\t0x80000060\tnot_linked\n"
+        "3\t0x80000030\tgamma_fn\n4\t0x80000040\tdelta\n5\t0x80000050\tshimmed\n6\t0x80000060\tnot_linked\n" \
+        "7\t0x80000070\thost_shim\n8\t0x80000080\tnative_api\n"
 class TraceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=args.work)
@@ -46,16 +56,25 @@ class TraceTests(unittest.TestCase):
         facts.mkdir(parents=True)
         (facts / "symbol_addrs.txt").write_text("alpha = 0x80000010; //\nbeta = 0x80000020; //\n")
         (self.path / "trace.tsv").write_text(TRACE)
-        project = {"version": "test", "sources": [], "bindings": {"shimmed": "host_shim"}, "stops": {}}
+        project = {"version": "test", "sources": [],
+                   "bindings": {"shimmed": "host_shim", "shimmed_alias": "host_shim", "dead_bound": "never_shim",
+                                "game_alias": "alpha"},
+                   "stops": {}}
         (self.path / "input.json").write_text(json.dumps(project))
     def generate(self):
-        module.generate(self.path / "trace.tsv", self.path / "input.json", self.path / "source", self.path / "out")
+        with patch.object(module, "native_functions", return_value={"host_shim", "native_api", "never_shim"}):
+            module.generate(self.path / "trace.tsv", self.path / "input.json", self.path / "source", self.path / "out")
         return (self.path / "out/trace_table.c").read_text()
     def test_table_names_and_shim_rows(self):
         table = self.generate()
         self.assertIn('{2, 0x80000020u, 0, {"beta_old", "beta"}}', table)
         self.assertIn('{5, 0x80000050u, 1, {"shimmed"}}', table)
-        self.assertIn("n64c_trace_count = 6;", table)
+        self.assertIn("n64c_trace_count = 8;", table)
+        self.assertIn('{7, 0x80000070u, 1, {"host_shim"}}', table)
+        self.assertIn('{"host_shim", "host_shim shimmed shimmed_alias"}', table)
+        self.assertIn("n64c_shim_count = 3;", table)
+        self.assertIn('{8, 0x80000080u, 1, {"native_api"}}', table)
+        self.assertNotIn('"game_alias"', table)
     def test_bad_trace_is_refused(self):
         for text in ["order\taddress\tsymbol\n2\t0x80000010\talpha\n", "order\taddress\tsymbol\n1\t0x80000010\n",
                      "order\taddress\tsymbol\n1\t0x80000010\tbad name\n", "order\taddress\tsymbol\n"]:
@@ -86,14 +105,19 @@ class TraceTests(unittest.TestCase):
         result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr.splitlines(), [
-            "boot-step: trace armed: 4 of 6 functions watched (1 shim-bound, 1 not linked)",
-            "boot-step: first thread start (after 0/6)",
-            "boot-step: 1/6 beta",
+            "boot-shim-bind: host_shim host_shim shimmed shimmed_alias",
+            "boot-shim-bind: native_api native_api",
+            "boot-shim-bind: never_shim dead_bound never_shim",
+            "boot-step: trace armed: 4 of 8 functions watched (3 shim-bound, 1 not linked)",
+            "boot-step: first thread start (after 0/8)",
+            "boot-shim: host_shim host_shim shimmed shimmed_alias",
+            "boot-shim: native_api native_api",
+            "boot-step: 1/8 beta",
             "boot-step: out of oracle order: beta (order 2) before alpha (order 1)",
-            "boot-step: 2/6 alpha",
-            "boot-step: 3/6 delta",
+            "boot-step: 2/8 alpha",
+            "boot-step: 3/8 delta",
             "boot-step: out of oracle order: delta (order 4) before gamma_fn (order 3)",
-            "boot-step: census 3/6 hit, 4 watched, last delta (order 4), next in oracle order gamma_fn (order 3)",
+            "boot-step: census 3/8 hit, 4 watched, last delta (order 4), next in oracle order gamma_fn (order 3)",
         ])
     @unittest.skipUnless(args.m32, "lockstep return trampolines on i386 only")
     def test_lockstep_guest_shutdown_returns_through_host_entry(self):
@@ -174,7 +198,8 @@ int main(void) { n64c_trace_init(); return real_main(); }
         (self.path / "table.c").write_text(
             '#include "trace.h"\nconst N64cTraceEntry n64c_trace_entries[] = {\n'
             '    {1, 0x80000010u, 0, {"keep"}}, {2, 0x80000020u, 0, {"crash"}}, {3, 0x80000030u, 0, {"spin"}},\n'
-            '    {4, 0x80000040u, 0, {"never"}}};\nconst unsigned n64c_trace_count = 4;\n')
+            '    {4, 0x80000040u, 0, {"never"}}};\nconst unsigned n64c_trace_count = 4;\n'
+            'const N64cShimEntry n64c_shim_entries[] = {{0, 0}};\nconst unsigned n64c_shim_count = 0;\n')
         (self.path / "shim.c").write_text(RUN_ON_SHIM)
         shim = ROOT.parent
         objects = []
