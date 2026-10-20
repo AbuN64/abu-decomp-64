@@ -179,4 +179,50 @@ int main(void) { return sum(2, 3.25, 7) != 10.25; }
         self.assertEqual(subprocess.run([exe]).returncode, 0)
 
 
+class ObjectCacheTests(unittest.TestCase):
+    """unitstep.py --objcache: a restored unit runs no step; an edited header or another tree's paths behave."""
+    STEP = ("import pathlib, sys\n"
+            "out = pathlib.Path(sys.argv[1])\n"
+            "out.write_text(open(sys.argv[2]).read())\n"
+            "pathlib.Path(sys.argv[3]).write_text(str(out) + ': ' + sys.argv[2] + '\\n')\n"
+            "(out.parent / 'ran').write_text('x')\n")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir=args.work)
+        self.addCleanup(self.tmp.cleanup)
+        self.path = pathlib.Path(self.tmp.name)
+        (self.path / "cache").mkdir()
+        (self.path / "src").mkdir()
+
+    def unit(self, tree, header="1"):
+        build = self.path / tree
+        build.mkdir(exist_ok=True)
+        header_file = self.path / "src" / "h.h"
+        header_file.write_text(header)
+        step = build / "step.py"
+        step.write_text(self.STEP)
+        obj = build / "u.o"
+        (build / "ran").unlink(missing_ok=True)
+        (build / "u.i").write_text("stale")
+        subprocess.run([sys.executable, "-I", str(ROOT / "unitstep.py"), "--base", str(build / "u"), "--source", "u",
+                        "--objcache", str(self.path / "cache"), "--root", str(build),
+                        "--map", f"{self.path}/src=SRC", "--out", str(obj), "--drop", str(build / "u.i"),
+                        "--depfile", str(build / "u.d"), "--dep-target", str(obj), "--",
+                        sys.executable, str(step), str(obj), str(header_file), str(build / "u.d")], check=True)
+        return build, obj.read_text(), (build / "ran").exists()
+
+    def test_restore_invalidate_share(self):
+        build, text, ran = self.unit("a")
+        self.assertEqual((text, ran), ("1", True))
+        build, text, ran = self.unit("a")
+        self.assertEqual((text, ran), ("1", False))
+        self.assertFalse((build / "u.i").exists())
+        self.assertIn(str(self.path / "src" / "h.h"), (build / "u.d").read_text())
+        self.assertTrue((build / "u.d").read_text().startswith(f"{build / 'u.o'}:"))
+        build, text, ran = self.unit("a", header="22")
+        self.assertEqual((text, ran), ("22", True))
+        build, text, ran = self.unit("b", header="22")
+        self.assertEqual((text, ran), ("22", False))  # another tree: the same key through --root and --map
+
+
 unittest.main(argv=["test_prepare"], verbosity=2)
