@@ -422,7 +422,10 @@ def deploy(
             if failed:
                 findings += failed
                 previous = row["swap"].get("previous")
-                if previous:  # the services did not come back healthy on the new venv: back to the old one
+                # only a unit that did not come back healthy on the new venv rolls back; a restart that waited out a
+                # busy hold lock touched nothing, so the new venv stays and `decomp tools restart` finishes the job
+                came_back = all(f.get("key") != "deploy.restart_failed" for f in failed)
+                if previous and not came_back:
                     row["rollback"] = point(live, Path(previous), migrate=False, users=users, stamp=stamp)
                     row["rollback"]["restarts"] = restart(live)[0]
     return result, int(bool(findings)), findings

@@ -144,6 +144,20 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(os.path.realpath(self.root / "venv-b"), str(self.root / "venv-b.old"))  # back on the old venv
         self.assertEqual(len(calls), 2)  # the units were restarted again onto the old venv
 
+    def test_a_restart_that_waited_out_a_busy_lock_keeps_the_new_venv(self):
+        busy = {"key": "deploy.restart_busy", "blocking": True, "message": "restart waited 150s for ['/x']"}
+        calls = []
+
+        def restart(live):
+            calls.append(os.path.realpath(live))
+            return [], [busy]
+
+        _result, code, findings = self.deploy(venvs=("venv-b",), extra={"restart": restart})
+        self.assertEqual(code, 1)
+        self.assertIn(busy, findings)
+        self.assertEqual(os.path.realpath(self.root / "venv-b"), str(self.root / f"venv-b.{D1[:12]}"))  # no rollback
+        self.assertEqual(len(calls), 1)
+
     def test_pins_that_disagree_are_named_and_nothing_is_installed(self):
         result, code, findings = self.deploy(unbake=U2, recipe=R2)
         self.assertEqual(code, 1)
