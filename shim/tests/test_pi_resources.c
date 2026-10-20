@@ -107,6 +107,7 @@ int main(void)
     static const Setup setups[2]={{0x80104458u,0x3C5729u,5,-2304.0f},{0,0,0,0.0f}};
     be32(rom+OVL,0x80104458u);be32(rom+OVL+4,0x3C5729u);be32(rom+OVL+8,5);be32(rom+OVL+12,0xC5100000u);
     rom[OVL-1]=0x5A;rom[OVL+sizeof setups]=0xA5;
+    for (u32 i=0;i<16;i++) rom[0xBE0+i]=(u8)(i+1);
     FILE *file=fopen(path,"wb");
     CHECK(file && fwrite(rom,1,sizeof rom,file)==sizeof rom && fclose(file)==0);
     N64cConfig config={.rom_path=path};
@@ -164,12 +165,49 @@ int main(void)
     CHECK(osPiStartDma(NULL,0,OS_READ,IMAGES+28+8,halves,6,&queue)==0);
     event(1);
     CHECK(halves[0]==8 && halves[1]==284 && halves[2]==183);
-    /* a DMA that ends inside a halfword or word of a record is refused with no completion event */
+    /* Partial fields return native-order slices and post completion. */
     u8 scratch[28];
-    CHECK(osPiStartDma(NULL,0,OS_READ,IMAGES+28,scratch,9,&queue)==-1);
-    event(0);
-    CHECK(osPiStartDma(NULL,0,OS_READ,IMAGES+28+8,scratch,5,&queue)==-1);
-    event(0);
+    CHECK(osPiStartDma(NULL,0,OS_READ,IMAGES+28,scratch,9,&queue)==0);
+    event(1);
+    CHECK(memcmp(scratch,&one,9)==0);
+    CHECK(osPiStartDma(NULL,0,OS_READ,IMAGES+28+8,scratch,5,&queue)==0);
+    event(1);
+    CHECK(memcmp(scratch,(u8 *)&one+8,5)==0);
+    /* A bulk read ending one byte into a neighbouring scalar must complete.
+     * This also covers raw bytes before a typed range and every cut of a word. */
+    static const u8 scalar_bytes[4]={3,0,0,0};
+    for (u32 begin=0;begin<4;begin++) {
+        for (u32 size=1;size<=4-begin;size++) {
+            u8 guarded[6];
+            memset(guarded,0xA5,sizeof guarded);
+            CHECK(osPiStartDma(NULL,0,OS_READ,DIRECTORY+begin,guarded+1,size,&queue)==0);
+            event(1);event(0);
+            CHECK(memcmp(guarded+1,scalar_bytes+begin,size)==0);
+            CHECK(guarded[0]==0xA5 && guarded[size+1]==0xA5);
+            u32 origin=0;
+            CHECK(n64c_pi_origin(guarded+1,&origin) && origin==DIRECTORY+begin);
+        }
+    }
+    osSetEventMesg(OS_EVENT_PI,&queue,(OSMesg){.data32=0x1234});
+    u8 boundary[3]={0xA5,0xA5,0xA5};
+    CHECK(osPiRawStartDma(OS_READ,DIRECTORY-1,boundary,2)==0);
+    event(1);event(0);
+    CHECK(boundary[0]==0 && boundary[1]==3 && boundary[2]==0xA5);
+    /* Graph and fixed-record fields allow eight-byte scalars; exercise all
+     * starts and ends, including a start seven bytes beyond the width marker. */
+    CHECK(n64c_pi_register(0xBE0,0xBE8,N64C_RES_GRAPH,"F:8")==0);
+    CHECK(n64c_pi_register(0xBE8,0xBF0,N64C_RES_STRUCT,"8")==0);
+    for (u32 kind=0;kind<2;kind++) {
+        for (u32 begin=0;begin<8;begin++) {
+            for (u32 size=1;size<=8-begin;size++) {
+                u8 bytes[10];memset(bytes,0xA5,sizeof bytes);
+                CHECK(osPiStartDma(NULL,0,OS_READ,0xBE0+kind*8+begin,bytes+1,size,&queue)==0);
+                event(1);event(0);
+                for (u32 i=0;i<size;i++) CHECK(bytes[i+1]==8+kind*8-begin-i);
+                CHECK(bytes[0]==0xA5 && bytes[size+1]==0xA5);
+            }
+        }
+    }
     /* directory table */
     u32 directory[4];
     CHECK(osPiStartDma(NULL,0,OS_READ,DIRECTORY,directory,sizeof directory,&queue)==0);
@@ -248,8 +286,9 @@ int main(void)
     event(1);
     CHECK(image==0xCAFEBABEu);
     u8 cut[8];
-    CHECK(osPiStartDma(NULL,0,OS_READ,PAGE+0x2C+0x2C,cut,3,&queue)==-1);   /* ends inside a word */
-    event(0);
+    CHECK(osPiStartDma(NULL,0,OS_READ,PAGE+0x2C+0x2C,cut,3,&queue)==0);
+    event(1);
+    CHECK(cut[0]==0xBE && cut[1]==0xBA && cut[2]==0xFE);
     CHECK(osPiStartDma(NULL,0,OS_READ,PAGE+PAGE_BYTES,cut,4,&queue)==-1);  /* a record no layout names */
     event(0);
     u8 cue[CUE_BYTES];
@@ -301,10 +340,12 @@ int main(void)
     memcpy(&w32,ctlB+0x64,4);CHECK(w32==2);
     memcpy(&h16,ctlB+0x68,2);CHECK(h16==-4000);
     memcpy(&h16,ctlB+0x68+62,2);CHECK(h16==31*257-4000);
-    CHECK(osPiStartDma(NULL,0,OS_READ,CTL+0x92,cut,4,&queue)==-1);   /* starts inside the wave length */
-    event(0);
-    CHECK(osPiStartDma(NULL,0,OS_READ,CTL+0x90,cut,6,&queue)==-1);   /* ends inside it */
-    event(0);
+    CHECK(osPiStartDma(NULL,0,OS_READ,CTL+0x92,cut,4,&queue)==0);
+    event(1);
+    CHECK(cut[0]==0 && cut[1]==0 && cut[2]==0x28 && cut[3]==0x23);
+    CHECK(osPiStartDma(NULL,0,OS_READ,CTL+0x90,cut,6,&queue)==0);
+    event(1);
+    CHECK(memcmp(cut,ctlB+0x10,6)==0);
     u8 cueTail[0x20];
     CHECK(osPiStartDma(NULL,0,OS_READ,CUE+56+0x20,cueTail,sizeof cueTail,&queue)==0);  /* starts at the second container's records */
     event(1);

@@ -18,13 +18,14 @@ void n64c_pi_set_relocator(N64cRelocateFn resolve,void *user);
 int n64c_pi_reserve(size_t count);
 /* TAGGED fields spec: "offset/width;tag=fields;tag=fields" in decimal (e.g. "14/2;1=4 4 4 2 2;2=..."): back-to-back
  * records of different sizes; the big-endian tag of width 1, 2 or 4 bytes at offset selects the record's field string
- * (its widths sum to the record size). A DMA subrange must start and end inside whole fields of whole records.
+ * (its widths sum to the record size). DMA subranges return slices of the converted records, including partial fields.
  * Register the ROM range [lo, hi) as one resource type. fields is used by STRUCT: widths in bytes, e.g. "222 2 22 1111"; p is a relocated32-bit pointer.
  * ALCTL (fields NULL): an audio control bank container the game maps and reads in place; at registration the range is
  * read from the ROM and its record graph walked (n64c_al_ctl_widths) into a per-byte width map that every DMA of a
  * subrange applies. Registration needs the ROM open and fails on a malformed container.
- * Resources must be disjoint whole records. DMA subranges must contain whole
- * multibyte fields. Failed reads have no completion event; discard their buffer. */
+ * Resources must be disjoint whole records. DMA boundaries may split multibyte fields;
+ * each read returns the same bytes as that slice of a whole-resource read.
+ * Failed reads have no completion event; discard their buffer. */
 int n64c_pi_register(u32 lo, u32 hi, N64cResKind kind, const char *fields);
 /* BYTE_STREAM: an opaque transport range (fields NULL). Its bytes need no scalar conversion; typed resources,
  * packed streams and native images may overlap it and retain their conversions. Unlike RAW, this is a fallback

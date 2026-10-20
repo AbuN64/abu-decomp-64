@@ -474,18 +474,31 @@ static int convert_field(u8 *bytes,char field)
     }
     return 1;
 }
-/* Convert the fields of the record at ROM address record that lie inside [start, finish) of the buffer. */
+/* A transport boundary may cut a typed field. Materialize that field from the
+ * cartridge, convert it once, then copy only the requested native-order slice.
+ * Whole fields use the DMA buffer directly; neither path writes outside it. */
+static int fix_field(char field,uint64_t position,uint64_t start,uint64_t finish,u32 dev,u8 *destination)
+{
+    const u32 width=field_width(field);
+    const uint64_t next=position+width;
+    if (!width || position>=finish || next<=start) return 1;
+    if (position>=start && next<=finish)
+        return convert_field(destination+(size_t)(position-dev),field);
+    u8 native[8];
+    if (fseek(rom,(long)position,SEEK_SET)!=0 || fread(native,1,width,rom)!=width ||
+        !convert_field(native,field)) return 0;
+    const uint64_t lo=position>start ? position : start;
+    const uint64_t hi=next<finish ? next : finish;
+    memcpy(destination+(size_t)(lo-dev),native+(size_t)(lo-position),(size_t)(hi-lo));
+    return 1;
+}
+/* Convert the intersection of a typed record and the requested DMA. */
 static int fix_record(const char *fields,uint64_t record,uint64_t start,uint64_t finish,u32 dev,u8 *destination)
 {
     uint64_t position=record;
     for (const char *field=fields;*field;field++) {
-        u32 width=field_width(*field);
-        uint64_t next=position+width;
-        if (position<finish && next>start) {
-            if (position<start || next>finish ||
-                !convert_field(destination+(size_t)(position-dev),*field)) return 0;
-        }
-        position=next;
+        if (!fix_field(*field,position,start,finish,dev,destination)) return 0;
+        position+=field_width(*field);
     }
     return 1;
 }
@@ -513,16 +526,13 @@ static int fix_tagged(const Res *entry,uint64_t start,uint64_t finish,u32 dev,u8
     }
     return 1;
 }
-/* Swap each mapped field inside [start, finish); a field cut by either end refuses the read. */
+/* Width maps mark a field's first byte. Include fields that start up to seven
+ * bytes before the DMA, since graph scalar widths can be as large as eight. */
 static int fix_widths(const Res *entry,uint64_t start,uint64_t finish,u32 dev,u8 *destination)
 {
-    for (uint64_t at=start>entry->lo+3 ? start-3 : entry->lo;at<start;at++)
-        if (at+entry->widths[at-entry->lo]>start) return 0;
-    for (uint64_t at=start;at<finish;at++) {
+    for (uint64_t at=start>entry->lo+7 ? start-7 : entry->lo;at<finish;at++) {
         u32 width=entry->widths[at-entry->lo];
-        if (!width) continue;
-        if (at+width>finish) return 0;
-        convert_field(destination+(size_t)(at-dev),(char)('0'+width));
+        if (width && !fix_field((char)('0'+width),at,start,finish,dev,destination)) return 0;
     }
     return 1;
 }

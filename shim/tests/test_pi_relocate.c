@@ -97,10 +97,15 @@ int main(void)
 #endif
     CHECK(osPiStartDma(NULL,0,OS_READ,0x70,&entry,4,&queue)==-1);
     event(0);
-    CHECK(osPiStartDma(NULL,0,OS_READ,0x25,&entry,3,&queue)==-1);
-    event(0);
-    CHECK(osPiStartDma(NULL,0,OS_READ,0x21,&entry,3,&queue)==-1);
-    event(0);
+    CHECK(osPiStartDma(NULL,0,OS_READ,0x25,&entry,3,&queue)==0);
+    event(1);
+    u32 native=data_address();
+    CHECK(memcmp(&entry,(u8 *)&native+1,3)==0);
+    CHECK(osPiStartDma(NULL,0,OS_READ,0x21,&entry,3,&queue)==0);
+    event(1);
+    CHECK(((u8 *)&entry)[0]==0x33 && ((u8 *)&entry)[1]==0x22 && ((u8 *)&entry)[2]==0x11);
+    CHECK(osPiStartDma(NULL,0,OS_READ,0x71,&entry,1,&queue)==-1);
+    event(0); /* A split unresolved pointer still fails. */
     u8 byte=0;
     CHECK(osPiStartDma(NULL,0,OS_READ,0x90,&byte,1,&queue)==0 && byte==0x5A);
     event(1);
