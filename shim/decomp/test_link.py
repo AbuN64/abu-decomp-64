@@ -217,12 +217,10 @@ int main(void) { return n64c_boot_entry(); }
         self.generate()
         code = (self.path / "output/bindings.c").read_text()
         self.assertIn('{"pack.a", 1280u, 0u, 64u, N64C_RES_GRAPH, "D:-,2;F:2 2 @0:3;L:1;F:4 2 2"},', code)
-        self.assertIn('{"pack.b", 1344u, 0u, 32u, N64C_RES_RAW, 0},', code)
         self.assertIn('{"plain", 1536u, 0u, 64u, N64C_RES_GRAPH, "G:0/4:0=1,3=2;F:4 4;E:3;F:2 2"},', code)
         self.assertIn('{"bundle.1", 1664u, 0u, 32u, N64C_RES_GRAPH, "E:3;F:2;X:1;P:2"},', code)
         self.assertIn('{"bundle.2", 1696u, 0u, 32u, N64C_RES_GRAPH, "E:3;F:2;X:1;P:2"},', code)
         self.assertIn("n64c_boot_packed_count", code)
-        self.assertNotIn('"split"', code)
         self.assertNotIn('"elsewhere"', code)
         packed = code[code.index("n64c_boot_packed[]"):]
         self.assertNotIn('"plain"', packed)                     # an uncompressed blob is a resource, not a stream
@@ -252,6 +250,32 @@ int main(void) { return n64c_boot_entry(); }
                 bad = copy.deepcopy(self.project)
                 change(bad["blob_layouts"])
                 with self.assertRaises((ValueError, TypeError, KeyError)):
+                    self.generate(bad)
+        # the byte-order gate: blobs no row types are UNTYPED (the first DMA stops the boot); a byte_streams format is
+        # data read byte by byte
+        self.assertIn('{"split", 1792u, 0u, 16u, N64C_RES_UNTYPED, "split"},', code)
+        self.assertIn('{"pack.b", 1344u, 0u, 32u, N64C_RES_UNTYPED, "pack.b"},', code)
+        streams = copy.deepcopy(self.project)
+        streams["byte_streams"] = [{"format": "samples", "evidence": "Fixture byte data"}]
+        (self.path / "source/blobs.toml").write_text((self.path / "source/blobs.toml").read_text() +
+                                                     '[blob."sample.1"]\ncodec = "none"\nformat = "samples"\n'
+                                                     'rom."test" = [[0x780, 0x790]]\n')
+        self.generate(streams)
+        code = (self.path / "output/bindings.c").read_text()
+        self.assertNotIn('"sample.1"', code)
+        classes = module.byte_order(streams, self.path / "source")
+        self.assertEqual(classes["sample.1"][0], "bytes")
+        self.assertEqual(classes["bundle.1"][0], "layout")
+        self.assertEqual(classes["split"][0], "untyped")
+        for index, change in enumerate([
+                lambda rows: rows.append({"format": "no such format", "evidence": "Fixture"}),
+                lambda rows: rows.append({"format": "bundle", "evidence": "Fixture"}),     # has a layout
+                lambda rows: rows.append(dict(rows[0])),
+                lambda rows: rows[0].update(evidence=" ")]):
+            with self.subTest(streams=index):
+                bad = copy.deepcopy(streams)
+                change(bad["byte_streams"])
+                with self.assertRaises(ValueError):
                     self.generate(bad)
         bad = copy.deepcopy(self.project)                      # a graph is no layout for a plain ROM resource row
         bad["resources"] = [{"name": "box", "rom": "0x400", "bytes": 16, "kind": "graph", "root": "Box",

@@ -26,7 +26,7 @@ NAMED_ADDRESS = re.compile(r"D_auto_(8[0-9A-F]{7})\Z")
 # nested in the bytes ("packed": the type of its unpacked bytes, or null).
 KINDS = {"raw": "N64C_RES_RAW", "swap16": "N64C_RES_SWAP16", "swap32": "N64C_RES_SWAP32", "fields": "N64C_RES_STRUCT",
          "tagged": "N64C_RES_TAGGED", "alctl": "N64C_RES_ALCTL", "u16": "N64C_RES_SWAP16", "u32": "N64C_RES_SWAP32",
-         "graph": "N64C_RES_GRAPH"}
+         "graph": "N64C_RES_GRAPH", "untyped": "N64C_RES_UNTYPED"}
 WIDTHS = {"raw": 1, "swap16": 2, "swap32": 4, "u16": 2, "u32": 4, "tagged": 1, "alctl": 1, "graph": 1}
 UNPACKED_KINDS = {"raw", "swap16", "swap32", "fields", "tagged", "graph"}
 MAX_LAYOUTS = 16  # n64c_pi.c keeps 16 layouts per tagged resource
@@ -194,6 +194,52 @@ def blob_facts(source, version):
     return facts
 
 
+def blob_ranges(source, version):
+    """{blob name: (ranges, codec, format)} of every blob fact (blobs.toml) with ROM ranges in this version."""
+    import tomllib  # Python 3.11+, only where blob facts are read
+
+    path = source / "blobs.toml"
+    if not path.exists():
+        return {}
+    out = {}
+    for blob, row in tomllib.loads(path.read_text()).get("blob", {}).items():
+        ranges = row.get("rom", {}).get(version)
+        if ranges:
+            out[blob] = ([(number(lo), number(hi)) for lo, hi in ranges], row.get("codec"), row.get("format"))
+    return out
+
+
+def byte_order(project, source):
+    """The byte-order class of every blob fact of the project's version: "layout" (a blob_layouts row names it or its
+    format), "rows" (a loads/resources row overlaps one of its ranges), "bytes" (its format is declared a byte
+    stream: data the game reads byte by byte, or that the shim reads in N64 order) or "untyped" (nothing says how its
+    multi-byte fields are ordered). {blob: (class, ranges, codec, format)}."""
+    blobs = blob_ranges(source, project["version"])
+    named = {row.get("blob") for row in project.get("blob_layouts", [])}
+    formats = {row.get("format") for row in project.get("blob_layouts", [])} - {None}
+    streams = set()
+    for item in project.get("byte_streams", []):
+        if set(item) != {"format", "evidence"} or not isinstance(item["evidence"], str) or not item["evidence"].strip():
+            raise ValueError("byte stream needs a format and evidence")
+        if item["format"] in formats or item["format"] in streams or \
+                not any(fmt == item["format"] for _, _, fmt in blobs.values()):
+            raise ValueError("byte stream format names no blob fact (or has a layout): " + str(item["format"]))
+        streams.add(item["format"])
+    rows = [(number(r["rom"]), number(r["bytes"])) for r in project.get("resources", []) + project.get("loads", [])]
+    out = {}
+    for blob, (ranges, codec, fmt) in blobs.items():
+        if blob in named or fmt in formats:
+            kind = "layout"
+        elif any(rom < hi and rom + size > lo for lo, hi in ranges for rom, size in rows):
+            kind = "rows"
+        elif fmt in streams:
+            kind = "bytes"
+        else:
+            kind = "untyped"
+        out[blob] = (kind, ranges, codec, fmt)
+    return out
+
+
 def number(value):
     result = int(value, 0) if isinstance(value, str) else value
     if type(result) is not int or not 0 <= result <= 0xffffffff:
@@ -336,6 +382,24 @@ def generate(manifest, source, output):
         rom_ranges.append((rom, rom + size, blob))
         code.insert(code.index('    {0},  /* keeps the array non-empty; the count below excludes it */'),
                     f'    {{"{blob}", {rom}u, 0u, {size}u, {KINDS[kind]}, {c_string(fields)}}},')
+    # The byte-order gate: a blob fact nothing types is registered as UNTYPED, so the first DMA of it stops the boot
+    # and names it (n64c_pi.h), instead of a big-endian count crashing a reader later.
+    classes = byte_order(project, source)
+    untyped_streams = set()
+    for blob, (kind, ranges, codec, _) in sorted(classes.items(), key=lambda pair: pair[1][1][0]):
+        if kind != "untyped":
+            continue
+        if blob in streams:
+            untyped_streams.add(blob)
+            continue
+        if not BLOB_NAME.fullmatch(blob):
+            raise ValueError("invalid blob name: " + blob)
+        for lo, hi in ranges:
+            if hi > rom_bytes or hi <= lo or any(lo < old_hi and hi > old_lo for old_lo, old_hi, _ in rom_ranges):
+                continue  # inside a typed range: that range's layout serves it
+            rom_ranges.append((lo, hi, blob))
+            code.insert(code.index('    {0},  /* keeps the array non-empty; the count below excludes it */'),
+                        f'    {{"{blob}", {lo}u, 0u, {hi - lo}u, N64C_RES_UNTYPED, "{blob}"}},')
     code.append('const N64cBootLoad n64c_boot_packed[] = {')
     for blob, (rom, size) in sorted(streams.items(), key=lambda pair: pair[1]):
         if rom + size > rom_bytes:
@@ -345,6 +409,8 @@ def generate(manifest, source, output):
                 raise ValueError(f"overlapping resource range: {blob} and {old_name}")
         rom_ranges.append((rom, rom + size, blob))
         kind, fields, _ = layouts.get(blob, ("raw", None, 1))
+        if blob in untyped_streams:
+            kind, fields = "untyped", blob
         code.append(f'    {{"{blob}", {rom}u, 0u, {size}u, {KINDS[kind]}, {c_string(fields)}}},')
     code += ['    {0},  /* keeps the array non-empty; the count below excludes it */', '};',
              'const size_t n64c_boot_packed_count = sizeof n64c_boot_packed / sizeof n64c_boot_packed[0] - 1;']

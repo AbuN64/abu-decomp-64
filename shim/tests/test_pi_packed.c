@@ -131,8 +131,17 @@ static void container2(u8 *c)
     be16(c+32,2); c[34]=8; c[35]=9; be16(c+36,0x0A0B); be16(c+38,0x0C0D);
     be32(c+40,0x11121314u); be16(c+44,0x2122); be16(c+46,0x2324); be16(c+48,0x2526);
 }
-enum { S1=0x100, S2=0x200, BAD=0x400, ROMGRAPH=0x500, MISFIT=0x600, ROMGRAPH2=0x680, NEST=0x740, PLANES=0x7A0 };
+enum { S1=0x100, S2=0x200, BAD=0x400, ROMGRAPH=0x500, MISFIT=0x600, ROMGRAPH2=0x680, NEST=0x740, PLANES=0x7A0,
+       PLANES2=0x800, UNTYPED=0x870 };
 static u8 ram[512];
+static void untyped_dma(void)
+{
+    dma(UNTYPED,ram,8);
+}
+static void untyped_stream(void)
+{
+    dma(PLANES2,ram,8);
+}
 static void misfit(void)
 {
     u8 out[8];
@@ -142,7 +151,7 @@ static void misfit(void)
 int main(void)
 {
     const char *path="n64c_packed_test.rom";
-    static u8 rom[0x840];
+    static u8 rom[0x8B0];
     u8 c[SIZE];
     int size1=stream1();
     memcpy(rom+S1,rnc1,(size_t)size1);
@@ -169,6 +178,8 @@ int main(void)
     int size4=stream2(planes,sizeof planes);
     CHECK(PLANES+size4<=(int)sizeof rom);
     memcpy(rom+PLANES,rnc2,(size_t)size4);
+    CHECK(PLANES2+size4<=UNTYPED-8);
+    memcpy(rom+PLANES2,rnc2,(size_t)size4);
     FILE *file=fopen(path,"wb");
     CHECK(file && fwrite(rom,1,sizeof rom,file)==sizeof rom && fclose(file)==0);
     N64cConfig config={.rom_path=path};
@@ -191,6 +202,9 @@ int main(void)
     CHECK(n64c_pi_register(0x700,0x740,N64C_RES_GRAPH,"X:1;F:4")==-1);                  /* planes in a ROM range */
     CHECK(n64c_pi_register_packed(MISFIT,MISFIT+(u32)size1,N64C_RES_GRAPH,"X:1;F:4 @0:1")==-1); /* planes: no refs */
     CHECK(n64c_pi_register_packed(PLANES,PLANES+(u32)size4,N64C_RES_GRAPH,"X:1;F:2 4")==0);
+    CHECK(n64c_pi_register(UNTYPED,UNTYPED+0x40,N64C_RES_UNTYPED,NULL)==-1);           /* the gate names a blob */
+    CHECK(n64c_pi_register(UNTYPED,UNTYPED+0x40,N64C_RES_UNTYPED,"blob.x")==0);
+    CHECK(n64c_pi_register_packed(PLANES2,PLANES2+(u32)size4,N64C_RES_UNTYPED,"blob.y")==0);
     /* the header in host order, the packed bytes raw, also when a DMA cuts the header */
     u32 w; u16 h;
     dma(S1,ram,6);
@@ -250,11 +264,23 @@ int main(void)
     memcpy(&h,built+6,2); CHECK(h==0x1112);
     memcpy(&w,built+8,4); CHECK(w==0x13141516u);
     CHECK(exits78(misfit));
+    dma(UNTYPED-8,ram,16);                                                             /* passes over: raw */
+    CHECK(memcmp(ram+8,rom+UNTYPED,8)==0);
+    CHECK(exits78(untyped_dma));                                                       /* the byte-order gate */
+    CHECK(exits78(untyped_stream));
+    CHECK(setenv("N64C_LAYOUT_GATE","log",1)==0);                                      /* diagnostic: raw */
+    dma(UNTYPED,ram,8);
+    CHECK(memcmp(ram,rom+UNTYPED,8)==0);
+    dma(PLANES2,ram,(u32)size4);
+    memset(out,0,sizeof out);
+    n64c_pi_rnc2_unpack(ram,out,size4-18,sizeof planes);
+    CHECK(memcmp(out,planes,sizeof planes)==0);
+    CHECK(unsetenv("N64C_LAYOUT_GATE")==0);
     n64c_shutdown();
     CHECK(remove(path)==0);
     printf("PI packed streams: %d checks; host-order headers (cut DMA), raw packed bytes, origins, method 1 STRUCT, "
            "method 2 GRAPH (pool references, shared and null), ROM GRAPH (tagged variants, head + elements, a nested "
            "stream), "
-           "byte-plane leaves, untraced raw, refusals\n",checks);
+           "byte-plane leaves, the untyped-blob gate (stop and log), untraced raw, refusals\n",checks);
     return 0;
 }

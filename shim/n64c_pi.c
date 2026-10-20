@@ -12,6 +12,8 @@
  *   PACKED   one RNC stream: header fields in host order, packed bytes raw; its unpacked bytes are typed by a layout
  *            (any kind above, or GRAPH: a typed record graph of directories, leaves and records with offset
  *            references) applied after the game unpacks it
+ *   UNTYPED  a blob of the decomp's blob facts that nothing types yet (the byte-order gate): a DMA that starts in it
+ *            stops the boot naming the blob (N64C_LAYOUT_GATE=log: logs it once and serves it raw)
  * A DMA may cover any sub-range of a resource; alignment is taken relative to the resource start. Every DMA also
  * records where its bytes came from (RAM range -> cartridge offset), so an unpack call can name its stream. */
 #include "n64c_internal.h"
@@ -26,7 +28,8 @@
 typedef struct { u32 tag, stride; char fields[64]; } TagLayout;
 typedef struct { u32 offset, width, count; TagLayout layout[16]; } Tagged;
 /* GRAPH types (n64c_pi.h): kind F/L/X/D/E/G/T/R/P; items: F widths (1-8) or references (REF | section << 16 | type),
- * L, X and E [type], D section types (NONE: untyped), G/T tag/type pairs; size: F record bytes; tag offset/width: G/T. */
+ * L, X and E [type], D section types (NONE: untyped), G/T tag/type pairs; size: F record bytes; tag offset/width:
+ * G/T. */
 typedef struct { char kind; u32 size, offset, width, n; u32 *items; } GType;
 typedef struct { u32 count; GType *types; } Graph;
 #define GRAPH_REF 0x80000000u
@@ -38,6 +41,7 @@ typedef struct { N64cResKind kind; char fields[64]; u32 stride; const Tagged *ta
 #define MAX_RES 1024
 typedef struct {
     u32 lo, hi; N64cResKind kind; char fields[64]; u32 stride; const Tagged *tagged; u8 *widths; const u8 *image;
+    int logged; /* UNTYPED (or a PACKED stream whose unpacked kind is UNTYPED): fields is the blob name */
     u8 header[RNC_HEADER]; u32 unpacked_bytes; Layout unpacked; /* PACKED: host-order header, unpacked layout */
 } Res;
 static Res res[MAX_RES];
@@ -296,9 +300,14 @@ static int disjoint(u32 lo,u32 hi)
 }
 int n64c_pi_register(u32 lo,u32 hi,N64cResKind kind,const char *fields)
 {
-    if (!disjoint(lo,hi) || ((unsigned)kind>N64C_RES_ALCTL && kind!=N64C_RES_GRAPH)) return -1; /* IMAGE, PACKED: own calls */
+    if (!disjoint(lo,hi) || ((unsigned)kind>N64C_RES_ALCTL && kind!=N64C_RES_GRAPH && kind!=N64C_RES_UNTYPED))
+        return -1; /* IMAGE, PACKED: own calls */
     Res entry={.lo=lo,.hi=hi,.kind=kind};
-    if (kind==N64C_RES_GRAPH) { /* the graph is walked over the ROM bytes once, into a per-byte width map */
+    if (kind==N64C_RES_UNTYPED) {
+        if (!fields || !*fields) return -1;
+        snprintf(entry.fields,sizeof entry.fields,"%s",fields);
+        entry.stride=1;
+    } else if (kind==N64C_RES_GRAPH) { /* the graph is walked over the ROM bytes once, into a per-byte width map */
         Graph *graph=parse_graph(fields);
         u8 *bytes=graph && rom && hi-lo<=0x01000000u ? malloc(hi-lo) : NULL;
         Stream *streams=NULL;
@@ -369,7 +378,11 @@ int n64c_pi_register_packed(u32 lo,u32 hi,N64cResKind kind,const char *fields)
     Res entry={.lo=lo,.hi=hi,.kind=N64C_RES_PACKED,.stride=1,.unpacked_bytes=be_value(raw+4,4)};
     for (u32 at=0,i=0;i<sizeof header_widths;at+=header_widths[i++])
         for (u32 b=0;b<header_widths[i];b++) entry.header[at+b]=raw[at+header_widths[i]-1-b];
-    if (!parse_layout(&entry.unpacked,kind,fields)) return -1;
+    if (kind==N64C_RES_UNTYPED) {
+        if (!fields || !*fields) return -1;
+        snprintf(entry.fields,sizeof entry.fields,"%s",fields);
+        entry.unpacked.kind=N64C_RES_UNTYPED;
+    } else if (!parse_layout(&entry.unpacked,kind,fields)) return -1;
     res[n_res++]=entry;
     return 0;
 }
@@ -441,14 +454,35 @@ static int fix_widths(const Res *entry,uint64_t start,uint64_t finish,u32 dev,u8
     }
     return 1;
 }
+/* The byte-order gate: a DMA reached a blob nothing types. Stop naming it (exit 78, like a misfit layout), or with
+ * N64C_LAYOUT_GATE=log name it once and serve its bytes raw (a diagnostic run that lists every untyped blob). */
+static void untyped(Res *entry,u32 dev)
+{
+    const char *gate=getenv("N64C_LAYOUT_GATE");
+    if (gate && strcmp(gate,"log")==0) {
+        if (!entry->logged) fprintf(stderr,"boot-diag: untyped blob %s ROM 0x%08x\n",entry->fields,entry->lo);
+        entry->logged=1;
+        return;
+    }
+    fprintf(stderr,"boot-input: DMA of ROM 0x%08x reads blob %s (ROM 0x%08x-0x%08x), which has no byte-order layout: "
+            "add a blob_layouts row or a byte_streams declaration to the manifest\n",dev,entry->fields,entry->lo,
+            entry->hi);
+    fflush(stderr);
+    _Exit(78);
+}
 static int fixup(u32 dev,u8 *destination,u32 bytes)
 {
     uint64_t end=(uint64_t)dev+bytes;
     for (int i=0;i<n_res;i++) {
-        const Res *entry=&res[i];
+        Res *entry=&res[i];
         uint64_t start=dev>entry->lo ? dev : entry->lo;
         uint64_t finish=end<entry->hi ? end : entry->hi;
         if (start>=finish || entry->kind==N64C_RES_RAW) continue;
+        /* a read of the blob starts inside it; a bulk copy that only passes over it (a whole-cartridge DMA) is not */
+        if ((entry->kind==N64C_RES_UNTYPED || (entry->kind==N64C_RES_PACKED && entry->unpacked.kind==N64C_RES_UNTYPED))
+            && dev>=entry->lo)
+            untyped(entry,dev);
+        if (entry->kind==N64C_RES_UNTYPED) continue;
         if (entry->kind==N64C_RES_TAGGED) {
             if (!fix_tagged(entry,start,finish,dev,destination)) return 0;
             continue;
@@ -799,7 +833,7 @@ static int apply_graph(const Graph *graph,u32 root,u8 *data,u32 bytes)
 static int apply_layout(const Layout *layout,u8 *data,u32 bytes)
 {
     switch (layout->kind) {
-    case N64C_RES_RAW:
+    case N64C_RES_RAW: case N64C_RES_UNTYPED: /* UNTYPED: only after N64C_LAYOUT_GATE=log served it raw */
         return 1;
     case N64C_RES_SWAP16: case N64C_RES_SWAP32: case N64C_RES_STRUCT:
         if (bytes%layout->stride) return 0;
