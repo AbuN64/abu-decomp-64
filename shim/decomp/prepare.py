@@ -45,6 +45,16 @@ def markers(source, prefix):
         r"n64c_" + prefix + r"_marker_(" + IDENT + ")" + suffix, source)))
 
 
+def known_fallbacks():
+    """Sources recorded as known NON_MATCHING compile failures: each may still contribute its matched C."""
+    path = pathlib.Path(__file__).with_name("known-fallback-units.txt")
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return set()
+    return {line.strip() for line in lines if line.strip() and not line.startswith("#")}
+def listed(source, units):
+    return any(str(source).endswith("/" + unit) for unit in units)
 def mapped(text, maps):
     for old, new in maps:
         text = text.replace(old, new)
@@ -118,7 +128,7 @@ class Cache:
                 break
             path.unlink(missing_ok=True)
             total -= size
-def prepare(compiler, source, output, stubs, inventory, depfile, flags, maps=(), cache=None):
+def prepare(compiler, source, output, stubs, inventory, depfile, flags, maps=(), cache=None, fallbacks=()):
     output.parent.mkdir(parents=True, exist_ok=True)
     flags = list(flags) + [f"-fmacro-prefix-map={old}={new}" for old, new in maps]
     store = Cache(cache, compiler, source, flags, maps) if cache else None
@@ -126,7 +136,8 @@ def prepare(compiler, source, output, stubs, inventory, depfile, flags, maps=(),
     result = store.lookup() if store else None
     if result:
         record = result["inventory"]
-        if record.get("mode") != mode or record.get("non_matching_errors"):
+        allowed = listed(source, fallbacks) and record.get("mode") == "matched"
+        if not allowed and (record.get("mode") != mode or record.get("non_matching_errors")):
             sys.stderr.write(f"decomp-prepare: unit {source.name} ({source}): refusing cached fallback "
                              f"or invalid result (requested {mode}, cached {record.get('mode')!r})\n")
             return 1
@@ -137,15 +148,25 @@ def prepare(compiler, source, output, stubs, inventory, depfile, flags, maps=(),
         deps = [store.unmap(path) for path, _ in result["deps"]]
         depfile.write_text(f"{output}: " + " \\\n ".join(deps) + "\n")
         return 0
-    # NON_MATCHING is an input contract. A failed body must never become a
-    # successful matched-only unit with generated stops, including via the cache.
+    # NON_MATCHING is an input contract. A failed body never becomes a successful matched-only unit with generated
+    # stops, unless the unit is a recorded known failure (known-fallback-units.txt): then its matched C is kept and
+    # the diagnostics stay in the inventory. Any other unit fails, including via the cache.
+    rejected = []
     if mode == "NON_MATCHING":
         check = subprocess.run([compiler, *flags, "-x", "c", "-fsyntax-only", str(source)],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if check.returncode:
-            sys.stderr.write(f"decomp-prepare: unit {source.name} ({source}): NON_MATCHING compile failed\n")
-            sys.stderr.write(check.stderr)
-            return check.returncode
+            rejected = [line for line in check.stderr.splitlines() if "error:" in line]
+            matched = [flag for flag in flags if flag != "-DNON_MATCHING"]
+            if listed(source, fallbacks):
+                again = subprocess.run([compiler, *matched, "-x", "c", "-fsyntax-only", str(source)],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if not listed(source, fallbacks) or again.returncode:
+                sys.stderr.write(f"decomp-prepare: unit {source.name} ({source}): NON_MATCHING compile failed\n")
+                sys.stderr.write(check.stderr)
+                return check.returncode
+            flags, mode = matched, "matched"
+            sys.stderr.write(f"decomp-prepare: {source}: known NON_MATCHING failure; using matched C with stops\n")
     command = [compiler, *flags, "-x", "c", "-E", "-MD", "-MF", str(depfile),
                "-MT", str(output), str(source)]
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -163,7 +184,7 @@ def prepare(compiler, source, output, stubs, inventory, depfile, flags, maps=(),
     declarations += ['long long ' + name + '(void) { return n64c_boot_missing("' + name + '"); }'
                      for name in missing]
     text = map_markers(result.stdout, maps)
-    record = {"missing": missing, "data": data, "mode": mode, "non_matching_errors": []}
+    record = {"missing": missing, "data": data, "mode": mode, "non_matching_errors": rejected[:50]}
     output.write_text(text)
     stubs.write_text("\n".join(declarations) + "\n")
     inventory.write_text(json.dumps(dict(record, source=str(source)), sort_keys=True) + "\n")
@@ -190,7 +211,7 @@ def main():
     maps = [tuple(m.split("=", 1)) for m in args.map]
     return prepare(args.compiler, pathlib.Path(args.source), pathlib.Path(args.output),
                    pathlib.Path(args.stubs), pathlib.Path(args.inventory),
-                   pathlib.Path(args.depfile), flags, maps, args.cache or None)
+                   pathlib.Path(args.depfile), flags, maps, args.cache or None, known_fallbacks())
 
 
 if __name__ == "__main__":

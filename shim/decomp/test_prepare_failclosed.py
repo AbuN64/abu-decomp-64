@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -63,6 +64,33 @@ class FailClosedTests(unittest.TestCase):
         self.assertIn(diagnostic, self.stderr.getvalue())
         self.assert_no_outputs()
         self.assertEqual(list(self.cache.rglob("*")), [])
+
+    def broken_unit(self):
+        self.source.write_text("#ifdef NON_MATCHING\nint fuzzy(void) { return undeclared; }\n#endif\nint matched(void) { return 1; }\n")
+        self.flags = ["-std=gnu89", "-DNON_MATCHING"]
+
+    def test_listed_known_failure_keeps_its_matched_c_with_the_diagnostics(self):
+        compiler = shutil.which("cc")
+        if not compiler:
+            self.skipTest("needs a C compiler")
+        self.broken_unit()
+        with contextlib.redirect_stderr(self.stderr):
+            status = prepare.prepare(compiler, self.source, *self.files, self.flags, fallbacks={self.source.name})
+        self.assertEqual(status, 0)
+        record = json.loads(self.files[2].read_text())
+        self.assertEqual(record["mode"], "matched")
+        self.assertTrue(any("undeclared" in line for line in record["non_matching_errors"]))
+        self.assertIn("known NON_MATCHING failure", self.stderr.getvalue())
+
+    def test_unlisted_failure_still_fails_closed(self):
+        compiler = shutil.which("cc")
+        if not compiler:
+            self.skipTest("needs a C compiler")
+        self.broken_unit()
+        with contextlib.redirect_stderr(self.stderr):
+            status = prepare.prepare(compiler, self.source, *self.files, self.flags, fallbacks={"OTHER.CPP"})
+        self.assertNotEqual(status, 0)
+        self.assert_no_outputs()
 
     def seed_cache(self, inventory):
         cache = prepare.Cache(self.cache, sys.executable, self.source, self.flags, ())
