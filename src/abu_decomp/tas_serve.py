@@ -292,7 +292,11 @@ class Session:
     def marks(self) -> dict[str, Any]:
         """The weird moments marked in the current run: how many, and the last one."""
         path = self.run_dir / "marks.jsonl" if self.run_dir else None
-        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path and path.is_file() else []
+        rows = (
+            [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+            if path and path.is_file()
+            else []
+        )
         return {"count": len(rows), "last": rows[-1] if rows else None}
 
     def mark(self, note: str) -> dict[str, Any]:

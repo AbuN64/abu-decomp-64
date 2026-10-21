@@ -4,7 +4,15 @@ from abu_decomp.tas_watch import Watcher
 
 
 def state(**kw):
-    base = {"run": "/r/1", "running": True, "polls": 5, "exit": None, "stopped": {}, "stacks": [], "marks": {"count": 0}}
+    base = {
+        "run": "/r/1",
+        "running": True,
+        "polls": 5,
+        "exit": None,
+        "stopped": {},
+        "stacks": [],
+        "marks": {"count": 0},
+    }
     return {**base, **kw}
 
 
@@ -18,7 +26,9 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual([e["event"] for e in w.feed(state(), 1)], ["start"])
         held = state(running=False, polls=9, stopped={"outcome": "stop", "subject": "s"}, stacks=["/r/1/a.txt"])
         (event,) = w.feed(held, 2)
-        self.assertEqual((event["event"], event["subject"], event["polls"], event["stacks"]), ("stop", "s", 9, ["/r/1/a.txt"]))
+        self.assertEqual(
+            (event["event"], event["subject"], event["polls"], event["stacks"]), ("stop", "s", 9, ["/r/1/a.txt"])
+        )
         self.assertEqual(w.feed(held, 3), [])
 
     def test_crash_and_end(self):
