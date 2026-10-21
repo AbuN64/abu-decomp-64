@@ -9,6 +9,7 @@ the one that matches the phase you are in before planning a lane or a fix.
 |---|---|---|
 | [01-first-boot-speedrun](01-first-boot-speedrun.md) | Port boots to its first original frame | The decomp is mostly matched and the port does not yet draw the game |
 | [02-tas-behaviour-loop](02-tas-behaviour-loop.md) | Port runs; the last functions and behaviours | The port draws frames and the remaining failures show up only while playing |
+| [03-play-loop-agent](03-play-loop-agent.md) | Same, run by an agent beside a player | The standing prompt for the agent that reacts to what the player sees |
 
 Rules every playbook shares:
 
