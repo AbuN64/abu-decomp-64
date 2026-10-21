@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TAS</title>
+<style>
+  :root { --bg: #111; --fg: #ddd; --dim: #888; --line: #333; --accent: #4a9; --bad: #d65; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px system-ui, sans-serif; display: flex; gap: 12px; padding: 12px; }
+  #game { flex: 1; min-width: 0; }
+  #game img { width: 100%; background: #000; aspect-ratio: 4 / 3; display: block; outline: none; }
+  #game img:focus { box-shadow: 0 0 0 2px var(--accent); }
+  aside { width: 300px; display: flex; flex-direction: column; gap: 10px; }
+  button { background: #222; color: var(--fg); border: 1px solid var(--line); padding: 6px 10px; cursor: pointer; }
+  button.main { border-color: var(--accent); }
+  input { background: #000; color: var(--fg); border: 1px solid var(--line); padding: 6px; width: 100%; box-sizing: border-box; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .dim { color: var(--dim); font-size: 12px; }
+  .bad { color: var(--bad); }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; gap: 6px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); }
+  li span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  pre { white-space: pre-wrap; margin: 0; font-size: 11px; color: var(--dim); }
+  @media (max-width: 800px) { body { flex-direction: column; } aside { width: auto; } }
+</style>
+</head>
+<body>
+<div id="game">
+  <img id="video" src="/video" tabindex="0" alt="port">
+  <p class="dim">Click the picture, then play: arrows stick · X A · C B · Z Z · Enter Start · A/S L/R · I J K L C buttons</p>
+</div>
+<aside>
+  <div class="row"><button class="main" id="new">New recording</button><span id="run" class="dim"></span></div>
+  <pre id="tail"></pre>
+  <div class="row"><input id="name" placeholder="movie-name"></div>
+  <div class="row"><input id="note" placeholder="note (what it shows)"><button id="save">Save</button></div>
+  <div id="msg" class="dim"></div>
+  <ul id="movies"></ul>
+  <div id="replay" class="dim"></div>
+</aside>
+<script>
+const $ = id => document.getElementById(id);
+const post = (path, body) => fetch(path, {method: "POST", body: JSON.stringify(body || {})}).then(r => r.json());
+const say = (text, bad) => { $("msg").textContent = text; $("msg").className = bad ? "bad" : "dim"; };
+const held = new Set();
+$("video").addEventListener("keydown", e => { e.preventDefault(); if (!held.has(e.key)) { held.add(e.key); post("/key", {key: e.key, down: true}); } });
+$("video").addEventListener("keyup", e => { e.preventDefault(); held.delete(e.key); post("/key", {key: e.key, down: false}); });
+$("video").addEventListener("blur", () => { held.forEach(k => post("/key", {key: k, down: false})); held.clear(); });
+$("new").onclick = () => post("/new").then(() => { say("recording from reset"); $("video").focus(); });
+$("save").onclick = () => post("/save", {name: $("name").value.trim(), note: $("note").value}).then(r =>
+  r.error ? say(r.error, true) : (say(`saved ${r.name} (${r.polls} polls)`), $("name").value = "", $("note").value = ""));
+function row(m) {
+  const li = document.createElement("li");
+  const name = document.createElement("span");
+  name.textContent = m.name; name.title = m.note || "";
+  const info = document.createElement("span");
+  info.className = "dim"; info.textContent = m.error ? "unreadable" : `${m.seconds}s`;
+  const play = document.createElement("button"); play.textContent = "Play";
+  play.onclick = () => post("/play", {name: m.name}).then(r => say(r.error || `replaying ${m.name}`, !!r.error));
+  const del = document.createElement("button"); del.textContent = "Delete";
+  del.onclick = () => confirm(`Delete ${m.name}?`) && post("/delete", {name: m.name}).then(r => say(r.error || `deleted ${m.name}`, !!r.error));
+  li.append(name, info, play, del);
+  return li;
+}
+async function refresh() {
+  try {
+    const s = await (await fetch("/state")).json();
+    $("run").textContent = s.running ? `recording · ${s.polls} polls` : s.exit === null ? "no run" : `ended (exit ${s.exit}) · ${s.polls} polls`;
+    $("tail").textContent = (s.tail || []).join("\n");
+    $("movies").replaceChildren(...s.movies.map(row));
+    const r = s.replay || {};
+    $("replay").textContent = r.movie ? `last replay ${r.movie}: ${r.outcome}${r.subject ? " · " + r.subject : ""}${r.polls_reached !== undefined ? ` · ${r.polls_reached} polls` : ""}` : "";
+  } catch (e) { $("run").textContent = "server unreachable"; }
+}
+refresh(); setInterval(refresh, 1000);
+</script>
+</body>
+</html>
