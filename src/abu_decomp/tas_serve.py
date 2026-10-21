@@ -44,7 +44,7 @@ def window_size(args: list[str]) -> str:
 
 
 class Session:
-    """The one live port run, its recording and the last replay result."""
+    """The one live port run: its recording and the movie driving it, if any."""
 
     def __init__(self, profile: Profile) -> None:
         self.profile = profile
@@ -64,7 +64,8 @@ class Session:
         self.log: Path | None = None
         self.run_dir: Path | None = None
         self.exit: int | None = None
-        self.replay: dict[str, Any] = {}
+        self.movie: str | None = None
+        self.movie_length = 0
         self.frame = b""
         self.frame_ready = threading.Condition()
         self.helpers: list[subprocess.Popen] = []
@@ -192,7 +193,10 @@ class Session:
             "PULSE_SINK": _SINK,
         }
 
-    def new_run(self) -> dict[str, Any]:
+    def new_run(self, movie: str | None = None) -> dict[str, Any]:
+        """A visible run from reset, recorded; with a movie, the movie drives the pad until it ends and the
+        page's keys take over, so the recording is the movie plus whatever is played after it."""
+        polls = tas.movie_polls(self.cfg, movie) if movie else []
         with self.lock:
             self._stop_port()
             stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -204,6 +208,11 @@ class Session:
             env = {**self.env(), "N64C_TAS_RECORD": str(self.recording)}
             for key in ("N64C_TAS_PLAY", "N64C_TAS_EXIT_AFTER"):
                 env.pop(key, None)
+            self.movie, self.movie_length = movie, len(polls)
+            if movie:
+                source = live / f"{stamp}.movie.raw"
+                source.write_text(tas.format_raw(polls))
+                env["N64C_TAS_PLAY"] = str(source)
             self.run_dir = live / stamp
             # Under the gdb bridge a stop or host fault holds the picture on screen and writes its stacks; the
             # bridge's stdin stays open so the process is held until the next run replaces it.
@@ -264,7 +273,8 @@ class Session:
             "exit": self.exit,
             "polls": polls,
             "tail": tail,
-            "replay": self.replay,
+            "movie": self.movie,
+            "movie_polls": self.movie_length,
             **tas.listing(self.profile),
         }
 
@@ -286,18 +296,6 @@ class Session:
         if not self.recording:
             raise DecompError("tas.serve", "nothing recorded yet: start a run first")
         return tas.save(self.profile, name, source=self.recording, note=note, replace=False)
-
-    def play(self, name: str) -> dict[str, Any]:
-        self.replay = {"movie": name, "outcome": "running"}
-
-        def run() -> None:
-            try:
-                self.replay = tas.play(self.profile, name)
-            except DecompError as error:
-                self.replay = {"movie": name, "outcome": "error", "subject": str(error)}
-
-        threading.Thread(target=run, daemon=True).start()
-        return self.replay
 
     def close(self) -> None:
         self._stop_port()
@@ -388,7 +386,7 @@ def handler(session: Session) -> type[BaseHTTPRequestHandler]:
                 elif self.path == "/save":
                     self.json(session.save(str(body.get("name", "")), str(body.get("note", ""))))
                 elif self.path == "/play":
-                    self.json(session.play(str(body.get("name", ""))))
+                    self.json(session.new_run(str(body.get("name", ""))))
                 elif self.path == "/delete":
                     self.json(tas.delete(session.profile, str(body.get("name", ""))))
                 else:

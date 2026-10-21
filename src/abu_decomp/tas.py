@@ -286,8 +286,8 @@ def classify(code: int | None, output: str) -> dict[str, Any]:
     return {"outcome": "exit", "subject": f"exit {code}"}
 
 
-def play(profile: Profile, name: str, *, now: datetime | None = None) -> dict[str, Any]:
-    cfg = settings(profile)
+def movie_polls(cfg: dict[str, Any], name: str) -> list[Poll]:
+    """A saved movie's polls, refused when it was recorded on another ROM."""
     path = _movie(cfg, name)
     if not path.is_file():
         raise DecompError("tas.play", f"no movie {path}")
@@ -295,6 +295,12 @@ def play(profile: Profile, name: str, *, now: datetime | None = None) -> dict[st
     rom = _sha1(cfg["rom"])
     if header.get("rom-sha1") != rom:
         raise DecompError("tas.play", f"{path.name} was recorded on ROM {header.get('rom-sha1')}, not {rom}")
+    return polls
+
+
+def play(profile: Profile, name: str, *, now: datetime | None = None) -> dict[str, Any]:
+    cfg = settings(profile)
+    polls = movie_polls(cfg, name)
     run = cfg["runs"] / "plays" / f"{_stamp(now)}-{name}"
     user_dir = run / "user"
     user_dir.mkdir(parents=True)

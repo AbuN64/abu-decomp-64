@@ -109,6 +109,34 @@ class ServeTests(unittest.TestCase):
         )
         self.assertEqual(tas_tabs.function_lines(feed), ["02:27:14 PROBE f same"])
 
+    def test_play_runs_the_movie_visibly_and_keeps_recording(self):
+        import hashlib
+        from unittest import mock
+
+        profile = self.profile()
+        (self.root / "movies").mkdir()
+        sha = hashlib.sha1(b"rom").hexdigest()
+        (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA *2\n")
+        session = tas_serve.Session(profile)
+        seen = {}
+
+        class Port:
+            pid = 7
+
+            def __init__(self, argv, env, **kwargs):
+                seen.update(env=env)
+
+            def poll(self):
+                return None
+
+        with mock.patch.object(tas_serve.subprocess, "Popen", Port), mock.patch.object(tas_serve.threading, "Thread"):
+            session.new_run("m")
+        played = Path(seen["env"]["N64C_TAS_PLAY"])
+        self.assertEqual(played.read_text(), "8000 0 0\n8000 0 0\n")
+        self.assertIn("N64C_TAS_RECORD", seen["env"])
+        self.assertNotIn("N64C_TAS_EXIT_AFTER", seen["env"])
+        self.assertEqual((session.movie, session.movie_length), ("m", 2))
+
 
 if __name__ == "__main__":
     unittest.main()

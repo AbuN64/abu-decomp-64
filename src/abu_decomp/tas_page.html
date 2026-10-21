@@ -40,7 +40,6 @@
   <div class="row"><input id="note" placeholder="note (what it shows)"><button id="save">Save</button></div>
   <div id="msg" class="dim"></div>
   <ul id="movies"></ul>
-  <div id="replay" class="dim"></div>
   <div class="tabs"><button data-tab="ai" class="on">AI</button><button data-tab="port">Port</button><button data-tab="functions">Functions</button></div>
   <pre id="tabtext"></pre>
 </aside>
@@ -65,7 +64,7 @@ function row(m) {
   const info = document.createElement("span");
   info.className = "dim"; info.textContent = m.error ? "unreadable" : `${m.seconds}s`;
   const play = document.createElement("button"); play.textContent = "Play";
-  play.onclick = () => post("/play", {name: m.name}).then(r => say(r.error || `replaying ${m.name}`, !!r.error));
+  play.onclick = () => post("/play", {name: m.name}).then(r => { say(r.error || `playing ${m.name}; your keys take over when it ends`, !!r.error); if (!r.error) $("video").focus(); });
   const del = document.createElement("button"); del.textContent = "Delete";
   del.onclick = () => confirm(`Delete ${m.name}?`) && post("/delete", {name: m.name}).then(r => say(r.error || `deleted ${m.name}`, !!r.error));
   li.append(name, info, play, del);
@@ -75,12 +74,11 @@ async function refresh() {
   try {
     const s = await (await fetch("/state")).json();
     const held = s.stopped && s.stopped.subject ? ` · STOPPED: ${s.stopped.subject}` : "";
-    $("run").textContent = (s.running ? `recording · ${s.polls} polls` : s.exit === null ? "no run" : `ended (exit ${s.exit}) · ${s.polls} polls`) + held;
+    const driving = s.movie && s.polls < s.movie_polls ? `playing ${s.movie} ${s.polls}/${s.movie_polls}` : "recording";
+    $("run").textContent = (s.running ? `${driving} · ${s.polls} polls` : s.exit === null ? "no run" : `ended (exit ${s.exit}) · ${s.polls} polls`) + held;
     $("run").className = held ? "bad" : "dim";
     $("tail").textContent = (s.tail || []).join("\n");
     $("movies").replaceChildren(...s.movies.map(row));
-    const r = s.replay || {};
-    $("replay").textContent = r.movie ? `last replay ${r.movie}: ${r.outcome}${r.subject ? " · " + r.subject : ""}${r.polls_reached !== undefined ? ` · ${r.polls_reached} polls` : ""}` : "";
   } catch (e) { $("run").textContent = "server unreachable"; }
 }
 let tab = "ai";
