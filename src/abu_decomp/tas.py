@@ -186,7 +186,8 @@ def save(
         if not live:
             raise DecompError("tas.save", f"no recording under {cfg['runs'] / 'live'}")
         source = live[-1]
-    polls = parse_raw(source.read_text())
+    text = source.read_text()
+    polls = parse_raw(text[: text.rfind("\n") + 1])  # a live recording may end in a half-written line
     if not polls:
         raise DecompError("tas.save", f"{source} holds no polls")
     header = {"rom-sha1": _sha1(cfg["rom"]), "recorded": _stamp(now), "polls": str(len(polls))}

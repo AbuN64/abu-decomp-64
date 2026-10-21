@@ -15,19 +15,41 @@ import re
 import signal
 import subprocess
 import threading
+import time
+from collections import deque
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, tas, tas_tabs
+from abu_decomp import DecompError, events, tas, tas_eyes, tas_tabs
 from abu_decomp.config import Profile
 
 KEYS = {"ArrowLeft": "Left", "ArrowRight": "Right", "ArrowUp": "Up", "ArrowDown": "Down", "Enter": "Return"}
 _LETTER = re.compile(r"[a-z]")
 _SERVE_KEYS = frozenset({"listen", "display", "fps", "ai_log"})
 _SINK = "tas"
+SAMPLE_SECONDS = 0.1  # the eyes keep a picture this often, stamped with the poll index
+SAMPLES_KEPT = 200
+PCM_SECONDS = 10
+# The port's keyboard bindings (platform/n64compat/n64c_input_config.c), by controller button.
+PAD_KEYS = {
+    "A": "x", "B": "c", "Z": "z", "START": "Return", "L": "a", "R": "s",
+    "CUP": "i", "CDOWN": "k", "CLEFT": "j", "CRIGHT": "l",
+    "UP": "Up", "DOWN": "Down", "LEFT": "Left", "RIGHT": "Right",
+}  # fmt: skip
+
+
+def pad_keys(spec: str) -> list[str]:
+    """X keysyms for a controller button name, a chord `UP+A`, or a bare keysym (`x`, `Return`)."""
+    names = []
+    for part in spec.split("+"):
+        name = PAD_KEYS.get(part.upper()) or (part if part in PAD_KEYS.values() else None)
+        if not name:
+            raise DecompError("tas.press", f"unknown button {part!r}: use {', '.join(PAD_KEYS)}")
+        names.append(name)
+    return names
 
 
 def keysym(key: str) -> str | None:
@@ -73,6 +95,35 @@ class Session:
         self.pulse = self.cfg["runs"] / "pulse"
         self.listeners: list[list[bytes]] = []
         self.audio_ready = threading.Condition()
+        self.counter = tas_eyes.PollCounter()
+        self.counter_lock = threading.Lock()
+        self.samples: deque[tas_eyes.Sample] = deque(maxlen=SAMPLES_KEPT)
+        self.pcm = bytearray()
+        self.pcm_lock = threading.Lock()
+
+    def polls(self) -> int:
+        """Controller polls the live run has made so far."""
+        with self.counter_lock:
+            return self.counter.update(self.recording)
+
+    def _sample(self) -> None:
+        while True:
+            time.sleep(SAMPLE_SECONDS)
+            poll = self.polls()
+            with self.frame_ready:
+                frame = self.frame
+            if not frame:
+                continue
+            if self.samples and poll < self.samples[-1][0]:
+                self.samples.clear()  # a new run restarted the count
+            self.samples.append((poll, frame))
+
+    def _read_pcm(self, stream) -> None:
+        keep = PCM_SECONDS * tas_eyes.RATE * tas_eyes.CHANNELS * 2
+        while chunk := stream.read1(16384):
+            with self.pcm_lock:
+                self.pcm += chunk
+                del self.pcm[:-keep]
 
     def start_display(self) -> None:
         width, height = self.size.split("x")
@@ -114,7 +165,13 @@ class Session:
     def start_audio(self) -> None:
         self.pulse.mkdir(parents=True, exist_ok=True)
         socket = self.pulse / "native"
-        env = {**os.environ, "PULSE_RUNTIME_PATH": str(self.pulse), "PULSE_STATE_PATH": str(self.pulse)}
+        # No D-Bus: a second page on the same user bus would lose the org.PulseAudio1 name to the first and exit.
+        env = {
+            **os.environ,
+            "PULSE_RUNTIME_PATH": str(self.pulse),
+            "PULSE_STATE_PATH": str(self.pulse),
+            "DBUS_SESSION_BUS_ADDRESS": "disabled:",
+        }
         self.helpers.append(
             subprocess.Popen(
                 [
@@ -162,6 +219,17 @@ class Session:
         )
         self.helpers.append(encode)
         threading.Thread(target=self._read_audio, args=(encode.stdout,), daemon=True).start()
+        raw = subprocess.Popen(
+            [
+                "ffmpeg", "-loglevel", "error", "-f", "pulse", "-server", f"unix:{socket}",
+                "-i", f"{_SINK}.monitor", "-ac", "2", "-ar", str(tas_eyes.RATE), "-f", "s16le", "pipe:1",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )  # fmt: skip
+        self.helpers.append(raw)
+        threading.Thread(target=self._read_pcm, args=(raw.stdout,), daemon=True).start()
+        threading.Thread(target=self._sample, daemon=True).start()
 
     def _read_audio(self, stream) -> None:
         while chunk := stream.read1(4096):
@@ -254,6 +322,49 @@ class Session:
         name = keysym(key)
         if name and self.port and self.port.poll() is None:
             subprocess.run(["xdotool", "keydown" if down else "keyup", name], env=self.env(), check=False)
+
+    def _wait_polls(self, target: int, what: str) -> int:
+        """Block until the run has made `target` polls (keyed to polls, not wall time); a run that stops polling
+        for 10 s is an error, not a wait."""
+        poll, seen = self.polls(), time.monotonic()
+        while poll < target:
+            time.sleep(0.005)
+            now = self.polls()
+            if now != poll:
+                poll, seen = now, time.monotonic()
+            elif time.monotonic() - seen > 10:
+                raise DecompError("tas.press", f"{what}: the run made no poll for 10 s (at poll {poll})")
+        return poll
+
+    def press(self, buttons: list[str], hold: int, then: int) -> dict[str, Any]:
+        """Press each button (or chord `UP+A`) in turn for `hold` polls, then wait `then` polls, so the
+        recording shows exactly that input at any host speed."""
+        if not (self.port and self.port.poll() is None):
+            raise DecompError("tas.press", "no run is live: start one with `tas new`")
+        steps = [(spec, pad_keys(spec)) for spec in buttons]
+        first, rows = self.polls(), []
+        for spec, keys in steps:
+            start = self.polls()
+            for key in keys:
+                subprocess.run(["xdotool", "keydown", key], env=self.env(), check=False)
+            try:
+                end = self._wait_polls(start + hold, spec)
+            finally:
+                for key in keys:
+                    subprocess.run(["xdotool", "keyup", key], env=self.env(), check=False)
+            rows.append({"button": spec, "from": start, "to": end})
+            self._wait_polls(end + then, spec)
+        return {"pressed": rows, "from_poll": first, "polls": self.polls()}
+
+    def look(self, frames: int, span: int, seconds: float) -> dict[str, Any]:
+        if not self.run_dir:
+            raise DecompError("tas.look", "no run: start one with `tas new`")
+        with self.pcm_lock:
+            pcm = bytes(self.pcm)
+        samples = list(self.samples)
+        return tas_eyes.look(
+            self.run_dir / "look", samples, pcm, frames=frames, span=span, seconds=seconds, poll=self.polls()
+        )
 
     def state(self) -> dict[str, Any]:
         running = bool(self.port and self.port.poll() is None)
@@ -386,6 +497,16 @@ def handler(session: Session) -> type[BaseHTTPRequestHandler]:
                     self.json({"lines": session.tab(name)})
                 except DecompError as error:
                     self.json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            elif path == "/look":
+                query = dict(part.partition("=")[::2] for part in self.path.partition("?")[2].split("&") if part)
+                try:
+                    self.json(
+                        session.look(
+                            int(query.get("frames", 12)), int(query.get("span", 180)), float(query.get("seconds", 5))
+                        )
+                    )
+                except (DecompError, ValueError) as error:
+                    self.json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             elif path == "/video":
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
@@ -436,6 +557,14 @@ def handler(session: Session) -> type[BaseHTTPRequestHandler]:
                     self.json(session.stop())
                 elif self.path == "/mark":
                     self.json(session.mark(str(body.get("note", ""))))
+                elif self.path == "/press":
+                    self.json(
+                        session.press(
+                            [str(b) for b in body.get("buttons", [])],
+                            int(body.get("hold", 6)),
+                            int(body.get("then", 12)),
+                        )
+                    )
                 elif self.path == "/key":
                     session.key(str(body.get("key", "")), bool(body.get("down")))
                     self.json({})

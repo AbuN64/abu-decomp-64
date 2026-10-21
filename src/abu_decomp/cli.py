@@ -354,6 +354,22 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     actions.add_parser("list", help="the saved movies and the newest recordings")
     watch = actions.add_parser("watch", help="print one JSON line per game event from the running page")
     watch.add_argument("--next", dest="once", action="store_true", help="block for the next event, print it, exit 0")
+    new = actions.add_parser("new", help="start a recorded run from reset on the page (optionally driven by a movie)")
+    new.add_argument("--movie", help="a saved movie drives the pad first; the run keeps recording after it ends")
+    press = actions.add_parser("press", help="press buttons in turn on the page, keyed to controller polls")
+    press.add_argument(
+        "keys", nargs="+", metavar="KEY", help="A B Z START L R CUP CDOWN CLEFT CRIGHT UP DOWN LEFT RIGHT"
+    )
+    press.add_argument("--hold-polls", type=int, default=6, help="polls each button is held (default 6)")
+    press.add_argument("--then-wait-polls", type=int, default=12, help="polls to wait after each (default 12)")
+    actions.add_parser("state", help="the page's state: running, polls, marks, stop, run folder")
+    mark = actions.add_parser("mark", help="mark this moment weird: saves frame, poll and a movie of the run so far")
+    mark.add_argument("note", nargs="+")
+    actions.add_parser("stop", help="end the live run")
+    look = actions.add_parser("look", help="write the frame, a contact sheet and an audio spectrogram as small PNGs")
+    look.add_argument("--frames", type=int, default=12, help="tiles on the contact sheet (default 12)")
+    look.add_argument("--span-polls", type=int, default=180, help="the sheet covers the last P polls (default 180)")
+    look.add_argument("--audio-seconds", type=float, default=5.0, help="seconds of audio for the spectrogram")
     actions.add_parser("serve", help="serve the page that plays the port live, records runs and manages movies")
     for verb, text in (
         ("show", "one movie's header and polls"),
@@ -373,6 +389,18 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         return tas.save(profile, args.name, source=args.source, note=args.note, replace=args.replace), 0, []
     if args.action == "list":
         return tas.listing(profile), 0, []
+    if args.action in ("new", "press", "state", "mark", "stop", "look"):
+        from abu_decomp import tas_drive
+
+        if args.action == "new":
+            return tas_drive.new(profile, args.movie), 0, []
+        if args.action == "press":
+            return tas_drive.press(profile, args.keys, args.hold_polls, args.then_wait_polls), 0, []
+        if args.action == "mark":
+            return tas_drive.mark(profile, " ".join(args.note)), 0, []
+        if args.action == "look":
+            return tas_drive.look(profile, args.frames, args.span_polls, args.audio_seconds), 0, []
+        return getattr(tas_drive, args.action)(profile), 0, []
     if args.action == "serve":
         from abu_decomp import tas_serve
 
