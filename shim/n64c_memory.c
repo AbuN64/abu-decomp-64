@@ -75,6 +75,22 @@ static int guest_virtual(uintptr_t address)
 {
     return ram_size && address>=0x10000u && address<(uintptr_t)__executable_start;
 }
+static int host_traced(void);
+/* Every named stop ends the same way: under a debugger through the stop function it breaks on, so the stop is
+ * held with its stacks; otherwise the line is written and the process exits 78. `line` is "boot-missing: S\n". */
+static _Noreturn void named_stop(const char *line,size_t length)
+{
+    if (n64c_boot_missing && host_traced()) {
+        char subject[64];
+        size_t start=sizeof "boot-missing: "-1,n=length-start-1;
+        if (n>=sizeof subject) n=sizeof subject-1;
+        memcpy(subject,line+start,n);
+        subject[n]=0;
+        n64c_boot_missing(subject); /* prints the line itself; the process ends there */
+    }
+    (void)write(STDERR_FILENO,line,length);
+    _Exit(78);
+}
 /* A guest access to a virtual page no TLB entry maps when nothing services it (off a guest thread, or no
  * OS_EVENT_FAULT queue): the boot stops here by name instead of crashing. */
 static _Noreturn void tlb_miss_stop(u32 address)
@@ -82,8 +98,7 @@ static _Noreturn void tlb_miss_stop(u32 address)
     char line[]="boot-missing: TLB-miss-00000000\n";
     static const char hex[]="0123456789abcdef";
     for (int i=0;i<8;i++) line[sizeof line-3-i]=hex[(address>>(4*i))&15u];
-    (void)write(STDERR_FILENO,line,sizeof line-1);
-    _Exit(78);
+    named_stop(line,sizeof line-1);
 }
 /* The CPU jumped to a guest address: a call through a code pointer the data holds as the original's raw value
  * (KSEG0 0x80xxxxxx or a KUSEG alias), which is no native function. Native code never runs from guest memory, so
@@ -93,8 +108,7 @@ static _Noreturn void code_pointer_stop(u32 address)
     char line[]="boot-missing: code-pointer-00000000\n";
     static const char hex[]="0123456789abcdef";
     for (int i=0;i<8;i++) line[sizeof line-3-i]=hex[(address>>(4*i))&15u];
-    (void)write(STDERR_FILENO,line,sizeof line-1);
-    _Exit(78);
+    named_stop(line,sizeof line-1);
 }
 static int guest_code_fetch(const ucontext_t *context,uintptr_t address)
 {
@@ -151,8 +165,7 @@ static _Noreturn void mmio_decode_stop(const ucontext_t *context)
         line[sizeof line-14+2*i]=hex[code[i]>>4];
         line[sizeof line-13+2*i]=hex[code[i]&15];
     }
-    (void)write(STDERR_FILENO,line,sizeof line-1);
-    _Exit(78);
+    named_stop(line,sizeof line-1);
 }
 /* The component call is done: a read lands in the register, and the saved context moves past the instruction. */
 static void mmio_finish(u32 value)
