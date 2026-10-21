@@ -61,6 +61,7 @@ class Session:
         self.port: subprocess.Popen | None = None
         self.recording: Path | None = None
         self.log: Path | None = None
+        self.run_dir: Path | None = None
         self.exit: int | None = None
         self.replay: dict[str, Any] = {}
         self.frame = b""
@@ -202,16 +203,25 @@ class Session:
             env = {**self.env(), "N64C_TAS_RECORD": str(self.recording)}
             for key in ("N64C_TAS_PLAY", "N64C_TAS_EXIT_AFTER"):
                 env.pop(key, None)
+            self.run_dir = live / stamp
+            # Under the gdb bridge a stop or host fault holds the picture on screen and writes its stacks; the
+            # bridge's stdin stays open so the process is held until the next run replaces it.
             with self.log.open("w") as log:
                 self.port = subprocess.Popen(
-                    tas._argv(self.cfg, user_dir), env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
+                    tas.supervised(self.cfg, self.run_dir, tas._argv(self.cfg, user_dir)),
+                    env=env,
+                    stdin=subprocess.PIPE,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
                 )
-            threading.Thread(target=self._focus, args=(self.port.pid,), daemon=True).start()
+            threading.Thread(target=self._focus, daemon=True).start()
             return {"recording": str(self.recording)}
 
-    def _focus(self, pid: int) -> None:
+    def _focus(self) -> None:
+        # The port is the only client of its display, so its window is the one window there.
         subprocess.run(
-            ["xdotool", "search", "--sync", "--pid", str(pid), "windowfocus"],
+            ["xdotool", "search", "--sync", "--onlyvisible", "--name", ".", "windowfocus"],
             env=self.env(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -238,8 +248,15 @@ class Session:
         if self.port and not running:
             self.exit = self.port.returncode
         polls = len(tas.parse_raw(self.recording.read_text())) if self.recording and self.recording.is_file() else 0
-        tail = self.log.read_text(errors="replace").splitlines()[-3:] if self.log and self.log.is_file() else []
+        text = self.log.read_text(errors="replace") if self.log and self.log.is_file() else ""
+        held = tas.classify(None if running else self.exit, text) if text else {}
+        stopped = held if held.get("outcome") in ("stop", "crash") else {}
+        tail = text.splitlines()[-3:]
         return {
+            "stopped": stopped,
+            "stacks": [str(p) for p in sorted(self.run_dir.glob("*.txt"))]
+            if self.run_dir and self.run_dir.is_dir()
+            else [],
             "running": running,
             "exit": self.exit,
             "polls": polls,

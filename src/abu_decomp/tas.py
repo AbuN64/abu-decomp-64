@@ -234,6 +234,25 @@ def _argv(cfg: dict[str, Any], user_dir: Path) -> list[str]:
     return [str(cfg["port"])] + [arg.replace("{user_dir}", str(user_dir)) for arg in cfg["args"]]
 
 
+def supervised(cfg: dict[str, Any], run_dir: Path, argv: list[str]) -> list[str]:
+    """The port under the supervisor's gdb bridge: a stop or host fault leaves its stacks in run_dir."""
+    return [
+        sys.executable,
+        "-m",
+        "abu_decomp.supervisor.gdb",
+        "--gdb",
+        cfg["gdb"],
+        "--breakpoint",
+        STOP_FUNCTION,
+        "--reason-expression",
+        STOP_SUBJECT,
+        "--run-dir",
+        str(run_dir),
+        "--",
+        *argv,
+    ]
+
+
 def record(profile: Profile, *, now: datetime | None = None, extra_env: dict[str, str] | None = None) -> dict[str, Any]:
     """Run the port with live input and log every poll; returns when the port exits."""
     cfg = settings(profile)
@@ -287,21 +306,7 @@ def play(profile: Profile, name: str, *, now: datetime | None = None) -> dict[st
         "N64C_TAS_RECORD": str(run / "polls.raw"),
         "N64C_TAS_EXIT_AFTER": str(cfg["exit_after"]),
     }
-    argv = [
-        sys.executable,
-        "-m",
-        "abu_decomp.supervisor.gdb",
-        "--gdb",
-        cfg["gdb"],
-        "--breakpoint",
-        STOP_FUNCTION,
-        "--reason-expression",
-        STOP_SUBJECT,
-        "--run-dir",
-        str(run),
-        "--",
-        *_argv(cfg, user_dir),
-    ]
+    argv = supervised(cfg, run, _argv(cfg, user_dir))
     with (run / "output.txt").open("w") as output:
         process = subprocess.Popen(
             argv, env=env, stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT, start_new_session=True

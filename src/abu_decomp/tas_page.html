@@ -69,7 +69,9 @@ function row(m) {
 async function refresh() {
   try {
     const s = await (await fetch("/state")).json();
-    $("run").textContent = s.running ? `recording · ${s.polls} polls` : s.exit === null ? "no run" : `ended (exit ${s.exit}) · ${s.polls} polls`;
+    const held = s.stopped && s.stopped.subject ? ` · STOPPED: ${s.stopped.subject}` : "";
+    $("run").textContent = (s.running ? `recording · ${s.polls} polls` : s.exit === null ? "no run" : `ended (exit ${s.exit}) · ${s.polls} polls`) + held;
+    $("run").className = held ? "bad" : "dim";
     $("tail").textContent = (s.tail || []).join("\n");
     $("movies").replaceChildren(...s.movies.map(row));
     const r = s.replay || {};
