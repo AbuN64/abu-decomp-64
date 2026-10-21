@@ -185,9 +185,14 @@ def prepare_unit(unit, source, work, adapter=HERE, build=None, deps=None, exact=
         ready = pathlib.Path(build) / "decomp" / (unit + ".i")
         inv = pathlib.Path(build) / "decomp" / (unit + ".json")
         if ready.exists() and inv.exists():
-            if deps is not None:
-                deps += [str(ready), str(inv)]
-            return ready, json.loads(inv.read_text()).get("mode", "NON_MATCHING")
+            try:
+                mode = json.loads(inv.read_text()).get("mode", "NON_MATCHING")
+            except ValueError:  # an interrupted prepare left an empty manifest: prepare the unit here
+                mode = None
+            if mode is not None:
+                if deps is not None:
+                    deps += [str(ready), str(inv)]
+                return ready, mode
     out = pathlib.Path(work) / "i" / (unit + ".i")
     stubs, inv, dep = (out.with_name(out.name + s) for s in (".stubs.c", ".json", ".d"))
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -920,8 +925,10 @@ def decision(evidence, shim_text, unprobed):
             "recommend": "flag" if differ and not residual and not shared else "per-struct"}
 
 
-def lto_rows(scans, work, pin, jobs, cache=None):
-    """-flto -Wlto-type-mismatch over every prepared unit: conflicting declarations of one symbol across units."""
+def lto_rows(scans, work, pin, jobs, cache=None, ctx=None):
+    """-flto -Wlto-type-mismatch over every prepared unit: conflicting declarations of one symbol across units.
+    A cached scan or a --build hit can leave a unit's `.i` off this sweep's disk; prepare it here, and say so when
+    a unit still does not reach the link, so a shorter object list never reads as fewer mismatch sites."""
     outdir = pathlib.Path(work) / "lto"
     outdir.mkdir(parents=True, exist_ok=True)
     todo = [(u, str(pathlib.Path(work) / "i" / (u + ".i")), str(outdir / (u.replace("/", "_") + ".o")))
@@ -929,6 +936,8 @@ def lto_rows(scans, work, pin, jobs, cache=None):
 
     def compile_one(item):
         unit, ipath, obj = item
+        if not os.path.exists(ipath) and ctx:
+            prepare_unit(unit, ctx["source"], work, ctx["adapter"], None, None, exact=False)
         sha = file_state(ipath)[2:]
         stampf = pathlib.Path(obj + ".sha")
         if cache and os.path.exists(obj) and stampf.exists() and stampf.read_text() == json.dumps(sha):
@@ -942,6 +951,9 @@ def lto_rows(scans, work, pin, jobs, cache=None):
         objs = [o for o in tp.map(compile_one, todo) if o]
     listing = outdir / "objects.txt"
     listing.write_text("\n".join(objs) + "\n")
+    if len(objs) < len(todo):
+        print("lto: %d of %d units reached the link (%d dropped by prepare/compile)" % (
+            len(objs), len(todo), len(todo) - len(objs)), file=sys.stderr, flush=True)
     memo = pathlib.Path(cache) / "lto.json" if cache else None
     link_key = hashlib.sha1(json.dumps([[o, file_state(o + ".sha")[2:]] for o in objs]).encode()).hexdigest()
     if memo and memo.exists():
@@ -1018,7 +1030,7 @@ def sweep(args):
         pathlib.Path(args.ubsan_units).write_text("".join(u + "\n" for u in listed))
         print("ubsan units: %d of %d define a boot-trace function" % (len(listed), len(scans)), file=sys.stderr)
     if args.lto:
-        lrows, code, err = lto_rows(scans, work, pin, args.jobs, ctx["cache"])
+        lrows, code, err = lto_rows(scans, work, pin, args.jobs, ctx["cache"], ctx)
         for symbol, file, line, message in lrows:
             f = relative(file, source)
             rows.append(row("gate-lto-type", symbol, f, "%s:%d" % (f, line), pin, f in boot, message))
