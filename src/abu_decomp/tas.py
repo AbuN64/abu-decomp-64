@@ -55,7 +55,7 @@ _RAW = re.compile(r"([0-9a-fA-F]{1,4}) (-?\d{1,3}) (-?\d{1,3})")
 _KEYS = frozenset({"movies", "runs", "port", "args", "rom", "env", "exit_after", "timeout_seconds", "gdb"})
 _REQUIRED = frozenset({"movies", "runs", "port", "args", "rom"})
 STOP_FUNCTION = "n64c_boot_stopped"
-STOP_SUBJECT = "n64c_boot_stop_symbol"
+STOP_SUBJECT = "*(char**)&n64c_boot_stop_symbol"
 
 Poll = tuple[int, int, int]
 
@@ -252,7 +252,8 @@ def record(profile: Profile, *, now: datetime | None = None, extra_env: dict[str
 
 
 def classify(code: int | None, output: str) -> dict[str, Any]:
-    reason = re.search(r"^debug-reason: (.+)$", output, re.M)
+    # The bridge names the subject when it held the stop; stops that end the process directly only print it.
+    reason = re.search(r"^debug-reason: (.+)$", output, re.M) or re.search(r"^boot-missing: (\S+)$", output, re.M)
     signal_name = re.search(r"^debug-signal: (\S+)$", output, re.M)
     if code is None:
         return {"outcome": "hang"}
@@ -303,8 +304,10 @@ def play(profile: Profile, name: str, *, now: datetime | None = None) -> dict[st
     ]
     with (run / "output.txt").open("w") as output:
         process = subprocess.Popen(
-            argv, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, start_new_session=True
+            argv, env=env, stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT, start_new_session=True
         )
+        # The bridge holds a stopped port until its stdin says "continue"; a closed pipe ends it after the stacks.
+        process.stdin.close()
         try:
             code: int | None = process.wait(cfg["timeout_seconds"])
         except subprocess.TimeoutExpired:

@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import subprocess
 import tempfile
@@ -49,6 +50,10 @@ class CodecTests(unittest.TestCase):
             tas.classify(125, "debug-reason: func_80001234\n"), {"outcome": "stop", "subject": "func_80001234"}
         )
         self.assertEqual(tas.classify(139, "debug-signal: SIGSEGV\n"), {"outcome": "crash", "subject": "SIGSEGV"})
+        self.assertEqual(
+            tas.classify(78, "x\nboot-missing: code-pointer-8011fe88\n"),
+            {"outcome": "stop", "subject": "code-pointer-8011fe88"},
+        )
         self.assertEqual(tas.classify(None, ""), {"outcome": "hang"})
         self.assertEqual(tas.classify(1, "boom"), {"outcome": "exit", "subject": "exit 1"})
 
@@ -126,6 +131,7 @@ class MovieTests(unittest.TestCase):
                 stdout.write("debug-reason: host-fault-00002b88\n")
                 stdout.flush()
                 self.pid = 1
+                self.stdin = io.StringIO()
 
             def wait(self, timeout=None):
                 return 125
@@ -148,6 +154,7 @@ class MovieTests(unittest.TestCase):
 
         class Port:
             pid = 4242
+            stdin = io.StringIO()
 
             def __init__(self, *args, **kwargs):
                 self.calls = 0
