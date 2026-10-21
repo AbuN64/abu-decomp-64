@@ -343,6 +343,40 @@ def _run_probe(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
     return probe.status(profile, args.id), 0, []
 
 
+def _tas_arguments(parser: argparse.ArgumentParser) -> None:
+    actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
+    actions.add_parser("record", help="run the port with live input and log every controller poll")
+    save = actions.add_parser("save", help="save a recording (default: the newest) as a named movie")
+    save.add_argument("name", help="lower-case words joined by '-', saying what the movie does")
+    save.add_argument("--from", dest="source", type=Path, help="raw recording to save")
+    save.add_argument("--note", default="", help="one line: what the movie shows")
+    save.add_argument("--replace", action="store_true", help="overwrite a movie of the same name")
+    actions.add_parser("list", help="the saved movies and the newest recordings")
+    for verb, text in (
+        ("show", "one movie's header and polls"),
+        ("delete", "remove one movie"),
+        ("play", "replay one movie against the port and report its outcome"),
+    ):
+        actions.add_parser(verb, help=text).add_argument("name")
+
+
+def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import tas
+
+    profile = _profile(args.profile)
+    if args.action == "record":
+        return tas.record(profile), 0, []
+    if args.action == "save":
+        return tas.save(profile, args.name, source=args.source, note=args.note, replace=args.replace), 0, []
+    if args.action == "list":
+        return tas.listing(profile), 0, []
+    if args.action == "show":
+        return tas.show(profile, args.name), 0, []
+    if args.action == "delete":
+        return tas.delete(profile, args.name), 0, []
+    return tas.play(profile, args.name), 0, []
+
+
 def _run_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp.cycle import serve
 
@@ -568,6 +602,7 @@ COMMANDS: dict[str, Command] = {
         _behave_arguments,
         _run_behave,
     ),
+    "tas": Command("record, save, list and replay controller movies against the port", _tas_arguments, _run_tas),
     "describe": Command("list every command and its arguments as JSON", _none, _run_describe),
     "mcp": Command("serve the commands as MCP tools over stdio", _none, _served_elsewhere),
 }

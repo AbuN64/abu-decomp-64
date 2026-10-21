@@ -28,6 +28,7 @@ SECTIONS = frozenset(
         "probe",
         "land",
         "behave",
+        "tas",
     }
 )
 _REQUIRED = frozenset({"schema_version", "name"})
