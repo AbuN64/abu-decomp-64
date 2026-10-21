@@ -2,8 +2,9 @@
 
 Section `tas.serve`: {"listen": "HOST:PORT", "display": ":N", "fps": N}. The port runs in its own Xvfb display at the
 size its `--window` argument names; ffmpeg grabs that display as MJPEG for the page, and the page's key presses go to
-the port window through xdotool, so the port reads them through its normal keyboard bindings. Every run the page starts
-is a recording from reset (`N64C_TAS_RECORD`), so Save always stores a replayable movie of the current run.
+the port window through xdotool, so the port reads them through its normal keyboard bindings. Sound goes to a private
+PulseAudio null sink (socket under `runs/pulse`) whose monitor ffmpeg encodes as an MP3 stream for the page. Every
+run the page starts is a recording from reset (`N64C_TAS_RECORD`), so Save always stores a replayable movie of it.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from abu_decomp.config import Profile
 KEYS = {"ArrowLeft": "Left", "ArrowRight": "Right", "ArrowUp": "Up", "ArrowDown": "Down", "Enter": "Return"}
 _LETTER = re.compile(r"[a-z]")
 _SERVE_KEYS = frozenset({"listen", "display", "fps"})
+_SINK = "tas"
 
 
 def keysym(key: str) -> str | None:
@@ -53,7 +55,7 @@ class Session:
             raise DecompError("tas.serve", f"unknown tas.serve keys: {', '.join(sorted(extra))}")
         self.listen = str(serve.get("listen", "127.0.0.1:8097"))
         self.display = str(serve.get("display", ":97"))
-        self.fps = int(serve.get("fps", 15))
+        self.fps = int(serve.get("fps", 30))
         self.size = window_size(self.cfg["args"])
         self.lock = threading.Lock()
         self.port: subprocess.Popen | None = None
@@ -64,6 +66,9 @@ class Session:
         self.frame = b""
         self.frame_ready = threading.Condition()
         self.helpers: list[subprocess.Popen] = []
+        self.pulse = self.cfg["runs"] / "pulse"
+        self.listeners: list[list[bytes]] = []
+        self.audio_ready = threading.Condition()
 
     def start_display(self) -> None:
         width, height = self.size.split("x")
@@ -92,7 +97,7 @@ class Session:
                 "-f",
                 "mjpeg",
                 "-q:v",
-                "6",
+                "3",
                 "pipe:1",
             ],
             stdout=subprocess.PIPE,
@@ -100,6 +105,67 @@ class Session:
         )
         self.helpers.append(grab)
         threading.Thread(target=self._read_frames, args=(grab.stdout,), daemon=True).start()
+        self.start_audio()
+
+    def start_audio(self) -> None:
+        self.pulse.mkdir(parents=True, exist_ok=True)
+        socket = self.pulse / "native"
+        env = {**os.environ, "PULSE_RUNTIME_PATH": str(self.pulse), "PULSE_STATE_PATH": str(self.pulse)}
+        self.helpers.append(
+            subprocess.Popen(
+                [
+                    "pulseaudio",
+                    "-n",
+                    "--daemonize=no",
+                    "--exit-idle-time=-1",
+                    "--use-pid-file=no",
+                    "-L",
+                    f"module-native-protocol-unix socket={socket} auth-anonymous=1",
+                    "-L",
+                    f"module-null-sink sink_name={_SINK} rate=48000",
+                    "-L",
+                    "module-always-sink",
+                ],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        )
+        subprocess.run(
+            ["pactl", "--server", f"unix:{socket}", "info"], env=env, capture_output=True, timeout=10, check=False
+        )
+        encode = subprocess.Popen(
+            [
+                "ffmpeg",
+                "-loglevel",
+                "error",
+                "-f",
+                "pulse",
+                "-server",
+                f"unix:{socket}",
+                "-i",
+                f"{_SINK}.monitor",
+                "-ac",
+                "2",
+                "-b:a",
+                "128k",
+                "-f",
+                "mp3",
+                "pipe:1",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        self.helpers.append(encode)
+        threading.Thread(target=self._read_audio, args=(encode.stdout,), daemon=True).start()
+
+    def _read_audio(self, stream) -> None:
+        while chunk := stream.read1(4096):
+            with self.audio_ready:
+                for queue in self.listeners:
+                    queue.append(chunk)
+                    del queue[:-64]  # a stalled listener drops old audio instead of growing
+                self.audio_ready.notify_all()
 
     def _read_frames(self, stream) -> None:
         buffer = b""
@@ -114,7 +180,15 @@ class Session:
                 buffer = buffer[end + 2 :]
 
     def env(self) -> dict[str, str]:
-        return {**os.environ, **self.cfg["env"], "DISPLAY": self.display, "SDL_VIDEODRIVER": "x11"}
+        return {
+            **os.environ,
+            **self.cfg["env"],
+            "DISPLAY": self.display,
+            "SDL_VIDEODRIVER": "x11",
+            "SDL_AUDIODRIVER": "pulse",
+            "PULSE_SERVER": f"unix:{self.pulse / 'native'}",
+            "PULSE_SINK": _SINK,
+        }
 
     def new_run(self) -> dict[str, Any]:
         with self.lock:
@@ -217,11 +291,12 @@ def handler(session: Session) -> type[BaseHTTPRequestHandler]:
             self.reply(json.dumps(value).encode(), "application/json", status)
 
         def do_GET(self) -> None:
-            if self.path == "/":
+            path = self.path.split("?", 1)[0]
+            if path == "/":
                 self.reply(PAGE().encode(), "text/html; charset=utf-8")
-            elif self.path == "/state":
+            elif path == "/state":
                 self.json(session.state())
-            elif self.path == "/video":
+            elif path == "/video":
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                 self.end_headers()
@@ -239,6 +314,25 @@ def handler(session: Session) -> type[BaseHTTPRequestHandler]:
                         )
                 except (BrokenPipeError, ConnectionResetError):
                     return
+            elif path == "/audio":
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                queue: list[bytes] = []
+                with session.audio_ready:
+                    session.listeners.append(queue)
+                try:
+                    while True:
+                        with session.audio_ready:
+                            session.audio_ready.wait(5)
+                            chunks, queue[:] = list(queue), []
+                        self.wfile.write(b"".join(chunks))
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                finally:
+                    with session.audio_ready:
+                        session.listeners.remove(queue)
             else:
                 self.json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 

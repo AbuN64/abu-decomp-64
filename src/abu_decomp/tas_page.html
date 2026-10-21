@@ -27,7 +27,8 @@
 <body>
 <div id="game">
   <img id="video" src="/video" tabindex="0" alt="port">
-  <p class="dim">Click the picture, then play: arrows stick · X A · C B · Z Z · Enter Start · A/S L/R · I J K L C buttons</p>
+  <audio id="audio" preload="none"></audio>
+  <p class="dim">Click the picture (starts sound), then play: arrows stick · X A · C B · Z Z · Enter Start · A/S L/R · I J K L C buttons</p>
 </div>
 <aside>
   <div class="row"><button class="main" id="new">New recording</button><span id="run" class="dim"></span></div>
@@ -43,6 +44,9 @@ const $ = id => document.getElementById(id);
 const post = (path, body) => fetch(path, {method: "POST", body: JSON.stringify(body || {})}).then(r => r.json());
 const say = (text, bad) => { $("msg").textContent = text; $("msg").className = bad ? "bad" : "dim"; };
 const held = new Set();
+function sound() { const a = $("audio"); if (a.paused) { a.src = "/audio?" + Date.now(); a.play().catch(() => {}); } }
+$("video").addEventListener("click", sound);
+$("video").addEventListener("focus", sound);
 $("video").addEventListener("keydown", e => { e.preventDefault(); if (!held.has(e.key)) { held.add(e.key); post("/key", {key: e.key, down: true}); } });
 $("video").addEventListener("keyup", e => { e.preventDefault(); held.delete(e.key); post("/key", {key: e.key, down: false}); });
 $("video").addEventListener("blur", () => { held.forEach(k => post("/key", {key: k, down: false})); held.clear(); });
