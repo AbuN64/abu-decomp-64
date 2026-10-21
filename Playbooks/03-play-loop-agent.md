@@ -22,7 +22,9 @@ person may also just tell you what they saw. Every event is one cycle:
    original's asm. Write down the chain from what the person saw to the line that causes it.
 3. **Fix at the owning boundary.** Wrong game C: fix the decomp source so it reads like the original
    developers' code, keeping every ROM byte-identical (`decomp make ... check`). Wrong hardware model: fix the
-   port's layer, with a unit test. Never hide a game-code difference in the port.
+   port's layer, with a unit test. Never hide a game-code difference in the port. When the port had to be
+   changed for something that lives in the game, backport it to the decomp in this same cycle: the cycle
+   is not done until both repos carry the fix.
 4. **Make it a class.** Name the defect's class, find every other site across the whole ROM with a detector,
    fix the cheap ones, and make the detector a gate that refuses new sites.
 5. **Prove and land.** Rebuild the port, replay the movie past the old stop, replay the other movies (they

@@ -62,6 +62,13 @@ When they do not, find the sources before anything else:
    watchpoint, and let it name the writer. Then compare the writer's stores with the original asm.
 4. Lockstep (port vs oracle on the same movie) when the oracle runs: the first function whose writes differ.
 
+## Port fixes are backported at once
+
+When a cycle fixes the port for something that lives in the game (its code, its data, a raw address the
+data holds, a layout), the same cycle fixes the decomp too: the decomp source must say what the original
+said, so a fresh port built from it needs no workaround. The cycle closes only when both land. A port fix
+that models hardware (a device, a clock, memory behaviour) needs no backport; say so in the commit.
+
 ## Every fix is a class
 
 A defect found once exists elsewhere. Before closing a loop, name its class, write the detector that finds
