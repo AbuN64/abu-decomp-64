@@ -2,8 +2,8 @@
 /* Controller movies keyed to the guest's own poll count, so a replay is the same
  * run at any host speed. N64C_TAS_PLAY names a raw movie that replaces channel 0
  * (one "BUTTONS STICK_X STICK_Y" line per poll, hex buttons, decimal stick);
- * after its last line the pad is neutral, and N64C_TAS_EXIT_AFTER polls later
- * the process exits 0. N64C_TAS_RECORD appends every poll's channel 0 in the
+ * after its last line the live input source takes over (neutral when there is
+ * none), and N64C_TAS_EXIT_AFTER polls later the process exits 0. N64C_TAS_RECORD appends every poll's channel 0 in the
  * same format, flushed per line, so a crash leaves the polls it reached.
  * N64C_TAS_SHOT_EVERY and N64C_TAS_SHOT_DIR ask the frame loop for a
  * picture every N polls, to compare with the oracle's at the same poll. */
@@ -72,7 +72,6 @@ void n64c_tas_poll(OSContPad *pad)
             fprintf(stderr, "n64c-tas: movie ended at poll %ld\n", played);
         }
         if (play_done) {
-            *pad = (OSContPad){0};
             if (exit_after >= 0 && polls - played >= exit_after) {
                 fprintf(stderr, "n64c-tas: done polls=%ld\n", polls);
                 fflush(stderr);

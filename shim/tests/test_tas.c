@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Movie replay overrides the live pad per guest poll, records what the game read,
- * and exits cleanly a fixed number of polls after the movie ends. */
+ * hands the pad back to the live source after the movie, and exits cleanly a fixed
+ * number of polls after the movie ends. */
 #include "../n64c_cont.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,7 +37,7 @@ int main(void)
             osContStartReadData(NULL);
             osContGetReadData(pads);
             if (i == 1 && !(pads[0].button == 0x1000 && pads[0].stick_x == -80 && pads[0].stick_y == 80)) _Exit(4);
-            if (i == 3 && pads[0].button != 0) _Exit(5); /* neutral after the movie, not the live pad */
+            if (i == 3 && pads[0].button != 0x0020) _Exit(5); /* the live pad takes over after the movie */
         }
         _Exit(3); /* EXIT_AFTER never fired */
     }
@@ -47,7 +48,7 @@ int main(void)
     f = fopen(log, "r");
     CHECK(f != NULL);
     if (f) { CHECK(fread(got, 1, sizeof got - 1, f) > 0); fclose(f); }
-    CHECK(strcmp(got, "8000 0 0\n1000 -80 80\n0400 5 -5\n0000 0 0\n0000 0 0\n") == 0);
+    CHECK(strcmp(got, "8000 0 0\n1000 -80 80\n0400 5 -5\n0020 0 0\n0020 0 0\n") == 0);
     remove(movie);
     remove(log);
     if (!fails) puts("n64c_tas ok");
