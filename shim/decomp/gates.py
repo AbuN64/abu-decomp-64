@@ -13,7 +13,8 @@ over all prepared units at once (boot units flagged), and writes one needs.jsonl
   gate-uninit         -Wuninitialized / -Wmaybe-uninitialized: a local read before any write
   gate-knr-args       a call through a prototype-less `()` declaration with fewer arguments than the definition
                       (on MIPS a0-a3 still hold the caller's values, natively the slots are garbage)
-  gate-lto-type       conflicting extern declarations across units (-flto -Wlto-type-mismatch over the boot link)
+  gate-lto-type       conflicting extern declarations across units (-flto -Wlto-type-mismatch over every unit: a
+                      caller off the boot path still runs once the game is played)
   gate-u64-param      a long long / u64 parameter in non-SDK code (o32 passes it in an aligned register pair, i386
                       on the stack; a `()` declaration or hand-split halves breaks)
   gate-subword        a data symbol the C reads as a 1/2-byte view inside a 4-byte scalar another symbol names
@@ -919,12 +920,12 @@ def decision(evidence, shim_text, unprobed):
             "recommend": "flag" if differ and not residual and not shared else "per-struct"}
 
 
-def lto_rows(boot_scans, work, pin, jobs, cache=None):
-    """-flto -Wlto-type-mismatch over the boot link: conflicting declarations of one symbol across units."""
+def lto_rows(scans, work, pin, jobs, cache=None):
+    """-flto -Wlto-type-mismatch over every prepared unit: conflicting declarations of one symbol across units."""
     outdir = pathlib.Path(work) / "lto"
     outdir.mkdir(parents=True, exist_ok=True)
     todo = [(u, str(pathlib.Path(work) / "i" / (u + ".i")), str(outdir / (u.replace("/", "_") + ".o")))
-            for u, s in sorted(boot_scans.items()) if not s["prepare_error"]]
+            for u, s in sorted(scans.items()) if not s["prepare_error"]]
 
     def compile_one(item):
         unit, ipath, obj = item
@@ -1017,7 +1018,7 @@ def sweep(args):
         pathlib.Path(args.ubsan_units).write_text("".join(u + "\n" for u in listed))
         print("ubsan units: %d of %d define a boot-trace function" % (len(listed), len(scans)), file=sys.stderr)
     if args.lto:
-        lrows, code, err = lto_rows({u: r for u, r in scans.items() if r["boot"]}, work, pin, args.jobs, ctx["cache"])
+        lrows, code, err = lto_rows(scans, work, pin, args.jobs, ctx["cache"])
         for symbol, file, line, message in lrows:
             f = relative(file, source)
             rows.append(row("gate-lto-type", symbol, f, "%s:%d" % (f, line), pin, f in boot, message))
@@ -1049,7 +1050,7 @@ def main(argv=None):
     ap.add_argument("--mips-gcc", default=shutil.which("mips-linux-gnu-gcc") or "mips-linux-gnu-gcc")
     ap.add_argument("--units", help="a file of src/... paths to sweep instead of every unit")
     ap.add_argument("--no-layout", action="store_true", help="skip the struct layout parity stage")
-    ap.add_argument("--lto", action="store_true", help="add the -flto -Wlto-type-mismatch stage over the boot link")
+    ap.add_argument("--lto", action="store_true", help="add the -flto -Wlto-type-mismatch stage over every unit")
     ap.add_argument("--ubsan-units", help="write the units that define a boot-trace function here (RAGE_DECOMP_UBSAN_UNITS)")
     ap.add_argument("--fresh", action="store_true", help="ignore and drop the cache (OUT/cache, OUT/work/i): a cold sweep")
     ap.add_argument("--keep-work", action="store_true", help="keep the prepared units under OUT/work")
