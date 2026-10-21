@@ -41,6 +41,36 @@ This loop turns each one into named, behaving C in the decomp.
    passes becomes a regression test: it stays in the TAS folder and runs after
    every port build.
 
+## Determinism comes first
+
+A movie is only evidence if replaying it plays the same game. Prove it before trusting any replay:
+replay one movie twice and compare the per-poll shots (`N64C_TAS_SHOT_EVERY`); they must match byte for byte.
+When they do not, find the sources before anything else:
+- the game's random-number seed: find its generator (a linear congruential step on a global word) and the
+  function that writes the seed; a constant seed is fine, a seed from a clock or counter is not;
+- every clock the game reads (Count, osGetTime, VI count): in the port these must be the virtual clock,
+  never wall time;
+- thread order: the port's scheduler must run one guest thread at a time in a fixed order.
+
+## Finding the cause, in order of cost
+
+1. The stop names its subject and the run folder holds stacks; every stop path (host fault, code pointer,
+   TLB miss, MMIO) must leave them, or that is the first defect to fix.
+2. `decomp behave` on the top suspects. A verdict counts only with its counts: `same` over mostly
+   untestable cases is no evidence.
+3. A wrong value: replay under gdb, record the address at the point it was right, set a hardware
+   watchpoint, and let it name the writer. Then compare the writer's stores with the original asm.
+4. Lockstep (port vs oracle on the same movie) when the oracle runs: the first function whose writes differ.
+
+## Every fix is a class
+
+A defect found once exists elsewhere. Before closing a loop, name its class, write the detector that finds
+every site across the whole ROM, and make it a gate that refuses new sites (a baseline that only goes down).
+Cycle 1 produced three: struct fields whose names state an offset the layout does not give
+(`unbake audit` `source.offset-name`), declarations that disagree with definitions (`gates.py --lto` over
+every unit), and code words held as raw numbers in data (`addrscan`/`image`, including blobs and entries
+inside a function's prologue).
+
 ## Rules
 
 - A movie is input only. It names the port build and ROM digest it was
