@@ -187,13 +187,15 @@ def behave_event(profile: Profile, **fields: Any) -> None:
     """The stable schema `decomp behave` emits into: function, verdict (same|differs|error), checks, differences,
     inputs, expected, actual, evidence (path), lane. Anything else is kept as given."""
     verdict = fields.get("verdict")
-    if verdict not in ("same", "differs", "error") or not fields.get("function"):
-        raise DecompError("narrate.behave", "a behave event needs function and verdict same|differs|error")
+    if verdict not in ("same", "differs", "untestable", "error") or not fields.get("function"):
+        raise DecompError("narrate.behave", "a behave event needs function and verdict same|differs|untestable|error")
     lane = str(fields.setdefault("lane", lane_of(None)))
     name = fields["function"]
+    compared, total = fields.get("checks", 0), fields.get("total", "?")
     message = {
         "same": f"Checked {name} against the original: same behaviour",
         "differs": f"Checked {name} against the original: behaviour differs",
+        "untestable": f"Checked {name} against the original: untestable ({compared} of {total} cases compared)",
         "error": f"Checking {name} against the original failed",
     }[verdict]
     append(profile, lane, "passed" if verdict == "same" else "failed", message, "PROBE", {"op": "behave", **fields})

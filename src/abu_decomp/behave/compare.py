@@ -258,9 +258,15 @@ def reason_key(reason: str | None) -> str:
     return f"{head} {detail.split()[0]}" if detail.split() and head.endswith("fatal") else head
 
 
-def overall(cases: list[dict[str, Any]], inputs: list[dict[str, str]]) -> dict[str, Any]:
-    """The verdict over every case: differs when any does (first one named with its inputs), untestable when none
-    could be compared, else same."""
+MIN_COMPARED = 8  # default `behave.min_compared`: a quarter of the default 48 cases, enough for a baseline + sweeps
+
+
+def overall(
+    cases: list[dict[str, Any]], inputs: list[dict[str, str]], min_compared: int = MIN_COMPARED
+) -> dict[str, Any]:
+    """The verdict over every case: differs when any does (first one named with its inputs); same only when at least
+    `min_compared` cases (capped at the number of cases) actually compared and none differ; else untestable, with
+    "only N of M cases compared" and the top untestable reasons. A verdict over no evidence is never `same`."""
     counts = {SAME: 0, DIFFERS: 0, UNTESTABLE: 0}
     for case in cases:
         counts[case["verdict"]] += 1
@@ -272,15 +278,19 @@ def overall(cases: list[dict[str, Any]], inputs: list[dict[str, str]]) -> dict[s
     if first:
         given = " ".join(f"{k}={v}" for k, v in first[1].items())
         verdict, reason = DIFFERS, f"{first[0]['name']} ({given}): {first[0]['reason']}"
-    elif counts[SAME] == 0:
-        top = max(reasons, key=reasons.get) if reasons else "no cases"
-        verdict, reason = UNTESTABLE, f"no case ran to a comparison; most common: {top}"
+    elif counts[SAME] < max(1, min(min_compared, len(cases))):
+        top = ", ".join(f"{k} x{n}" for k, n in sorted(reasons.items(), key=lambda kv: -kv[1])[:3]) or "no cases"
+        verdict = UNTESTABLE
+        reason = f"only {counts[SAME]} of {len(cases)} cases compared; most common: {top}"
     else:
         verdict, reason = SAME, None
     return {
         "verdict": verdict,
         "reason": reason,
         "counts": counts,
+        "compared": counts[SAME] + counts[DIFFERS],
+        "total": len(cases),
+        "min_compared": min_compared,
         "untestable_reasons": reasons,
         **({"bounded": bounded} if (bounded := sum("ran" in c for c in cases)) else {}),
         "first_difference": (

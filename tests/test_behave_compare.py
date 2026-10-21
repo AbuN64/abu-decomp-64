@@ -185,7 +185,7 @@ class OverallTests(unittest.TestCase):
 
     def test_classes(self):
         labels = [{"a": str(i)} for i in range(3)]
-        same = c.overall(self.rows(c.SAME, c.UNTESTABLE, c.SAME), labels)
+        same = c.overall(self.rows(c.SAME, c.UNTESTABLE, c.SAME), labels, min_compared=2)
         self.assertEqual((same["verdict"], same["counts"]), (c.SAME, {"same": 2, "differs": 0, "untestable": 1}))
         differs = c.overall(self.rows(c.SAME, c.DIFFERS, c.DIFFERS), labels)
         self.assertEqual((differs["verdict"], differs["first_difference"]["case"]), (c.DIFFERS, "c1"))
@@ -193,6 +193,25 @@ class OverallTests(unittest.TestCase):
         none = c.overall(self.rows(c.UNTESTABLE, c.UNTESTABLE, c.UNTESTABLE), labels)
         self.assertEqual(none["verdict"], c.UNTESTABLE)
         self.assertEqual(none["untestable_reasons"], {"original unmapped": 3})
+
+
+class EvidenceTests(unittest.TestCase):
+    def rows(self, *verdicts):
+        return OverallTests.rows(self, *verdicts)
+
+    def test_same_needs_the_minimum_compared(self):
+        v = [c.SAME] * 2 + [c.UNTESTABLE] * 6
+        got = c.overall(self.rows(*v), [{}] * 8)
+        self.assertEqual(got["verdict"], c.UNTESTABLE)
+        self.assertIn("only 2 of 8 cases compared", got["reason"])
+        self.assertEqual((got["compared"], got["total"]), (2, 8))
+        self.assertEqual(c.overall(self.rows(*v), [{}] * 8, min_compared=2)["verdict"], c.SAME)
+
+    def test_minimum_is_capped_at_the_case_count(self):
+        self.assertEqual(c.overall(self.rows(c.SAME, c.SAME), [{}] * 2)["verdict"], c.SAME)
+
+    def test_a_difference_outranks_thin_evidence(self):
+        self.assertEqual(c.overall(self.rows(c.DIFFERS, c.UNTESTABLE), [{}] * 2)["verdict"], c.DIFFERS)
 
 
 class ReasonTests(unittest.TestCase):

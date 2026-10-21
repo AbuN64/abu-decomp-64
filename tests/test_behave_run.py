@@ -70,7 +70,7 @@ class RunTests(unittest.TestCase):
                     "name": "t",
                     "tools": {"project": str(project), "host": str(self.root / "host.toml"), "timeout_seconds": 5},
                     "events": {"path": str(self.root / "events.jsonl")},
-                    "behave": {"work": str(self.root / "work"), "learn_rounds": 1},
+                    "behave": {"work": str(self.root / "work"), "learn_rounds": 1, "min_compared": 1},
                 }
             )
         )

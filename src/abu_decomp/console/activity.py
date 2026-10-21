@@ -73,6 +73,9 @@ def reason_of(message: str) -> str:
 
 def checks_text(payload: dict[str, Any]) -> str:
     checks, differences = payload.get("checks"), payload.get("differences") or 0
+    total = payload.get("total")
+    if payload.get("verdict") == "untestable" and isinstance(checks, int):
+        return f" {checks}/{total} compared" if isinstance(total, int) else f" {checks} compared"
     return f" {checks - differences}/{checks}" if isinstance(checks, int) and checks else ""
 
 
@@ -88,6 +91,8 @@ def verdict_cells(event: dict[str, Any]) -> tuple[str, str, str]:
         return op, f"same as original{counts}", "passed"
     if verdict == "differs":
         return op, f"differs from original{counts}", "stop"
+    if verdict == "untestable":
+        return op, f"untestable{counts}", "stop"
     return op, "check could not run", "stop"
 
 

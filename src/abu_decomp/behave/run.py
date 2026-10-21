@@ -33,6 +33,7 @@ DEFAULTS: dict[str, Any] = {
     "depth_cap": 3,  # calls deep the original callees may run when no case ran to completion with fewer
     "learn_cases": 8,
     "learn_rounds": 8,
+    "min_compared": compare.MIN_COMPARED,  # cases that must compare before the verdict may be `same`
     "headers": ["include/**/*.h", "include/**/*.H", "src/**/*.c", "src/**/*.C", "src/**/*.CPP", "src/**/*.cpp"],
 }
 
@@ -593,7 +594,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         for a, b in zip(original["cases"], changed["cases"], strict=True)
     ]
     labels = [c["labels"] for c in cases]
-    summary = compare.overall(rows, labels)
+    summary = compare.overall(rows, labels, int(config["min_compared"]))
     notes = sorted({n for row in rows for n in row["notes"]})
     shown = [dict(r, inputs=labels[i]) for i, r in enumerate(rows) if r["verdict"] != compare.SAME][:12]
     result = {
@@ -622,7 +623,7 @@ def announce(profile: Profile, result: dict[str, Any]) -> None:
     """The verdict as one PROBE event for the stream; never fails the command (no events section, unwritable feed)."""
     first = result.get("first_difference") or {}
     counts = result.get("counts") or {}
-    verdict = {"same": "same", "differs": "differs"}.get(result["verdict"], "error")
+    verdict = {"same": "same", "differs": "differs", "untestable": "untestable"}.get(result["verdict"], "error")
     try:
         narrate.behave_event(
             profile,
@@ -630,6 +631,9 @@ def announce(profile: Profile, result: dict[str, Any]) -> None:
             verdict=verdict,
             checks=counts.get("same", 0) + counts.get("differs", 0),
             differences=counts.get("differs", 0),
+            total=result.get("total", sum(counts.values())),
+            untestable=counts.get("untestable", 0),
+            untestable_reasons=result.get("untestable_reasons"),
             inputs=first.get("inputs"),
             expected=first.get("expected"),
             actual=first.get("got"),

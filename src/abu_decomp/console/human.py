@@ -101,7 +101,7 @@ def sentence(event: dict[str, Any]) -> str:
         state = "refused" if payload.get("refused") else "stored" if payload.get("landed_files") else "exact"
         return f"{name}: {state if payload.get('refused') or payload.get('exact') else 'not exact'}"
     if op == "behave":
-        verdict = {"same": "same as original", "differs": "differs from original"}.get(
+        verdict = {"same": "same as original", "differs": "differs from original", "untestable": "untestable"}.get(
             payload.get("verdict"), "check could not run"
         )
         return f"{name}: {verdict}"
@@ -186,7 +186,11 @@ def _block(event: dict[str, Any]) -> str:
             ("input", value(payload["inputs"]) if payload.get("inputs") is not None else ""),
             ("expected", value(payload["expected"]) if payload.get("expected") is not None else ""),
             ("actual", value(payload["actual"]) if payload.get("actual") is not None else ""),
-            ("checks", f"{payload.get('checks', '?')}, differences {payload.get('differences', '?')}"),
+            (
+                "checks",
+                f"{payload.get('checks', '?')} of {payload.get('total', '?')} compared, "
+                f"{payload.get('differences', '?')} differ, {payload.get('untestable', '?')} untestable",
+            ),
             ("reason", str(payload.get("reason") or "")),
         )
     if kind == "PROBE" and payload.get("checks") is not None:
