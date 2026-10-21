@@ -5,6 +5,7 @@
 #include "n64c_internal.h"
 #include "n64c_cont.h"
 #include "n64c_si.h"
+#include "n64c_tas.h"
 #ifdef N64C_INPUT_SDL3
 #include "n64c_input.h"
 #endif
@@ -104,6 +105,7 @@ s32 osContStartReadData(OSMesgQueue *mq)
         else if (i != 0)
             latched[i].errno_ = CONT_ERR_NO_CONTROLLER;
     }
+    n64c_tas_poll(&latched[0]);
     done(mq);
     return 0;
 }
