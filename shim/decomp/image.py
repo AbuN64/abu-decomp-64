@@ -302,7 +302,7 @@ def build(manifest, source, objects, linked, output, rom=None):
     keep_overlay = overlapping(overlay_placed, "rom", refused)
     stops, blob, words, extents, rom_extents, imaged = set(), bytearray(), [], [], [], 0
 
-    targets = addrscan.Targets(table, resolved_names)
+    targets = addrscan.Targets(table, resolved_names, roms)
 
     def resolve(elf, symbol_index, addend):
         """A pointer word's value: an original address, or a native name."""
@@ -346,14 +346,16 @@ def build(manifest, source, objects, linked, output, rom=None):
             word, = struct.unpack_from(">I", rom, at + offset)
             if struct.unpack_from("<I", chunk, offset)[0] != word:
                 continue  # the source types these bytes otherwise (not one native word equal to the cartridge's)
-            name = addrscan.code_word(rom, at + offset, targets)
-            if not name:
+            found = addrscan.code_class(rom, at + offset, targets)
+            if not found:
                 continue
+            name = found[0]
             if name not in resolved_names:
                 stops.add(name)
             out.append((offset, name, 0))
             code_words.append({"symbol": item["name"], "address": f"0x{start + offset:08x}",
-                               "rom": f"0x{at + offset:x}", "word": f"0x{word:08x}", "function": name})
+                               "rom": f"0x{at + offset:x}", "word": f"0x{word:08x}", "function": name,
+                               "class": found[1]})
         return out
 
     for item in keep + keep_overlay:

@@ -123,12 +123,13 @@ target = 0x80001000; //
 # Raw code addresses: the source keeps numbers the cartridge shows to be code addresses (a KUSEG function alias
 # beside a data pointer, a KSEG0 function start), a lone round value, and the same alias typed as bytes.
 RAW = """unsigned int raw[4] = {0x00200010, 0x80001000, 0x80200020, 7};
-unsigned int sizes[4] = {0x00200010, 1, 2, 3};
+unsigned int sizes[4] = {0x00200000, 1, 2, 3};
 unsigned char packed[4] = {0x00, 0x20, 0x00, 0x10};
 """
 RAW_FACTS = """raw = 0x80001100; // rom:0x1100
 sizes = 0x80001200; // rom:0x1200
 packed = 0x80001300; // rom:0x1300
+func_80200000 = 0x80200000; // type:func
 func_80200010 = 0x80200010; // type:func
 func_80200020 = 0x80200020; // type:func
 """
@@ -239,7 +240,7 @@ class ImageTests(unittest.TestCase):
         (self.source / "versions/test/symbol_addrs.txt").write_text(RAW_FACTS)
         (self.source / "src" / "RAW.CPP").write_text(RAW)
         unit = self.compile(self.source / "src" / "RAW.CPP", self.path / "RAW.CPP.o", "-x", "c")
-        rom = self.cartridge({0x1100: [0x00200010, 0x80001000, 0x80200020, 7], 0x1200: [0x00200010, 1, 2, 3],
+        rom = self.cartridge({0x1100: [0x00200010, 0x80001000, 0x80200020, 7], 0x1200: [0x00200000, 1, 2, 3],
                               0x1300: [0x00200010]})
         out = self.path / "out"
         image.build(self.manifest, self.source, [unit], [], out, rom)
@@ -258,16 +259,56 @@ class ImageTests(unittest.TestCase):
         # within 6 words; a KUSEG data record (D_00XXXXXX) is tlb-data
         sys.path.insert(0, str(ROOT))
         import addrscan
-        table = {"func_80200010": (0x80200010, "func"), "D_0044B4A0": (0x0044B4A0, "data")}
+        table = {"func_80200000": (0x80200000, "func"), "func_80200010": (0x80200010, "func"),
+                 "D_0044B4A0": (0x0044B4A0, "data")}
         targets = addrscan.Targets(table)
         rom = self.cartridge({0x100: [0x00200010, 0x80001000], 0x200: [0xDE000000, 0x80200010],
-                              0x300: [0x80200010], 0x400: [0x00200010]})
+                              0x300: [0x80200010], 0x400: [0x00200000], 0x500: [0x00200010]})
         self.assertEqual(addrscan.code_word(rom, 0x100, targets), "func_80200010")
         self.assertIsNone(addrscan.code_word(rom, 0x204, targets))
         self.assertEqual(addrscan.code_word(rom, 0x300, targets), "func_80200010")
-        self.assertIsNone(addrscan.code_word(rom, 0x400, targets))
+        self.assertIsNone(addrscan.code_word(rom, 0x400, targets))  # a lone page-aligned value stays a size
+        self.assertEqual(addrscan.code_word(rom, 0x500, targets), "func_80200010")  # a lone off-page start is code
+        self.assertIsNone(
+                          addrscan.code_class(rom, 0x500, targets, lone=False))  # unless in raw binary
         self.assertEqual(targets.classify(0x0044B4A0), ("tlb-data", "D_0044B4A0"))
         self.assertIsNone(targets.classify(0x00300000))
+
+    def test_entry_alias_binds_over_register_only_prologue_skips(self):
+        # a KUSEG alias k instructions into a function binds to it (class "entry") when every skipped instruction is
+        # a register-only ALU op; a load, branch or call among them, or too deep an entry, leaves the word unbound
+        sys.path.insert(0, str(ROOT))
+        import addrscan
+        sll, addiu, lw, jal = 0x00051080, 0x27BDFFC0, 0x8FA20010, 0x0C000000
+        table = {"func_80200010": (0x80200010, "func")}
+        targets = addrscan.Targets(table, roms={"func_80200010": 0x1000})
+        rom = bytearray(0x2000)
+        for at, word in ((0x1000, sll), (0x1004, addiu), (0x1008, lw), (0x100C, sll), (0x1010, sll), (0x1014, sll)):
+            rom[at:at + 4] = word.to_bytes(4, "big")
+        for at, word in ((0x100, 0x00200014), (0x104, 0x00200018), (0x108, 0x0020001C), (0x10C, 0x00200024),
+                         (0x110, 0x00200010)):
+            rom[at:at + 4] = word.to_bytes(4, "big")
+        self.assertEqual(addrscan.code_class(rom, 0x100, targets), ("func_80200010", "entry"))
+        self.assertEqual(addrscan.code_class(rom, 0x104, targets), ("func_80200010", "entry"))  # sll, addiu
+        self.assertIsNone(addrscan.code_class(rom, 0x108, targets))  # skips a load
+        self.assertIsNone(addrscan.code_class(rom, 0x10C, targets))  # skips more than MAX_SKIP instructions
+        self.assertEqual(addrscan.code_class(rom, 0x110, targets), ("func_80200010", "exact"))
+        self.assertFalse(addrscan.register_alu(jal) or addrscan.register_alu(lw))
+        self.assertTrue(addrscan.register_alu(sll) and addrscan.register_alu(addiu))
+        self.assertIsNone(addrscan.code_class(rom, 0x100, addrscan.Targets(table)))  # no ROM fact, no entry
+
+    def test_entry_alias_in_a_typed_blob_is_bound_by_the_image(self):
+        (self.source / "versions/test/symbol_addrs.txt").write_text(
+            "D_blob_0123abcd = 0x80001100; // rom:0x1100\nfunc_80200010 = 0x80200010; // type:func rom:0x1500\n")
+        (self.source / "src" / "RAW.CPP").write_text("unsigned int D_blob_0123abcd[3] = {0xE06, 0x13, 0x00200014};\n")
+        unit = self.compile(self.source / "src" / "RAW.CPP", self.path / "RAW.CPP.o", "-x", "c")
+        rom = bytearray(self.cartridge({0x1100: [0xE06, 0x13, 0x00200014]}))
+        rom[0x1500:0x1504] = (0x00051080).to_bytes(4, "big")
+        out = self.path / "out"
+        image.build(self.manifest, self.source, [unit], [], out, bytes(rom))
+        report = json.loads((out / "image.json").read_text())
+        self.assertEqual([(row["word"], row["function"], row["class"]) for row in report["code_words"]],
+                         [("0x00200014", "func_80200010", "entry")])
 
     def test_layout_condition_refuses_unknown_forms(self):
         (self.source / "RageWars.ld").write_text("#if VERSION_TEST > 1\n#endif\n")
