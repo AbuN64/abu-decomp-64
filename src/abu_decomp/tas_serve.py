@@ -272,7 +272,12 @@ class Session:
         if name == "ai":
             return tas_tabs.ai_lines(self.ai_log) if self.ai_log else ["tas.serve.ai_log is not configured"]
         if name == "port":
-            return tas_tabs.port_lines(self.log, self.run_dir, bool(self.state()["stopped"]))
+            log, run_dir = self.log, self.run_dir
+            if not log:  # after a server restart the newest live run is still the one on screen
+                logs = sorted((self.cfg["runs"] / "live").glob("*.log"))
+                log, run_dir = (logs[-1], logs[-1].with_suffix("")) if logs else (None, None)
+            text = log.read_text(errors="replace") if log and log.is_file() else ""
+            return tas_tabs.port_lines(log, run_dir, "debug-reason:" in text or bool(self.state()["stopped"]))
         if name == "functions":
             return tas_tabs.function_lines(events.events_path(self.profile))
         raise DecompError("tas.serve", f"no tab {name}")
