@@ -21,12 +21,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas
+from abu_decomp import DecompError, events, tas, tas_tabs
 from abu_decomp.config import Profile
 
 KEYS = {"ArrowLeft": "Left", "ArrowRight": "Right", "ArrowUp": "Up", "ArrowDown": "Down", "Enter": "Return"}
 _LETTER = re.compile(r"[a-z]")
-_SERVE_KEYS = frozenset({"listen", "display", "fps"})
+_SERVE_KEYS = frozenset({"listen", "display", "fps", "ai_log"})
 _SINK = "tas"
 
 
@@ -56,6 +56,7 @@ class Session:
         self.listen = str(serve.get("listen", "127.0.0.1:8097"))
         self.display = str(serve.get("display", ":97"))
         self.fps = int(serve.get("fps", 30))
+        self.ai_log = profile.path("tas.serve.ai_log", serve["ai_log"]) if "ai_log" in serve else None
         self.size = window_size(self.cfg["args"])
         self.lock = threading.Lock()
         self.port: subprocess.Popen | None = None
@@ -249,8 +250,10 @@ class Session:
             self.exit = self.port.returncode
         polls = len(tas.parse_raw(self.recording.read_text())) if self.recording and self.recording.is_file() else 0
         text = self.log.read_text(errors="replace") if self.log and self.log.is_file() else ""
-        held = tas.classify(None if running else self.exit, text) if text else {}
+        # A debug-reason line: the gdb bridge holds the stop (process alive, picture frozen), so not running, not a hang.
+        held = tas.classify(None if running and "debug-reason:" not in text else self.exit or 0, text) if text else {}
         stopped = held if held.get("outcome") in ("stop", "crash") else {}
+        running = running and not stopped
         tail = text.splitlines()[-3:]
         return {
             "stopped": stopped,
@@ -264,6 +267,15 @@ class Session:
             "replay": self.replay,
             **tas.listing(self.profile),
         }
+
+    def tab(self, name: str) -> list[str]:
+        if name == "ai":
+            return tas_tabs.ai_lines(self.ai_log) if self.ai_log else ["tas.serve.ai_log is not configured"]
+        if name == "port":
+            return tas_tabs.port_lines(self.log, self.run_dir, bool(self.state()["stopped"]))
+        if name == "functions":
+            return tas_tabs.function_lines(events.events_path(self.profile))
+        raise DecompError("tas.serve", f"no tab {name}")
 
     def save(self, name: str, note: str) -> dict[str, Any]:
         if not self.recording:
@@ -313,6 +325,12 @@ def handler(session: Session) -> type[BaseHTTPRequestHandler]:
                 self.reply(PAGE().encode(), "text/html; charset=utf-8")
             elif path == "/state":
                 self.json(session.state())
+            elif path == "/tab":
+                name = self.path.partition("name=")[2].split("&")[0]
+                try:
+                    self.json({"lines": session.tab(name)})
+                except DecompError as error:
+                    self.json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
             elif path == "/video":
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")

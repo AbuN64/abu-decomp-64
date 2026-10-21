@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from abu_decomp import DecompError, tas_serve
+from abu_decomp import DecompError, tas_serve, tas_tabs
 from abu_decomp.config import load_profile
 
 
@@ -48,6 +48,66 @@ class ServeTests(unittest.TestCase):
             session.save("m", "")
         state = session.state()
         self.assertEqual((state["running"], state["polls"], state["movies"]), (False, 0, []))
+
+    def test_held_stop_reports_stopped_not_running(self):
+        session = tas_serve.Session(self.profile())
+
+        class Alive:
+            returncode = None
+
+            def poll(self):
+                return None
+
+        session.port, session.log = Alive(), self.root / "run.log"
+        session.log.write_text("boot\ndebug-reason: n64c_boot_stopped\n")
+        state = session.state()
+        self.assertEqual((state["running"], state["stopped"]["outcome"]), (False, "stop"))
+        session.log.write_text("boot\n")
+        self.assertTrue(session.state()["running"])
+
+    def test_tabs(self):
+        ai = self.root / "ai"
+        ai.mkdir()
+        rows = [
+            {
+                "type": "assistant",
+                "timestamp": "2026-10-21T01:02:03Z",
+                "message": {
+                    "content": [
+                        {"type": "thinking", "thinking": "x"},
+                        {"type": "text", "text": "hello  world"},
+                        {"type": "tool_use", "name": "Bash", "input": {"command": "ls", "description": "list"}},
+                    ]
+                },
+            },
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "no"}]}},
+        ]
+        (ai / "a.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+        self.assertEqual(tas_tabs.ai_lines(ai), ["01:02:03 hello world", "01:02:03 > Bash: list"])
+        threads = "Thread 2 (x):\n#0 idle\nThread 1 (y):\n#0 n64c_game_scheduler_main ()\n"
+        self.assertEqual(tas_tabs.game_threads(threads), ["Thread 1 (y):", "#0 n64c_game_scheduler_main ()"])
+        run = self.root / "run"
+        run.mkdir()
+        (run / "failure-stack.txt").write_text("S1\n")
+        (run / "failure-threads.txt").write_text(threads)
+        log = self.root / "p.log"
+        log.write_text("L1\n")
+        self.assertEqual(tas_tabs.port_lines(log, run, False), ["L1"])
+        self.assertEqual(tas_tabs.port_lines(log, run, True)[:3], ["L1", "--- failure-stack.txt", "S1"])
+        feed = self.root / "e.jsonl"
+        feed.write_text(
+            json.dumps({"kind": "LANE", "message": "x"})
+            + "\n"
+            + json.dumps(
+                {
+                    "kind": "PROBE",
+                    "time": "2026-10-21T02:27:14+00:00",
+                    "message": "m",
+                    "payload": {"function": "f", "verdict": "same"},
+                }
+            )
+        )
+        self.assertEqual(tas_tabs.function_lines(feed), ["02:27:14 PROBE f same"])
 
 
 if __name__ == "__main__":

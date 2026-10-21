@@ -21,6 +21,9 @@
   li { display: flex; gap: 6px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); }
   li span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
   pre { white-space: pre-wrap; margin: 0; font-size: 11px; color: var(--dim); }
+  .tabs { display: flex; gap: 4px; }
+  .tabs button.on { border-color: var(--accent); color: var(--accent); }
+  #tabtext { height: 260px; overflow-y: auto; background: #000; border: 1px solid var(--line); padding: 4px; font: 11px/1.35 ui-monospace, monospace; color: var(--fg); white-space: pre-wrap; word-break: break-word; }
   @media (max-width: 800px) { body { flex-direction: column; } aside { width: auto; } }
 </style>
 </head>
@@ -38,6 +41,8 @@
   <div id="msg" class="dim"></div>
   <ul id="movies"></ul>
   <div id="replay" class="dim"></div>
+  <div class="tabs"><button data-tab="ai" class="on">AI</button><button data-tab="port">Port</button><button data-tab="functions">Functions</button></div>
+  <pre id="tabtext"></pre>
 </aside>
 <script>
 const $ = id => document.getElementById(id);
@@ -78,7 +83,25 @@ async function refresh() {
     $("replay").textContent = r.movie ? `last replay ${r.movie}: ${r.outcome}${r.subject ? " · " + r.subject : ""}${r.polls_reached !== undefined ? ` · ${r.polls_reached} polls` : ""}` : "";
   } catch (e) { $("run").textContent = "server unreachable"; }
 }
-refresh(); setInterval(refresh, 1000);
+let tab = "ai";
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  tab = b.dataset.tab;
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
+  $("tabtext").textContent = ""; tabs();
+});
+async function tabs() {
+  const box = $("tabtext"), want = tab;
+  try {
+    const r = await (await fetch("/tab?name=" + want)).json();
+    if (want !== tab) return;
+    const text = r.error || (r.lines || []).join("\n");
+    if (text === box.textContent) return;
+    const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
+    box.textContent = text;
+    if (stick) box.scrollTop = box.scrollHeight;
+  } catch (e) {}
+}
+refresh(); tabs(); setInterval(tabs, 1000); setInterval(refresh, 1000);
 </script>
 </body>
 </html>
