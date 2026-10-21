@@ -4,8 +4,11 @@
  * (one "BUTTONS STICK_X STICK_Y" line per poll, hex buttons, decimal stick);
  * after its last line the pad is neutral, and N64C_TAS_EXIT_AFTER polls later
  * the process exits 0. N64C_TAS_RECORD appends every poll's channel 0 in the
- * same format, flushed per line, so a crash leaves the polls it reached. */
+ * same format, flushed per line, so a crash leaves the polls it reached.
+ * N64C_TAS_SHOT_EVERY and N64C_TAS_SHOT_DIR ask the frame loop for a
+ * picture every N polls, to compare with the oracle's at the same poll. */
 #include "n64c_tas.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -13,6 +16,9 @@ static int started;
 static FILE *play, *record;
 static long exit_after = -1, polls, played;
 static int play_done;
+static long shot_every;
+static const char *shot_dir;
+static atomic_long shot_due = -1;
 
 static void start(void)
 {
@@ -27,6 +33,9 @@ static void start(void)
         fprintf(stderr, "n64c-tas: cannot append %s\n", path);
         _Exit(2);
     }
+    const char *every = getenv("N64C_TAS_SHOT_EVERY");
+    shot_dir = getenv("N64C_TAS_SHOT_DIR");
+    if (every && *every && shot_dir && *shot_dir) shot_every = strtol(every, NULL, 10);
     const char *after = getenv("N64C_TAS_EXIT_AFTER");
     if (after && *after) exit_after = strtol(after, NULL, 10);
 }
@@ -72,8 +81,12 @@ void n64c_tas_poll(OSContPad *pad)
         }
     }
     polls++;
+    if (shot_every > 0 && polls % shot_every == 0) atomic_store(&shot_due, polls);
     if (record) {
         fprintf(record, "%04x %d %d\n", pad->button, pad->stick_x, pad->stick_y);
         fflush(record);
     }
 }
+
+long n64c_tas_take_shot(void) { return atomic_exchange(&shot_due, -1); }
+const char *n64c_tas_shot_dir(void) { return shot_dir; }

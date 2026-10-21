@@ -8,12 +8,17 @@
 #include "n64c_f3d.h"
 #include "n64c_memory.h"
 #include "n64c_diag.h"
+#include "n64c_tas.h"
 #include "audio_abi/n64a_abi.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+
+/* Movie comparison shots are small: enough to see a wrong screen, cheap to write every few polls. */
+#define TAS_SHOT_WIDTH 320
+#define TAS_SHOT_HEIGHT 240
 
 static struct {
     u32 tasks,audio_tasks,ram_bytes,shown;
@@ -185,21 +190,10 @@ int n64c_boot_frame_start(u32 width,u32 height,u32 ram_bytes,int audio_abi,u32 w
     if (live) n64c_boot_stop_hook=live_stop;
     return 1;
 }
-int n64c_boot_frame_capture(const char *path,u32 retrace,u32 width,u32 height)
+/* The VI shows whichever color image it was given; double buffering presents an earlier rendered surface,
+ * never the last one by assumption. Writes it scaled to width x height as a binary PPM. */
+static int write_presented(const char *path,u32 width,u32 height)
 {
-    if (!path || !retrace || !width || !height || width>4096 || height>4096) return 0;
-    while (osViGetRetraceCount()<retrace) {
-        if (!n64c_frame()) {
-            fprintf(stderr,"boot-frame: no live original threads\n");
-            return 0;
-        }
-    }
-    if (osViGetRetraceCount()!=retrace || !frame.tasks || !frame.presented) {
-        fprintf(stderr,"boot-frame: no accepted presentation at retrace %u\n",retrace);
-        return 0;
-    }
-    /* The VI shows whichever color image it was given; double buffering
-     * presents an earlier rendered surface, never the last one by assumption. */
     u32 physical=n64c_memory_physical(frame.presented);
     u32 *pixels=malloc((size_t)width*height*sizeof *pixels);
     if (!pixels) return 0;
@@ -217,7 +211,24 @@ int n64c_boot_frame_capture(const char *path,u32 retrace,u32 width,u32 height)
     }
     free(pixels);
     if (fclose(out)) ok=0;
-    if (!ok) { (void)remove(path);return 0; }
+    if (!ok) (void)remove(path);
+    return ok;
+}
+int n64c_boot_frame_capture(const char *path,u32 retrace,u32 width,u32 height)
+{
+    if (!path || !retrace || !width || !height || width>4096 || height>4096) return 0;
+    while (osViGetRetraceCount()<retrace) {
+        if (!n64c_frame()) {
+            fprintf(stderr,"boot-frame: no live original threads\n");
+            return 0;
+        }
+    }
+    if (osViGetRetraceCount()!=retrace || !frame.tasks || !frame.presented) {
+        fprintf(stderr,"boot-frame: no accepted presentation at retrace %u\n",retrace);
+        return 0;
+    }
+    if (!write_presented(path,width,height)) return 0;
+    u32 physical=n64c_memory_physical(frame.presented);
     fprintf(stderr,"boot-frame: retrace=%u tasks=%u audio=%u commands=%llu surface=0x%08x\n",
             retrace,frame.tasks,frame.audio_tasks,(unsigned long long)frame.commands,physical);
     return 1;
@@ -242,6 +253,12 @@ int n64c_boot_frame_live(void)
         if (!alive) {
             fprintf(stderr,"boot-frame: no live original threads at retrace %u\n",osViGetRetraceCount());
             return 0;
+        }
+        long shot=n64c_tas_take_shot();
+        if (shot>=0 && frame.presented && frame.tasks) {
+            char path[1024];
+            snprintf(path,sizeof path,"%s/poll-%06ld.ppm",n64c_tas_shot_dir(),shot);
+            if (!write_presented(path,TAS_SHOT_WIDTH,TAS_SHOT_HEIGHT)) fprintf(stderr,"n64c-tas: shot %ld failed\n",shot);
         }
         if (n%600==0)
             fprintf(stderr,"boot-step: retrace=%u tasks=%u audio=%u commands=%llu\n",osViGetRetraceCount(),
