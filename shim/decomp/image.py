@@ -321,6 +321,10 @@ def build(manifest, source, objects, linked, output, rom=None):
             # a KUSEG alias (D_00XXXXXX) names the function at its KSEG0 address: bind to that function, or stop on
             # its name so the closure routes the function (a stop named after the alias names no unit to link)
             function = targets.function(table[name][0] | 0x80000000)
+            if not function and rom is not None and 0x10000 <= table[name][0] < 0x00800000:
+                # a named alias that lands 1..4 register-ALU instructions into a function is that function's entry
+                entered = targets.entry(table[name][0], rom)
+                function = entered[0] if entered else None
             if function:
                 if function not in resolved_names:
                     stops.add(function)

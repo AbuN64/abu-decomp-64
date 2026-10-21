@@ -310,6 +310,23 @@ class ImageTests(unittest.TestCase):
         self.assertEqual([(row["word"], row["function"], row["class"]) for row in report["code_words"]],
                          [("0x00200014", "func_80200010", "entry")])
 
+    def test_named_alias_into_a_function_binds_to_its_entry(self):
+        # a type:func D_00XXXXXX name at a function's second instruction (a named reference, not a raw word) binds to
+        # that function when the skipped instruction is register-only; without the cartridge it stays a stop on the name
+        (self.source / "versions/test/symbol_addrs.txt").write_text(
+            "func_80200010 = 0x80200010; // type:func rom:0x1500\nD_00200014 = 0x00200014; // type:func\n"
+            "table = 0x80001100; // rom:0x1100\n")
+        (self.source / "src" / "NAMED.CPP").write_text("extern char D_00200014[]; unsigned int table[1] = "
+                                                       "{(unsigned int)D_00200014};\n")
+        unit = self.compile(self.source / "src" / "NAMED.CPP", self.path / "NAMED.CPP.o", "-x", "c")
+        rom = bytearray(self.cartridge({0x1100: [0]}))
+        rom[0x1500:0x1504] = (0x00051080).to_bytes(4, "big")
+        out = self.path / "named"
+        image.build(self.manifest, self.source, [unit], [], out, bytes(rom))
+        report = json.loads((out / "image.json").read_text())
+        self.assertEqual(report["function_stops"], ["func_80200010"])
+        self.assertIn(".long func_80200010", (out / "image.c").read_text())
+
     def test_layout_condition_refuses_unknown_forms(self):
         (self.source / "RageWars.ld").write_text("#if VERSION_TEST > 1\n#endif\n")
         with self.assertRaises(ValueError):
