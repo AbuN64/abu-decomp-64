@@ -88,6 +88,12 @@ def parse_raw(text: str) -> list[Poll]:
     return polls
 
 
+def read_raw(path: Path) -> list[Poll]:
+    """The polls of a recording the port may still be writing: a last line without its newline is left out."""
+    text = path.read_text()
+    return parse_raw(text[: text.rfind("\n") + 1])
+
+
 def format_raw(polls: list[Poll]) -> str:
     return "".join(f"{b:04x} {x} {y}\n" for b, x, y in polls)
 
@@ -209,7 +215,7 @@ def listing(profile: Profile) -> dict[str, Any]:
                 "recorded": header.get("recorded", ""),
             }
         )
-    live = [{"path": str(p), "polls": len(parse_raw(p.read_text()))} for p in recordings(cfg)[-5:]]
+    live = [{"path": str(p), "polls": len(read_raw(p))} for p in recordings(cfg)[-5:]]
     return {"movies": rows, "recordings": live}
 
 

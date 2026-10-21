@@ -64,6 +64,7 @@ class Session:
         self.log: Path | None = None
         self.run_dir: Path | None = None
         self.exit: int | None = None
+        self.ended_by_page = False
         self.movie: str | None = None
         self.movie_length = 0
         self.frame = b""
@@ -205,6 +206,7 @@ class Session:
             user_dir.mkdir(parents=True, exist_ok=True)
             live.mkdir(parents=True, exist_ok=True)
             self.recording, self.log, self.exit = live / f"{stamp}.raw", live / f"{stamp}.log", None
+            self.ended_by_page = False
             env = {**self.env(), "N64C_TAS_RECORD": str(self.recording)}
             for key in ("N64C_TAS_PLAY", "N64C_TAS_EXIT_AFTER"):
                 env.pop(key, None)
@@ -257,11 +259,11 @@ class Session:
         running = bool(self.port and self.port.poll() is None)
         if self.port and not running:
             self.exit = self.port.returncode
-        polls = len(tas.parse_raw(self.recording.read_text())) if self.recording and self.recording.is_file() else 0
+        polls = len(tas.read_raw(self.recording)) if self.recording and self.recording.is_file() else 0
         text = self.log.read_text(errors="replace") if self.log and self.log.is_file() else ""
         # A debug-reason line: the gdb bridge holds the stop: process alive, picture frozen, not a hang.
         held = tas.classify(None if running and "debug-reason:" not in text else self.exit or 0, text) if text else {}
-        stopped = held if held.get("outcome") in ("stop", "crash") else {}
+        stopped = held if held.get("outcome") in ("stop", "crash") and not self.ended_by_page else {}
         running = running and not stopped
         tail = text.splitlines()[-3:]
         return {
@@ -270,6 +272,8 @@ class Session:
             if self.run_dir and self.run_dir.is_dir()
             else [],
             "running": running,
+            "run": str(self.run_dir) if self.run_dir else None,
+            "marks": self.marks(),
             "exit": self.exit,
             "polls": polls,
             "tail": tail,
@@ -277,6 +281,50 @@ class Session:
             "movie_polls": self.movie_length,
             **tas.listing(self.profile),
         }
+
+    def stop(self) -> dict[str, Any]:
+        """End the live run (the page stays idle until the next /new)."""
+        with self.lock:
+            self._stop_port()
+            self.ended_by_page = True
+        return {"stopped": True}
+
+    def marks(self) -> dict[str, Any]:
+        """The weird moments marked in the current run: how many, and the last one."""
+        path = self.run_dir / "marks.jsonl" if self.run_dir else None
+        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path and path.is_file() else []
+        return {"count": len(rows), "last": rows[-1] if rows else None}
+
+    def mark(self, note: str) -> dict[str, Any]:
+        """Mark this moment weird: save the current picture and poll index into the run folder and the movie up
+        to this poll as `weird-STAMP`; the run keeps going."""
+        if not self.recording or not self.run_dir:
+            raise DecompError("tas.mark", "nothing is running: start a run first")
+        with self.frame_ready:
+            frame = self.frame
+        if not frame:
+            raise DecompError("tas.mark", "no video frame yet")
+        polls = tas.read_raw(self.recording) if self.recording.is_file() else []
+        poll = len(polls)
+        if not poll:
+            raise DecompError("tas.mark", "the run has no polls yet")
+        marks = self.run_dir / "marks"
+        marks.mkdir(parents=True, exist_ok=True)
+        picture = marks / f"poll-{poll}.jpg"
+        picture.write_bytes(frame)
+        part = marks / f"poll-{poll}.raw"
+        part.write_text(tas.format_raw(polls))
+        name = "weird-" + datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        note = " ".join(note.split())
+        try:
+            saved = tas.save(self.profile, name, source=part, note=note or "marked weird", replace=False)
+        except DecompError:  # a second mark in the same second
+            name = f"{name}-{poll}"
+            saved = tas.save(self.profile, name, source=part, note=note or "marked weird", replace=True)
+        row = {"poll": poll, "note": note, "frame": str(picture), "movie": saved["name"]}
+        with (self.run_dir / "marks.jsonl").open("a") as handle:
+            handle.write(json.dumps(row) + "\n")
+        return row
 
     def tab(self, name: str) -> list[str]:
         if name == "ai":
@@ -380,6 +428,10 @@ def handler(session: Session) -> type[BaseHTTPRequestHandler]:
             try:
                 if self.path == "/new":
                     self.json(session.new_run())
+                elif self.path == "/stop":
+                    self.json(session.stop())
+                elif self.path == "/mark":
+                    self.json(session.mark(str(body.get("note", ""))))
                 elif self.path == "/key":
                     session.key(str(body.get("key", "")), bool(body.get("down")))
                     self.json({})

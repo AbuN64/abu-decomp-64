@@ -65,6 +65,41 @@ class ServeTests(unittest.TestCase):
         session.log.write_text("boot\n")
         self.assertTrue(session.state()["running"])
 
+    def test_mark_saves_frame_movie_and_reports_in_state(self):
+        session = tas_serve.Session(self.profile())
+        with self.assertRaises(DecompError):
+            session.mark("x")
+        run = self.root / "runs" / "live" / "20261021T000000Z"
+        run.mkdir(parents=True)
+        session.run_dir, session.recording = run, run.with_suffix(".raw")
+        session.recording.write_text("8000 0 0\n0000 1 2\n0010 0")  # last line cut mid-write
+        session.frame = b"\xff\xd8jpeg\xff\xd9"
+        row = session.mark("odd  menu")
+        self.assertEqual((row["poll"], row["note"]), (2, "odd menu"))
+        self.assertEqual(Path(row["frame"]).read_bytes(), session.frame)
+        self.assertEqual(Path(row["frame"]).name, "poll-2.jpg")
+        self.assertTrue(row["movie"].startswith("weird-"))
+        self.assertEqual(session.state()["marks"], {"count": 1, "last": row})
+        self.assertEqual(len((run / "marks.jsonl").read_text().splitlines()), 1)
+        again = session.mark("")  # same second: still a distinct movie
+        self.assertNotEqual(again["movie"], row["movie"])
+        self.assertEqual(session.state()["marks"]["count"], 2)
+
+    def test_stop_ends_the_run_and_clears_the_held_stop(self):
+        session = tas_serve.Session(self.profile())
+
+        class Gone:
+            returncode = -15
+
+            def poll(self):
+                return -15
+
+        session.port, session.log = Gone(), self.root / "run.log"
+        session.log.write_text("debug-reason: n64c_boot_stopped\n")
+        self.assertEqual(session.state()["stopped"]["outcome"], "stop")
+        session.stop()
+        self.assertEqual(session.state()["stopped"], {})
+
     def test_tabs(self):
         ai = self.root / "ai"
         ai.mkdir()

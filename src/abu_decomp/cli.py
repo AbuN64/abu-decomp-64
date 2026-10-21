@@ -352,6 +352,8 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     save.add_argument("--note", default="", help="one line: what the movie shows")
     save.add_argument("--replace", action="store_true", help="overwrite a movie of the same name")
     actions.add_parser("list", help="the saved movies and the newest recordings")
+    watch = actions.add_parser("watch", help="print one JSON line per game event from the running page")
+    watch.add_argument("--next", dest="once", action="store_true", help="block for the next event, print it, exit 0")
     actions.add_parser("serve", help="serve the page that plays the port live, records runs and manages movies")
     for verb, text in (
         ("show", "one movie's header and polls"),
@@ -375,6 +377,10 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         from abu_decomp import tas_serve
 
         return tas_serve.serve(profile), 0, []
+    if args.action == "watch":
+        from abu_decomp import tas_watch
+
+        raise _Text(tas_watch.watch(profile, once=args.once))  # event lines are the whole output
     if args.action == "show":
         return tas.show(profile, args.name), 0, []
     if args.action == "delete":

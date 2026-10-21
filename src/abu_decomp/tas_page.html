@@ -31,13 +31,14 @@
 <div id="game">
   <img id="video" src="/video" tabindex="0" alt="port">
   <audio id="audio" preload="none"></audio>
-  <p class="dim">Click the picture (starts sound), then play: arrows stick · X A · C B · Z Z · Enter Start · A/S L/R · I J K L C buttons</p>
+  <p class="dim">Click the picture (starts sound), then play: arrows stick · X A · C B · Z Z · Enter Start · A/S L/R · I J K L C buttons · F9 marks the moment weird</p>
 </div>
 <aside>
   <div class="row"><button class="main" id="new">New recording</button><span id="run" class="dim"></span></div>
   <pre id="tail"></pre>
   <div class="row"><input id="name" placeholder="movie-name"></div>
   <div class="row"><input id="note" placeholder="note (what it shows)"><button id="save">Save</button></div>
+  <div class="row"><input id="weirdnote" placeholder="weird note (optional)"><button id="weird" title="F9">Weird</button></div>
   <div id="msg" class="dim"></div>
   <ul id="movies"></ul>
   <div class="tabs"><button data-tab="ai" class="on">AI</button><button data-tab="port">Port</button><button data-tab="functions">Functions</button></div>
@@ -57,6 +58,12 @@ $("video").addEventListener("blur", () => { held.forEach(k => post("/key", {key:
 $("new").onclick = () => post("/new").then(() => { say("recording from reset"); $("video").focus(); });
 $("save").onclick = () => post("/save", {name: $("name").value.trim(), note: $("note").value}).then(r =>
   r.error ? say(r.error, true) : (say(`saved ${r.name} (${r.polls} polls)`), $("name").value = "", $("note").value = ""));
+function weird() {
+  post("/mark", {note: $("weirdnote").value}).then(r =>
+    r.error ? say(r.error, true) : (say(`weird at poll ${r.poll}: saved ${r.movie}`), $("weirdnote").value = ""));
+}
+$("weird").onclick = weird;
+document.addEventListener("keydown", e => { if (e.key === "F9") { e.preventDefault(); weird(); } });
 function row(m) {
   const li = document.createElement("li");
   const name = document.createElement("span");
@@ -75,7 +82,7 @@ async function refresh() {
     const s = await (await fetch("/state")).json();
     const held = s.stopped && s.stopped.subject ? ` · STOPPED: ${s.stopped.subject}` : "";
     const driving = s.movie && s.polls < s.movie_polls ? `playing ${s.movie} ${s.polls}/${s.movie_polls}` : "recording";
-    $("run").textContent = (s.running ? `${driving} · ${s.polls} polls` : s.exit === null ? "no run" : `ended (exit ${s.exit}) · ${s.polls} polls`) + held;
+    $("run").textContent = (s.running ? `${driving} · ${s.polls} polls` : s.exit === null ? "no run" : `ended (exit ${s.exit}) · ${s.polls} polls`) + held + (s.marks && s.marks.count ? ` · ${s.marks.count} weird` : "");
     $("run").className = held ? "bad" : "dim";
     $("tail").textContent = (s.tail || []).join("\n");
     $("movies").replaceChildren(...s.movies.map(row));
