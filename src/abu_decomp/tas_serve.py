@@ -250,7 +250,7 @@ class Session:
             self.exit = self.port.returncode
         polls = len(tas.parse_raw(self.recording.read_text())) if self.recording and self.recording.is_file() else 0
         text = self.log.read_text(errors="replace") if self.log and self.log.is_file() else ""
-        # A debug-reason line: the gdb bridge holds the stop (process alive, picture frozen), so not running, not a hang.
+        # A debug-reason line: the gdb bridge holds the stop: process alive, picture frozen, not a hang.
         held = tas.classify(None if running and "debug-reason:" not in text else self.exit or 0, text) if text else {}
         stopped = held if held.get("outcome") in ("stop", "crash") else {}
         running = running and not stopped
