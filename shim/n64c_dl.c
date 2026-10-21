@@ -15,6 +15,7 @@ enum {
     OP_NOOP = 0x00, OP_VTX = 0x01, OP_MODIFYVTX = 0x02, OP_BRANCH_Z = 0x04, OP_TRI1 = 0x05, OP_LINE3D = 0x08, OP_FIRST_SP = 0xD3,
     OP_DMA_IO = 0xD6, OP_POPMTX = 0xD8, OP_GEOMETRYMODE = 0xD9, OP_MTX = 0xDA, OP_MOVEWORD = 0xDB,
     OP_MOVEMEM = 0xDC, OP_LOAD_UCODE = 0xDD, OP_DL = 0xDE, OP_ENDDL = 0xDF, OP_RDPHALF_1 = 0xE1,
+    OP_SETOTHERMODE_H = 0xE3, OP_TEXRECT = 0xE4, OP_TEXRECTFLIP = 0xE5, OP_SETSCISSOR = 0xED, OP_RDPSETOTHERMODE = 0xEF,
     OP_LOADTLUT = 0xF0, OP_LOADBLOCK = 0xF3, OP_LOADTILE = 0xF4, OP_SETTIMG = 0xFD, OP_SETZIMG = 0xFE,
     OP_SETCIMG = 0xFF,
 };
@@ -505,8 +506,9 @@ static const uintptr_t *line_list(Ctx *c, uint32_t w0)
 static const uintptr_t *color_image_list(Ctx *c, const uintptr_t *cmd, uint32_t phys)
 {
     uintptr_t extra[2] = {0, 0};
+    const uint32_t rows = (c->arena->scissor_lry + 3) / 4, height = rows + (rows & 1);
     if (!c->hooks || !c->hooks->color_image || (c->geo.zimg_known && phys == c->geo.zimg_phys) ||
-        !c->hooks->color_image(c->hooks->user, phys, ((uint32_t)cmd[0] & 0xFFF) + 1, extra))
+        !c->hooks->color_image(c->hooks->user, phys, ((uint32_t)cmd[0] & 0xFFF) + 1, height, extra))
         return NULL;
     uintptr_t *out = arena_alloc(c->arena, 3 * 2 * sizeof *out);
     if (!out) {
@@ -544,6 +546,64 @@ static uint32_t list_length(Ctx *c, uint32_t phys, int *ends)
         }
     }
     return n;
+}
+
+/* Other-mode high word fields (public GBI): texture filter in bits 12-13, cycle type in 20-21. */
+enum { TF_SHIFT = 12, TF_POINT = 0, TF_BILERP = 2, CYC_SHIFT = 20, CYC_COPY = 2, TEX_ONE = 1 << 10 };
+
+/* G_SETOTHERMODE_H and G_RDPSETOTHERMODE as the RDP keeps them between lists. */
+static void other_mode_h(N64cDlArena *a, uint32_t w0, uint32_t w1)
+{
+    if ((w0 >> 24) == OP_RDPSETOTHERMODE) {
+        a->other_mode_h = w0 & 0xFFFFFF;
+        a->other_mode_h_known = 0xFFFFFF;
+        return;
+    }
+    const int len = (int)(w0 & 0xFF) + 1, shift = 32 - len - (int)(w0 >> 8 & 0xFF);
+    if (len > 32 || shift < 0 || shift + len > 32)
+        return;
+    const uint32_t mask = (uint32_t)(((uint64_t)1 << len) - 1) << shift;
+    a->other_mode_h = (a->other_mode_h & ~mask) | (w1 & mask);
+    a->other_mode_h_known |= mask;
+}
+
+/* A bilinear texture rectangle at one texel per pixel from a whole texel: the RDP samples each pixel
+ * at exactly one texel (filter weights zero), but a host renderer drawing it larger samples between
+ * texels and pulls in the texels past the rectangle's edges. The copy draws it point-sampled, which
+ * is the same picture: a list of the filter change, the rectangle with its two halves, and the
+ * filter restored. *taken is the number of commands from i the rectangle spans (1 or 3). */
+static const uintptr_t *texrect_list(Ctx *c, uint32_t phys, uint32_t i, uint32_t n, uint32_t *taken)
+{
+    const N64cDlArena *a = c->arena;
+    const uint32_t need = 3u << TF_SHIFT | 3u << CYC_SHIFT;
+    *taken = 1;
+    if (i + 2 >= n || (a->other_mode_h_known & need) != need ||
+        (a->other_mode_h >> TF_SHIFT & 3) != TF_BILERP || (a->other_mode_h >> CYC_SHIFT & 3) >= CYC_COPY)
+        return NULL;
+    const uint32_t h1 = word_at(c, phys + (i + 1) * 8), s1 = word_at(c, phys + (i + 1) * 8 + 4);
+    const uint32_t h2 = word_at(c, phys + (i + 2) * 8), s2 = word_at(c, phys + (i + 2) * 8 + 4);
+    if (h1 >> 24 != OP_RDPHALF_1 || h2 >> 24 != 0xF1 || (s1 & 0x001F001F) || s2 != (TEX_ONE << 16 | TEX_ONE))
+        return NULL;
+    uintptr_t *out = arena_alloc(c->arena, 6 * 2 * sizeof *out);
+    if (!out) {
+        c->failed = 1;
+        return NULL;
+    }
+    const uint32_t set_tf = (uint32_t)OP_SETOTHERMODE_H << 24 | (32 - TF_SHIFT - 2) << 8 | 1;
+    out[0] = set_tf;
+    out[1] = TF_POINT << TF_SHIFT;
+    out[2] = word_at(c, phys + i * 8);
+    out[3] = word_at(c, phys + i * 8 + 4);
+    out[4] = h1;
+    out[5] = s1;
+    out[6] = h2;
+    out[7] = s2;
+    out[8] = set_tf;
+    out[9] = TF_BILERP << TF_SHIFT;
+    out[10] = (uintptr_t)OP_ENDDL << 24;
+    out[11] = 0;
+    *taken = 3;
+    return out;
 }
 
 static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth)
@@ -663,9 +723,14 @@ static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth)
                 }
                 memcpy(saved, c->seg, sizeof saved);
                 *geo = c->geo;
+                const uint32_t omh = c->arena->other_mode_h, omh_known = c->arena->other_mode_h_known,
+                               scissor = c->arena->scissor_lry;
                 const uintptr_t *target = translate(c, w1, depth + 1);
                 memcpy(c->seg, saved, sizeof saved);
                 c->geo = *geo;
+                c->arena->other_mode_h = omh;
+                c->arena->other_mode_h_known = omh_known;
+                c->arena->scissor_lry = scissor;
                 free(geo);
                 if (target)
                     cmd[1] = (uintptr_t)target;
@@ -688,6 +753,30 @@ static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth)
         case OP_LOADTLUT:
             texture_reach(c, ((w1 >> 12 & 0xFFF) >> 2) + 1, SIZ_16B);
             break;
+        case OP_SETSCISSOR:
+            c->arena->scissor_lry = w1 & 0xFFF;
+            break;
+        case OP_SETOTHERMODE_H:
+        case OP_RDPSETOTHERMODE:
+            other_mode_h(c->arena, w0, w1);
+            break;
+        case OP_TEXRECT:
+        case OP_TEXRECTFLIP: {
+            uint32_t taken;
+            const uintptr_t *list = texrect_list(c, phys, i, n, &taken);
+            if (list) {
+                cmd[0] = (uintptr_t)OP_DL << 24;
+                cmd[1] = (uintptr_t)list;
+                for (uint32_t k = 1; k < taken; k++) { /* the halves now sit in the list */
+                    cmd[k * 2] = (uintptr_t)OP_NOOP << 24;
+                    cmd[k * 2 + 1] = 0;
+                }
+                c->stats->commands += taken - 1;
+                c->stats->texrects_point++;
+                i += taken - 1;
+            }
+            break;
+        }
         case OP_SETZIMG:
             cmd[1] = operand(c, w1, 0, NULL, 1);
             c->geo.zimg_phys = physical(c, w1);

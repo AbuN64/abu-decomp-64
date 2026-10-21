@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Focused tests for the display-list boundary (n64c_dl): segment resolution in RSP order, call and
  * branch copies, BRANCH_Z segment isolation, replay-record conversion to host layout, microcode loads,
- * cut lists, G_LINE3D as two triangles, the colour-image hook and unknown opcodes. Lists are written by hand into a RAM image, word-swapped for replay as the oracle
+ * cut lists, G_LINE3D as two triangles, the colour-image hook, point-sampled 1:1 rectangles and unknown opcodes. Lists are written by hand into a RAM image, word-swapped for replay as the oracle
  * capture stores it. */
 #include "../n64c_dl.h"
 #include <math.h>
@@ -277,13 +277,15 @@ static void test_modify_vertex(void)
     CHECK(op(root + 18) == 0xDE && ((const int16_t *)z[5])[2] == -16416 && op(root + 20) == 0x00);
     n64c_dl_arena_free(&arena);
 }
-static uint32_t hook_phys, hook_width, hook_calls;
-static int hook(void *user, uint32_t phys, uint32_t width, uintptr_t extra[2])
+static uint32_t hook_phys, hook_width, hook_height, hook_calls, hook_heights[4];
+static int hook(void *user, uint32_t phys, uint32_t width, uint32_t height, uintptr_t extra[2])
 {
     CHECK(user == &hook_calls);
     hook_calls++;
     hook_phys = phys;
     hook_width = width;
+    hook_height = height;
+    hook_heights[(hook_calls - 1) & 3] = height;
     extra[0] = 0x21u << 24;
     extra[1] = 7;
     return 1;
@@ -306,10 +308,78 @@ static void test_color_image_hook(void)
     const uintptr_t *l = root ? (const uintptr_t *)root[5] : NULL;
     CHECK(l && op(l) == 0xFF && l[1] == (uintptr_t)(ram + 0xC000) && l[2] == 0x21u << 24 && l[3] == 7 && op(l + 4) == 0xDF);
     CHECK(st.unknown == 1 && st.unknown_op == 0x42);
+    CHECK(hook_height == 0); /* no scissor yet */
+    /* The game's boot list: scissor (0,0)-(479,359) before its 480-wide colour image -> 360 rows; the
+     * scissor carries over to the next frame, then (283,221) -> 222 and an exclusive 240 stays 240. */
+    n64c_dl_arena_reset(&arena);
+    at = 0x1000;
+    cmd(0xED000000u, 0x0077C59Cu);
+    cmd(0xFFu << 24 | 2u << 19 | (480 - 1), 0x8000C000);
+    cmd(0xDFu << 24, 0);
+    root = n64c_dl_translate(&mem, 0x1000, &arena, &st, &hooks);
+    CHECK(root && hook_width == 480 && hook_height == 360);
+    n64c_dl_arena_reset(&arena);
+    at = 0x1000;
+    cmd(0xFFu << 24 | 2u << 19 | (480 - 1), 0x8000C000);
+    cmd(0xED000000u, 0x0046C374u);
+    cmd(0xFFu << 24 | 2u << 19 | (284 - 1), 0x8000C000);
+    cmd(0xED000000u, 0x005003C0u);
+    cmd(0xFFu << 24 | 2u << 19 | (320 - 1), 0x8000C000);
+    cmd(0xDFu << 24, 0);
+    hook_calls = 0;
+    root = n64c_dl_translate(&mem, 0x1000, &arena, &st, &hooks);
+    CHECK(root && hook_calls == 3 && hook_heights[0] == 360 && hook_heights[1] == 222 && hook_heights[2] == 240);
+    n64c_dl_arena_free(&arena);
+}
+/* The game's menu background strip (poll 1200): a 1:1 texture rectangle under bilinear filtering is
+ * drawn point-sampled; scaled, copy-mode or point rectangles and an unknown filter stay as they are. */
+static void test_texrect_point(void)
+{
+    N64cGfxMem mem = begin(0);
+    at = 0x1000;
+    cmd(0xE4470318u, 0x00000300u);  /* filter not known yet: kept */
+    cmd(0xE1000000u, 0);
+    cmd(0xF1000000u, 0x04000400u);
+    cmd(0xE3001201u, 0x00002000u);  /* G_SETOTHERMODE_H texture filter = bilerp */
+    cmd(0xE3000A01u, 0x00000000u);  /* cycle type = 1-cycle */
+    cmd(0xE4470324u, 0x00000318u);  /* (0,198)-(284,201), 1:1 */
+    cmd(0xE1000000u, 0);
+    cmd(0xF1000000u, 0x04000400u);
+    cmd(0xE4470324u, 0x00000318u);  /* half a texel per pixel: kept */
+    cmd(0xE1000000u, 0);
+    cmd(0xF1000000u, 0x02000400u);
+    cmd(0xDFu << 24, 0);
+    N64cDlArena arena = {0};
+    N64cDlStats st;
+    const uintptr_t *root = n64c_dl_translate(&mem, 0x1000, &arena, &st, NULL);
+    CHECK(root != NULL);
+    if (!root)
+        return;
+    CHECK(op(root) == 0xE4 && op(root + 2) == 0xE1 && op(root + 4) == 0xF1);
+    const uintptr_t *l = op(root + 10) == 0xDE ? (const uintptr_t *)root[11] : NULL;
+    CHECK(l && l[0] == 0xE3001201u && l[1] == 0 && l[2] == 0xE4470324u && l[3] == 0x318 && op(l + 4) == 0xE1 &&
+          l[7] == 0x04000400u && l[8] == 0xE3001201u && l[9] == 0x2000 && op(l + 10) == 0xDF);
+    CHECK(op(root + 12) == 0x00 && op(root + 14) == 0x00);
+    CHECK(op(root + 16) == 0xE4 && op(root + 18) == 0xE1 && op(root + 20) == 0xF1 && op(root + 22) == 0xDF);
+    CHECK(st.texrects_point == 1 && st.commands == 12);
+    n64c_dl_arena_reset(&arena); /* the filter carries over to the next frame */
+    at = 0x1000;
+    cmd(0xE3000A01u, 0x00200000u);  /* copy mode: kept */
+    cmd(0xE4470324u, 0x00000318u);
+    cmd(0xE1000000u, 0);
+    cmd(0xF1000000u, 0x10000400u);
+    cmd(0xE3000A01u, 0x00000000u);
+    cmd(0xE4470324u, 0x00000318u);
+    cmd(0xE1000000u, 0);
+    cmd(0xF1000000u, 0x04000400u);
+    cmd(0xDFu << 24, 0);
+    root = n64c_dl_translate(&mem, 0x1000, &arena, &st, NULL);
+    CHECK(root && op(root + 2) == 0xE4 && op(root + 10) == 0xDE && st.texrects_point == 1);
     n64c_dl_arena_free(&arena);
 }
 int main(void)
 {
+    test_texrect_point();
     test_line();
     test_modify_vertex();
     test_color_image_hook();

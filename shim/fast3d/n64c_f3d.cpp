@@ -47,12 +47,13 @@ struct N64cF3d {
     uintptr_t wrapper[6] = {};
     std::string gl_renderer;
 };
-// n64c_dl hook: the framebuffer of this colour image, created on first use at the game's size.
-static int color_image(void* user, uint32_t phys, uint32_t width, uintptr_t extra[2])
+// n64c_dl hook: the framebuffer of this colour image, created on first use at the game's size (its
+// scissor's height; the configured one until the game has set a scissor).
+static int color_image(void* user, uint32_t phys, uint32_t width, uint32_t height, uintptr_t extra[2])
 {
     auto* f3d = static_cast<N64cF3d*>(user);
     const int fb = N64c::ColorImageSurface(*f3d->interpreter, *f3d->renderer, f3d->surfaces,
-                                          phys, width, f3d->config.fb_h);
+                                          phys, width, height ? height : f3d->config.fb_h);
     f3d->surface = phys;
     extra[0] = (uintptr_t)(uint8_t)Fast::OTR_G_SETFB << 24;
     extra[1] = (uintptr_t)fb;

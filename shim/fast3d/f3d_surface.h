@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // A color-image address can be reused at a different resolution. Keep its framebuffer ID,
-// but refresh the native coordinate system and, when needed, its scaled allocation.
+// but refresh the native coordinate system and, when needed, its scaled allocation. The height comes
+// from the game's scissor, which can cover part of the image (one player's view): at an unchanged
+// width a smaller height keeps the surface's own.
 #pragma once
 #include <cstdint>
 #include <map>
@@ -16,6 +18,8 @@ int ColorImageSurface(Interpreter& gfx, Renderer& renderer, std::map<uint32_t, i
         return surfaces.emplace(phys, fb).first->second;
     }
     auto& info = gfx.mFrameBuffers.at(it->second);
+    if (info.orig_width == width && height < info.orig_height)
+        height = info.orig_height;
     if (info.orig_width != width || info.orig_height != height) {
         info.orig_width = info.native_width = width;
         info.orig_height = info.native_height = height;

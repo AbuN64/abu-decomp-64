@@ -16,7 +16,7 @@ typedef struct N64cF3dConfig {
     const char *shaders;     /* fast3d-shaders.o2r (Fast3D's own shader sources); NULL: beside the executable */
     const char *settings;    /* renderer settings file (created when missing); NULL: beside the executable */
     uint32_t window_w, window_h;
-    uint32_t fb_w, fb_h;     /* the game's colour image size */
+    uint32_t fb_w, fb_h;     /* the screen size the window maps (VI output) and the colour image height until the game sets a scissor */
     int software;            /* nonzero: render on Mesa's software EGL device when present */
     int offscreen;           /* nonzero: no visible window (SDL's offscreen video driver) */
 } N64cF3dConfig;

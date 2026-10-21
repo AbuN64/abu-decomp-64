@@ -39,7 +39,13 @@
  * (w = 1, depth kept from its load) with its colour, lighting lifted while it loads when lighting is
  * known to be on, and the slot's latest ST applied again. G_MWO_POINT_ZSCREEN (16.16 screen depth in
  * the viewport's z units) sets the slot's depth the same way. Modifies whose state is unknown are
- * dropped and counted in modifies_dropped. */
+ * dropped and counted in modifies_dropped.
+ *
+ * A G_TEXRECT or G_TEXRECTFLIP drawn with bilinear filtering in 1- or 2-cycle mode at one texel per
+ * pixel from a whole texel samples exactly one texel per pixel on the RDP; a renderer drawing above
+ * the native size would sample between texels and blend in those past the rectangle's edges
+ * (texture memory the game never meant to show). Such a rectangle becomes a call to a list that
+ * switches the filter to point, draws it, and switches back, and is counted in texrects_point. */
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -55,6 +61,10 @@ typedef struct N64cDlArena {
     N64cDlBlock *blocks; /* blocks never move, so pointers into the arena stay valid */
     N64cDlBlock *cur;    /* block being filled */
     size_t used;         /* bytes handed out since the last reset */
+    /* RDP other-mode high word as the lists translated so far left it, and which of its bits are
+     * known: the RDP keeps it between lists and frames, so a reset keeps it too. */
+    uint32_t other_mode_h, other_mode_h_known;
+    uint32_t scissor_lry; /* lower-right y (10.2) of the latest G_SETSCISSOR, 0 before any */
 } N64cDlArena;
 typedef struct N64cDlStats {
     uint32_t commands;   /* commands copied */
@@ -67,12 +77,16 @@ typedef struct N64cDlStats {
     uint32_t modifies_dropped;
     uint32_t unknown;    /* commands outside the F3DEX2/L3DEX2 and RDP opcode ranges */
     uint32_t unknown_op; /* opcode of the first of them */
+    uint32_t texrects_point; /* bilinear one-texel-per-pixel rectangles drawn point-sampled */
 } N64cDlStats;
 /* Renderer extension point: called for each G_SETCIMG that does not target the current depth image,
- * with its physical address and width in pixels. A nonzero return appends the command written to
- * extra (two pointer-width words) right after the G_SETCIMG. */
+ * with its physical address, width in pixels and height in rows (0 while no G_SETSCISSOR has been
+ * seen). G_SETCIMG carries no height; the RDP draws only inside the scissor, so the height is the
+ * rows down to the scissor's lower edge, rounded up to an even count (games pass the last row or the
+ * height; colour images have an even number of rows). A nonzero return appends the command written
+ * to extra (two pointer-width words) right after the G_SETCIMG. */
 typedef struct N64cDlHooks {
-    int (*color_image)(void *user, uint32_t phys, uint32_t width, uintptr_t extra[2]);
+    int (*color_image)(void *user, uint32_t phys, uint32_t width, uint32_t height, uintptr_t extra[2]);
     void *user;
 } N64cDlHooks;
 /* Limit on commands per translation; a list that exceeds it is cut with G_ENDDL and counted in bad. */

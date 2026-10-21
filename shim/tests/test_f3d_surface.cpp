@@ -59,6 +59,12 @@ int main()
     CHECK(renderer.updates == 1 && renderer.id == first && renderer.width == 642 && renderer.height == 482);
     CHECK(N64c::ColorImageSurface(gfx, renderer, surfaces, 0x500000, 480, 222) == first);
     CHECK(renderer.updates == 2 && gfx.created == 2 && surfaces.size() == 2);
+    CHECK(N64c::ColorImageSurface(gfx, renderer, surfaces, 0x500000, 480, 360) == first); // grows
+    CHECK(gfx.mFrameBuffers.at(first).orig_height == 360);
+    CHECK(N64c::ColorImageSurface(gfx, renderer, surfaces, 0x500000, 480, 120) == first); // part-screen scissor
+    CHECK(gfx.mFrameBuffers.at(first).orig_height == 360);
+    CHECK(N64c::ColorImageSurface(gfx, renderer, surfaces, 0x500000, 284, 222) == first); // new mode
+    CHECK(gfx.mFrameBuffers.at(first).orig_height == 222 && gfx.mFrameBuffers.at(first).orig_width == 284);
     std::printf("f3d_surface: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }
