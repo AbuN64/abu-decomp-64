@@ -15,8 +15,8 @@ requires-python = ">=3.13"
 dependencies = [
   "textual==8.2.8",
   "unbake @ git+https://github.com/AbuN64/cake-unbake-64@b164c78d88d9eb35f6510740d7832aafd60e2ce8",
-  "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@fe723a7b2d410c0e5f49d44add2ba51fdba350e0",
-  "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@aa3bdbbbb9aaad9d8c52622fec20814f79168c8a",
+  "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@54f5d2ad68d151923e25d3799cdeae9f6ed11cf2",
+  "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@14828481cf327ccb9b4c5ab0a97301bdda969392",
 ]
 
 [project.optional-dependencies]
