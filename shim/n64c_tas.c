@@ -8,6 +8,7 @@
  * N64C_TAS_SHOT_EVERY and N64C_TAS_SHOT_DIR ask the frame loop for a
  * picture every N polls, to compare with the oracle's at the same poll. */
 #include "n64c_tas.h"
+#include "n64c_os.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +20,7 @@ static int play_done;
 static long shot_every;
 static const char *shot_dir;
 static atomic_long shot_due = -1;
+static FILE *trace;
 
 static void start(void)
 {
@@ -36,6 +38,11 @@ static void start(void)
     const char *every = getenv("N64C_TAS_SHOT_EVERY");
     shot_dir = getenv("N64C_TAS_SHOT_DIR");
     if (every && *every && shot_dir && *shot_dir) shot_every = strtol(every, NULL, 10);
+    path = getenv("N64C_TAS_TRACE");
+    if (path && *path && !(trace = fopen(path, "w"))) {
+        fprintf(stderr, "n64c-tas: cannot write %s\n", path);
+        _Exit(2);
+    }
     const char *after = getenv("N64C_TAS_EXIT_AFTER");
     if (after && *after) exit_after = strtol(after, NULL, 10);
 }
@@ -80,6 +87,7 @@ void n64c_tas_poll(OSContPad *pad)
         }
     }
     polls++;
+    if (trace) { fprintf(trace, "%ld %u\n", polls, (unsigned)osViGetRetraceCount()); fflush(trace); }
     if (shot_every > 0 && polls % shot_every == 0) atomic_store(&shot_due, polls);
     if (record) {
         fprintf(record, "%04x %d %d\n", pad->button, pad->stick_x, pad->stick_y);
