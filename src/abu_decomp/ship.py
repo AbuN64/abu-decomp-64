@@ -19,7 +19,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, land, meter, nextcmd, priority
+from abu_decomp import DecompError, events, land, meter, nextcmd, priority, tools
 from abu_decomp.config import Profile
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
@@ -53,17 +53,20 @@ class Ship:
         lock_wait: float = LOCK_WAIT_SECONDS,
         cgroup: Callable[[], str] = lambda: Path("/proc/self/cgroup").read_text(),
         worktree: str | None = None,
+        from_try: str | None = None,
+        invoke: Callable[..., Any] = tools.invoke,
     ) -> None:
         self.profile, self.patches, self.messages = profile, list(patches), dict(messages or {})
+        self.from_try, self.invoke = from_try, invoke  # from_try: the function whose proven candidate is the input
         self.worktree: str | None = worktree  # the work tree's own tracked changes are the input (see capture)
         self.saved: dict[str, Any] | None = None
         self.tree = tree.expanduser().resolve()
         if not (self.tree / ".git").exists():
             raise ShipError("ship.tree", f"{self.tree} is not a git checkout")
-        if self.worktree and self.patches:
-            raise ShipError("ship.arguments", "--worktree is the input itself; give it without --patch")
-        if not self.patches and not self.worktree:
-            raise ShipError("ship.arguments", "ship needs at least one --patch, or --worktree NAME")
+        if sum(map(bool, (self.worktree, self.patches, self.from_try))) > 1:
+            raise ShipError("ship.arguments", "--patch, --worktree and --from-try are each the input; give one")
+        if not (self.patches or self.worktree or self.from_try):
+            raise ShipError("ship.arguments", "ship needs at least one --patch, --worktree NAME or --from-try F")
         if len({lane for lane, _ in self.patches}) != len(self.patches):
             raise ShipError("ship.arguments", "two --patch inputs carry one lane name; each input needs its own")
         table = land.settings(profile, tree)
@@ -209,6 +212,33 @@ class Ship:
             raise ShipError("ship.worktree_restore", f"the work tree does not match its capture {saved['path']}")
         self.saved = None
 
+    def enter(self, name: str) -> None:
+        """`--from-try F`: the candidate `recipe try F` proved exact becomes the tree's tracked change, written by
+        `unbake submit` (F out of its NON_MATCHING fence or its INCLUDE_ASM replaced, its own pool rows brought), at the
+        branch tip; the ship then takes it as a --worktree input, so no lane writes a diff."""
+        self.tip()
+        file = self.tree / ".unbake/recipe/work" / f"{name}.c"
+        if not file.is_file():
+            raise ShipError(
+                "ship.from_try", f"{file} does not exist: no candidate for {name}", next=f"recipe work {name}"
+            )
+        called = self.invoke("unbake", self.profile, ["submit", str(file)], project=self.tree)
+        result = called.document.get("result") or {}
+        rows = result.get("submissions") or [{}]
+        refused = (result.get("drain") or {}).get("refused") or []
+        found = [*(rows[0].get("findings") or []), *(called.document.get("findings") or []), *refused]
+        if not called.ok or rows[0].get("operation") != "publish" or refused or not self.git("diff", "HEAD")[1]:
+            why = next((str(f.get("message") or f.get("key")) for f in found if isinstance(f, dict)), "not exact")
+            raise ShipError("ship.from_try", f"unbake submit refused {name}: {why}", next=f"recipe try {name}")
+        self.worktree = name
+
+    def abandon(self) -> None:
+        """A ship that pushed nothing puts a --worktree input back; a --from-try input was never the lane's own
+        work, so the shared tree goes back to the branch clean instead of staying dirty."""
+        self.restore()
+        if self.from_try:
+            self.clean(self.git("rev-parse", "HEAD")[1].strip())
+
     def settle(self, sha: str) -> None:
         """After a push the work tree is clean at the new commit; a tree that sat on a branch moves it there."""
         saved, self.saved = self.saved, None
@@ -286,14 +316,16 @@ class Ship:
         handle = self.lock()
         try:
             try:
+                if self.from_try:
+                    self.enter(self.from_try)
                 outcome = self.attempts(started)
             except BaseException:
-                self.restore()
+                self.abandon()
                 raise
             if outcome[0].get("pushed"):
                 self.settle(outcome[0]["pushed"])
             else:
-                self.restore()
+                self.abandon()
             return outcome
         finally:
             os.close(handle)

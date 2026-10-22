@@ -555,12 +555,22 @@ def _ship_arguments(parser: argparse.ArgumentParser) -> None:
         "patch, gated like one, committed alone and pushed; the tree ends clean at the new commit, and a refusal puts "
         "it back exactly as it was",
     )
+    parser.add_argument(
+        "--from-try",
+        metavar="F[:MESSAGE]",
+        help="the candidate `recipe try F` proved exact is the input: `unbake submit` writes it into the tree (no diff "
+        "to write), the ship gates, commits and pushes it; a refusal leaves the tree at the branch",
+    )
 
 
 def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp.land import parse_messages, parse_patches
     from abu_decomp.ship import ship
 
+    if args.from_try:
+        name, _, message = args.from_try.partition(":")
+        messages = {name: message.strip()} if message.strip() else {}
+        return ship(_profile(args.profile), args.tree, [], messages=messages, from_try=name)
     if args.patch and args.worktree:
         raise DecompError("ship.arguments", "--worktree is the input itself; give it without --patch")
     if args.patch:
