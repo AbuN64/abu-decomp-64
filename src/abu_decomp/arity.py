@@ -409,6 +409,18 @@ def aliases_of(project: Path, cfg: dict[str, Any]) -> dict[str, str]:
 # --- census ------------------------------------------------------------------------------------------------------
 
 
+def argument_words(kinds: list[str]) -> int:
+    """The argument words a parameter list takes under O32: a 64-bit value takes two words and starts at an even
+    word, so one after an odd count leaves a hole (s32, s64 is 4 words, not 3: the asm reads a0 and a2/a3)."""
+    words = 0
+    for kind in kinds:
+        if kind in ("int64", "uint64", "double"):
+            words += words % 2 + 2
+        else:
+            words += 1
+    return words
+
+
 def build(rows: dict[str, list[list[Any]]], asm: dict[str, dict[str, Any]], aliases: dict[str, str]) -> dict[str, Any]:
     """The per-symbol verdicts from per-file rows."""
     table: dict[str, dict[str, Any]] = {}
@@ -418,7 +430,7 @@ def build(rows: dict[str, list[list[Any]]], asm: dict[str, dict[str, Any]], alia
             site = {"file": file, "line": line, "n": count}
             if kind == "d":
                 kinds = [prototype._param(p, i, aliases).kind for i, p in enumerate(params)]
-                words = sum(2 if k in ("int64", "uint64", "double") else 1 for k in kinds)
+                words = argument_words(kinds)
                 entry["defs"].append({**site, "words": words, "blind": "struct" in kinds, "digest": digest})
             elif kind == "p":
                 entry["protos"].append(site)

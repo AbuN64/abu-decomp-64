@@ -195,3 +195,15 @@ class SeedTests(unittest.TestCase):
         test_ship.git(wt, "add", "new.c")
         self.assertGreaterEqual(worktree.align_times(shared.tree, wt), 1)
         self.assertEqual((wt / "a.c").stat().st_mtime_ns, 10**18)
+
+
+class ArityTests(unittest.TestCase):
+    def test_a_64_bit_argument_starts_at_an_even_word(self) -> None:
+        from abu_decomp.arity import argument_words
+
+        self.assertEqual(argument_words(["int64", "int64"]), 4)
+        self.assertEqual(argument_words(["int", "int64"]), 4)
+        self.assertEqual(argument_words(["int", "int", "uint64"]), 4)
+        self.assertEqual(argument_words(["int", "int", "int"]), 3)
+        self.assertEqual(argument_words(["int", "int64", "int"]), 5)
+        self.assertEqual(argument_words(["ptr", "int64", "int64"]), 6)  # lldiv(LldivResult *, s64, s64): a0, a2:a3, stack
