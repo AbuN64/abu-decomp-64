@@ -140,13 +140,9 @@ def check(profile: Profile, text: str, function: str | None = None) -> dict[str,
                 from abu_decomp import arity
 
                 where = arity.definition_file(profile, guess)
-                behave = f"decomp {profile_arg} behave --function {guess} --candidate {where or 'FILE'}"
+                behave = f"decomp {profile_arg} behave --function {guess}" + (f" --candidate {where}" if where else "")
             # Only behave can show behaviour or a benign difference; a byte check suits `pass` with no function named.
-            nxt = behave or (
-                f"decomp {profile_arg} make check"
-                if need == "pass"
-                else f"decomp {profile_arg} behave --function SYM --candidate FILE"
-            )
+            nxt = behave or (f"decomp {profile_arg} make check" if need == "pass" else f"decomp {profile_arg} owes")
             problems.append({"word": word, "line": number, "need": need, "why": why, "next": nxt})
     return {"cited": [run["invocation"] for run in cited], "problems": problems}
 

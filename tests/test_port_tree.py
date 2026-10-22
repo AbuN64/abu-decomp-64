@@ -137,7 +137,7 @@ class PortTreeTests(unittest.TestCase):
         steps = next(g for g in result["gates"] if g["gate"] == "check")["steps"]
         self.assertEqual([s["step"] for s in steps], ["build", "tas"])
         behind = [f for f in findings if f["key"] == "pin.behind"]
-        self.assertTrue(behind and "decomp repin" in behind[0]["next"])
+        self.assertTrue(behind and " repin --tree " in behind[0]["next"])
 
     def test_a_failing_step_refuses_the_input_and_stops_the_later_steps(self) -> None:
         self.exits["cmake"] = 2
@@ -157,14 +157,14 @@ class PortTreeTests(unittest.TestCase):
         _, code, findings = self.land(patch)
         self.assertEqual(code, 1)
         self.assertEqual(findings[0]["key"], "pin.differ")
-        self.assertIn("decomp repin", findings[0]["next"])
+        self.assertIn(" repin --tree ", findings[0]["next"])
 
     def test_a_pin_behind_the_source_is_a_note_naming_the_repin_verb(self) -> None:
         pin = land.settings(self.profile, self.tree)["pin"]
-        found = repin.check(pin, self.tree, run_process)
+        found = repin.check(pin, self.tree, run_process, self.profile.source_file)
         row = next(f for f in found["findings"] if f["key"] == "pin.behind")
         self.assertFalse(row["blocking"])
-        self.assertTrue(row["next"].startswith("decomp repin --tree"))
+        self.assertTrue(row["next"].startswith("decomp --profile"))
 
     def test_repin_sets_every_place_and_leaves_the_change_in_the_work_tree(self) -> None:
         result, code, findings = repin.repin(self.profile, self.tree, None)

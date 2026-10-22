@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError
+from abu_decomp import DecompError, nextcmd
 from abu_decomp.config import Profile
 
 Run = Callable[[Sequence[str], Path, "dict[str, str] | None", "float | None"], "tuple[int, str, str]"]
@@ -23,6 +23,13 @@ HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
 class RepinError(DecompError):
     pass
+
+
+def _repin(profile_file: Path | None, tree: Path, source: Path, ref: str = "HEAD") -> str:
+    """The repin command (needs the seat profile), else the read-only command that shows the source's tip."""
+    if profile_file:
+        return f"decomp --profile {profile_file} repin --tree {tree}"
+    return f"git -C {source} log -1 --oneline {ref}"
 
 
 def commit(run: Run, repo: Path, ref: str) -> str:
@@ -44,7 +51,7 @@ def read(pin: dict[str, Any], tree: Path) -> dict[str, list[str]]:
     return found
 
 
-def check(pin: dict[str, Any], tree: Path, run: Run) -> dict[str, Any]:
+def check(pin: dict[str, Any], tree: Path, run: Run, profile_file: Path | None = None) -> dict[str, Any]:
     """{"pin": the tree's pin or None, "findings": [...]}: the pin gate's reading of the tree as it is."""
     findings: list[dict[str, Any]] = []
     places = read(pin, tree)
@@ -53,14 +60,14 @@ def check(pin: dict[str, Any], tree: Path, run: Run) -> dict[str, Any]:
     if empty:
         findings.append(
             {"key": "pin.missing", "blocking": True, "message": f"no pin found in {', '.join(empty)}",
-             "next": f"check land.trees pin.files patterns against {empty[0]}"}
+             "next": f"cat {tree / empty[0]}"}
         )  # fmt: skip
     if len(values) > 1:
         spelled = "; ".join(f"{p}={','.join(v[:9] for v in r)}" for p, r in places.items())
         findings.append(
             {"key": "pin.differ", "blocking": True,
              "message": "the pin places disagree: " + spelled,
-             "next": f"decomp repin --tree {tree}"}
+             "next": _repin(profile_file, tree, pin["source"], pin["ref"])}
         )  # fmt: skip
     current = next(iter(values)) if len(values) == 1 else None
     if current and pin["fetched"]:
@@ -70,7 +77,7 @@ def check(pin: dict[str, Any], tree: Path, run: Run) -> dict[str, Any]:
                 {"key": "pin.fetched", "blocking": True,
                  "message": f"the fetched source {pin['fetched']} is at {out.strip()[:12] or 'nothing'}, "
                  f"the pin is {current[:12]}",
-                 "next": f"build the tree again (its configure fetches the pin), or decomp repin --tree {tree}"}
+                 "next": _repin(profile_file, tree, pin["fetched"])}
             )  # fmt: skip
     if current:
         try:
@@ -82,7 +89,7 @@ def check(pin: dict[str, Any], tree: Path, run: Run) -> dict[str, Any]:
                 findings.append(
                     {"key": "pin.behind", "blocking": False,
                      "message": f"the pin {current[:12]} lags {pin['source'].name} {pin['ref']} at {head[:12]}",
-                     "next": f"decomp repin --tree {tree}"}
+                     "next": _repin(profile_file, tree, pin["source"], pin["ref"])}
                 )  # fmt: skip
     return {"pin": current, "findings": findings}
 
@@ -106,6 +113,34 @@ def apply(pin: dict[str, Any], tree: Path, sha: str) -> list[str]:
     return changed
 
 
+def lag(profile: Profile, path: Path, run: Run | None = None) -> dict[str, str] | None:
+    """{tree, pin, head, next} when `path` lies in a tree whose pin trails its source's ref (its build cannot
+    configure against the moved source until `decomp repin` runs); None when it has no pin or the pin is current."""
+    from abu_decomp import land
+
+    run = run or land.run_process
+    path = path.expanduser().resolve()
+    for key in profile.section("land").get("trees", {}):
+        tree = profile.path(f"land.trees.{key}", key)
+        if path != tree and tree not in path.parents:
+            continue
+        pin = land.settings(profile, tree)["pin"]
+        if pin is None:
+            return None
+        found = check(pin, tree, run, profile.source_file)
+        behind = next((f for f in found["findings"] if f["key"] == "pin.behind"), None)
+        if behind is None:
+            return None
+        head = commit(run, pin["source"], pin["ref"])
+        return {
+            "tree": str(tree),
+            "pin": found["pin"] or "",
+            "head": head,
+            "next": f"decomp --profile {profile.source_file} repin --tree {tree}",
+        }
+    return None
+
+
 def repin(
     profile: Profile, tree: Path, to: str | None, run: Run | None = None
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -123,6 +158,11 @@ def repin(
     blocking = [
         f for f in after["findings"] if f["blocking"] and f["key"] != "pin.fetched"
     ]  # fetched follows the build
-    ship = f"decomp ship --tree {tree} --worktree repin:'Repin to {pin['source'].name} {sha[:7]}: <what moved>'"
+    _, moved, _ = run(["git", "-C", str(pin["source"]), "log", "-1", "--format=%s", sha], tree, None, 60)
+    head = f"Repin to {pin['source'].name} {sha[:7]}"
+    limit = land.settings(profile, tree)["subject_limit"]
+    ship = nextcmd.ship_command(
+        profile.source_file, tree, "repin", f"{head}: {moved.strip()}", worktree=True, limit=limit
+    )
     result = {"tree": str(tree), "from": before, "to": sha, "changed": changed, "next": ship}
     return result, int(bool(blocking)), blocking

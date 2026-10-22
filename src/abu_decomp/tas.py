@@ -380,7 +380,7 @@ def play(
     began = time.monotonic()
     if cheap and cfg["replay"]["args"] is not None:
         cfg = {**cfg, "args": cfg["replay"]["args"]}
-    health = tas_health.read(cfg) if health is None else health
+    health = tas_health.read(cfg, profile) if health is None else health
     polls = movie_polls(cfg, name)
     run = cfg["runs"] / "plays" / f"{_stamp(now)}-{name}"
     user_dir = run / "user"
@@ -444,7 +444,10 @@ def table(result: dict[str, Any]) -> str:
     lines = [build.get("summary", "build: not configured")]
     lines += [f"  failed {row['unit']}: {row['error']}" for row in build.get("failed", [])]
     if build.get("stale"):
-        lines.append(f"  stale: {build['stale']}; next: {build.get('rebuild', '')}")
+        lines.append(
+            f"  stale: {build['stale']}; next: {build.get('rebuild', '')}"
+            + (f"; then: {build['then']}" if build.get("then") else "")
+        )
     head = ("movie", "outcome", "polls", "vs recorded", "wall/cpu s", "next")
     rows = [
         (
@@ -477,7 +480,7 @@ def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) ->
 
     cfg = settings(profile)
     names = sorted(p.stem for p in cfg["movies"].glob("*.tas")) if cfg["movies"].is_dir() else []
-    health = tas_health.read(cfg)
+    health = tas_health.read(cfg, profile)
     began, cpu0 = time.monotonic(), resource.getrusage(resource.RUSAGE_CHILDREN)
 
     def one(name: str) -> dict[str, Any]:

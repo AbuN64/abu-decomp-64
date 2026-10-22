@@ -123,7 +123,7 @@ def claim(
         from abu_decomp import tas, tas_health
 
         if health is None:
-            health = tas_health.read(tas.settings(profile))
+            health = tas_health.read(tas.settings(profile), profile)
         return tas_health.apply(profile, health, outcome, out)
     except Exception:
         return out

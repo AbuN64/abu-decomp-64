@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from abu_decomp import nextcmd
+
 ORDER = ("build", "stale", "blocks", "owes")
 RANK_KEYS = frozenset({"order", "layers", "owes_rows"})
 _SITE = re.compile(r"^(\S+?:\d+)\s+(.*)$")
@@ -37,7 +39,7 @@ def build_rows(health: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, An
         match = _SITE.match(unit["error"])
         where, text = (match[1], match[2]) if match else (unit["unit"], unit["error"])
         text = text.partition(";")[0][:140]  # the first sentence: the compiler's notes after it are in the build header
-        layer, nxt = "game source", f"fix {where}: {text}"
+        layer, nxt = "game source", nextcmd.read_site(where)
         for rule in cfg["layers"]:
             if rule["match"].search(unit["error"]):
                 layer = rule["layer"]
@@ -56,7 +58,7 @@ def stale_rows(health: dict[str, Any]) -> list[dict[str, Any]]:
             "where": health.get("stale_by", ""),
             "error": "binary older than source",
             "layer": "build",
-            "next": health.get("rebuild") or "rebuild the port",
+            "next": health.get("rebuild") or f"ls -l {health.get('stale_by', '.')}",
         }
     ]
 

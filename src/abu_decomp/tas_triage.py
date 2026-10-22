@@ -109,7 +109,7 @@ def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None
             cannot_help="input cannot pass this point: the fault repeats on every replay",
             next=f"decomp --profile {source} arity show {owner_fn}"
             if owner_fn
-            else f"decomp --profile {source} tas play MOVIE",
+            else f"decomp --profile {source} tas look",
         )
         if owner_fn:
             site = definition_site(project, owner_fn) or include_asm_site(project, owner_fn)

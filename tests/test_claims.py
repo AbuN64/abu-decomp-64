@@ -102,9 +102,9 @@ class ClaimTests(unittest.TestCase):
     def test_behaviour_claims_need_a_behave_run_and_point_at_behave(self):
         claims.record(self.profile, "1" * 32, "make", True, {}, ["make", "check"])
         problem = claims.check(self.profile, f"the body is correct, {'1' * 32}")["problems"][0]
-        assert problem["word"] == "correct" and "behave --function SYM" in problem["next"]
+        assert problem["word"] == "correct" and problem["next"].endswith(" owes")
         assert "make check" in claims.check(self.profile, "fixed it")["problems"][0]["next"]
-        assert "behave --function SYM" in claims.check(self.profile, "an artifact")["problems"][0]["next"]
+        assert claims.check(self.profile, "an artifact")["problems"][0]["next"].endswith(" owes")
         claims.record(self.profile, "2" * 32, "behave", True, {"verdict": "same", "function": "f"}, ["behave"])
         assert claims.check(self.profile, f"the body is correct, {'2' * 32}")["problems"] == []
 

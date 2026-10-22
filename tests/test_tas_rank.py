@@ -47,7 +47,7 @@ class RankTests(unittest.TestCase):
         self.assertEqual((flags["layer"], flags["where"]), ("compile flags", "src/A/x.CPP:75"))
         self.assertEqual(flags["next"], "add the define for A/x.CPP (src/A/x.CPP:75) to the port flags")
         self.assertEqual(source["layer"], "game source")
-        self.assertIn("src/B/y.CPP:9", source["next"])
+        self.assertIn("sed -n 6,14p src/B/y.CPP", source["next"])
 
     def test_render_ends_with_the_first_rows_next(self):
         lines = tas_rank.render(self.rows).splitlines()

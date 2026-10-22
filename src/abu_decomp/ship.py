@@ -19,7 +19,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, land, meter, priority
+from abu_decomp import DecompError, events, land, meter, nextcmd, priority
 from abu_decomp.config import Profile
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
@@ -122,7 +122,7 @@ class Ship:
         """The holder of the ship lock is the job every lane's next tree waits on: its own systemd unit (scope or
         service, from /proc/self/cgroup) gets `land.lock_weight` CPU and IO weight against the lane units beside it
         for as long as it runs. Whatever stops that is a printed finding, never a silent pass."""
-        why = ""
+        why, unit = "", None
         if self.weight is None:
             why = "land.lock_weight is not set in the seat profile"
         else:
@@ -144,7 +144,10 @@ class Ship:
         os.environ[PRIORITY] = "1"  # unbake admits this job's pool work ahead of every command without it
         if why:
             message = f"ship lock held without a CPU/IO boost: {why}"
-            sys.stderr.write(f"decomp: {message}\n")
+            if why.startswith("this process runs in no systemd"):
+                pass  # configured and nothing to boost (no systemd scope here): a note in the result, no stderr line
+            else:
+                sys.stderr.write(f"decomp: {message}\n")
             self.notes.append({"key": "ship.boost", "message": message, "blocking": False})
 
     def tip(self) -> str:
@@ -158,7 +161,11 @@ class Ship:
             self.capture(sha)
             dirty = []
         if dirty:
-            raise ShipError("ship.dirty", f"{self.tree} has {len(dirty)} tracked changes; ship never resets over them")
+            raise ShipError(
+                "ship.dirty",
+                f"{self.tree} has {len(dirty)} tracked changes; ship never resets over them",
+                next=f"git -C {self.tree} status --short --untracked-files=no",
+            )
         if self.git("rev-parse", "HEAD")[1].strip() != sha:
             self.git("checkout", "-q", "--detach", sha)
         self.step("tip", started, sha=sha)
@@ -185,6 +192,7 @@ class Ship:
                 "ship.worktree_conflict",
                 f"the work tree's {count} changed file(s) do not apply on {sha[:12]} ({text.strip()[-300:]}); "
                 "the tree is unchanged",
+                next=f"git -C {self.tree} log -5 --oneline FETCH_HEAD",
             )
         self.patches = [(self.worktree or "worktree", path)]
 
@@ -346,6 +354,10 @@ class Ship:
     ) -> Result:
         lanes = [lane for lane, _ in self.patches]
         findings = [*self.notes, *findings]
+        if self.worktree:  # a refusal of a --worktree ship names the --worktree form (--patch would fail ship.dirty)
+            findings = [
+                {**f, "next": nextcmd.as_worktree(f["next"], self.worktree)} if f.get("next") else f for f in findings
+            ]
         names = sorted({n for row in result.get("lanes", []) for n in (row.get("functions") or {}).get("names", [])})
         refusal = next((f for f in findings if f.get("blocking")), None)
         inputs = self.inputs(result, sha)

@@ -38,7 +38,7 @@ def request(profile: Profile, path: str, body: dict[str, Any] | None = None) -> 
 
 def new(profile: Profile, movie: str | None) -> dict[str, Any]:
     started = request(profile, "/play", {"name": movie}) if movie else request(profile, "/new", {})
-    build = tas_health.header(tas_health.read(tas.settings(profile)))
+    build = tas_health.header(tas_health.read(tas.settings(profile), profile))
     return {**started, "build": build} if build else started
 
 
@@ -50,7 +50,7 @@ def state(profile: Profile) -> dict[str, Any]:
     full = request(profile, "/state")
     full.pop("movies", None)  # `tas list` is the place for those
     full.pop("recordings", None)
-    build = tas_health.header(tas_health.read(tas.settings(profile)))
+    build = tas_health.header(tas_health.read(tas.settings(profile), profile))
     return {**full, "build": build} if build else full
 
 

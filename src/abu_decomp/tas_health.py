@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import tas_triage
+from abu_decomp import DecompError, tas_triage
 
 BUILD_KEYS = frozenset({"units", "sources", "rebuild"})
 
@@ -43,7 +43,7 @@ def newest_source(listing: Path) -> tuple[float, str] | None:
     return newest
 
 
-def read(cfg: dict[str, Any]) -> dict[str, Any]:
+def read(cfg: dict[str, Any], profile: Any = None) -> dict[str, Any]:
     """{failed: [...], stale: bool, stale_by, rebuild, summary}; {} when the profile configures no build section."""
     build = cfg.get("build")
     if not build:
@@ -62,7 +62,7 @@ def read(cfg: dict[str, Any]) -> dict[str, Any]:
     if out["stale"]:
         parts.append("stale: binary older than source")
     out["summary"] = "; ".join(parts) or "build: ok"
-    return out
+    return with_pin_lag(profile, cfg, out)
 
 
 def header(health: dict[str, Any]) -> dict[str, Any]:
@@ -76,6 +76,8 @@ def header(health: dict[str, Any]) -> dict[str, Any]:
         out["stale"] = f"binary older than source: {health['stale_by']}"
         if health["rebuild"]:
             out["rebuild"] = health["rebuild"]
+        if health.get("repin"):
+            out["then"] = health["repin"]["then"]
     return out
 
 
@@ -88,6 +90,22 @@ def _unit_of(project: Path | None, name: str, failed: list[dict[str, str]]) -> d
         if file.endswith(row["unit"]):
             return {**row, "site": site}
     return None
+
+
+def with_pin_lag(profile: Any, cfg: dict[str, Any], health: dict[str, Any]) -> dict[str, Any]:
+    """A stale binary whose port tree pins an older source commit than the source's ref cannot rebuild (its configure
+    refuses the moved source): the `rebuild` next becomes the repin, and the build command follows as `then`."""
+    if not (health and health.get("stale") and health.get("rebuild") and profile is not None):
+        return health
+    from abu_decomp import repin
+
+    try:
+        lag = repin.lag(profile, Path(cfg["port"]))
+    except (OSError, DecompError, KeyError):
+        lag = None
+    if not lag:
+        return health
+    return {**health, "repin": {**lag, "then": health["rebuild"]}, "rebuild": lag["next"]}
 
 
 def apply(profile: Any, health: dict[str, Any], outcome: dict[str, Any], out: dict[str, Any]) -> dict[str, Any]:
@@ -114,6 +132,9 @@ def apply(profile: Any, health: dict[str, Any], outcome: dict[str, Any], out: di
                 out["kind"] = "stale binary"
             out["then"] = out.get("next")
             out["next"] = health["rebuild"]
+            if health.get("repin"):
+                out["pin_lag"] = health["repin"]
+                out["then"] = health["repin"]["then"]
     out["build"] = health["summary"]
     out["claim"] = (
         f"{out.get('kind')}: {subject or outcome.get('outcome')}; blocking={str(out.get('blocking', True)).lower()}; "

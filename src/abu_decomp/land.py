@@ -136,6 +136,7 @@ from abu_decomp import (
     evidence,
     evidence_gate,
     meter,
+    nextcmd,
     proposals,
     retarget,
     standalone,
@@ -197,11 +198,8 @@ NEXT_COMMANDS = {
     "land.sync_after": MAKE,
     "land.audit": MAKE,
     "land.input_build_failed": MAKE,
-    "land.readme": (
-        "decomp --profile {p} land --tree {tree} --base {base} --patch LANE=PATH --credit-fall LANE=V:BYTES:WHY"
-    ),
-    "land.commit_subject": "decomp --profile {p} ship --tree {tree} --patch LANE=PATH:SHORTER_MESSAGE",
-    "land.commit_hook": "decomp --profile {p} ship --tree {tree} --patch LANE=PATH:MESSAGE_THE_HOOK_ACCEPTS",
+    "land.readme": "git -C {tree} diff {base} -- README.md",
+    "land.commit_hook": "git -C {tree} log -5 --format=%s {base}",
     "land.symbol_conflict": "git -C {tree} diff {base} -- 'versions/*/symbol_addrs.txt'",
     "land.symbol_invalid": "git -C {tree} diff {base} -- 'versions/*/symbol_addrs.txt'",
     "land.symbol_clash": "git -C {tree} diff {base} -- 'versions/*/symbol_addrs.txt'",
@@ -211,10 +209,22 @@ NEXT_COMMANDS = {
 }
 
 
-def next_command(profile: Profile, tree: Path, base: str, finding: dict[str, Any]) -> str:
+def next_command(
+    profile: Profile,
+    tree: Path,
+    base: str,
+    finding: dict[str, Any],
+    inputs: dict[str, tuple[Path, str | None]] | None = None,
+) -> str:
+    """The finding's one `next`, concrete (nextcmd.problems(...) == []); `inputs` is lane -> (patch path, message)."""
     cited = re.search(r"run `([^`]+)`", finding.get("message", "")) if finding["key"] == "land.claim_uncited" else None
     if cited:
         return cited.group(1)
+    lane = finding.get("lane")
+    if finding["key"] == "land.commit_subject" and inputs and lane in inputs:
+        path, message = inputs[lane]
+        limit = settings(profile, tree)["subject_limit"]
+        return nextcmd.ship_command(profile.source_file, tree, lane, message, path=path, limit=limit)
     template = NEXT_COMMANDS.get(finding["key"], "git -C {tree} status --short")
     return template.format(p=profile.source_file, tree=tree, base=base, file=finding.get("file") or ".")
 
@@ -1637,7 +1647,7 @@ class Landing:
         from abu_decomp import repin
 
         started = self.clock()
-        found = repin.check(self.config["pin"], self.tree, self.run)
+        found = repin.check(self.config["pin"], self.tree, self.run, self.profile.source_file)
         for row in found["findings"]:
             if row["blocking"]:
                 self.fail(row["key"], row["message"], next=row.get("next"))
@@ -2054,7 +2064,7 @@ class Landing:
                 (
                     "land.commit_subject",
                     f"lane {lane}: commit subject is {len(subject)} characters, the limit is {limit}; "
-                    "shorten --patch LANE=PATH:MESSAGE",
+                    "shorten the message",
                 )
             )
         if hook:
@@ -2353,7 +2363,13 @@ class Landing:
         }
         for finding in self.findings:
             if finding["blocking"] and not finding.get("next"):
-                finding["next"] = next_command(self.profile, self.tree, self.base, finding)
+                finding["next"] = next_command(
+                    self.profile,
+                    self.tree,
+                    self.base,
+                    finding,
+                    {lane: (path, self.messages.get(lane)) for lane, path in self.patches},
+                )
         self.write_event(result)
         return result, int(not result["pass"]), self.findings
 
