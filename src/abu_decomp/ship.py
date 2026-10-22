@@ -144,9 +144,8 @@ class Ship:
         os.environ[PRIORITY] = "1"  # unbake admits this job's pool work ahead of every command without it
         if why:
             message = f"ship lock held without a CPU/IO boost: {why}"
-            if why.startswith("this process runs in no systemd"):
-                pass  # configured and nothing to boost (no systemd scope here): a note in the result, no stderr line
-            else:
+            # configured, but this process is in no unit the user manager owns: a note in the result, no stderr line
+            if not (why.startswith("this process runs in no systemd") or "not found" in why):
                 sys.stderr.write(f"decomp: {message}\n")
             self.notes.append({"key": "ship.boost", "message": message, "blocking": False})
 
