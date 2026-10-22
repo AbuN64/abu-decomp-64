@@ -3,8 +3,9 @@ text that states a result (a commit message, an inbox entry) must cite an id who
 
 State dir: `ABU_DECOMP_INVOCATIONS`, else `invocations/` beside the profile's `events.path` (never a game repo).
 Config (profile section `land`, key `claims`):
-    "words":    {"fixed": "pass", "benign": "benign", ...}   claim word -> the outcome a cited run must have
-                (`pass`: the run's check passed; `benign`: behave found only a benign difference)
+    "words":    {"fixed": "pass", "correct": "behaves", "benign": "benign", ...}   word -> what a cited run must show
+                (`pass`: the run's check passed; `behaves`: a behave run found the same behaviour, since a byte check
+                never compiles a non-matching body; `benign`: behave found only a benign difference)
     "commands": ["behave", "land", "ship", "make"]          commands whose runs may be cited (default: any but claims)
 No `claims` key means no claim is checked; the records are written regardless.
 """
@@ -24,6 +25,13 @@ from abu_decomp.config import Profile
 ID = re.compile(r"\b[0-9a-f]{12,32}\b")
 FUNCTION = re.compile(r"\bfunc_[0-9A-Fa-f]{8}\w*")
 NOT_RECORDED = frozenset({"claims", "describe", "mcp"})
+NEEDS = ("pass", "behaves", "benign")
+
+
+def supports(run: dict[str, Any], need: str) -> bool:
+    if need == "behaves":
+        return run.get("command") == "behave" and bool(run.get("passed"))
+    return bool(run.get("passed" if need == "pass" else "benign"))
 
 
 def state_dir(profile: Profile | None) -> Path | None:
@@ -87,12 +95,10 @@ def settings(profile: Profile) -> dict[str, Any] | None:
     if not table:
         return None
     words = table.get("words")
-    if (
-        not isinstance(words, dict)
-        or not words
-        or not all(isinstance(k, str) and v in ("pass", "benign") for k, v in words.items())
-    ):
-        raise DecompError("config.schema", f"{profile.source_file}:land.claims.words: expected {{word: pass|benign}}")
+    if not isinstance(words, dict) or not words or not all(isinstance(k, str) and v in NEEDS for k, v in words.items()):
+        raise DecompError(
+            "config.schema", f"{profile.source_file}:land.claims.words: expected {{word: {'|'.join(NEEDS)}}}"
+        )
     return {"words": {k.lower(): v for k, v in words.items()}, "commands": table.get("commands") or []}
 
 
@@ -111,7 +117,7 @@ def check(profile: Profile, text: str, function: str | None = None) -> dict[str,
     )
     guess = function or next(iter(FUNCTION.findall(text)), None)
     profile_arg = f"--profile {profile.source_file}"
-    nxt = ""
+    behave = ""
     problems: list[dict[str, Any]] = []
     seen: set[str] = set()
     for number, line in enumerate(text.splitlines(), 1):
@@ -121,7 +127,7 @@ def check(profile: Profile, text: str, function: str | None = None) -> dict[str,
             if word in seen:
                 continue
             seen.add(word)
-            if any(run.get("passed" if need == "pass" else "benign") for run in cited):
+            if any(supports(run, need) for run in cited):
                 continue
             why = (
                 f"states '{word}' without citing an invocation id whose recorded outcome is {need}"
@@ -129,15 +135,17 @@ def check(profile: Profile, text: str, function: str | None = None) -> dict[str,
                 else f"states '{word}' but none of the cited runs ({', '.join(r['invocation'][:12] for r in cited)}) "
                 f"is {need}"
             )
-            if not nxt:  # the candidate is the function's own source file, found only when a claim needs it
+            if guess and not behave:  # the candidate is the function's own source file, found only when needed
                 from abu_decomp import arity
 
-                where = arity.definition_file(profile, guess) if guess else None
-                nxt = (
-                    f"decomp {profile_arg} behave --function {guess} --candidate {where or 'FILE'}"
-                    if guess
-                    else f"decomp {profile_arg} make check"
-                )
+                where = arity.definition_file(profile, guess)
+                behave = f"decomp {profile_arg} behave --function {guess} --candidate {where or 'FILE'}"
+            # Only behave can show behaviour or a benign difference; a byte check suits `pass` with no function named.
+            nxt = behave or (
+                f"decomp {profile_arg} make check"
+                if need == "pass"
+                else f"decomp {profile_arg} behave --function SYM --candidate FILE"
+            )
             problems.append({"word": word, "line": number, "need": need, "why": why, "next": nxt})
     return {"cited": [run["invocation"] for run in cited], "problems": problems}
 
