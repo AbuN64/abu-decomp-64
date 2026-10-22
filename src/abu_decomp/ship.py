@@ -216,15 +216,24 @@ class Ship:
 
     def enter(self, name: str) -> None:
         """`--from-try F`: the candidate `recipe try F` proved exact becomes the tree's tracked change, written by
-        `unbake submit` (F out of its NON_MATCHING fence or its INCLUDE_ASM replaced, its own pool rows brought), at the
-        branch tip; the ship then takes it as a --worktree input, so no lane writes a diff."""
+        `unbake submit` at the branch tip (F out of its NON_MATCHING fence or its INCLUDE_ASM replaced, its own pool
+        rows brought, plus the header, alias or config files under work/F.overlay/ at their project paths); the ship
+        then takes it as a --worktree input, so no lane writes a diff."""
         self.tip()
         file = self.tree / ".unbake/recipe/work" / f"{name}.c"
         if not file.is_file():
             raise ShipError(
                 "ship.from_try", f"{file} does not exist: no candidate for {name}", next=f"recipe work {name}"
             )
-        called = self.invoke("unbake", self.profile, ["submit", str(file)], project=self.tree)
+        stray = sorted((self.tree / ".unbake/inbox").glob("*.json"))
+        if stray:  # `unbake submit` lands the whole inbox: another entry would ride into this input
+            raise ShipError(
+                "ship.from_try", f"the inbox holds {len(stray)} other submission(s); they would land with {name}",
+                next="unbake land",
+            )  # fmt: skip
+        overlay = self.tree / ".unbake/recipe/work" / f"{name}.overlay"  # companions: project path -> its new text
+        extras = [f"{p.relative_to(overlay)}={p}" for p in sorted(overlay.rglob("*")) if p.is_file()]
+        called = self.invoke("unbake", self.profile, ["submit", str(file), *extras], project=self.tree)
         result = called.document.get("result") or {}
         rows = result.get("submissions") or [{}]
         refused = (result.get("drain") or {}).get("refused") or []
