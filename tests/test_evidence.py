@@ -164,3 +164,38 @@ def test_landing_gate_turns_a_refusal_into_a_blocking_finding(monkeypatch):
     assert landing.evidence() is False
     assert landing.findings[0]["key"] == "land.evidence" and "decomp behave" in landing.findings[0]["message"]
     assert landing.gates[0]["gate"] == "evidence" and landing.gates[0]["pass"] is False
+
+
+def test_gate_refuses_a_body_that_moved_to_another_unit_and_passes_it_in_place(tmp_path: Path, monkeypatch):
+    from abu_decomp import evidence_gate
+
+    stub = 'INCLUDE_ASM("o", g);\n'
+    body = "int g(int a) { return a; }\n"
+    other = "int h(void) { return 0; }\n"
+    base = {"a.c": stub, "b.c": other}
+
+    def landing_for(new: dict[str, str]):
+        tree = tmp_path / ("t" + "".join(sorted(new)) + str(len(new["a.c"])))
+        tree.mkdir(parents=True)
+        for name, text in new.items():
+            (tree / name).write_text(text)
+        return SimpleNamespace(
+            tree=tree,
+            extra={"base": "B"},
+            findings=[],
+            behave=lambda o: pytest.fail("behave"),
+            git=lambda *a, ok=True: base[a[1].split(":")[1]] if a[0] == "show" else "",
+            snapshot=lambda: "N",
+            changed_files=lambda: sorted(new),
+            profile=SimpleNamespace(source_file=Path("p.json")),
+        )
+
+    cfg = {"suffixes": (".c",), "guard": "NON_MATCHING", "stand_in": "INCLUDE_ASM", "headers": [], "roms": []}
+    cfg["slow_seconds"] = 60
+    moved = evidence_gate.Gate(landing_for({"a.c": "", "b.c": other + body}), cfg, lambda: "v").run()[0]
+    assert [r["function"] for r in moved] == ["g"] and "moved from unit a.c to unit b.c" in moved[0]["why"]
+    assert (
+        "its body belongs in place of its INCLUDE_ASM line in a.c" in moved[0]["why"]
+        and "diff" in moved[0]["reproduce"]
+    )
+    assert evidence_gate.Gate(landing_for({"a.c": body, "b.c": other}), cfg, lambda: "v").run()[0] == []

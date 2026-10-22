@@ -142,6 +142,10 @@ class Gate:
         refused: list[dict[str, str]] = []
         checked: list[dict[str, str]] = []
         files = [f for f in landing.changed_files() if f.lower().endswith(cfg["suffixes"])]
+        lost: dict[
+            str, str
+        ] = {}  # function -> the file whose base held its body or INCLUDE_ASM line and the tree lacks it
+        gained: dict[str, str] = {}  # function -> a file that holds it now and did not at the base
         for relative in files:
             old = landing.git("show", f"{landing.extra['base']}:{relative}", ok=False)
             path = landing.tree / relative
@@ -149,6 +153,8 @@ class Gate:
             base_fns = evidence.parse(old, cfg["guard"], cfg["stand_in"])
             new_fns = evidence.parse(new, cfg["guard"], cfg["stand_in"])
             texts = {"base": old, "new": new}
+            lost |= {name: relative for name in base_fns if name not in new_fns}
+            gained |= {name: relative for name in new_fns if name not in base_fns}
 
             def measure(
                 side: str, function: str, relative: str = relative, texts: dict[str, str] = texts
@@ -169,6 +175,19 @@ class Gate:
                 )
             refused += bad
             checked += [{**row, "file": relative} for row in good]
+        for name in sorted(lost.keys() & gained.keys()):
+            home, there = lost[name], gained[name]
+            refused.append(
+                {
+                    "function": name,
+                    "base": f"in {home}",
+                    "new": f"in {there}",
+                    "why": f"{name} moved from unit {home} to unit {there}; its body belongs in place of its "
+                    f"{cfg['stand_in']} line in {home}",
+                    "file": there,
+                    "reproduce": f"git -C {landing.tree} diff {landing.extra['base']} -- {home} {there}",
+                }
+            )
         return refused, checked
 
 
