@@ -66,7 +66,7 @@ def unproven(base: dict[str, Fn], new: dict[str, Fn], tries: dict[str, dict[str,
         {
             "function": name,
             "why": f"{name} body was not produced/proven by recipe try (no recorded candidate has this body)",
-            "next": f"recipe work {name}",
+            "next": f"recipe try {name}",
         }
         for name, fn in sorted(new.items())
         if changed(base.get(name), fn) and inner(fn) not in tries

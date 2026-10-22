@@ -872,6 +872,15 @@ def _own_version(args: list[str]) -> bool:
     return args[-1:] == ["--version"] and (len(args) == 1 or (len(args) == 3 and args[0] == "--profile"))
 
 
+def _refusal_lines(findings: list[dict[str, Any]]) -> None:
+    """Each blocking finding on stderr: what refused and the one command to run next (never only in JSON)."""
+    for finding in findings:
+        if finding.get("blocking"):
+            sys.stderr.write(f"decomp: refused {finding.get('key')}: {finding.get('message')}\n")
+            if finding.get("next"):
+                sys.stderr.write(f"decomp: next: {finding['next']}\n")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if _own_version(args):
@@ -923,4 +932,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     sys.stdout.write(json.dumps(envelope, sort_keys=True, default=str) + "\n")
     sys.stdout.flush()
+    _refusal_lines(findings)
     return code
