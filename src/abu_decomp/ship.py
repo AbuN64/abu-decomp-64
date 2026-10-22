@@ -742,6 +742,9 @@ class Ship:
                 self.refused.append({"lane": lane, "key": key, "message": reason})
                 self.notes.append({"key": "ship.input_refused", "message": f"{lane}: {reason}", "blocking": False})
             inputs = kept
+            if not self.carry and self.carry_mode(base, inputs):  # the rest brought proofs: no gate runs again
+                self.carry = True
+                sys.stderr.write(f"decomp: {', '.join(sorted(lanes))} dropped; the rest carry their proofs\n")
 
     def evidence_refusals(self, result: dict[str, Any], findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The evidence gate's refusals, each tagged with the lane(s) whose files carry the refused function."""

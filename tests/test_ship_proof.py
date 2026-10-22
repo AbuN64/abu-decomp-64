@@ -543,3 +543,37 @@ class TypesTrainTests(CarriedShipTests):
 for _name in dir(CarriedShipTests):  # the train tests reuse the carried tests' fixtures, not their cases
     if _name.startswith("test_") and _name not in TypesTrainTests.__dict__:
         setattr(TypesTrainTests, _name, None)
+
+
+class DropAndCarryTests(CarriedShipTests):
+    """A refused input leaves the round at once; the inputs that brought proofs land with no gate run again."""
+
+    def test_the_rest_of_a_refused_round_carries_instead_of_building_again(self) -> None:
+        test_ship.git(self.tree, "worktree", "add", "--detach", "-q", str(self.root / "wt" / "M"), "HEAD")
+        other = self.root / "m.patch"
+        other.write_text("diff --git a/b.c b/b.c\n--- a/b.c\n+++ b/b.c\n@@ -1 +1,2 @@\n int b;\n+int g;\n")
+        (self.tree / "b.c").write_text("int b;\n")
+
+        def prove(profile: Any, tree: Path, lane: str, path: Path, **kw: Any) -> dict[str, Any]:
+            shape = shipproof.describe(path.read_text())
+            base = self.base if lane == "L" else "0" * 40  # M's proof base is no ancestor of the tip: it builds
+            return shipproof.build_record(
+                lane, base, shipproof.patch_hash(path), shape, {}, {"us": {"sha1": "x", "ok": True}}, {"check": True}
+            )
+
+        def landing(profile: Any, tree: Path, base: str, patches: Any, **kw: Any) -> Any:
+            self.lands.append({"lanes": [lane for lane, _ in patches], **kw})
+            if len(patches) == 2:
+                refused = [{"key": "land.file_refused", "message": "x", "blocking": True, "lane": "M"}]
+                return {"pass": True, "lanes": []}, 0, refused
+            (tree / "a.c").write_text((tree / "a.c").read_text() + "int f;\n")
+            plan = {"lane": "L", "files": ["a.c"], "functions": ["f"], "message": "Match f", "body": None}
+            return {"pass": True, "commits": [plan], "lanes": [{"lane": "L", "functions": {"names": ["f"]}}]}, 0, []
+
+        _, code, findings = ship(
+            self.profile, self.tree, [("L", self.patch), ("M", other)], landing=landing, prove=prove,
+            append=lambda path, record: {"ok": True}, spawn=lambda: None,
+        )  # fmt: skip
+        self.assertEqual(code, 0, (findings, self.lands))
+        self.assertEqual([row.get("carry") for row in self.lands], [None, True])
+        self.assertEqual(self.lands[1]["lanes"], ["L"])
