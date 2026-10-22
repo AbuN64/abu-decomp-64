@@ -50,7 +50,6 @@ class LinkTests(unittest.TestCase):
             tool.write_text(f"#!/bin/sh\ncat <<'EOF'\n{OBJDUMP_T}EOF\n")
             tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
             elf = Path(directory) / "x.elf"
-            self.assertEqual(cand.text_symbols(str(tool), elf), ["func_a", "func_b", "helper"])
             table = cand.function_table(str(tool), elf, 0x80800080, 0x80800000)
             # func_b has no size: it runs to the next symbol
             self.assertEqual(

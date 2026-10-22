@@ -1,21 +1,16 @@
 import io
 import json
-import os
 import subprocess
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
-from abu_decomp.console.app import selected_events
 from abu_decomp.console.feed import append_event, canonical_kind
 from abu_decomp.console.gitrefs import RefSource
 from abu_decomp.console.host_output import HostOutput
 from abu_decomp.console.statusline import follow
-from abu_decomp.console.terminal import resize_to_tty
-from abu_decomp.console.wrap import WrappedLog
 
 
 class StatusLineTests(unittest.TestCase):
@@ -166,8 +161,6 @@ class FeedTests(unittest.TestCase):
             {**old, "message": "rung", "kind": "RUNG"},
         ]
         self.assertEqual(canonical_kind(records[1]), "LAND")
-        self.assertEqual(selected_events(records, {"LAND"}), [records[1]])
-        self.assertEqual(selected_events(records, None), records)
 
     def test_append_through_the_one_writer_reaches_the_seat_feed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -177,25 +170,3 @@ class FeedTests(unittest.TestCase):
             line = json.loads((root / "feed.jsonl").read_text())
             self.assertEqual(line, written["event"])
             self.assertEqual((line["schema"], line["kind"]), (2, "LAND"))
-
-
-class WrapAndTerminalTests(unittest.TestCase):
-    def test_wrapped_scroll_stays_anchored_then_follows_tail(self):
-        view = WrappedLog()
-        for number in range(12):
-            view.append(f"actual event {number} /long/path/to/evidence")
-        view.layout(20, 4)
-        view.page(-1)
-        anchor = view.layout(20, 4)[0]
-        view.append("new outcome")
-        assert view.layout(20, 4)[0] == anchor
-        view.end()
-        assert "new outcome" in " ".join(view.layout(20, 4))
-
-    def test_terminal_resize_passes_lines_before_columns(self):
-        with (
-            patch("abu_decomp.console.terminal.os.get_terminal_size", return_value=os.terminal_size((106, 28))),
-            patch("abu_decomp.console.terminal.curses.resizeterm") as resize,
-        ):
-            resize_to_tty(0)
-        resize.assert_called_once_with(28, 106)

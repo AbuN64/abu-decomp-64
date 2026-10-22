@@ -86,11 +86,6 @@ def split_brief(brief: str) -> tuple[str, list[str], str]:
     return "\n".join(kept).rstrip(), steers, standing
 
 
-def task_text(brief: str) -> str:
-    """The brief without its appended LANE RULES block, `## Continuation`, carried steers and standing orders."""
-    return split_brief(brief)[0]
-
-
 def continuation_brief(brief: str, rules: str, old_name: str, old_dir: Path, new_dir: Path, adopt: str = "") -> str:
     handoff = os.path.relpath(old_dir / "HANDOFF.md", new_dir)
     status = os.path.relpath(old_dir / "STATUS.md", new_dir)

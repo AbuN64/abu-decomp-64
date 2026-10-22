@@ -263,8 +263,3 @@ def argument_slots(proto: Prototype) -> list[Slot]:
         word += param.words
         slots.append(Slot(param, where))
     return slots
-
-
-def arg_words(proto: Prototype) -> int:
-    """Argument words the callee reads (at least the register ones are compared, never more than 8 are logged)."""
-    return min(8, sum(p.words for p in proto.params))

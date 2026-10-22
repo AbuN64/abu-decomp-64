@@ -209,7 +209,3 @@ class Layout:
                     self.reconcile()
         finally:
             subscriber.close()
-
-
-def run_layout(profile: Any) -> dict[str, Any]:
-    return Layout(profile).watch()

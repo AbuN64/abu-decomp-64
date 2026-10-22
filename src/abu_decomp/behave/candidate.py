@@ -164,11 +164,6 @@ def text_functions(objdump: str, obj: Path) -> list[tuple[str, int, int]]:
     return found
 
 
-def text_symbols(objdump: str, obj: Path) -> list[str]:
-    """Names of the symbols an object defines in .text."""
-    return [name for name, _, _ in text_functions(objdump, obj)]
-
-
 _RELOCATION = re.compile(r"^([0-9a-f]{8})\s+(R_\w+)\s+([^\s+-]+)")
 
 

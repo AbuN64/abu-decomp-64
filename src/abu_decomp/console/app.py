@@ -22,7 +22,6 @@ from textual.widgets import Collapsible, Static
 from . import kit
 from .dashboard_model import Dashboard, Row, ago
 from .dashboard_sources import Sources
-from .feed import canonical_kind
 from .terminal_driver import ConsoleDriver
 
 WATCH_MASK = 0x00000002 | 0x00000008 | 0x00000080 | 0x00000100 | 0x00000200
@@ -42,10 +41,6 @@ def _watch_directory(directory: Path) -> int:
         os.close(fd)
         raise OSError(code, "inotify_add_watch")
     return fd
-
-
-def selected_events(records, kinds: set[str] | None):
-    return [record for record in records if kinds is None or canonical_kind(record) in kinds]
 
 
 class EvidenceRow(Collapsible):
