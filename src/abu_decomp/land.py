@@ -166,6 +166,7 @@ REFUSAL_KEYS = frozenset(
         "land.commit_hook",
         "land.claim_uncited",
         "land.unit",
+        "land.placeholder_name",
     }
 )
 _PERCENT = re.compile(r"\bcode\s+\[[^\]\n]*\]\s*(\d+(?:\.\d+)?)%")  # the `code [bar] NN.NN%` row, not the `<code>` tags
@@ -633,27 +634,42 @@ def run_process(
     return done.returncode, done.stdout, done.stderr
 
 
+BUILD_ERROR = re.compile(r"\berror\b|undefined reference|overlaps|cannot (?:open|find|move)|\*\*\* ", re.I)
+
+
 def build_process(
     argv: Sequence[str], cwd: Path, env: dict[str, str] | None, timeout: float | None
 ) -> tuple[int, str, str]:
     """The project's check build: its output streams live to our stderr line by line (a job log shows progress while
     it runs), and the last lines are kept for the failure finding."""
     tail: deque[str] = deque(maxlen=40)
+    errors: list[str] = []
+    log = cwd / ".unbake" / "ship-check.log"  # git-ignored: the whole output of the last build, for the finding
     try:
-        with subprocess.Popen(
-            list(argv), cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
-        ) as child:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with (
+            log.open("w", errors="replace") as kept,
+            subprocess.Popen(
+                list(argv), cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                errors="replace",
+            ) as child,
+        ):  # fmt: skip
             assert child.stdout is not None
             deadline = None if timeout is None else time.monotonic() + timeout
             for line in child.stdout:
                 sys.stderr.write(line)
+                kept.write(line)
                 tail.append(line)
+                if len(errors) < 8 and BUILD_ERROR.search(line):
+                    errors.append(line)
                 if deadline is not None and time.monotonic() > deadline:
                     child.kill()
                     raise LandError("land.timeout", f"{argv[0]} exceeded {timeout:g}s")
             code = child.wait()
     except OSError as exc:
         raise LandError("land.process", f"cannot execute {argv[0]}: {exc}") from exc
+    if code and errors:  # the real error comes before the linker's closing warnings: it ends the kept lines
+        return code, "".join(tail) + "== first errors ==\n" + "".join(errors) + f"== full log: {log}\n", ""
     return code, "".join(tail), ""
 
 
@@ -840,6 +856,9 @@ def find_run(lines: Sequence[str], run: Sequence[str], near: int) -> int | None:
 
 def marker_lines(lines: Sequence[str], markers: Sequence[str]) -> list[str]:
     return [line for line in lines if any(marker in line for marker in markers)]
+
+
+PLACEHOLDER = re.compile(r"func_[0-9A-Fa-f]{8}(?:_\w+)?")  # the name the extraction gave a function nobody named yet
 
 
 def function_name(line: str) -> str | None:
@@ -1462,6 +1481,19 @@ class Landing:
             gained |= {n: file for n in new if n not in old}
         return [(n, lost[n], gained[n]) for n in sorted(lost.keys() & gained.keys())]
 
+    def placeholder_names(self, row: dict[str, Any]) -> list[str]:
+        """The functions this input converts whose C definition in the landed files still has a placeholder name
+        (func_<ADDR>[_<ver>]): a match ships with the name Recipe Maker gave it, in the same input."""
+        names = [n for n in row["functions"]["names"] if PLACEHOLDER.fullmatch(n)]
+        if not names:
+            return []
+        text = "\n".join(
+            (self.tree / f).read_text(errors="replace")
+            for f in row["files"]
+            if (self.tree / f).suffix.lower() != ".s" and (self.tree / f).is_file()
+        )
+        return [n for n in names if re.search(rf"^[A-Za-z_][^\n;=()]*\b{n}\s*\([^;{{}}]*\)\s*\{{", text, re.M)]
+
     def input_refusal(self, row: dict[str, Any], changed: dict[str, Any], mark: int) -> str | None:
         """Why this input cannot land, None when it can: checked against the state the earlier inputs left, before any
         build. Its symbol facts must merge (a name at another address, a line splat rejects) and the fact files it
@@ -1486,6 +1518,14 @@ class Landing:
                 file=there,
                 next=f"git -C {self.tree} diff {self.before_input} -- {home} {there}",
             )
+            return message
+        if placeholder := self.placeholder_names(row):
+            message = (
+                f"lane {lane}: {', '.join(placeholder)} lands with the placeholder name; name it in this same input "
+                f"(`recipe name next --target {placeholder[0]} --step T`, then `recipe name submit`, then ship the "
+                "named body)"
+            )
+            self.fail("land.placeholder_name", message, lane=lane, functions=placeholder)
             return message
         facts = sorted(n for n, (added, _) in changed.items() if self.is_fact_file(n) and any(map(symbol_line, added)))
         bad = (self.splat_file_check(facts) or {}) if facts else {}

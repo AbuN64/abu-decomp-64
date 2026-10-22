@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 BATCH_MAX = 8  # inputs adopted into one round, the adopter's own included
+VERSION = 2  # a ship adopts only inputs published by ships that run the same gates (v2: placeholder names refused)
 STALE = 3600.0  # seconds a result nobody collected stays
 
 
@@ -42,7 +43,12 @@ class Batch:
         self.messages: dict[str, str] = {}  # the commit messages those inputs came with
 
     def publish(self, patches: list[tuple[str, Path]], messages: dict[str, str]) -> None:
-        body = {"pid": os.getpid(), "patches": [[lane, str(path)] for lane, path in patches], "messages": messages}
+        body = {
+            "v": VERSION,
+            "pid": os.getpid(),
+            "patches": [[lane, str(path)] for lane, path in patches],
+            "messages": messages,
+        }
         temp = self.inputs / f".{self.ticket}.tmp"
         temp.write_text(json.dumps(body))
         temp.rename(self.mine)
@@ -80,6 +86,8 @@ class Batch:
                 body = json.loads(path.read_text())
                 lanes = [(lane, Path(file)) for lane, file in body["patches"]]
                 pid = int(body["pid"])
+                if body.get("v") != VERSION:
+                    continue
             except (OSError, ValueError, KeyError, TypeError):
                 continue
             if not alive(pid) or not lanes or any(lane in taken for lane, _ in lanes):

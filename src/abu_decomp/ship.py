@@ -554,29 +554,43 @@ class Ship:
         blocking = [f for f in findings if f.get("blocking") and f.get("key") not in PER_INPUT]
         return [] if blocking else found
 
-    def precheck(self) -> None:
+    def precheck(self) -> dict[str, Any] | None:
         """The checks that need no tree and no turn, before the queue wait (10-22: a 75-character subject was refused
-        only after 15 minutes in the queue): the commit subject limit and the claims an explicit message must cite."""
+        only after 15 minutes in the queue): the commit subject limit and the claims an explicit message must cite.
+        The refusing finding, None when the inputs pass."""
         table = land.settings(self.profile, self.tree)
         for lane, message in self.messages.items():
             subject = (message.splitlines() or [""])[0]
             path = next((p for name, p in self.patches if name == lane), None)
             if len(subject) > table["subject_limit"]:
-                raise ShipError(
-                    "land.commit_subject",
-                    f"lane {lane}: commit subject is {len(subject)} characters, the limit is "
+                return {
+                    "key": "land.commit_subject",
+                    "message": f"lane {lane}: commit subject is {len(subject)} characters, the limit is "
                     f"{table['subject_limit']}; shorten the message",
-                    next=nextcmd.ship_command(
-                        self.profile.source_file, self.tree, lane, message, path=path, limit=table["subject_limit"]
+                    "blocking": True,
+                    "lane": lane,
+                    "next": nextcmd.ship_command(
+                        self.profile.source_file, self.tree, lane, message, path=path,
+                        worktree=bool(self.worktree), limit=table["subject_limit"],
                     ),
-                )
+                }  # fmt: skip
             if table.get("claims"):
                 for problem in claims.check(self.profile, message)["problems"]:
-                    raise ShipError("land.claim_uncited", f"lane {lane}: {claims.refusal_text(problem)}")
+                    return {
+                        "key": "land.claim_uncited",
+                        "message": f"lane {lane}: {claims.refusal_text(problem)}",
+                        "blocking": True,
+                        "lane": lane,
+                    }
+        return None
 
     def execute(self) -> Result:
         started = self.clock()
-        self.precheck()
+        if refusal := self.precheck():
+            lanes = ", ".join(lane for lane, _ in self.patches) or self.worktree or self.from_try or ""
+            shipped = {"lane": lanes, "inputs": [], "base": None, "pushed": None, "functions": [], "seconds": 0.0,
+                       "cpu": 0.0, "steps": [], "refused": refusal, "land": {}}  # fmt: skip
+            return shipped, 1, [refusal]
         try:
             handle = self.lock()
         except Adopted as adopted:

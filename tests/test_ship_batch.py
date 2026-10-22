@@ -13,7 +13,7 @@ from typing import Any
 
 import test_ship
 
-from abu_decomp.ship import ShipError, ship
+from abu_decomp.ship import ship
 from abu_decomp.ship_batch import Batch, restrict
 
 
@@ -112,7 +112,43 @@ class PrecheckTests(unittest.TestCase):
         held = os.open(shared.tree / ".git" / "decomp-ship.lock", os.O_RDWR | os.O_CREAT)
         self.addCleanup(os.close, held)
         fcntl.flock(held, fcntl.LOCK_EX)  # a ship ahead: a refusal after the wait would never come
-        with self.assertRaises(ShipError) as raised:
-            ship(shared.profile, shared.tree, [("L", shared.root / "l.patch")], messages={"L": "m" * 80}, lock_wait=1)
-        self.assertEqual(raised.exception.key, "land.commit_subject")
-        self.assertIn("decomp", raised.exception.next or "")
+        _, code, findings = ship(
+            shared.profile, shared.tree, [("L", shared.root / "l.patch")], messages={"L": "m" * 80}, lock_wait=1
+        )
+        self.assertEqual((code, findings[0]["key"]), (1, "land.commit_subject"))
+        self.assertIn("decomp", findings[0]["next"])
+
+
+class PlaceholderTests(unittest.TestCase):
+    def test_a_converted_function_keeping_its_extraction_name_is_found_and_a_named_one_is_not(self) -> None:
+        import tempfile
+        from types import SimpleNamespace
+
+        from abu_decomp.land import Landing
+
+        with tempfile.TemporaryDirectory() as temp:
+            tree = Path(temp)
+            (tree / "a.c").write_text(
+                'void func_80201A80_de(int a)\n{\n}\nINCLUDE_ASM("m", func_80201A90_de);\nint Named_Thing(void)\n{\n}\n'
+                "void func_80201AA0_de(int);\n"
+            )
+            row = {"files": ["a.c"], "functions": {"names": ["func_80201A80_de", "func_80201AA0_de", "Named_Thing"]}}
+            self.assertEqual(Landing.placeholder_names(SimpleNamespace(tree=tree), row), ["func_80201A80_de"])
+
+
+class BuildLogTests(unittest.TestCase):
+    def test_a_failed_build_keeps_its_first_errors_and_the_log_path_after_the_closing_warnings(self) -> None:
+        import tempfile
+
+        from abu_decomp.land import build_process
+
+        with tempfile.TemporaryDirectory() as temp:
+            script = (
+                "echo 'a.c:3: error: conflicting types for f'; for i in $(seq 30); do echo warning $i; done; exit 2"
+            )
+            code, out, _ = build_process(["sh", "-c", script], Path(temp), None, 30)
+            last = out.strip().splitlines()[-12:]
+            self.assertEqual(code, 2)
+            self.assertTrue(any("conflicting types for f" in line for line in last))
+            self.assertIn("full log:", last[-1])
+            self.assertIn("warning 30", (Path(temp) / ".unbake/ship-check.log").read_text())
