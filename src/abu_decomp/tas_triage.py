@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, arity, evidence
+from abu_decomp import DecompError, arity, evidence, recipe_needs
 
 _FUNCTION = re.compile(r"func_[0-9A-Fa-f]{8}\w*")
 _POINTER = re.compile(r"(?:code-pointer-|D_)([0-9A-Fa-f]{8})$")
@@ -122,14 +122,14 @@ def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None
                 kind="no C body",
                 cannot_help="input cannot pass this point: the function exists only as INCLUDE_ASM",
                 owner=f"{subject} at {site}",
-                next=f"recipe work {subject}",
+                next=recipe_needs.route(project, subject, f"recipe work {subject}"),
             )
         elif owed == subject:
             out.update(
                 kind="non-matching body",
                 cannot_help="input cannot pass this point: the guarded body does not behave like the original",
                 owner=f"{subject} at {definition_site(project, subject)}",
-                next=f"recipe work {subject}",
+                next=recipe_needs.route(project, subject, f"recipe work {subject}"),
             )
         else:
             out.update(

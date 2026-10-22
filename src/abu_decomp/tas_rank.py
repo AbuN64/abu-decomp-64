@@ -91,9 +91,10 @@ def owes_rows(owes: dict[str, Any] | None, taken: set[str], limit: int) -> list[
             continue
         out.append(
             {
-                "kind": "owes a match",
+                "kind": "type before match" if row.get("waits") else "owes a match",
                 "where": f"{row['function']} at {row['file']}",
-                "error": f"{row['level']}, reached by {row['reached']} runs",
+                "error": f"{row['level']}, reached by {row['reached']} runs"
+                + (f"; its `void *` parameter needs the record {row['waits']} first" if row.get("waits") else ""),
                 "layer": "game source",
                 "next": row["next"],
             }
@@ -108,7 +109,9 @@ def rank(
 ) -> list[dict[str, Any]]:
     """Open work in the configured rule order; every row carries `rank`, the first is THE next action."""
     blocks = block_rows(movies)
-    taken = {r["where"] for r in blocks} | {w for r in blocks for w in r["next"].split() if w.startswith("func_")}
+    taken = {r["where"] for r in blocks} | {
+        w.split(".")[0] for r in blocks for w in r["next"].split() if w.startswith("func_")
+    }
     parts = {
         "build": lambda: build_rows(health, cfg),
         "stale": lambda: stale_rows(health),

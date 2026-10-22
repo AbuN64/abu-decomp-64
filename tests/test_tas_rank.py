@@ -68,3 +68,34 @@ class RankTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TypeBeforeMatchTests(unittest.TestCase):
+    def test_a_function_waiting_for_a_type_shows_the_type_item_and_a_stop_row_does_not_repeat_it(self):
+        owes = {
+            "top": [
+                {
+                    "function": "func_2",
+                    "file": "b.c",
+                    "level": "asm",
+                    "reached": 4,
+                    "waits": "func_2.arg0",
+                    "next": "recipe work func_2.arg0 --kind type",
+                }
+            ]
+        }
+        movies = [
+            {
+                "movie": "a",
+                "outcome": "stop",
+                "subject": "func_1",
+                "kind": "no C body",
+                "next": "recipe work func_1.arg0 --kind type",
+            }
+        ]
+        rows = tas_rank.rank(tas_rank.settings({}), {}, movies, owes)
+        self.assertEqual([r["kind"] for r in rows], ["no C body", "type before match"])
+        self.assertIn("needs the record func_2.arg0 first", rows[1]["error"])
+        self.assertEqual(rows[1]["next"], "recipe work func_2.arg0 --kind type")
+        again = tas_rank.rank(tas_rank.settings({}), {}, movies, {"top": [{**owes["top"][0], "function": "func_1"}]})
+        self.assertEqual([r["kind"] for r in again], ["no C body"])  # the stop row already names func_1

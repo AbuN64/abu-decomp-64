@@ -48,6 +48,12 @@ its switcher pins another; `tas watch` also reports `play-start` / `play-end`. N
 3. **Fix at the owning boundary.** A function you stop in or fix gets a full match first: a stop or fault in an
    `INCLUDE_ASM` or `NON_MATCHING` body prints `next: recipe work SYM` and says the function owes a match; follow the
    recipe rounds toward a plain body (make check green on every ROM), which removes the fence in the same change.
+   When `recipe` skips a function as `needs-header-change` or `type-unresolved` because a `void *` parameter needs a
+   record, the ranked lists (`next:`, `decomp owes`, `tas play --all`) name the type item instead: `recipe work
+   SYM.argN --kind type` plans one record from every access (the function, its callees, the functions handed the same
+   object, the members the module already typed), the prototype once and the includes; `recipe try SYM.argN --dry`
+   proves it and records the sources, then `decomp ship --worktree` lands the planned files. The function returns
+   to the list when its prototype changes; call sites that pass byte views are reported, not cast.
    Only when `recipe` says the match budget is spent, land the best body that behaves the same inside
    `#ifdef NON_MATCHING` ... `#else` `INCLUDE_ASM(...)` `#endif` (prove it with `decomp behave --function SYM
    --candidate FILE`); it then owes a match, listed by `decomp owes` (the work list, most reached by play first), and a

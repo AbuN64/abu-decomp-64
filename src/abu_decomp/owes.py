@@ -17,7 +17,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, evidence, evidence_gate
+from abu_decomp import DecompError, evidence, evidence_gate, recipe_needs
 
 _REACHED = re.compile(r"^(?:boot-step: \d+/\d+ |boot-missing: |debug-reason: )(\w+)$", re.M)
 _FRAME = re.compile(r"\bin (\w+) \(")
@@ -110,8 +110,11 @@ def run(profile: Any, project: Path | None, top: int) -> dict[str, Any]:
         rows.append({"function": name, "file": where["file"], "level": level, "word": word, "reached": hits})
     rows.sort(key=lambda r: (-r["reached"], r["function"]))
     levels = Counter(r.pop("word") for r in rows)
+    waiting = recipe_needs.read(root)
     for row in rows[:top]:
-        row["next"] = f"recipe work {row['function']}"
+        row["next"] = recipe_needs.route(root, row["function"], f"recipe work {row['function']}")
+        if row["function"] in waiting:
+            row["waits"] = str(waiting[row["function"]].get("item", ""))
     return {
         "owes": len(rows),
         "levels": {name: levels.get(name, 0) for name in LEVELS},

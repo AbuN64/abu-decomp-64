@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import arity, evidence, tas_triage
+from abu_decomp import arity, evidence, recipe_needs, tas_triage
 
 _FAULT = re.compile(r"host-fault-([0-9A-Fa-f]+)$")
 _GAME = re.compile(r"func_[0-9A-Fa-f]{8}\w*")
@@ -106,7 +106,7 @@ def overlay(profile: Any, outcome: dict[str, Any], out: dict[str, Any]) -> dict[
     if any(n.get("verdict") == "disagree" for n in notes):
         out["next"] = notes[0]["next"]
     else:
-        out["next"] = f"recipe work {name}"
+        out["next"] = recipe_needs.route(project, name, f"recipe work {name}")
     out["claim"] = (
         f"host fault: {outcome.get('subject')} = {frame}; blocking=true; {out['cannot_help']}; owner {out['owner']}; "
         f"evidence {out['evidence']}" + (f"; arity {notes[0]['summary']}" if notes else "") + f"; next: {out['next']}"
