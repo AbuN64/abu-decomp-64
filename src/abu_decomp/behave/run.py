@@ -604,6 +604,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         "candidate": {
             "file": str(candidate_file),
             "object_sha256": image.object_sha256,
+            "function_sha256": _function_sha256(image, options.function),
             "address": f"0x{image.vram:08X}",
             "functions": [f["name"] for f in image.functions],
             "image_bytes": image.size,
@@ -617,6 +618,18 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
     }
     announce(profile, result)
     return result, 0, findings
+
+
+def _function_sha256(image: Any, function: str) -> str | None:
+    """Digest of the linked bytes of the function under test alone: equal digests mean a byte-identical body."""
+    row = next((f for f in image.functions if f["name"] == function), None)
+    if row is None:
+        return None
+    try:
+        blob = image.path.read_bytes()[row["offset"] : row["offset"] + row["size"]]
+    except OSError:
+        return None
+    return hashlib.sha256(blob).hexdigest()
 
 
 def announce(profile: Profile, result: dict[str, Any]) -> None:

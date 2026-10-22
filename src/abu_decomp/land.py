@@ -128,7 +128,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, meter, proposals, retarget, standalone, tools
+from abu_decomp import DecompError, events, evidence_gate, meter, proposals, retarget, standalone, tools
 from abu_decomp.config import Profile, check_keys
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
@@ -146,7 +146,7 @@ GATES = (
     "standalone",
     "readme",
 )
-OPTIONAL_GATES = ("recipe",)
+OPTIONAL_GATES = ("recipe", "evidence")
 # A failed build gate that can be the fault of one input (not the admit command or the tree's own state).
 BISECTABLE = frozenset({"land.setup", "land.check", "land.sync_after", "land.audit"})
 DEFAULT_SUBJECT_LIMIT = 72
@@ -300,6 +300,30 @@ def commit_message(
     return head[:limit].rstrip(), body
 
 
+def evidence_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
+    """`land.evidence` (absent: the gate is off): suffixes of the C sources it reads, the guard and stand-in macros,
+    the header paths and ROM globs that key its cache, the seconds past which a measure is flagged."""
+    if given is None:
+        return None
+    unknown = (
+        set(given) - {"suffixes", "guard", "stand_in", "headers", "roms", "slow_seconds"}
+        if isinstance(given, dict)
+        else {"?"}
+    )
+    if unknown or not isinstance(given, dict):
+        raise LandError(
+            "config.schema", f"{profile.source_file}:land.evidence: expected an object; unknown {sorted(unknown)}"
+        )
+    return {
+        "suffixes": tuple(s.lower() for s in given.get("suffixes", [".c", ".cpp"])),
+        "guard": str(given.get("guard", "NON_MATCHING")),
+        "stand_in": str(given.get("stand_in", "INCLUDE_ASM")),
+        "headers": list(given.get("headers", ["include"])),
+        "roms": list(given.get("roms", [])),
+        "slow_seconds": float(given.get("slow_seconds", 60)),
+    }
+
+
 def settings(profile: Profile) -> dict[str, Any]:
     table = profile.section("land")
     check_keys(
@@ -326,6 +350,7 @@ def settings(profile: Profile) -> dict[str, Any]:
                 "branch",
                 "author",
                 "lock_weight",
+                "evidence",
             }
         ),
     )
@@ -360,6 +385,7 @@ def settings(profile: Profile) -> dict[str, Any]:
     if weight is not None and (type(weight) is not int or not 1 <= weight <= 10000):
         raise LandError("config.schema", f"{profile.source_file}:land.lock_weight: expected an integer 1..10000")
     return {
+        "evidence": evidence_settings(profile, table.get("evidence")),
         "lock_weight": weight,  # CPUWeight and IOWeight of the unit holding the ship lock
         "subject_limit": limit,
         "check": argv("check"),
@@ -735,7 +761,9 @@ class Landing:
         ready: Callable[[], None] | None = None,
         credit_falls: Sequence[dict[str, Any]] | None = None,
         reclasses: Sequence[dict[str, Any]] | None = None,
+        behave: Callable[[Any], tuple[dict[str, Any], int, list[dict[str, Any]]]] | None = None,
     ) -> None:
+        self.behave = behave
         self.config = settings(profile)
         self.tree = tree.expanduser().resolve()
         if not self.tree.is_dir():
@@ -1469,6 +1497,20 @@ class Landing:
             "readme", not any(f["key"] == "land.readme" for f in self.findings), started, base=old, now=new
         )
 
+    def evidence(self) -> bool:
+        """Every function the change touches keeps or raises its rung of the evidence ladder (evidence.py)."""
+        started = self.clock()
+        cfg = self.config["evidence"]
+        gate = evidence_gate.Gate(self, cfg)
+        refused, checked = gate.run()
+        for row in refused:
+            self.fail(
+                "land.evidence",
+                f"{row['function']}: {row['base']} -> {row['new']}: {row['why']}; reproduce: {row['reproduce']}",
+                **row,
+            )
+        return self.gate("evidence", not refused, started, checked=checked, measures=gate.measures)
+
     def readme_rows(self, name: str) -> list[dict[str, Any]]:
         path = self.tree / name
         return code_rows(path.read_text(errors="replace")) if path.is_file() else []
@@ -1769,6 +1811,7 @@ class Landing:
             self.untracked,
             self.standalone,
             self.readme,
+            *([self.evidence] if self.config["evidence"] else []),
             *([self.recipe] if self.config["recipe"] else []),
         ]
 
@@ -1964,7 +2007,7 @@ class Landing:
                     failed = True
                     break
         done = {row["gate"] for row in self.gates}
-        for name in (*GATES, *(g for g in OPTIONAL_GATES if self.config["recipe"])):
+        for name in (*GATES, *(g for g in OPTIONAL_GATES if self.config[g])):
             if name not in done:
                 self.gates.append({"gate": name, "pass": None, "skipped": True})
         result: dict[str, Any] = {

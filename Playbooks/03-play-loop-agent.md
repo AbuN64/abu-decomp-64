@@ -49,7 +49,14 @@ the person can watch it. The movie stays in the TAS folder as a regression test 
 4. **Make it a class.** Name the defect's class, find every other site across the whole ROM with a detector,
    fix the cheap ones, and make the detector a gate that refuses new sites.
 5. **Prove and land.** Rebuild the port, replay the movie past the old stop, replay the other movies (they
-   must stay ok), then commit each repo with one line naming the defect and push.
+   must stay ok), then land each repo with one line naming the defect and push. A decomp repo takes commits only
+   through the evidence gate: save the change as a patch (`git diff > PATH.patch`, then `git restore` the files) and
+   run `decomp ship --tree REPO --patch LANE=PATH.patch` (or `land`). For each function the patch touches the gate
+   reads the evidence rung at the parent and at the candidate: asm, C unproven, behaves k/n (`decomp behave
+   --function SYM` with the C as candidate), matches. It refuses a step down, and a non-matching body that does not
+   raise k unless its linked bytes are identical; a refusal prints the function, both rungs and the behave command.
+   A PreToolUse hook (`~/.claude-local/hooks/guard-git.py`, repo list in `guard-git.json`) refuses raw `git commit` and
+   `git push` in those repos and names this command.
 6. **Report in three lines**: what you saw, why it happened, what changed. Then play the next section.
 
 **Guardrails.** One cycle at a time. Main branch only; commits under the owner's identity, no attribution
