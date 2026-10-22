@@ -91,6 +91,23 @@ def _process(pid: str) -> str:
     return f"pid {pid}: " + " ".join(w.decode(errors="replace") for w in words if w)[:160]
 
 
+def _starved(pid: str, tree_lock: Path) -> bool:
+    """Whether process `pid` has the tree lock file open yet holds no flock on it: it waits for the tree lock (the
+    hierarchy is ship lock, tree lock, journal lock, so a journal holder that waits for the tree is a deadlock)."""
+    try:
+        inode = tree_lock.stat().st_ino
+        opened = any(
+            Path(f"/proc/{int(pid)}/fd/{fd}").stat().st_ino == inode
+            for fd in os.listdir(f"/proc/{int(pid)}/fd")
+            if os.path.exists(f"/proc/{int(pid)}/fd/{fd}")
+        )
+        rows = Path("/proc/locks").read_text().splitlines()
+    except (OSError, ValueError):
+        return False
+    held = any(f" {pid} " in row and f":{inode} " in row and "->" not in row for row in rows)
+    return opened and not held
+
+
 class Ship:
     def __init__(
         self,
@@ -365,6 +382,17 @@ class Ship:
                         f"decomp: ship waits for an unbake landing to finish writing the tree: {who}"
                         f" ({said - began:.0f}s)\n"
                     )
+                holder = os.pread(handle, 200, 0).decode(errors="replace").split()
+                if holder and self.clock() - began >= 2 and _starved(holder[0], self.tree / ".unbake/tree.lock"):
+                    time.sleep(1)  # twice, a second apart: a landing between two holds is not a wait
+                    if _starved(holder[0], self.tree / ".unbake/tree.lock"):
+                        raise ShipError(
+                            "ship.deadlock",
+                            f"ship pid {os.getpid()} holds the tree lock and waits for the journal lock held by "
+                            f"{_process(holder[0])}, which waits for the tree lock: it took the journal first (the "
+                            "order is ship, tree, journal)",
+                            next=f"kill {holder[0]} (its submit retries after the ship)",
+                        )
                 time.sleep(0.5)
             yield
         finally:

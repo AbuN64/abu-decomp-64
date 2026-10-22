@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
@@ -469,3 +470,38 @@ class HealthTests(ShipTests):
         repaired = next(f for f in findings if f["key"] == "ship.tree_repaired")
         self.assertEqual((code, len(builds), repaired["versions"]), (1, 2, ["de"]))
         self.assertFalse((self.tree / "build/de/x.o").exists())
+
+
+class DeadlockTests(unittest.TestCase):
+    def test_a_ship_waiting_for_the_journal_lock_of_a_process_that_waits_for_the_tree_lock_fails_naming_it(
+        self,
+    ) -> None:
+        from unittest import mock
+
+        from abu_decomp import ship as ship_module
+
+        with tempfile.TemporaryDirectory() as temp:
+            tree = Path(temp)
+            (tree / ".unbake").mkdir()
+            child_code = (
+                "import fcntl,os,sys,time\\n"
+                "j=os.open(sys.argv[1]+'/.unbake/journal.lock',os.O_RDWR|os.O_CREAT)\\n"
+                "fcntl.flock(j,fcntl.LOCK_EX);os.write(j,(str(os.getpid())+' x').encode())\\n"
+                "t=os.open(sys.argv[1]+'/.unbake/tree.lock',os.O_RDWR|os.O_CREAT)\\n"
+                "print('ready',flush=True);time.sleep(30)\\n"
+            ).replace("\\n", "\n")
+            child = subprocess.Popen(["python3", "-c", child_code, temp], stdout=subprocess.PIPE, text=True)
+            self.addCleanup(child.kill)
+            assert child.stdout and child.stdout.readline().strip() == "ready"
+            mine = os.open(tree / ".unbake/tree.lock", os.O_RDWR)  # the ship's own hold
+            self.addCleanup(os.close, mine)
+            fcntl.flock(mine, fcntl.LOCK_EX)
+            waiting = object.__new__(ship_module.Ship)
+            waiting.tree = tree
+            clock = iter(range(0, 1000, 3))
+            waiting.clock = lambda: float(next(clock))
+            patched = mock.patch.object(ship_module.time, "sleep")
+            with patched, self.assertRaises(ship_module.ShipError) as raised, waiting.landing_lock():
+                pass
+            self.assertEqual(raised.exception.key, "ship.deadlock")
+            self.assertIn(str(child.pid), str(raised.exception))
