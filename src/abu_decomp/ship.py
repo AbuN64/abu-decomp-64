@@ -27,7 +27,7 @@ from typing import Any
 from unbake import build as unbake_build
 from unbake import treelock
 
-from abu_decomp import DecompError, events, land, meter, nextcmd, priority, tools
+from abu_decomp import DecompError, claims, events, land, meter, nextcmd, priority, tools
 from abu_decomp.config import Profile
 from abu_decomp.ship_batch import Batch, restrict
 
@@ -554,8 +554,29 @@ class Ship:
         blocking = [f for f in findings if f.get("blocking") and f.get("key") not in PER_INPUT]
         return [] if blocking else found
 
+    def precheck(self) -> None:
+        """The checks that need no tree and no turn, before the queue wait (10-22: a 75-character subject was refused
+        only after 15 minutes in the queue): the commit subject limit and the claims an explicit message must cite."""
+        table = land.settings(self.profile, self.tree)
+        for lane, message in self.messages.items():
+            subject = (message.splitlines() or [""])[0]
+            path = next((p for name, p in self.patches if name == lane), None)
+            if len(subject) > table["subject_limit"]:
+                raise ShipError(
+                    "land.commit_subject",
+                    f"lane {lane}: commit subject is {len(subject)} characters, the limit is "
+                    f"{table['subject_limit']}; shorten the message",
+                    next=nextcmd.ship_command(
+                        self.profile.source_file, self.tree, lane, message, path=path, limit=table["subject_limit"]
+                    ),
+                )
+            if table.get("claims"):
+                for problem in claims.check(self.profile, message)["problems"]:
+                    raise ShipError("land.claim_uncited", f"lane {lane}: {claims.refusal_text(problem)}")
+
     def execute(self) -> Result:
         started = self.clock()
+        self.precheck()
         try:
             handle = self.lock()
         except Adopted as adopted:

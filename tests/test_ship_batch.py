@@ -13,7 +13,7 @@ from typing import Any
 
 import test_ship
 
-from abu_decomp.ship import ship
+from abu_decomp.ship import ShipError, ship
 from abu_decomp.ship_batch import Batch, restrict
 
 
@@ -102,3 +102,17 @@ class BatchTests(unittest.TestCase):
         mine, code, _ = restrict((shipped, 0, []), {"B"})
         self.assertEqual((code, mine["pushed"], mine["functions"]), (0, "abc", ["fb"]))
         json.dumps(mine)
+
+
+class PrecheckTests(unittest.TestCase):
+    def test_a_long_subject_is_refused_before_the_queue_wait(self) -> None:
+        shared = test_ship.ShipTests()
+        shared.setUp()
+        self.addCleanup(shared.doCleanups)
+        held = os.open(shared.tree / ".git" / "decomp-ship.lock", os.O_RDWR | os.O_CREAT)
+        self.addCleanup(os.close, held)
+        fcntl.flock(held, fcntl.LOCK_EX)  # a ship ahead: a refusal after the wait would never come
+        with self.assertRaises(ShipError) as raised:
+            ship(shared.profile, shared.tree, [("L", shared.root / "l.patch")], messages={"L": "m" * 80}, lock_wait=1)
+        self.assertEqual(raised.exception.key, "land.commit_subject")
+        self.assertIn("decomp", raised.exception.next or "")
