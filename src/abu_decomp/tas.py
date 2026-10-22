@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas_capture, tas_symbolize
+from abu_decomp import DecompError, tas_capture, tas_health, tas_symbolize
 from abu_decomp.config import Profile, check_keys
 
 SCHEMA = 1
@@ -52,12 +52,25 @@ BUTTONS = (
 _BIT = dict(BUTTONS)
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 _RAW = re.compile(r"([0-9a-fA-F]{1,4}) (-?\d{1,3}) (-?\d{1,3})")
-_KEYS = frozenset({"movies", "runs", "port", "args", "rom", "env", "exit_after", "timeout_seconds", "gdb", "serve"})
+_KEYS = frozenset(
+    {"movies", "runs", "port", "args", "rom", "env", "exit_after", "timeout_seconds", "gdb", "serve", "build"}
+)
 _REQUIRED = frozenset({"movies", "runs", "port", "args", "rom"})
 STOP_FUNCTION = "n64c_boot_stopped"
 STOP_SUBJECT = "*(char**)&n64c_boot_stop_symbol"
 
 Poll = tuple[int, int, int]
+
+
+def _build(profile: Profile, table: Any) -> dict[str, Any]:
+    if not table:
+        return {}
+    check_keys(profile.source_file, "tas.build", table, frozenset(), tas_health.BUILD_KEYS)
+    out = {"rebuild": str(table.get("rebuild", ""))}
+    for key in ("units", "sources"):
+        if key in table:
+            out[key] = profile.path(f"tas.build.{key}", table[key])
+    return out
 
 
 def settings(profile: Profile) -> dict[str, Any]:
@@ -73,6 +86,7 @@ def settings(profile: Profile) -> dict[str, Any]:
         "exit_after": int(table.get("exit_after", 120)),
         "timeout_seconds": int(table.get("timeout_seconds", 300)),
         "gdb": str(table.get("gdb", "gdb")),
+        "build": _build(profile, table.get("build")),
     }
 
 
@@ -305,8 +319,11 @@ def movie_polls(cfg: dict[str, Any], name: str) -> list[Poll]:
     return polls
 
 
-def play(profile: Profile, name: str, *, now: datetime | None = None) -> dict[str, Any]:
+def play(
+    profile: Profile, name: str, *, now: datetime | None = None, health: dict[str, Any] | None = None
+) -> dict[str, Any]:
     cfg = settings(profile)
+    health = tas_health.read(cfg) if health is None else health
     polls = movie_polls(cfg, name)
     run = cfg["runs"] / "plays" / f"{_stamp(now)}-{name}"
     user_dir = run / "user"
@@ -350,5 +367,94 @@ def play(profile: Profile, name: str, *, now: datetime | None = None) -> dict[st
     if stacks:
         result["stacks"] = stacks
     # Kind, blocking, what cannot help, owner, arity note and one next command (the arity note comes first when set).
-    result.update(tas_symbolize.claim(profile, result, stacks))
+    result.update(tas_symbolize.claim(profile, result, stacks, health))
+    if health:
+        result["build"] = tas_health.header(health)
     return result
+
+
+def compare(recorded: dict[str, Any] | None, now: dict[str, Any]) -> str:
+    """better / same / worse / new: a clean end beats any stop, then more polls reached beats fewer."""
+    if not recorded:
+        return "new"
+
+    def standing(row: dict[str, Any]) -> tuple[int, int]:
+        return (int(row.get("outcome") == "ok"), int(row.get("polls_reached") or 0))
+
+    before, after = standing(recorded), standing(now)
+    return "worse" if after < before else "better" if after > before else "same"
+
+
+def table(result: dict[str, Any]) -> str:
+    """The `play --all` result as aligned text: the build header, then one row per movie."""
+    build = result.get("build") or {}
+    lines = [build.get("summary", "build: not configured")]
+    lines += [f"  failed {row['unit']}: {row['error']}" for row in build.get("failed", [])]
+    if build.get("stale"):
+        lines.append(f"  stale: {build['stale']}; next: {build.get('rebuild', '')}")
+    head = ("movie", "outcome", "polls", "vs recorded", "next")
+    rows = [
+        (
+            r["movie"],
+            r["outcome"] + (f" {r['subject']}" if r["subject"] else ""),
+            f"{r['polls_reached']}/{r['polls']}",
+            r["vs_recorded"],
+            r["next"],
+        )
+        for r in result["movies"]
+    ]
+    widths = [max(len(str(x[i])) for x in [head, *rows]) for i in range(4)]
+    for row in [head, *rows]:
+        lines.append("  ".join(str(c).ljust(w) for c, w in zip(row[:4], widths, strict=True)) + "  " + row[4])
+    return "\n".join(lines)
+
+
+def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) -> tuple[dict[str, Any], int]:
+    """Replay every saved movie in parallel, block until done, one row per movie against its recorded standing.
+
+    The recorded standing is the best row so far in `runs/standing.json`, moved only when a movie is not worse, so a
+    regression stays `worse` until fixed. Exit status 1 when any movie is worse."""
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+
+    cfg = settings(profile)
+    names = sorted(p.stem for p in cfg["movies"].glob("*.tas")) if cfg["movies"].is_dir() else []
+    health = tas_health.read(cfg)
+
+    def one(name: str) -> dict[str, Any]:
+        try:
+            return play(profile, name, now=now, health=health)
+        except DecompError as error:
+            return {"movie": name, "outcome": "refused", "subject": str(error), "polls_reached": 0}
+
+    with ThreadPoolExecutor(max_workers=max(1, min(jobs, len(names) or 1))) as pool:
+        results = list(pool.map(one, names))
+    path = cfg["runs"] / "standing.json"
+    try:
+        standing = json.loads(path.read_text())
+    except (OSError, ValueError):
+        standing = {}
+    rows = []
+    for result in results:
+        recorded = standing.get(result["movie"])
+        verdict = compare(recorded, result)
+        if verdict != "worse":
+            standing[result["movie"]] = {k: result.get(k) for k in ("outcome", "subject", "polls_reached")}
+        rows.append(
+            {
+                "movie": result["movie"],
+                "outcome": result["outcome"],
+                "subject": result.get("subject", ""),
+                "polls_reached": result.get("polls_reached", 0),
+                "polls": result.get("polls", 0),
+                "recorded": recorded,
+                "vs_recorded": verdict,
+                "kind": result.get("kind", ""),
+                "next": result.get("next", ""),
+                "run": result.get("run", ""),
+            }
+        )
+    cfg["runs"].mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(standing, indent=1, sort_keys=True) + "\n")
+    worse = [r["movie"] for r in rows if r["vs_recorded"] == "worse"]
+    return {"build": tas_health.header(health), "movies": rows, "worse": worse}, int(bool(worse))

@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from abu_decomp import DecompError, tas, tas_watch
+from abu_decomp import DecompError, tas, tas_health, tas_watch
 from abu_decomp.config import Profile
 
 TIMEOUT = 300  # a press waits for polls; `look` cuts PNGs
@@ -37,7 +37,9 @@ def request(profile: Profile, path: str, body: dict[str, Any] | None = None) -> 
 
 
 def new(profile: Profile, movie: str | None) -> dict[str, Any]:
-    return request(profile, "/play", {"name": movie}) if movie else request(profile, "/new", {})
+    started = request(profile, "/play", {"name": movie}) if movie else request(profile, "/new", {})
+    build = tas_health.header(tas_health.read(tas.settings(profile)))
+    return {**started, "build": build} if build else started
 
 
 def press(profile: Profile, buttons: list[str], hold: int, then: int) -> dict[str, Any]:
@@ -48,7 +50,8 @@ def state(profile: Profile) -> dict[str, Any]:
     full = request(profile, "/state")
     full.pop("movies", None)  # `tas list` is the place for those
     full.pop("recordings", None)
-    return full
+    build = tas_health.header(tas_health.read(tas.settings(profile)))
+    return {**full, "build": build} if build else full
 
 
 def mark(profile: Profile, note: str) -> dict[str, Any]:

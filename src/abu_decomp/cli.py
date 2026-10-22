@@ -374,9 +374,12 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     for verb, text in (
         ("show", "one movie's header and polls"),
         ("delete", "remove one movie"),
-        ("play", "replay one movie against the port and report its outcome"),
     ):
         actions.add_parser(verb, help=text).add_argument("name")
+    play = actions.add_parser("play", help="replay a movie (or every movie with --all) and report the outcome")
+    play.add_argument("name", nargs="?")
+    play.add_argument("--all", action="store_true", help="replay every saved movie in parallel; exit 1 if any is worse")
+    play.add_argument("--jobs", type=int, default=4, help="parallel replays with --all (default 4)")
 
 
 def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -413,6 +416,12 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         return tas.show(profile, args.name), 0, []
     if args.action == "delete":
         return tas.delete(profile, args.name), 0, []
+    if args.all:
+        result, code = tas.play_all(profile, jobs=args.jobs)
+        print(tas.table(result), file=sys.stderr)
+        return result, code, []
+    if not args.name:
+        raise DecompError("tas.play", "give a movie name or --all")
     return tas.play(profile, args.name), 0, []
 
 

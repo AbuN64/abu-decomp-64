@@ -77,3 +77,5 @@ its switcher pins another; `tas watch` also reports `play-start` / `play-end`. N
 lines. Never revert, reset or stash work you did not write. Nothing runs longer than five minutes of CPU
 without a reason you can state. Every command you run goes through `decomp` (it records what you did on the
 activity feed). When stuck after two hypotheses, write what you know and ask the person.
+
+**Build health.** Every `play`, `new` and `state` result carries `build`: `build: N units failed` (each unit with its first compile error) and `stale: binary older than source`. A stop in a failed unit is kind `unit failed to compile` (the fix is the compile error, not input or recipe work); a stale binary's `next` is the rebuild command. Never treat either as a game defect. `tas play --all` replays every movie, prints one row per movie against its recorded standing (better / same / worse) and exits 1 if any is worse.

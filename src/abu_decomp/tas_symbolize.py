@@ -114,6 +114,16 @@ def overlay(profile: Any, outcome: dict[str, Any], out: dict[str, Any]) -> dict[
     return out
 
 
-def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None) -> dict[str, Any]:
-    """tas_triage.claim plus the host fault's own function. Never raises."""
-    return overlay(profile, outcome, tas_triage.claim(profile, outcome, stacks))
+def claim(
+    profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None, health: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """tas_triage.claim plus the host fault's own function and the port build's facts. Never raises."""
+    out = overlay(profile, outcome, tas_triage.claim(profile, outcome, stacks))
+    try:
+        from abu_decomp import tas, tas_health
+
+        if health is None:
+            health = tas_health.read(tas.settings(profile))
+        return tas_health.apply(profile, health, outcome, out)
+    except Exception:
+        return out
