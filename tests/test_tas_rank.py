@@ -99,3 +99,23 @@ class TypeBeforeMatchTests(unittest.TestCase):
         self.assertEqual(rows[1]["next"], "recipe work func_2.arg0 --kind type")
         again = tas_rank.rank(tas_rank.settings({}), {}, movies, {"top": [{**owes["top"][0], "function": "func_1"}]})
         self.assertEqual([r["kind"] for r in again], ["no C body"])  # the stop row already names func_1
+
+
+class RerouteTests(unittest.TestCase):
+    def test_a_recorded_stop_row_is_rerouted_when_its_function_now_waits_for_a_type(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from abu_decomp import recipe_needs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".unbake/recipe").mkdir(parents=True)
+            (Path(tmp) / ".unbake/recipe/needs.json").write_text(
+                json.dumps({"func_1": {"next": "recipe work func_1.arg0 --kind type"}})
+            )
+            self.assertEqual(
+                recipe_needs.reroute(Path(tmp), "recipe work func_1"), "recipe work func_1.arg0 --kind type"
+            )
+            self.assertEqual(recipe_needs.reroute(Path(tmp), "recipe work func_2"), "recipe work func_2")
+            self.assertEqual(recipe_needs.reroute(Path(tmp), "arity show f"), "arity show f")

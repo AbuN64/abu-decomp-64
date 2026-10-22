@@ -551,8 +551,13 @@ def ranked_work(
     owed: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """The ranked open-work list (module tas_rank) for these movie rows and the current build health."""
-    from abu_decomp import owes
+    from abu_decomp import owes, recipe_needs, tools
 
+    try:  # a stop row recorded before its function was skipped for a type still names the type item
+        project: Path | None = tools.project_dir(profile)
+    except (DecompError, OSError, ValueError, KeyError, AttributeError):
+        project = None
+    movies = [{**m, "next": recipe_needs.reroute(project, m["next"])} if m.get("next") else m for m in movies]
     if owed is None:
         try:
             owed = owes.run(profile, None, cfg["rank"]["owes_rows"] + len(movies))

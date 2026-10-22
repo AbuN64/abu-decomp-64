@@ -8,6 +8,7 @@ that would send an agent to `recipe work F` sends it to the type item's `next` i
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 
@@ -23,3 +24,9 @@ def route(project: Path | None, function: str, default: str) -> str:
     """`default` unless `function` waits for a type item, then that item's command."""
     row = read(project).get(function)
     return str(row["next"]) if isinstance(row, dict) and row.get("next") else default
+
+
+def reroute(project: Path | None, command: str) -> str:
+    """A `recipe work FUNCTION` command, or the type item's command when FUNCTION waits for one."""
+    found = re.fullmatch(r"recipe work (\w+)", command)
+    return route(project, found[1], command) if found else command
