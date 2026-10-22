@@ -316,24 +316,26 @@ class ShipBoostTests(unittest.TestCase):
         got = ship(profile, self.tree, [("L", self.root / "l.patch")], landing=self.landing(), run=run, cgroup=cgroup)
         return got, calls
 
-    def test_a_refused_ship_puts_the_extraction_back_and_removes_what_its_land_built(self) -> None:
-        (self.tree / "asm").mkdir()
-        (self.tree / "asm/a.s").write_text("pre")
-        (self.tree / "build").mkdir(exist_ok=True)
+    def test_a_refused_ship_puts_the_extraction_back_and_drops_the_objects_a_changed_top_level_file_reaches(
+        self,
+    ) -> None:
+        (self.tree / "asm/de").mkdir(parents=True)
+        (self.tree / "asm/de/a.s").write_text("pre")
+        (self.tree / "build/de").mkdir(parents=True)
         (self.tree / "asm.pre-ship").mkdir()  # a leftover of the earlier layout
         (self.tree / "asm.pre-ship/old.s").write_text("stale")
         inner = self.landing(refuse="land.check")
 
         def land(profile: Any, tree: Path, base: str, patches: Any, **kw: Any) -> Any:
-            (tree / "asm/a.s").unlink()  # a sync re-extracts: a fresh file, not the kept one
-            (tree / "asm/a.s").write_text("candidate")
-            (tree / "build/x.o").write_text("object of the candidate")
+            (tree / "asm/de/a.s").unlink()  # a sync re-extracts: a fresh file, not the kept one
+            (tree / "asm/de/a.s").write_text("candidate")
+            (tree / "build/de/x.o").write_text("object of the candidate")
             return inner(profile, tree, base, patches, **kw)
 
         got = ship(self.profile, self.tree, [("L", self.root / "l.patch")], landing=land)
         self.assertEqual(got[1], 1)
-        self.assertEqual((self.tree / "asm/a.s").read_text(), "pre")
-        self.assertFalse((self.tree / "build/x.o").exists())
+        self.assertEqual((self.tree / "asm/de/a.s").read_text(), "pre")
+        self.assertFalse((self.tree / "build/de/x.o").exists())
         self.assertFalse((self.tree / ".unbake/ship-asm").exists())
         self.assertFalse((self.tree / "asm.pre-ship").exists())
         self.assertTrue((self.tree / "build.o").exists())  # warm build state it did not touch stays
@@ -388,3 +390,25 @@ class ShipBoostTests(unittest.TestCase):
     def test_a_weight_out_of_range_is_a_profile_error(self) -> None:
         with self.assertRaises(DecompError):
             self.boosted(0, lambda: self.SCOPE)
+
+
+class UnwindTests(ShipTests):
+    def test_a_refused_ship_drops_only_what_its_extraction_changed(self) -> None:
+        from abu_decomp.ship import Ship
+
+        asm, build = self.tree / "asm/de/nonmatchings", self.tree / "build/de"
+        asm.mkdir(parents=True)
+        build.mkdir(parents=True)
+        (asm / "a.s").write_text("glabel a\n")
+        (asm / "b.s").write_text("glabel b\n")
+        one = Ship(self.profile, self.tree, [("L", self.root / "l.patch")])
+        kept = one.keep_extraction()
+        (asm / "a.s").unlink()
+        (asm / "a.s").write_text("glabel a_moved\n")  # the land's extraction rewrote a.s, left b.s alone
+        for name, include in (("x", "a.s"), ("y", "b.s")):
+            (build / f"{name}.s").write_text(f'.include "nonmatchings/{include}"\n')
+            (build / f"{name}.o").write_text("obj")
+        (build / "link.ld").write_text("ld")
+        one.unwind(kept)
+        self.assertEqual((asm / "a.s").read_text(), "glabel a\n")
+        self.assertEqual([(build / n).exists() for n in ("x.o", "y.o", "link.ld")], [False, True, False])

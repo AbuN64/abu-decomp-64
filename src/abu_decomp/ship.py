@@ -18,10 +18,12 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+from unbake import build as unbake_build
 from unbake import treelock
 
 from abu_decomp import DecompError, events, land, meter, nextcmd, priority, tools
@@ -42,6 +44,24 @@ PER_INPUT = ("land.evidence", "land.arity")
 
 class ShipError(DecompError):
     pass
+
+
+def _changed(asm: Path, kept: Path) -> dict[str, set[str]]:
+    """Per version, the extracted files (relative to asm/<v>/) that differ between `asm` and `kept`, or are in one only;
+    a file the land's extraction left alone is still the kept one's hard link."""
+    out: dict[str, set[str]] = {}
+    for top in {p.name for p in (*asm.iterdir(), *kept.iterdir()) if p.is_dir()}:
+        mine = {p.relative_to(asm / top): p for p in (asm / top).rglob("*") if p.is_file()}
+        theirs = {p.relative_to(kept / top): p for p in (kept / top).rglob("*") if p.is_file()}
+        names = {str(rel) for rel in mine.keys() ^ theirs.keys()}
+        for rel in mine.keys() & theirs.keys():
+            a, b = mine[rel].stat(), theirs[rel].stat()
+            if a.st_ino != b.st_ino and (a.st_size != b.st_size or mine[rel].read_bytes() != theirs[rel].read_bytes()):
+                names.add(str(rel))
+        names.discard(".extracted")  # the mark: what changed is handled file by file
+        if names:
+            out[top] = names
+    return out
 
 
 def _flocked(handle: int) -> bool:
@@ -438,7 +458,7 @@ class Ship:
                     outcome = self.attempts(started)
                 except BaseException:
                     self.abandon()
-                    self.unwind(kept, started)
+                    self.unwind(kept)
                     self.unpark()
                     raise
                 if outcome[0].get("pushed"):
@@ -446,7 +466,7 @@ class Ship:
                     self.drop(kept)
                 else:
                     self.abandon()
-                    self.unwind(kept, started)
+                    self.unwind(kept)
                 outcome[2].extend(self.unpark())
                 return outcome
         finally:
@@ -464,17 +484,31 @@ class Ship:
         subprocess.run(["cp", "-al", str(self.tree / "asm"), str(kept)], check=True)
         return kept
 
-    def unwind(self, kept: Path | None, started: float) -> None:
-        """A ship that pushed nothing puts the extraction back and removes every object and assembly the land built
-        (newer than the ship's start, so built under its candidate Makefile and extraction): the next make rebuilds."""
+    def unwind(self, kept: Path | None) -> None:
+        """A ship that pushed nothing puts the extraction back and leaves make exactly what the land made stale. The
+        tracked files git restores carry a fresh mtime already; each extracted file that differs from the kept one is
+        touched (its own .s.o rebuilds), the C objects that include it are dropped (unbake's `drop_including`, the
+        rule its own re-extraction follows) and the version's rendered linker scripts go. A changed top-level file
+        (macro.inc, labels.inc) drops every object of its version. Everything else stays warm for the next ship (10-22:
+        dropping every object a refused ship built made the next ship rebuild ~2000 units, 182 s CPU)."""
         if kept is None or not kept.is_dir():
             return
-        shutil.rmtree(self.tree / "asm", ignore_errors=True)
-        kept.rename(self.tree / "asm")
-        since = time.time() - (self.clock() - started)
-        for path in (self.tree / "build").rglob("*"):
-            if path.suffix in (".o", ".s", ".prev", ".textsize") and path.is_file() and path.stat().st_mtime >= since:
-                path.unlink()
+        asm = self.tree / "asm"
+        changed = _changed(asm, kept)
+        shutil.rmtree(asm, ignore_errors=True)
+        kept.rename(asm)
+        held = SimpleNamespace(project=SimpleNamespace(root=self.tree))
+        for version, names in changed.items():
+            for name in names:
+                with suppress(FileNotFoundError):
+                    os.utime(asm / version / name)
+            if any("/" not in name for name in names):  # a top-level include: every object of the version
+                for obj in (self.tree / "build" / version).rglob("*.o"):
+                    obj.unlink()
+            else:
+                unbake_build.drop_including(held, version, names)
+            for script in (self.tree / "build" / version).glob("*.ld"):
+                script.unlink()
 
     def drop(self, kept: Path | None) -> None:
         if kept is not None:
