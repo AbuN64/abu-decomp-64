@@ -14,7 +14,7 @@ import time
 import urllib.request
 from typing import Any
 
-from abu_decomp import DecompError, tas
+from abu_decomp import DecompError, arity, tas
 from abu_decomp.config import Profile
 
 HANG_SECONDS = 15.0
@@ -99,6 +99,10 @@ def watch(profile: Profile, *, once: bool, interval: float = 1.0) -> int:
                 raise DecompError("tas.watch", f"cannot read {url}: {error}") from error
             events = []  # the page restarting is not an event
         for event in events:
+            if event.get("stacks"):
+                found = arity.notes(profile, arity.frame_names(event["stacks"]))
+                if found:
+                    event["arity"] = found
             sys.stdout.write(json.dumps(event, sort_keys=True) + "\n")
             sys.stdout.flush()
             if once:

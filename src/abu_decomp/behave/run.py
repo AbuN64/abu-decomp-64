@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, narrate
+from abu_decomp import DecompError, arity, narrate
 from abu_decomp.behave import abi, classify, compare, describe, inputs, prototype
 from abu_decomp.behave import candidate as build_candidate
 from abu_decomp.config import Profile
@@ -608,6 +608,9 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         candidate_file,
         profile.source_file,
     )
+    disagreement = arity.notes(profile, [options.function], chosen.project)
+    if disagreement and classification:
+        classification["arity_first"] = disagreement[0]["first"] + f": {disagreement[0]['next']}"
     result = {
         "mode": "compare",
         **common,
@@ -623,6 +626,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         },
         "notes": notes[:20],
         **({"classification": classification} if classification else {}),
+        **({"arity": disagreement} if disagreement else {}),
         **({"opaque_callees": sorted(opaque)} if opaque else {}),
         "cases_detail": shown,
         "timing": timing(stages, started, cache),

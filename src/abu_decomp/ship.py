@@ -30,6 +30,10 @@ INPUT_REFUSALS = frozenset({"land.file_refused", "land.input_build_failed", "lan
 PRIORITY = "UNBAKE_PRIORITY"  # unbake's pool: a command whose environment says "1" takes host slots first
 
 
+# Findings one input alone can cause: that input is refused and the others still land.
+PER_INPUT = ("land.evidence", "land.arity")
+
+
 class ShipError(DecompError):
     pass
 
@@ -191,7 +195,7 @@ class Ship:
             split = [f for f in findings if f.get("key") == "land.file_refused"]
             if code and not split:
                 split = self.evidence_refusals(result, findings)  # only the input whose function the gate refused
-            if not split or (code and not any(f.get("key") == "land.evidence" for f in split)):
+            if not split or (code and not any(f.get("key") in PER_INPUT for f in split)):
                 return outcome
             self.clean(base)
             lanes = {f.get("lane") for f in split}
@@ -213,9 +217,9 @@ class Ship:
                 owners.setdefault(item if isinstance(item, str) else str(item.get("file", "")), []).append(row["lane"])
         found = []
         for finding in findings:
-            if finding.get("key") == "land.evidence" and owners.get(finding.get("file", "")):
+            if finding.get("key") in PER_INPUT and owners.get(finding.get("file", "")):
                 found += [{**finding, "lane": lane} for lane in owners[finding["file"]]]
-        blocking = [f for f in findings if f.get("blocking") and f.get("key") != "land.evidence"]
+        blocking = [f for f in findings if f.get("blocking") and f.get("key") not in PER_INPUT]
         return [] if blocking else found
 
     def execute(self) -> Result:

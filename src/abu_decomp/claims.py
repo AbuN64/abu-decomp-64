@@ -111,11 +111,7 @@ def check(profile: Profile, text: str, function: str | None = None) -> dict[str,
     )
     guess = function or next(iter(FUNCTION.findall(text)), None)
     profile_arg = f"--profile {profile.source_file}"
-    nxt = (
-        f"decomp {profile_arg} behave --function {guess} --candidate FILE"
-        if guess
-        else f"decomp {profile_arg} make check"
-    )
+    nxt = ""
     problems: list[dict[str, Any]] = []
     seen: set[str] = set()
     for number, line in enumerate(text.splitlines(), 1):
@@ -133,6 +129,15 @@ def check(profile: Profile, text: str, function: str | None = None) -> dict[str,
                 else f"states '{word}' but none of the cited runs ({', '.join(r['invocation'][:12] for r in cited)}) "
                 f"is {need}"
             )
+            if not nxt:  # the candidate is the function's own source file, found only when a claim needs it
+                from abu_decomp import arity
+
+                where = arity.definition_file(profile, guess) if guess else None
+                nxt = (
+                    f"decomp {profile_arg} behave --function {guess} --candidate {where or 'FILE'}"
+                    if guess
+                    else f"decomp {profile_arg} make check"
+                )
             problems.append({"word": word, "line": number, "need": need, "why": why, "next": nxt})
     return {"cited": [run["invocation"] for run in cited], "problems": problems}
 

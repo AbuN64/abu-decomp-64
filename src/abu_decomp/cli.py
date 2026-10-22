@@ -596,6 +596,37 @@ def _run_behave(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dic
     return run(_profile(args.profile), options)
 
 
+def _arity_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "verb",
+        choices=["census", "show", "gate"],
+        help="census: counts and the worst symbols; show SYMBOL: its sites and the asm's argument count; "
+        "gate: the land arity gate on the working tree against --base",
+    )
+    parser.add_argument("symbol", nargs="?", help="show: the function name")
+    parser.add_argument("--project", type=Path, help="project tree (default: the profile's)")
+    parser.add_argument("--base", help="gate: git revision the tree is compared with (default HEAD)")
+    parser.add_argument("--top", type=int, default=20, help="census: how many symbols to list (default 20)")
+
+
+def _run_arity(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import arity
+
+    if args.verb == "show" and not args.symbol:
+        raise DecompError("arity.args", "show needs a function name")
+    result = arity.run(_profile(args.profile), args.verb, args.symbol, args.project, args.base, args.top)
+    findings = [
+        {
+            "key": "land.arity",
+            "blocking": True,
+            "message": f"{r['function']}: {r['why']}; {r['detail']}",
+            "file": r["file"],
+        }
+        for r in result.get("refused", [])
+    ]
+    return result, (1 if findings else 0), findings
+
+
 def _claims_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "verb", choices=["check"], help="check: validate that a text's result claims cite recorded runs"
@@ -664,6 +695,11 @@ COMMANDS: dict[str, Command] = {
         "run the original and a candidate on the same inputs and compare their behaviour",
         _behave_arguments,
         _run_behave,
+    ),
+    "arity": Command(
+        "census of every function's parameter list: definition vs declarations, calls and the original's assembly",
+        _arity_arguments,
+        _run_arity,
     ),
     "claims": Command(
         "check that a text's result claims (fixed, behaves, ...) cite runs whose recorded outcome supports them",

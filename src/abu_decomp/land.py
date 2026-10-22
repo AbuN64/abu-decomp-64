@@ -128,7 +128,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, claims, events, evidence_gate, meter, proposals, retarget, standalone, tools
+from abu_decomp import DecompError, arity, claims, events, evidence_gate, meter, proposals, retarget, standalone, tools
 from abu_decomp.config import Profile, check_keys
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
@@ -146,7 +146,7 @@ GATES = (
     "standalone",
     "readme",
 )
-OPTIONAL_GATES = ("recipe", "evidence")
+OPTIONAL_GATES = ("recipe", "evidence", "arity")
 # A failed build gate that can be the fault of one input (not the admit command or the tree's own state).
 BISECTABLE = frozenset({"land.setup", "land.check", "land.sync_after", "land.audit"})
 DEFAULT_SUBJECT_LIMIT = 72
@@ -362,6 +362,19 @@ def evidence_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
     }
 
 
+def arity_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
+    """`land.arity` (absent: the gate is off): the source dirs and suffixes the census reads, the symbol pattern and
+    the directory of the original's assembly (arity.py)."""
+    if given is None:
+        return None
+    unknown = set(given) - set(arity.DEFAULTS) if isinstance(given, dict) else {"?"}
+    if unknown or not isinstance(given, dict):
+        raise LandError(
+            "config.schema", f"{profile.source_file}:land.arity: expected an object; unknown {sorted(unknown)}"
+        )
+    return arity.settings(given)
+
+
 def settings(profile: Profile) -> dict[str, Any]:
     table = profile.section("land")
     check_keys(
@@ -389,6 +402,7 @@ def settings(profile: Profile) -> dict[str, Any]:
                 "author",
                 "lock_weight",
                 "evidence",
+                "arity",
                 "claims",
             }
         ),
@@ -426,6 +440,7 @@ def settings(profile: Profile) -> dict[str, Any]:
     return {
         "claims": claims.settings(profile),
         "evidence": evidence_settings(profile, table.get("evidence")),
+        "arity": arity_settings(profile, table.get("arity")),
         "lock_weight": weight,  # CPUWeight and IOWeight of the unit holding the ship lock
         "subject_limit": limit,
         "check": argv("check"),
@@ -1552,6 +1567,33 @@ class Landing:
             )
         return self.gate("evidence", not refused, started, checked=checked, measures=gate.measures)
 
+    def arity(self) -> bool:
+        """No touched function gains a disagreement between its definition, declarations, calls and assembly, and
+        none that disagrees stays so (arity.py)."""
+        started = self.clock()
+        from abu_decomp.behave.run import configuration, work_dir
+
+        base = self.extra["base"]
+        report = arity.check_change(
+            self.tree,
+            self.config["arity"],
+            self.changed_files(),
+            lambda f: self.git("show", f"{base}:{f}", ok=False) or None,
+            work_dir(configuration(self.profile)) / "arity",
+        )
+        for row in report["refused"]:
+            command = arity.next_command(self.profile.source_file, row["function"], row["kinds"])
+            self.fail(
+                "land.arity",
+                f"{row['function']}: {row['why']} (disagreements {row['base']} -> {row['new']}); "
+                f"{row['detail']}; next: {command}",
+                next=command,
+                file=row["file"],
+                function=row["function"],
+                sites=row["sites"],
+            )
+        return self.gate("arity", not report["refused"], started, checked=report["checked"], counts=report["counts"])
+
     def readme_rows(self, name: str) -> list[dict[str, Any]]:
         path = self.tree / name
         return code_rows(path.read_text(errors="replace")) if path.is_file() else []
@@ -1857,6 +1899,7 @@ class Landing:
             self.standalone,
             self.readme,
             *([self.evidence] if self.config["evidence"] else []),
+            *([self.arity] if self.config["arity"] else []),
             *([self.recipe] if self.config["recipe"] else []),
         ]
 
