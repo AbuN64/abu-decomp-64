@@ -206,3 +206,29 @@ def test_landing_gate_turns_a_refusal_into_a_blocking_finding(monkeypatch, tmp_p
     assert finding["key"] == "land.arity" and finding["file"] == "src/b.c"
     assert finding["next"].endswith("arity show func_80209CD8_de") and "defined with 1" in finding["message"]
     assert landing.gates[0]["gate"] == "arity" and landing.gates[0]["pass"] is False
+
+
+def test_notes_name_the_disagreeing_frame_first(monkeypatch):
+    from types import SimpleNamespace
+
+    table = census_of({"a.c": DEF, "b.c": USER}, {"func_80209CD8_de": {"words": 1, "regs": ["a0"]}})
+    table.update(census_of({"c.c": "void func_80208158_de(int a) { }"}))
+    fake = SimpleNamespace(table=lambda: table, close=lambda: None)
+    monkeypatch.setattr(arity, "census_for", lambda profile, project=None: fake)
+    found = arity.notes(
+        SimpleNamespace(source_file="w.json"), ["func_80209CD8_de", "func_80208158_de", "func_80209CD8_de"]
+    )
+    assert [r["function"] for r in found] == ["func_80209CD8_de"]
+    assert "first" in found[0]["first"] and found[0]["next"].endswith("recipe work func_80209CD8_de --kind declaration")
+
+
+def test_notes_never_raise_without_a_project(monkeypatch):
+    from types import SimpleNamespace
+
+    from abu_decomp import DecompError
+
+    def refuse(profile, project=None):
+        raise DecompError("tools.config", "no project")
+
+    monkeypatch.setattr(arity, "census_for", refuse)
+    assert arity.notes(SimpleNamespace(source_file="w.json"), ["func_80209CD8_de"]) == []
