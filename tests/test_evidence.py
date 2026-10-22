@@ -227,7 +227,7 @@ def test_parse_lines():
 
 
 def test_unrecorded_body_refused(tmp_path):
-    tries = tries_file(tmp_path, "#include <x.h>\n" + CLEAN.replace("count", "n"))
+    tries = tries_file(tmp_path, "#include <x.h>\n" + CLEAN.replace("count = *p", "count = p[1]"))
     rows = provenance.unproven(evidence.parse(BASE), evidence.parse(CLEAN), tries)
     assert [r["function"] for r in rows] == ["f"] and rows[0]["next"] == "recipe try f"
     assert "not produced/proven by recipe try" in rows[0]["why"]
@@ -236,6 +236,13 @@ def test_unrecorded_body_refused(tmp_path):
 def test_recorded_body_passes_even_with_other_header_and_whitespace(tmp_path):
     tries = tries_file(tmp_path, "#include <x.h>\nstatic void f(int *p)\n{ int count; /* hi */ count = *p; }\n")
     assert provenance.unproven(evidence.parse(BASE), evidence.parse(CLEAN), tries) == []
+
+
+def test_a_consistently_renamed_recorded_body_passes_and_a_different_shape_does_not(tmp_path):
+    tries = tries_file(tmp_path, CLEAN.replace("count", "n").replace("f(", "func_80000000("))
+    assert provenance.unproven(evidence.parse(BASE), evidence.parse(CLEAN), tries) == []
+    swapped = "void f(int *p) {\n    int count;\n    count = *p;\n    count = count;\n}\n"
+    assert provenance.unproven(evidence.parse(BASE), evidence.parse(swapped), tries) != []
 
 
 def test_declaration_edit_and_byte_checked_plain_need_no_try(tmp_path):

@@ -489,6 +489,7 @@ class Ship:
     def execute(self) -> Result:
         started = self.clock()
         handle = self.lock()
+        self.step("queue", started)  # the wait for the ticket and the ship lock, apart from the ship's own work
         try:
             for row in self.notices():  # every ship says it until the owner takes the parked change back
                 self.notes.append({"key": "ship.parked", "message": _parked_line(row), "blocking": False})
@@ -614,7 +615,9 @@ class Ship:
         for attempt in (1, 2):
             base = self.tip()
             self.refused = []
+            landing = self.clock()
             result, code, findings = self.land_all(base, list(self.patches))
+            self.step("land", landing)  # setup, check, sync, audit: the land's gates carry their own wall and CPU
             if code:
                 if any(f.get("key") == "land.file_refused" for f in findings):
                     self.clean(base)

@@ -1,6 +1,7 @@
 """Two checks on the function bodies a change adds or changes, both read from the code, never self-reported.
 
-provenance  a body must equal (normalised text) one that `recipe try` recorded: the tries stream of the project's
+provenance  a body must equal (normalised text, or up to a consistent identifier rename) one that `recipe try`
+            recorded: the tries stream of the project's
             Recipe state holds each candidate file it measured, so a hand-written body has no record.
 names       a body may not add machine-generated leftovers: the rules (name, regex, hint) come from the seat profile
             and run on the body's code lines (comments and strings blanked); a leftover the parent body already had
@@ -26,6 +27,28 @@ from abu_decomp.evidence import ASM, PLAIN, Fn
 def inner(fn: Fn) -> str:
     """The braces text of a function: what the header declares never makes a body new."""
     return fn.text[fn.text.find("{") :] if "{" in fn.text else fn.text
+
+
+_FIXED = frozenset(
+    re.findall(
+        r"\w+",
+        "auto break case char const continue default do double else enum extern float for goto if int long register "
+        "return short signed sizeof static struct switch typedef union unsigned void volatile while "
+        "s8 u8 s16 u16 s32 u32 s64 u64 f32 f64 NULL TRUE FALSE",
+    )
+)
+
+
+def shape(fn: Fn) -> str:
+    """The body with each non-keyword identifier numbered by first use: bodies that differ only by a consistent
+    rename (`recipe name` after the try) share it, so name and body can land in one commit."""
+    seen: dict[str, int] = {}
+    body = re.sub(
+        r"[A-Za-z_]\w*",
+        lambda m: m[0] if m[0] in _FIXED else f"@{seen.setdefault(m[0], len(seen))}",
+        inner(fn),
+    )
+    return "\0shape:" + body
 
 
 def edited(before: Fn | None, after: Fn) -> bool:
@@ -58,6 +81,7 @@ def recorded(paths: list[Path]) -> dict[str, dict[str, Any]]:
             for fn in evidence.parse(str(row["text"])).values():
                 if fn.kind != ASM:
                     found.setdefault(inner(fn), who)
+                    found.setdefault(shape(fn), who)
     return found
 
 
@@ -69,7 +93,7 @@ def unproven(base: dict[str, Fn], new: dict[str, Fn], tries: dict[str, dict[str,
             "next": f"recipe try {name}",
         }
         for name, fn in sorted(new.items())
-        if changed(base.get(name), fn) and inner(fn) not in tries
+        if changed(base.get(name), fn) and inner(fn) not in tries and shape(fn) not in tries
     ]
 
 
