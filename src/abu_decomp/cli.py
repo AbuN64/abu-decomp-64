@@ -493,30 +493,6 @@ def _run_build(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
     return run(_profile(args.profile), argv), 0, []
 
 
-def _land_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--tree", type=Path, required=True, help="proof tree: a clean checkout at --base")
-    parser.add_argument("--base", required=True, help="git ref the tree must be at")
-    parser.add_argument(
-        "--patch",
-        action="append",
-        required=True,
-        metavar="LANE=PATH[:MESSAGE]",
-        help="a lane's patch, in order (repeatable); MESSAGE is that lane's commit message when it matches no function",
-    )
-
-
-def _run_land(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    from abu_decomp.land import land, parse_messages, parse_patches
-
-    return land(
-        _profile(args.profile),
-        args.tree,
-        args.base,
-        parse_patches(args.patch),
-        messages=parse_messages(args.patch),
-    )
-
-
 def _ship_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--tree", type=Path, required=True, help="the warm tree: a checkout the ship keeps at the branch"
@@ -732,7 +708,6 @@ COMMANDS: dict[str, Command] = {
     "cycle": Command("rerun Recipe and unbake report whenever the decomp sources settle", _none, _run_cycle),
     "stream": Command("serve, supervise, control and capture the headless tile stream", _passthrough, _run_stream),
     "port": Command("generate a native port repository skeleton", _port_arguments, _run_port),
-    "land": Command("apply lane patches to a proof tree and run the landing gates", _land_arguments, _run_land),
     "standalone": Command(
         "list the lines of a game repo (or those it adds over --against) that name one of our tools",
         _standalone_arguments,

@@ -33,7 +33,7 @@ def _apply(args: list[str], now: int, lowest: int = 0, fail: bool = False) -> tu
 class Kind(unittest.TestCase):
     def test_land_make_and_tree_setup_are_proofs(self) -> None:
         for line in (
-            [*P, "land", "--tree", "T"],
+            [*P, "ship", "--tree", "T"],
             ["make", "check"],
             [*P, "unbake", "--project", "T", "--host", "H", "setup"],
             [*P, "unbake", "--", "--project=T", "land"],
@@ -55,13 +55,13 @@ class Kind(unittest.TestCase):
 
 class Apply(unittest.TestCase):
     def test_a_land_started_under_nice_15_comes_back_to_the_proof_value(self) -> None:
-        self.assertEqual(_apply([*P, "land"], 15, lowest=-5), (-5, [("nice", -5), ("io", 0)], []))
+        self.assertEqual(_apply([*P, "ship"], 15, lowest=-5), (-5, [("nice", -5), ("io", 0)], []))
 
     def test_without_rlimit_room_a_proof_goes_as_low_as_allowed(self) -> None:
-        self.assertEqual(_apply([*P, "land"], 15, lowest=10), (10, [("nice", 10), ("io", 0)], []))
+        self.assertEqual(_apply([*P, "ship"], 15, lowest=10), (10, [("nice", 10), ("io", 0)], []))
 
     def test_a_proof_that_cannot_go_lower_runs_with_one_warning(self) -> None:
-        got, calls, warned = _apply([*P, "land"], 15, lowest=20)
+        got, calls, warned = _apply([*P, "ship"], 15, lowest=20)
         self.assertEqual((got, calls), (None, [("io", 0)]))
         self.assertEqual(len(warned), 1)
 
@@ -76,7 +76,7 @@ class Apply(unittest.TestCase):
         self.assertEqual(_apply([*P, "lane", "end"], 3), (None, [], []))
 
     def test_a_refused_change_never_fails_the_command(self) -> None:
-        got, _, warned = _apply([*P, "land"], 15, lowest=-5, fail=True)
+        got, _, warned = _apply([*P, "ship"], 15, lowest=-5, fail=True)
         self.assertIsNone(got)
         self.assertEqual(len(warned), 1)
 
