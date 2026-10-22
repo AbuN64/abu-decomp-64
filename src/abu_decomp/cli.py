@@ -614,16 +614,20 @@ def _run_arity(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
 
     if args.verb == "show" and not args.symbol:
         raise DecompError("arity.args", "show needs a function name")
-    result = arity.run(_profile(args.profile), args.verb, args.symbol, args.project, args.base, args.top)
-    findings = [
-        {
-            "key": "land.arity",
-            "blocking": True,
-            "message": f"{r['function']}: {r['why']}; {r['detail']}",
-            "file": r["file"],
-        }
-        for r in result.get("refused", [])
-    ]
+    profile = _profile(args.profile)
+    result = arity.run(profile, args.verb, args.symbol, args.project, args.base, args.top)
+    findings = []
+    for r in result.get("refused", []):
+        command = arity.next_command(profile.source_file, r["function"], r["kinds"])
+        findings.append(
+            {
+                "key": "land.arity",
+                "blocking": True,
+                "message": f"{r['function']}: {r['why']}; {r['detail']}; next: {command}",
+                "file": r["file"],
+                "next": command,
+            }
+        )
     return result, (1 if findings else 0), findings
 
 
