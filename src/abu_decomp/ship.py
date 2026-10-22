@@ -107,21 +107,49 @@ class Ship:
         }
 
     def lock(self) -> int:
-        """The repository's ship lock (in git's common dir, so every worktree of one clone shares it)."""
+        """The repository's ship lock (in git's common dir, so every worktree of one clone shares it), served in
+        arrival order: flock is not FIFO, so each ship first takes a ticket (`decomp-ship.tickets/<ns>-<pid>`) and
+        only the oldest live ticket may take the lock."""
         common = Path(self.git("rev-parse", "--git-common-dir")[1].strip())
         path = (common if common.is_absolute() else self.tree / common) / "decomp-ship.lock"
+        tickets = path.with_name("decomp-ship.tickets")
+        tickets.mkdir(exist_ok=True)
+        mine = tickets / f"{time.time_ns():020d}-{os.getpid()}"
+        mine.touch()
         handle = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
         deadline = self.clock() + self.lock_wait
-        while True:
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self.boost()
-                return handle
-            except BlockingIOError:
+        try:
+            while True:
+                if self.first(tickets, mine):
+                    try:
+                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        self.boost()
+                        return handle
+                    except BlockingIOError:
+                        pass
                 if self.clock() > deadline:
-                    os.close(handle)
-                    raise ShipError("ship.busy", f"another ship held {path} for {self.lock_wait:g}s") from None
+                    raise ShipError("ship.busy", f"another ship held {path} for {self.lock_wait:g}s")
                 time.sleep(2)
+        except BaseException:
+            os.close(handle)
+            raise
+        finally:
+            mine.unlink(missing_ok=True)
+
+    @staticmethod
+    def first(tickets: Path, mine: Path) -> bool:
+        """Whether `mine` is the oldest ticket of a live ship (a dead ship's ticket is removed)."""
+        for ticket in sorted(tickets.iterdir()):
+            if ticket == mine:
+                return True
+            try:
+                os.kill(int(ticket.name.rpartition("-")[2]), 0)
+                return False
+            except ProcessLookupError:
+                ticket.unlink(missing_ok=True)
+            except (PermissionError, ValueError):
+                return False
+        return True
 
     def boost(self) -> None:
         """The holder of the ship lock is the job every lane's next tree waits on: its own systemd unit (scope or

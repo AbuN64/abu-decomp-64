@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -83,3 +84,26 @@ class FromTryTests(unittest.TestCase):
             return {"pass": True, "commits": [plan], "lanes": [{"functions": {"names": ["f_matched"]}}]}, 0, []
 
         return fake
+
+
+class TicketTests(unittest.TestCase):
+    setUp = ShipTests.setUp
+    landing = ShipTests.landing
+
+    def ticket(self, name: str) -> Path:
+        tickets = self.tree / ".git/decomp-ship.tickets"
+        tickets.mkdir(exist_ok=True)
+        (tickets / name).touch()
+        return tickets / name
+
+    def test_a_ship_waits_behind_an_older_live_ticket_and_drops_the_ticket_of_a_dead_ship(self) -> None:
+        older = self.ticket(f"{1:020d}-{os.getppid()}")
+        with self.assertRaises(DecompError) as raised:
+            ship(self.profile, self.tree, [("L", self.root / "l.patch")], landing=self.landing(), lock_wait=0)
+        self.assertEqual(raised.exception.key, "ship.busy")
+        self.assertEqual(sorted(p.name for p in older.parent.iterdir()), [older.name])  # only its own ticket went
+        older.unlink()
+        dead = self.ticket(f"{2:020d}-{2**22 + 12345}")
+        _, code, _ = ship(self.profile, self.tree, [("L", self.root / "l.patch")], landing=self.landing())
+        self.assertEqual(code, 0)
+        self.assertFalse(dead.exists())
