@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from abu_decomp import DecompError
 SINK = "tas"
 PLAY_FPS = 10  # a replay's picture is for watching, not for the page's input: keep its CPU low
 PUBLISH_SECONDS = 0.1
+RECENT_FRAMES = 20  # the port's exit blanks its window: the last picture is the fullest of the last two seconds
 KIND_LIVE = "live"
 KIND_PLAY = "proof replay"
 
@@ -204,6 +206,7 @@ class PlayView:
         self.capture = Capture(None, window_size(cfg["args"]), PLAY_FPS, self.pulse, eyes=False)
         self.stop = threading.Event()
         self.started = time.time()
+        self.recent: deque[bytes] = deque(maxlen=RECENT_FRAMES)
 
     @classmethod
     def open(cls, cfg: dict[str, Any], run: Path, movie: str, stamp: str) -> PlayView | None:
@@ -247,6 +250,7 @@ class PlayView:
                 frame = self.capture.frame
             if frame and frame is not last:
                 write_atomic(self.run / "frame.jpg", frame)
+                self.recent.append(frame)
                 last = frame
             time.sleep(PUBLISH_SECONDS)
 
@@ -267,10 +271,8 @@ class PlayView:
         """Keep the last picture, say how the run ended, release the display and sound card."""
         time.sleep(PUBLISH_SECONDS * 2)  # let the publisher write the final frame
         self.stop.set()
-        with self.capture.frame_ready:
-            frame = self.capture.frame
-        if frame:
-            write_atomic(self.run / "frame.jpg", frame)
+        if self.recent:
+            write_atomic(self.run / "frame.jpg", max(self.recent, key=len))
         self.write("done", result)
         self.capture.close()
         shutil.rmtree(self.pulse, ignore_errors=True)
