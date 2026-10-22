@@ -1460,11 +1460,10 @@ class Landing:
                 )
             for refused in row.get("refused", []):
                 last = (refused["reason"].splitlines() or [""])[-1]
-                tail = "the rest of the patch landed" if row["status"] == "applied" else "nothing of the patch landed"
                 self.findings.append(
                     {
                         "key": "land.file_refused",
-                        "message": f"lane {row['lane']}: {refused['file']} refused ({tail}): {last}",
+                        "message": f"lane {row['lane']}: {refused['file']} refused: {last}",
                         "blocking": True,
                         "lane": row["lane"],
                         "file": refused["file"],
