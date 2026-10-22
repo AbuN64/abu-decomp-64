@@ -60,8 +60,9 @@ its switcher pins another; `tas watch` also reports `play-start` / `play-end`. N
    fix the cheap ones, and make the detector a gate that refuses new sites.
 5. **Prove and land.** Rebuild the port, replay the movie past the old stop, replay the other movies (they
    must stay ok), then land each repo with one line naming the defect and push. A decomp repo takes commits only
-   through the evidence gate: save the change as a patch (`git diff > PATH.patch`, then `git restore` the files) and
-   run `decomp ship --tree REPO --patch LANE=PATH.patch` (or `land`). For each function the patch touches the gate
+   through the evidence gate: leave the change in the tree (never restore or revert) and
+   run `decomp ship --tree REPO --worktree LANE[:MESSAGE]` (the tree's own tracked changes are the input; a refusal leaves
+   them untouched; or `--patch LANE=PATH.patch`, or `land`). For each function the patch touches the gate
    reads the evidence rung at the parent and at the candidate: asm, C unproven, behaves k/n (`decomp behave
    --function SYM` with the C as candidate), matches. It refuses a step down, and a non-matching body that does not
    raise k unless its linked bytes are identical; a refusal prints the function, both rungs and the behave command.
