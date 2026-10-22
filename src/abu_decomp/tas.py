@@ -22,9 +22,11 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import resource
 import signal
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -406,6 +408,8 @@ def table(result: dict[str, Any]) -> str:
     widths = [max(len(str(x[i])) for x in [head, *rows]) for i in range(4)]
     for row in [head, *rows]:
         lines.append("  ".join(str(c).ljust(w) for c, w in zip(row[:4], widths, strict=True)) + "  " + row[4])
+    if "wall_seconds" in result:
+        lines.append(f"wall {result['wall_seconds']} s, cpu {result['cpu_seconds']} s (children)")
     return "\n".join(lines)
 
 
@@ -420,6 +424,7 @@ def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) ->
     cfg = settings(profile)
     names = sorted(p.stem for p in cfg["movies"].glob("*.tas")) if cfg["movies"].is_dir() else []
     health = tas_health.read(cfg)
+    began, cpu0 = time.monotonic(), resource.getrusage(resource.RUSAGE_CHILDREN)
 
     def one(name: str) -> dict[str, Any]:
         try:
@@ -454,7 +459,10 @@ def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) ->
                 "run": result.get("run", ""),
             }
         )
+    cpu1 = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = round(cpu1.ru_utime + cpu1.ru_stime - cpu0.ru_utime - cpu0.ru_stime, 1)
     cfg["runs"].mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(standing, indent=1, sort_keys=True) + "\n")
     worse = [r["movie"] for r in rows if r["vs_recorded"] == "worse"]
-    return {"build": tas_health.header(health), "movies": rows, "worse": worse}, int(bool(worse))
+    timing = {"wall_seconds": round(time.monotonic() - began, 1), "cpu_seconds": cpu}
+    return {"build": tas_health.header(health), "movies": rows, "worse": worse, **timing}, int(bool(worse))
