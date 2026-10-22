@@ -51,6 +51,8 @@ def fake_git(moved: dict[str, str], ancestor: bool = True) -> Any:
             return (0 if ancestor else 1), ""
         if args[:2] == ("diff", "--name-only"):
             return 0, "\n".join(moved) + "\n"
+        if args[0] == "rev-parse":
+            return 0, moved.get(args[1].partition(":")[2] + "#blob", "none") + "\n"
         if args[0] == "diff":
             return 0, moved.get(args[-1], "")
         raise AssertionError(args)
@@ -131,6 +133,60 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(shipproof.judge(record(), "other", "M", fake_git({}))[0])
         self.assertFalse(shipproof.judge(record(**{"pass": False}), "P", "M", fake_git({}))[0])
         self.assertIn("rebase", self.judge({}, ancestor=False)[1])
+
+
+SPLIT = """diff --git a/include/t.H b/include/t.H
+new file mode 100644
+--- /dev/null
++++ b/include/t.H
+@@ -0,0 +1 @@
++typedef int T;
+diff --git a/a.c b/a.c
+--- a/a.c
++++ b/a.c
+@@ -1 +1,2 @@
+ int a;
++T f;
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1 +1 @@
+-1%
++2%
+"""
+
+
+class SplitTests(unittest.TestCase):
+    def test_header_sections_and_body_sections_part_and_generated_files_drop(self) -> None:
+        types, body = shipproof.split_patch(SPLIT) or ("", "")
+        self.assertIn("include/t.H", types)
+        self.assertNotIn("a.c", types)
+        self.assertIn("a.c", body)
+        self.assertNotIn("README", types + body)
+
+    def test_a_patch_of_one_kind_is_not_split(self) -> None:
+        self.assertIsNone(shipproof.split_patch(PATCH))
+        self.assertIsNone(shipproof.split_patch(SPLIT.split("diff --git a/a.c")[0]))
+
+    def test_the_body_proof_is_the_whole_proof_for_the_body_files_with_no_headers(self) -> None:
+        shape = shipproof.describe(SPLIT)
+        units = {"us:a.c": {"i": "ab", "reads": ["a.c", "include/t.H"]}}
+        whole = shipproof.build_record("L", "B", "W", shape, units, {"us": {"sha1": "x", "ok": True}}, {"check": True})
+        body = (shipproof.split_patch(SPLIT) or ("", ""))[1]
+        rec = shipproof.body_record(whole, body)
+        self.assertEqual((rec["files"], rec["headers"], rec["split_of"]), (["a.c"], [], "W"))
+        self.assertEqual(rec["closure"], ["a.c", "include/t.H"])
+        self.assertEqual(rec["patch"], shipproof.hashlib.sha256(body.encode()).hexdigest())
+
+    def test_a_header_landed_as_the_proof_built_it_does_not_break_the_carry(self) -> None:
+        rec = record(blobs={"include/t.H": "good"})
+        rec["closure"] = ["a.c", "include/t.H"]
+        rec["units"]["us:src/a.CPP"]["reads"] = ["src/a.CPP", "include/t.H"]
+        same = shipproof.judge(rec, rec["patch"], "M", fake_git({"include/t.H": "", "include/t.H#blob": "good"}))
+        self.assertTrue(same[0], same[1])
+        other = shipproof.judge(rec, rec["patch"], "M", fake_git({"include/t.H": "", "include/t.H#blob": "else"}))
+        self.assertFalse(other[0])
+        self.assertIn("include/t.H", other[1])
 
 
 class ProveTests(unittest.TestCase):
@@ -410,3 +466,80 @@ class CliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TypesTrainTests(CarriedShipTests):
+    """A patch with header and body hunks: the header half lands in the types train, the body carries over."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.patch.write_text(SPLIT)
+        self.header = "typedef int T;\n"
+        out = subprocess.run(["git", "hash-object", "--stdin"], input=self.header, capture_output=True, text=True)
+        self.blob = out.stdout.strip()
+        self.train_lands: list[list[str]] = []
+
+    def prove(self, *args: Any, **kw: Any) -> dict[str, Any]:
+        self.proved += 1
+        shape = shipproof.describe(self.patch.read_text())
+        units = {"us:a.c": {"i": "ab", "reads": ["a.c", "include/t.H"]}}
+        return shipproof.build_record(
+            "L", self.base, shipproof.patch_hash(self.patch), shape, units, {"us": {"sha1": "x", "ok": True}},
+            {"check": True}, blobs={"include/t.H": self.blob},
+        )  # fmt: skip
+
+    def landing(self, profile: Any, tree: Path, base: str, patches: Any, **kw: Any) -> Any:
+        lanes = [lane for lane, _ in patches]
+        if lanes == ["L-types"]:
+            self.train_lands.append(lanes)
+            (tree / "include").mkdir(exist_ok=True)
+            (tree / "include/t.H").write_text(self.header)
+            test_ship.git(tree, "add", "include/t.H")
+            plan = {
+                "lane": "L-types",
+                "files": ["include/t.H"],
+                "functions": [],
+                "message": kw["messages"]["L-types"],
+                "body": None,
+            }
+            return {"pass": True, "commits": [plan], "lanes": [{"lane": "L-types", "functions": {"names": []}}]}, 0, []
+        self.lands.append({"base": base, **kw})
+        (tree / "a.c").write_text((tree / "a.c").read_text() + "T f;\n")
+        plan = {"lane": "L", "files": ["a.c"], "functions": ["f"], "message": "Match f", "body": None}
+        return {"pass": True, "commits": [plan], "lanes": [{"lane": "L", "functions": {"names": ["f"]}}]}, 0, []
+
+    def go(self, **kw: Any) -> Any:
+        append = lambda path, record: {"ok": True}  # noqa: E731
+        return ship(
+            self.profile, self.tree, [("L", self.patch)], landing=self.landing, append=append, prove=self.prove,
+            spawn=lambda: setattr(self, "spawned", self.spawned + 1),
+            messages={"L": "Match func_8000_de, the long enough message"}, **kw,
+        )  # fmt: skip
+
+    def test_the_header_half_lands_in_the_train_and_the_body_carries_over(self) -> None:
+        result, code, findings = self.go()
+        self.assertEqual(code, 0, findings)
+        self.assertEqual(self.train_lands, [["L-types"]])
+        self.assertEqual([row.get("carry") for row in self.lands], [True])
+        self.assertTrue(result["carried"])
+        subjects = test_ship.git(self.remote, "log", "--format=%s", "-3").splitlines()
+        self.assertEqual(subjects[0], "Match f")
+        self.assertTrue(subjects[1].startswith("Types for Match func_8000_de"), subjects)
+        self.assertIn("train", [step["step"] for step in result["steps"]])
+        self.assertEqual(self.proved, 1)  # one proof, built whole
+
+    def test_a_header_edit_that_moved_under_the_train_leaves_the_body_to_the_full_round(self) -> None:
+        self.header = "typedef long T;\n"  # the train lands text other than the proof built with
+        result, code, findings = self.go()
+        self.assertEqual(code, 0, findings)
+        self.assertEqual([row.get("carry") for row in self.lands], [None])
+        self.assertFalse(result["carried"])
+
+    def test_no_train_lands_the_whole_patch_in_one_round(self) -> None:
+        _, code, findings = self.go(split=False)
+        self.assertEqual((self.train_lands, code), ([], 0), findings)
+
+
+for _name in dir(CarriedShipTests):  # the train tests reuse the carried tests' fixtures, not their cases
+    if _name.startswith("test_") and _name not in TypesTrainTests.__dict__:
+        setattr(TypesTrainTests, _name, None)

@@ -51,6 +51,10 @@ HEADER = re.compile(r"\.(h|hpp|inc)$", re.I)
 SHA1_ROW = re.compile(r"^SHA1_([\w-]+)\s*:?=\s*([0-9a-f]{40})\s*$", re.M)
 
 
+TYPES = "-types"  # the lane name suffix of the header half of a split patch (a types-train input)
+BLOCK = re.compile(r"^diff --git a/(?P<a>\S+) b/(?P<b>\S+)", re.M)
+
+
 class NoProof(DecompError):
     """The patch cannot be proved in a work tree (no tree, another state, a tool refusal): the full land takes it."""
 
@@ -98,6 +102,37 @@ def parse_deps(text: str) -> list[str]:
         return []
     _, _, rest = head[0].partition(":")
     return rest.split()
+
+
+def split_patch(text: str, generated: Sequence[str] = ()) -> tuple[str, str] | None:
+    """(types, body): the file sections of a patch that are headers, and the others (generated files drop). None when
+    the patch is not both: a header-only or a body-only patch needs no split."""
+    starts = [m.start() for m in BLOCK.finditer(text)]
+    types, body = [], []
+    for begin, end in zip(starts, [*starts[1:], len(text)], strict=True):
+        block = text[begin:end]
+        found = BLOCK.match(block)
+        name = found["b"] if found else ""
+        if is_generated(name, generated):
+            continue
+        (types if HEADER.search(name) else body).append(block if block.endswith("\n") else block + "\n")
+    return ("".join(types), "".join(body)) if types and body else None
+
+
+def body_record(record: dict[str, Any], body: str, generated: Sequence[str] = ()) -> dict[str, Any]:
+    """The proof of the body half, derived from the proof of the whole patch (built at the same base with the headers
+    applied): the headers it needs are the types train's, recognised at landing by their blob (see judge)."""
+    shape = describe(body, generated)
+    return {
+        **record,
+        "patch": hashlib.sha256(body.encode()).hexdigest(),
+        "files": shape["files"],
+        "headers": [],
+        "rows": shape["rows"],
+        "generated": shape["generated"],
+        "closure": closure(shape["files"], record["units"]),
+        "split_of": record["patch"],
+    }
 
 
 def sha256(path: Path) -> str | None:
@@ -271,6 +306,13 @@ def prove(
         verdict = invoke("unbake", profile, ["verify", str(code)], project=work)
         gates = {"check": code == 0, "verify": bool(verdict.ok)}
         units = collect_units(work, set(shape["files"])) if code == 0 else {}
+        blobs = {}
+        for header in shape[
+            "headers"
+        ]:  # the header texts this proof built with: a types train that lands them keeps it
+            got = git("hash-object", "--", header, ok=False)
+            if got[0] == 0 and got[1].strip():
+                blobs[header] = got[1].strip()
         roms = rom_report(work) if code == 0 else {}
         record = build_record(
             lane,
@@ -281,6 +323,7 @@ def prove(
             roms,
             gates,
             tree=str(work),
+            blobs=blobs,
             seconds=round(clock() - started, 1),
             cpu=round(meter.cpu() - cpu, 1),
         )
@@ -320,7 +363,10 @@ def judge(
             return False, f"{name} changed since the proof: every unit reads it"
     closure_names, rows = set(record["closure"]), record["rows"]
     headers = bool(record["headers"])
+    blobs = record.get("blobs") or {}
     for name in others:
+        if name in blobs and git("rev-parse", f"{tip}:{name}")[1].strip() == blobs[name]:
+            continue  # the branch holds exactly the header text the proof built with (the types train landed it)
         if matches(name, ROW_FILES):
             mine = set(rows.get(name, ()))
             if mine:

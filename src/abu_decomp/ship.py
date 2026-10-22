@@ -137,6 +137,8 @@ class Ship:
         build: land.Run = land.build_process,
         proof: bool = True,
         prove: Callable[..., dict[str, Any]] = shipproof.prove,
+        split: bool = True,
+        train_round: bool = False,
         regen: bool = False,
         regen_min: int = 6,
         regen_age: float = 900.0,
@@ -144,6 +146,10 @@ class Ship:
         spawn: Callable[[], None] | None = None,
     ) -> None:
         self.proof, self.prove, self.spawn, self.build = proof, prove, spawn, build
+        self.split, self.train_round = (
+            split,
+            train_round,
+        )  # split: header hunks go to the types train; train_round: this is it
         self.regen, self.regen_min, self.regen_age, self.regen_now = regen, regen_min, regen_age, regen_now
         self.records: dict[str, dict[str, Any]] = {}  # lane -> its proof record (shipproof), when it has one
         self.carry, self.kept = False, None  # this round builds nothing / the extraction kept for a refused land
@@ -283,6 +289,8 @@ class Ship:
         bisect held the lock 58 min): none unless this ship's own inputs carry passing proofs, and then only inputs
         with their own passing proof whose fact-file rows (name or address) clash with no input already in the round.
         While the round carries over, an input must also hold on the branch tip."""
+        if self.train_round:  # the types train: header halves only, landed together with a full build
+            return lambda rows: all(lane.endswith(shipproof.TYPES) for lane, _ in rows)
         if self.worktree or self.from_try:
             return None
         own = self.proven(self.patches) if self.proof else None
@@ -397,7 +405,69 @@ class Ship:
                         "tail": record.get("tail", ""),
                     }
             self.records[lane] = record
+        self.types_train()
         return None
+
+    def types_train(self) -> None:
+        """A patch with header hunks and a body is proved whole in its lane's work tree; its header hunks land in the
+        types train (a ship round of header halves only, batched with every other queued one: one setup, one check,
+        one commit each) and the body then carries over, because the branch holds exactly the header text the proof
+        built with (shipproof.judge by blob). A refused train leaves the whole patch to the full land as before."""
+        if not self.split or self.train_round or self.worktree or self.from_try:
+            return
+        common, generated = self.common(), self.generated_globs()
+        folder = common / "decomp-ship.train"
+        halves: dict[str, tuple[Path, Path, str]] = {}
+        for lane, path in self.patches:
+            record = self.records.get(lane)
+            if not record or not record.get("pass") or not record.get("blobs") or record.get("split_of"):
+                continue
+            if set(record["blobs"]) != set(record["headers"]):
+                continue
+            try:
+                text = path.read_text(errors="replace")
+            except OSError:
+                continue
+            found = shipproof.split_patch(text, generated)
+            if found is None:
+                continue
+            folder.mkdir(exist_ok=True)
+            types_path, body_path = folder / f"{record['patch']}.types.patch", folder / f"{record['patch']}.body.patch"
+            types_path.write_text(found[0])
+            body_path.write_text(found[1])
+            halves[lane] = (types_path, body_path, found[1])
+        if not halves:
+            return
+        began = self.clock()
+        limit = land.settings(self.profile, self.tree)["subject_limit"]
+        rows = [(f"{lane}{shipproof.TYPES}", types) for lane, (types, _, _) in halves.items()]
+        messages = {
+            f"{lane}{shipproof.TYPES}": types_message(self.messages[lane], limit)
+            for lane in halves
+            if self.messages.get(lane)
+        }
+        train = Ship(
+            self.profile, self.tree, rows, messages=messages, run=self.run, landing=self.landing, append=self.append,
+            clock=self.clock, lock_wait=self.lock_wait, cgroup=self.cgroup, invoke=self.invoke, build=self.build,
+            proof=False, split=False, train_round=True, spawn=self.spawn,
+        )  # fmt: skip
+        shipped, _, findings = train.execute()
+        status = {row["lane"]: row for row in shipped.get("inputs", [])}
+        landed = []
+        for index, (lane, (_, body_path, body)) in enumerate(halves.items()):
+            row = status.get(rows[index][0]) or {}
+            if row.get("status") != "shipped":
+                why = row.get("message") or (shipped.get("refused") or {}).get("message") or "the train refused it"
+                note = f"{lane}: the header half did not land ({why}); the whole patch lands in the full round"
+                self.notes.append({"key": "ship.train_refused", "blocking": False, "message": note})
+                continue
+            record = shipproof.body_record(self.records[lane], body, generated)
+            shipproof.store(common, record)
+            self.records[lane] = record
+            self.patches = [(n, body_path if n == lane else p) for n, p in self.patches]
+            landed.append(lane)
+        self.step("train", began, lanes=landed, pushed=shipped.get("pushed"), seconds_lock=shipped.get("lock_seconds"))
+        del findings
 
     def carry_mode(self, tip: str, rows: Sequence[tuple[str, Path]]) -> bool:
         """Whether every input of `rows` brings a proof that still holds on `tip` (shipproof.judge): such a round
@@ -1121,6 +1191,13 @@ class Ship:
             with suppress(OSError, ValueError):
                 if int(pending.read_text()) == os.getpid():
                     pending.unlink()
+
+
+def types_message(message: str, limit: int) -> str:
+    """The commit message of a lane's header half: its subject becomes `Types for <subject>`, cut to the limit."""
+    subject, _, rest = message.partition("\n")
+    subject = f"Types for {subject}"[:limit].rstrip(" ,:;")
+    return subject + (f"\n{rest}" if rest else "")
 
 
 def ship(profile: Profile, tree: Path, patches: Sequence[tuple[str, Path]], **hooks: Any) -> Result:

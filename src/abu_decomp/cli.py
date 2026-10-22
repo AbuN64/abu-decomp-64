@@ -518,6 +518,12 @@ def _ship_arguments(parser: argparse.ArgumentParser) -> None:
         "is carried over",
     )
     parser.add_argument(
+        "--no-train",
+        action="store_true",
+        help="do not split a patch that has header and body hunks: its header hunks land with the body in the full "
+        "round, not in the types train",
+    )
+    parser.add_argument(
         "--regen",
         action="store_true",
         help="regenerate README, maps, overview and progress in one commit once enough carried ships landed (a carried "
@@ -560,6 +566,7 @@ def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
             parse_patches(args.patch),
             messages=parse_messages(args.patch),
             proof=not args.no_proof,
+            split=not args.no_train,
         )
     name, _, message = (args.worktree or "worktree").partition(":")
     return ship(
