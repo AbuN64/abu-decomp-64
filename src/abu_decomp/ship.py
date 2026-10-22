@@ -29,6 +29,7 @@ from unbake import treelock
 
 from abu_decomp import DecompError, events, land, meter, nextcmd, priority, tools
 from abu_decomp.config import Profile
+from abu_decomp.ship_batch import Batch, restrict
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
 IDENTITY = re.compile(r"^\s*(?P<name>[^<>]+?)\s*<(?P<email>[^<>\s]+)>\s*$")
@@ -41,6 +42,14 @@ PRIORITY = "UNBAKE_PRIORITY"  # unbake's pool: a command whose environment says 
 
 # Findings one input alone can cause: that input is refused and the others still land.
 PER_INPUT = ("land.evidence", "land.arity")
+
+
+class Adopted(Exception):
+    """Another ship of the queue landed this ship's inputs in its round; `result` is this ship's share."""
+
+    def __init__(self, result: Any) -> None:
+        super().__init__("adopted")
+        self.result = result
 
 
 class ShipError(DecompError):
@@ -147,6 +156,8 @@ class Ship:
         self.steps: list[dict[str, Any]] = []
         self.cpu_mark = self.cpu_start = meter.cpu()
         self.refused: list[dict[str, Any]] = []  # inputs the ship refused whole before the land that pushed
+        self.batch: Batch | None = None  # the queue's shared inputs (--patch ships only)
+        self.own = [lane for lane, _ in self.patches]  # this ship's lanes; the round may carry others'
 
     # git ----------------------------------------------------------------------------------------------------------
     def git(self, *args: str, ok: bool = True, env: dict[str, str] | None = None) -> tuple[int, str]:
@@ -185,11 +196,26 @@ class Ship:
         tickets.mkdir(exist_ok=True)
         mine = tickets / f"{time.time_ns():020d}-{os.getpid()}"
         mine.touch()
+        batch = self.batch = Batch(tickets.parent, mine.name) if self.patches and not self.worktree else None
+        if batch and not self.from_try:
+            batch.publish(self.patches, self.messages)
         handle = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
         began, said = self.clock(), None
         try:
             while True:
+                state, got = batch.poll() if batch else ("queued", None)
+                if state == "done":
+                    raise Adopted(got)
+                if state == "claimed":  # a ship ahead of us lands our input in its round: wait for its result
+                    if said is None or self.clock() - said >= WAIT_BEAT:
+                        said = self.clock()
+                        sys.stderr.write(
+                            f"decomp: ship pid {got} lands this input in its round ({said - began:.0f}s)\n"
+                        )
+                    time.sleep(1)
+                    continue
                 if self.first(tickets, mine) and _flocked(handle):
+                    self.adopt()
                     self.boost()
                     return handle
                 if self.clock() - began > self.lock_wait:
@@ -208,6 +234,20 @@ class Ship:
             raise
         finally:
             mine.unlink(missing_ok=True)
+            if batch:
+                batch.withdraw()
+
+    def adopt(self) -> None:
+        """The inputs of the ships queued behind this one land in this round (one commit per input)."""
+        if self.batch is None or self.from_try:
+            return
+        rows = self.batch.adopt({lane for lane, _ in self.patches})
+        self.patches += rows
+        self.messages.update(self.batch.messages)
+        if rows:
+            lanes = ", ".join(lane for lane, _ in rows)
+            self.steps.append({"step": "batch", "seconds": 0.0, "adopted": [lane for lane, _ in rows]})
+            sys.stderr.write(f"decomp: landing the queued inputs of {lanes} in this round\n")
 
     @staticmethod
     def first(tickets: Path, mine: Path) -> bool:
@@ -516,7 +556,11 @@ class Ship:
 
     def execute(self) -> Result:
         started = self.clock()
-        handle = self.lock()
+        try:
+            handle = self.lock()
+        except Adopted as adopted:
+            shipped, code, findings = adopted.result
+            return {**shipped, "seconds": round(self.clock() - started, 3)}, code, findings
         self.step("queue", started)  # the wait for the ticket and the ship lock, apart from the ship's own work
         try:
             for row in self.notices():  # every ship says it until the owner takes the parked change back
@@ -547,8 +591,13 @@ class Ship:
                     if any(g.get("gate") == "check" and not g.get("pass") for g in gates):  # the build itself refused
                         outcome[2].extend(self.health(outcome[0]["base"]))
                 outcome[2].extend(self.unpark())
+                if self.batch and self.batch.adopted:
+                    self.batch.release(outcome)
+                    outcome = restrict(outcome, set(self.own))
                 return outcome
         finally:
+            if self.batch:
+                self.batch.release(None)  # anything not given a result goes back to the queue
             os.close(handle)
 
     def health(self, base: str) -> list[dict[str, Any]]:
