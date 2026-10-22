@@ -52,13 +52,18 @@ class Ship:
         clock: Callable[[], float] = time.monotonic,
         lock_wait: float = LOCK_WAIT_SECONDS,
         cgroup: Callable[[], str] = lambda: Path("/proc/self/cgroup").read_text(),
+        worktree: str | None = None,
     ) -> None:
         self.profile, self.patches, self.messages = profile, list(patches), dict(messages or {})
+        self.worktree: str | None = worktree  # the work tree's own tracked changes are the input (see capture)
+        self.saved: dict[str, Any] | None = None
         self.tree = tree.expanduser().resolve()
         if not (self.tree / ".git").exists():
             raise ShipError("ship.tree", f"{self.tree} is not a git checkout")
-        if not self.patches:
-            raise ShipError("ship.arguments", "ship needs at least one --patch")
+        if self.worktree and self.patches:
+            raise ShipError("ship.arguments", "--worktree is the input itself; give it without --patch")
+        if not self.patches and not self.worktree:
+            raise ShipError("ship.arguments", "ship needs at least one --patch, or --worktree NAME")
         if len({lane for lane, _ in self.patches}) != len(self.patches):
             raise ShipError("ship.arguments", "two --patch inputs carry one lane name; each input needs its own")
         table = land.settings(profile)
@@ -149,12 +154,59 @@ class Ship:
         self.git("fetch", "-q", self.remote, self.branch)
         sha = self.git("rev-parse", "--verify", "FETCH_HEAD^{commit}")[1].strip()  # a remote name, URL or path
         dirty = self.git("status", "--porcelain", "--untracked-files=no")[1].splitlines()
+        if dirty and self.worktree and self.saved is None:
+            self.capture(sha)
+            dirty = []
         if dirty:
             raise ShipError("ship.dirty", f"{self.tree} has {len(dirty)} tracked changes; ship never resets over them")
         if self.git("rev-parse", "HEAD")[1].strip() != sha:
             self.git("checkout", "-q", "--detach", sha)
         self.step("tip", started, sha=sha)
         return sha
+
+    def capture(self, sha: str) -> None:
+        """The work tree's tracked changes become the input patch, saved beside the repository's ship lock. The tree is
+        then moved to `sha` clean (only tracked paths are rewritten; ignored build state and untracked files stay) and
+        the patch must apply there; if it does not, the tree is put back exactly and the ship is refused."""
+        diff = self.git("diff", "HEAD", "--binary", "--full-index")[1]
+        head = self.git("rev-parse", "HEAD")[1].strip()
+        code, ref = self.git("symbolic-ref", "-q", "HEAD", ok=False)
+        common = Path(self.git("rev-parse", "--git-common-dir")[1].strip())
+        path = (common if common.is_absolute() else self.tree / common) / f"decomp-ship-worktree-{self.worktree}.patch"
+        path.write_text(diff)
+        count = len(self.git("diff", "HEAD", "--name-only")[1].splitlines())
+        self.saved = {"diff": diff, "head": head, "branch": "" if code else ref.strip(), "path": path}
+        self.git("checkout", "-q", "--force", "--detach", head)  # drops tracked changes only; the patch holds them
+        self.git("checkout", "-q", "--detach", sha)
+        code, text = self.git("apply", "--check", str(path), ok=False)
+        if code:
+            self.restore()
+            raise ShipError(
+                "ship.worktree_conflict",
+                f"the work tree's {count} changed file(s) do not apply on {sha[:12]} ({text.strip()[-300:]}); "
+                "the tree is unchanged",
+            )
+        self.patches = [(self.worktree or "worktree", path)]
+
+    def restore(self) -> None:
+        """Put the work tree back as the ship found it: its commit (and branch), then its captured changes."""
+        saved = self.saved
+        if not saved:
+            return
+        self.git("clean", "-q", "-f", "-d", ok=False)
+        name = saved["branch"].removeprefix("refs/heads/")
+        self.git("checkout", "-q", "--force", name or saved["head"])
+        if saved["diff"]:
+            self.git("apply", "--binary", str(saved["path"]))
+        if self.git("diff", "HEAD", "--binary", "--full-index")[1] != saved["diff"]:
+            raise ShipError("ship.worktree_restore", f"the work tree does not match its capture {saved['path']}")
+        self.saved = None
+
+    def settle(self, sha: str) -> None:
+        """After a push the work tree is clean at the new commit; a tree that sat on a branch moves it there."""
+        saved, self.saved = self.saved, None
+        if saved and saved["branch"] and self.git("merge-base", "--is-ancestor", saved["head"], sha, ok=False)[0] == 0:
+            self.git("checkout", "-q", "-B", saved["branch"].removeprefix("refs/heads/"), sha)
 
     def clean(self, base: str) -> None:
         """The tree back at `base` with nothing the land wrote: tracked files reset, untracked (not ignored) files
@@ -226,33 +278,45 @@ class Ship:
         started = self.clock()
         handle = self.lock()
         try:
-            for attempt in (1, 2):
-                base = self.tip()
-                self.refused = []
-                result, code, findings = self.land_all(base, list(self.patches))
-                if code:
-                    if any(f.get("key") == "land.file_refused" for f in findings):
-                        self.clean(base)
-                    return self.finish(result, findings, base, None, started)
-                sha = self.commit(result)
-                if sha == base:  # nothing to commit: the branch already holds the inputs
-                    self.clean(base)
-                    findings.append(
-                        {"key": "ship.empty", "message": f"the inputs change nothing on {base[:12]}", "blocking": True}
-                    )
-                    return self.finish({**result, "pass": False}, findings, base, None, started)
-                if self.push():
-                    return self.finish(result, findings, base, sha, started)
-                self.clean(base)  # the landed commits stay local only; the next tip moves on
-                if attempt == 2:
-                    findings.append(
-                        {"key": "ship.moved", "message": f"{self.remote}/{self.branch} moved twice during the ship",
-                         "blocking": True}
-                    )  # fmt: skip
-                    return self.finish(result, findings, base, None, started)
-            raise AssertionError("unreachable")
+            try:
+                outcome = self.attempts(started)
+            except BaseException:
+                self.restore()
+                raise
+            if outcome[0].get("pushed"):
+                self.settle(outcome[0]["pushed"])
+            else:
+                self.restore()
+            return outcome
         finally:
             os.close(handle)
+
+    def attempts(self, started: float) -> Result:
+        for attempt in (1, 2):
+            base = self.tip()
+            self.refused = []
+            result, code, findings = self.land_all(base, list(self.patches))
+            if code:
+                if any(f.get("key") == "land.file_refused" for f in findings):
+                    self.clean(base)
+                return self.finish(result, findings, base, None, started)
+            sha = self.commit(result)
+            if sha == base:  # nothing to commit: the branch already holds the inputs
+                self.clean(base)
+                findings.append(
+                    {"key": "ship.empty", "message": f"the inputs change nothing on {base[:12]}", "blocking": True}
+                )
+                return self.finish({**result, "pass": False}, findings, base, None, started)
+            if self.push():
+                return self.finish(result, findings, base, sha, started)
+            self.clean(base)  # the landed commits stay local only; the next tip moves on
+            if attempt == 2:
+                findings.append(
+                    {"key": "ship.moved", "message": f"{self.remote}/{self.branch} moved twice during the ship",
+                     "blocking": True}
+                )  # fmt: skip
+                return self.finish(result, findings, base, None, started)
+        raise AssertionError("unreachable")
 
     def inputs(self, result: dict[str, Any], sha: str | None) -> list[dict[str, Any]]:
         """Each input's outcome, in order: shipped (landed and pushed) or refused with the reason."""

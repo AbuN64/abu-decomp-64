@@ -211,6 +211,68 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ShipWorktreeTests(unittest.TestCase):
+    """`worktree=NAME`: the tree's own tracked changes are the input; the fake land applies the captured patch."""
+
+    setUp = ShipTests.setUp
+    remote_tip = ShipTests.remote_tip
+
+    def landing(self, refuse: str | None = None, split: bool = False) -> Any:
+        def fake(profile: Any, tree: Path, base: str, patches: Any, **_: Any) -> Any:
+            self.lands.append(base)
+            self.assertEqual(git(tree, "status", "--porcelain", "--untracked-files=no"), "")
+            if refuse:
+                return {"pass": False, "lanes": []}, 1, [{"key": refuse, "message": "no", "blocking": True}]
+            git(tree, "apply", str(patches[0][1]))
+            plan = {"lane": patches[0][0], "files": ["a.c"], "functions": ["f"], "body": None, "message": "Fix a"}
+            return {"pass": True, "commits": [plan], "lanes": [{"functions": {"names": ["f"]}}]}, 0, []
+
+        return fake
+
+    def work(self, **fake: Any) -> Any:
+        append = lambda path, record: self.events.append(record) or {"ok": True}  # noqa: E731
+        return ship(self.profile, self.tree, [], worktree="W", landing=self.landing(**fake), append=append)
+
+    def snapshot(self) -> tuple[str, str, str]:
+        return (
+            git(self.tree, "diff", "HEAD", "--binary"),
+            git(self.tree, "rev-parse", "HEAD").strip(),
+            git(self.tree, "symbolic-ref", "-q", "HEAD").strip(),
+        )
+
+    def test_the_trees_own_change_is_gated_committed_and_pushed_and_the_tree_ends_clean(self) -> None:
+        (self.tree / "a.c").write_text("int a2;\n")
+        (self.tree / "scratch.txt").write_text("untracked stays\n")
+        result, code, _ = self.work()
+        self.assertEqual(code, 0)
+        self.assertEqual(result["pushed"], self.remote_tip())
+        self.assertEqual(git(self.remote, "show", "main:a.c"), "int a2;\n")
+        self.assertEqual(git(self.tree, "status", "--porcelain", "--untracked-files=no"), "")
+        self.assertEqual(git(self.tree, "rev-parse", "HEAD").strip(), result["pushed"])
+        self.assertEqual(git(self.tree, "symbolic-ref", "-q", "HEAD").strip(), "refs/heads/main")
+        self.assertTrue((self.tree / "scratch.txt").exists() and (self.tree / "build.o").exists())
+
+    def test_a_refusal_leaves_the_tree_exactly_as_it_was(self) -> None:
+        (self.tree / "a.c").write_text("int a2;\n")
+        before = self.snapshot()
+        result, code, _ = self.work(refuse="land.check")
+        self.assertEqual((code, result["pushed"]), (1, None))
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual((self.tree / "a.c").read_text(), "int a2;\n")
+
+    def test_changes_that_do_not_apply_on_the_new_tip_are_refused_and_kept(self) -> None:
+        (self.other / "a.c").write_text("int other;\n")
+        git(self.other, "commit", "-q", "-am", "other")
+        git(self.other, "push", "-q", "origin", "HEAD:main")
+        (self.tree / "a.c").write_text("int mine;\n")
+        before = self.snapshot()
+        with self.assertRaises(DecompError) as raised:
+            self.work()
+        self.assertEqual(raised.exception.key, "ship.worktree_conflict")
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.lands, [])
+
+
 class ShipBoostTests(unittest.TestCase):
     """The ship lock and the CPU/IO boost of its holder are one rule: the unit holding the lock outranks the lanes."""
 

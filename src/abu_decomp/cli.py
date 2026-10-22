@@ -547,10 +547,19 @@ def _ship_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--patch",
         action="append",
-        required=True,
+        default=[],
         metavar="LANE=PATH[:MESSAGE]",
         help="an input to land, commit and push; repeat it for every ready input, landed in order in one round with "
         "one commit each and one push (MESSAGE as for land)",
+    )
+    parser.add_argument(
+        "--worktree",
+        nargs="?",
+        const="worktree",
+        metavar="NAME[:MESSAGE]",
+        help="the tree's own tracked changes are the input (the default when no --patch is given): captured as a "
+        "patch, gated like one, committed alone and pushed; the tree ends clean at the new commit, and a refusal puts "
+        "it back exactly as it was",
     )
 
 
@@ -558,7 +567,18 @@ def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     from abu_decomp.land import parse_messages, parse_patches
     from abu_decomp.ship import ship
 
-    return ship(_profile(args.profile), args.tree, parse_patches(args.patch), messages=parse_messages(args.patch))
+    if args.patch and args.worktree:
+        raise DecompError("ship.arguments", "--worktree is the input itself; give it without --patch")
+    if args.patch:
+        return ship(_profile(args.profile), args.tree, parse_patches(args.patch), messages=parse_messages(args.patch))
+    name, _, message = (args.worktree or "worktree").partition(":")
+    return ship(
+        _profile(args.profile),
+        args.tree,
+        [],
+        messages={name: message.strip()} if message.strip() else {},
+        worktree=name,
+    )
 
 
 def _standalone_arguments(parser: argparse.ArgumentParser) -> None:
