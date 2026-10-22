@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, arity
+from abu_decomp import DecompError, arity, evidence
 
 _FUNCTION = re.compile(r"func_[0-9A-Fa-f]{8}\w*")
 _POINTER = re.compile(r"(?:code-pointer-|D_)([0-9A-Fa-f]{8})$")
@@ -74,6 +74,17 @@ def definition_site(project: Path | None, name: str) -> str | None:
     return _grep(project, name, re.compile(rf"^\s*[\w\s\*]+\b{re.escape(name)}\s*\([^;]*$"))
 
 
+def nonmatching(project: Path | None, names: list[str]) -> str | None:
+    """The first of `names` whose body sits under the NON_MATCHING guard: it owes a match."""
+    for name in names:
+        site = definition_site(project, name) if project else None
+        if site and project:
+            fn = evidence.parse((project / site.rpartition(":")[0]).read_text(errors="replace")).get(name)
+            if fn is not None and fn.kind == evidence.NM:
+                return name
+    return None
+
+
 def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None) -> dict[str, Any]:
     """The outcome's self-classification (empty for a clean end). Never raises."""
     what = outcome.get("outcome")
@@ -84,6 +95,7 @@ def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None
     project = _project(profile)
     frames = arity.frame_names(stacks or [])
     out: dict[str, Any] = {"blocking": True}
+    owed = nonmatching(project, [n for n in dict.fromkeys([subject, *frames]) if _FUNCTION.fullmatch(n)])
     if what == "hang":
         out.update(
             kind="hang",
@@ -105,11 +117,18 @@ def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None
                 out["owner"] = f"{owner_fn} at {site}"
     elif _FUNCTION.fullmatch(subject):
         site = include_asm_site(project, subject)
-        if site:
+        if site and owed != subject:
             out.update(
                 kind="no C body",
                 cannot_help="input cannot pass this point: the function exists only as INCLUDE_ASM",
                 owner=f"{subject} at {site}",
+                next=f"recipe work {subject}",
+            )
+        elif owed == subject:
+            out.update(
+                kind="non-matching body",
+                cannot_help="input cannot pass this point: the guarded body does not behave like the original",
+                owner=f"{subject} at {definition_site(project, subject)}",
                 next=f"recipe work {subject}",
             )
         else:
@@ -141,9 +160,20 @@ def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None
     notes = arity.notes(profile, names) if names else []
     if notes:
         out["arity"] = notes
+    if out["kind"] == "no C body" or owed:
+        who = owed or subject
+        out["owes"] = (
+            f"{who} owes a match: its frame is "
+            + ("an INCLUDE_ASM stand-in" if not owed else "a NON_MATCHING body")
+            + f"; the match is the target (recipe work {who}); recipe says when its budget is spent and the best "
+            "behaves-the-same body may land fenced"
+        )
+        if owed and out["kind"] == "host fault" and not any(n["function"] == owed for n in notes):
+            out["next"] = f"recipe work {owed}"
     out["claim"] = (
         f"{out['kind']}: {subject or what}; blocking={str(out['blocking']).lower()}; {out['cannot_help']}"
         + (f"; owner {out['owner']}" if "owner" in out else "")
+        + (f"; {out['owes']}" if "owes" in out else "")
         + f"; next: {out['next']}"
     )
     return out

@@ -631,6 +631,19 @@ def _run_arity(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
     return result, (1 if findings else 0), findings
 
 
+def _owes_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project", type=Path, help="project tree (default: the profile's)")
+    parser.add_argument(
+        "--top", type=int, default=10, help="how many functions to list, most reached first (default 10)"
+    )
+
+
+def _run_owes(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import owes
+
+    return owes.run(_profile(args.profile), args.project, args.top), 0, []
+
+
 def _claims_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "verb", choices=["check"], help="check: validate that a text's result claims cite recorded runs"
@@ -704,6 +717,11 @@ COMMANDS: dict[str, Command] = {
         "census of every function's parameter list: definition vs declarations, calls and the original's assembly",
         _arity_arguments,
         _run_arity,
+    ),
+    "owes": Command(
+        "functions that owe a match (NON_MATCHING bodies, reached INCLUDE_ASM) by evidence level, most reached first",
+        _owes_arguments,
+        _run_owes,
     ),
     "claims": Command(
         "check that a text's result claims (fixed, behaves, ...) cite runs whose recorded outcome supports them",

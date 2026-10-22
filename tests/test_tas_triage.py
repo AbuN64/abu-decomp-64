@@ -19,6 +19,10 @@ class TriageTests(unittest.TestCase):
             '#include "x.H"\nINCLUDE_ASM("ovl", func_8041CAD8_de);\nvoid func_80209CD8_de(int a)\n{\n}\n'
         )
         (self.project / "src" / "b.CPP").write_text("s32 D_0042F130[4];\n")
+        (self.project / "src" / "c.CPP").write_text(
+            "#ifdef NON_MATCHING\nvoid func_80209DDD_de(int a)\n{\n}\n#else\n"
+            'INCLUDE_ASM("o", func_80209DDD_de);\n#endif\n'
+        )
         self.profile = SimpleNamespace(source_file=Path("/p/w.json"))
         patch = mock.patch("abu_decomp.tas_triage._project", return_value=self.project)
         patch.start()
@@ -47,6 +51,28 @@ class TriageTests(unittest.TestCase):
         self.assertEqual(got["kind"], "host fault")
         self.assertEqual(got["owner"], "func_80209CD8_de at src/a.CPP:3")
         self.assertIn("arity show func_80209CD8_de", got["next"])
+
+    def test_a_fault_in_a_non_matching_body_names_the_match_target_and_says_it_owes_one(self):
+        stack = self.project / "st.txt"
+        stack.write_text("#0 func_80209DDD_de (a=1)\n#1 func_8041CAD8_de ()\n")
+        got = tas_triage.claim(self.profile, {"outcome": "crash", "subject": "host-fault-080f2e1c"}, [str(stack)])
+        self.assertEqual(got["next"], "recipe work func_80209DDD_de")
+        self.assertIn("func_80209DDD_de owes a match", got["owes"])
+        self.assertIn("NON_MATCHING body", got["claim"])
+
+    def test_a_stop_in_a_non_matching_body_is_a_match_target_not_unknown(self):
+        got = tas_triage.claim(self.profile, {"outcome": "stop", "subject": "func_80209DDD_de"})
+        self.assertEqual((got["kind"], got["next"]), ("non-matching body", "recipe work func_80209DDD_de"))
+
+    def test_an_include_asm_stop_also_says_it_owes_a_match(self):
+        got = tas_triage.claim(self.profile, {"outcome": "stop", "subject": "func_8041CAD8_de"})
+        self.assertIn("func_8041CAD8_de owes a match", got["owes"])
+
+    def test_a_fault_in_a_matching_body_does_not_owe_one(self):
+        stack = self.project / "st.txt"
+        stack.write_text("#0 func_80209CD8_de (a=1)\n")
+        got = tas_triage.claim(self.profile, {"outcome": "crash", "subject": "host-fault-1"}, [str(stack)])
+        self.assertNotIn("owes", got)
 
     def test_arity_note_is_carried(self):
         self.notes.return_value = [{"function": "func_8041CAD8_de", "next": "x"}]

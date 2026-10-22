@@ -45,7 +45,13 @@ its switcher pins another; `tas watch` also reports `play-start` / `play-end`. N
    the decomp's C with `--candidate` (a `same` counts only with enough compared cases); for a wrong value,
    replay under gdb, watch the address, and let the watchpoint name the writer; compare that writer with the
    original's asm. Write down the chain from what you saw to the line that causes it.
-3. **Fix at the owning boundary.** Wrong game C: fix the decomp source so it reads like the original
+3. **Fix at the owning boundary.** A function you stop in or fix gets a full match first: a stop or fault in an
+   `INCLUDE_ASM` or `NON_MATCHING` body prints `next: recipe work SYM` and says the function owes a match; follow the
+   recipe rounds toward a plain body (make check green on every ROM), which removes the fence in the same change.
+   Only when `recipe` says the match budget is spent, land the best body that behaves the same inside
+   `#ifdef NON_MATCHING` ... `#else` `INCLUDE_ASM(...)` `#endif` (prove it with `decomp behave --function SYM
+   --candidate FILE`); it then owes a match, listed by `decomp owes` (the work list, most reached by play first), and a
+   later change to it is accepted only when it matches or raises behave k. Wrong game C: fix the decomp source so it reads like the original
    developers' code, keeping every ROM byte-identical (`decomp make ... check`). Wrong hardware model: fix the
    port's layer, with a unit test. Never hide a game-code difference in the port. When the port had to be
    changed for something that lives in the game, backport it to the decomp in this same cycle: the cycle

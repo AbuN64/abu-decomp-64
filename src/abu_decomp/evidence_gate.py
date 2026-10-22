@@ -19,6 +19,23 @@ if TYPE_CHECKING:
     from abu_decomp.land import Landing
 
 
+def header_digest(listing: str) -> str:
+    return hashlib.sha256(listing.encode()).hexdigest()
+
+
+def rom_digest(tree: Path, patterns: list[str]) -> str:
+    digest = hashlib.sha1()
+    for pattern in patterns:
+        for path in sorted(tree.glob(pattern)):
+            digest.update(path.name.encode())
+            digest.update(hashlib.sha1(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def text_digest(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 class Gate:
     def __init__(self, landing: Landing, config: dict[str, Any], versions: Any = tools.version_text) -> None:
         self.landing, self.config, self.versions = landing, config, versions
@@ -34,22 +51,17 @@ class Gate:
             tree = self.landing.extra["base"] if side == "base" else self.landing.snapshot()
             self.trees[side] = tree
         listing = self.landing.git("ls-tree", "-r", tree, "--", *self.config["headers"], ok=False)
-        return hashlib.sha256(listing.encode()).hexdigest()
+        return header_digest(listing)
 
     def rom_hash(self) -> str:
         if self.roms is None:
-            digest = hashlib.sha1()
-            for pattern in self.config["roms"]:
-                for path in sorted(self.landing.tree.glob(pattern)):
-                    digest.update(path.name.encode())
-                    digest.update(hashlib.sha1(path.read_bytes()).digest())
-            self.roms = digest.hexdigest()
+            self.roms = rom_digest(self.landing.tree, self.config["roms"])
         return self.roms
 
     def key(self, side: str, function: str, text: str) -> str:
         parts = [
             function,
-            hashlib.sha256(text.encode()).hexdigest(),
+            text_digest(text),
             self.header_hash(side),
             self.rom_hash(),
             self.versions(),
@@ -79,7 +91,7 @@ class Gate:
         if cached.is_file():
             data = json.loads(cached.read_text())
             self.measures.append({"function": function, "side": side, "cached": True, "seconds": 0.0, "cpu": 0.0})
-            return evidence.Score(**data)
+            return evidence.Score(**{k: v for k, v in data.items() if k in evidence.Score.__dataclass_fields__})
         path = self.candidate(side, relative, text)
         started, cpu = time.monotonic(), meter.cpu()
         try:
@@ -107,7 +119,14 @@ class Gate:
                     "message": f"behave of {function} ({side}) took {wall:.0f}s wall, {spent:.0f}s CPU",
                 }
             )
-        cached.write_text(json.dumps(score.__dict__))
+        # the sidecar fields let `decomp owes` find this measure again after the tool version moved the key
+        facts = {
+            "function": function,
+            "text": text_digest(text),
+            "headers": self.header_hash(side),
+            "roms": self.rom_hash(),
+        }
+        cached.write_text(json.dumps({**score.__dict__, **facts}))
         return score
 
     def run_behave(self, function: str, path: Path) -> dict[str, Any]:
