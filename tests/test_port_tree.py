@@ -45,6 +45,7 @@ class PortTreeTests(unittest.TestCase):
         self.remote, self.tree = self.root / "remote.git", self.root / "port"
         git(self.root, "init", "-q", "--bare", "-b", "main", str(self.remote))
         git(self.root, "clone", "-q", str(self.remote), str(self.tree))
+        (self.tree / ".git/info/exclude").write_text(".unbake/\n")  # real trees ignore it (ship locks there)
         (self.tree / "decomp.cmake").write_text(f"GIT_TAG {self.pin1}\nset(x)\n")
         (self.tree / "README.md").write_text(f"fetches at commit {self.pin1}.\n")
         git(self.tree, "add", ".")
