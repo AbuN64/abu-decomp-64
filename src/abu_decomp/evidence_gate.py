@@ -143,7 +143,8 @@ class Gate:
         if given is None:
             return None
         root = Path(str(tools.project_dir(self.landing.profile)))
-        return provenance.recorded([root / t for t in given["tries"]])
+        # a try recorded in any worktree of the tree counts: the proof is the body text, not the tree that tried it
+        return provenance.recorded([r / t for r in (root, *provenance.worktrees(root)) for t in given["tries"]])
 
     def provenance(
         self,

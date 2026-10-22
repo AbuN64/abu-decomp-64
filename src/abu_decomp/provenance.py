@@ -63,6 +63,20 @@ def changed(before: Fn | None, after: Fn) -> bool:
     return edited(before, after) and not (before is not None and before.kind == PLAIN and after.kind == PLAIN)
 
 
+def worktrees(root: Path) -> list[Path]:
+    """The other work trees of the repository at `root` (`git worktree list`): lanes crack in their own."""
+    import subprocess
+
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "worktree", "list", "--porcelain"], capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return []
+    found = [Path(line[9:]) for line in done.stdout.splitlines() if line.startswith("worktree ")]
+    return [p for p in found if p.resolve() != Path(root).resolve() and (p / ".unbake").is_dir()]
+
+
 def recorded(paths: list[Path]) -> dict[str, dict[str, Any]]:
     """Body text -> the try that produced it (item, session, time), over every candidate a try compiled and scored
     (a failed try proved nothing)."""

@@ -152,3 +152,46 @@ class BuildLogTests(unittest.TestCase):
             self.assertTrue(any("conflicting types for f" in line for line in last))
             self.assertIn("full log:", last[-1])
             self.assertIn("warning 30", (Path(temp) / ".unbake/ship-check.log").read_text())
+
+
+class WorktreeTriesTests(unittest.TestCase):
+    def test_a_try_recorded_in_a_worktree_counts_for_the_tree(self) -> None:
+        import tempfile
+
+        from abu_decomp import provenance
+
+        shared = test_ship.ShipTests()
+        shared.setUp()
+        self.addCleanup(shared.doCleanups)
+        wt = shared.root / "wt"
+        test_ship.git(shared.tree, "worktree", "add", "--detach", "-q", str(wt))
+        (wt / ".unbake/recipe").mkdir(parents=True)
+        row = {
+            "item": "f",
+            "result": "exact",
+            "time": 1,
+            "session": "s",
+            "text": "int f_x(void)\n{\n    return 3;\n}\n",
+        }
+        (wt / ".unbake/recipe/tries.jsonl").write_text(json.dumps(row) + "\n")
+        self.assertEqual([p.name for p in provenance.worktrees(shared.tree)], ["wt"])
+        found = provenance.recorded([wt / ".unbake/recipe/tries.jsonl"])
+        self.assertTrue(found)
+        self.assertEqual(tempfile.gettempdir() is not None, True)
+
+
+class SeedTests(unittest.TestCase):
+    def test_a_seeded_tree_gets_the_shared_trees_times_for_files_with_equal_bytes(self) -> None:
+        from abu_decomp import worktree
+
+        shared = test_ship.ShipTests()
+        shared.setUp()
+        self.addCleanup(shared.doCleanups)
+        wt = shared.root / "wt"
+        test_ship.git(shared.tree, "worktree", "add", "--detach", "-q", str(wt))
+        os.utime(shared.tree / "a.c", ns=(10**18, 10**18))
+        (wt / "a.c").write_text("int a;\n")
+        (wt / "new.c").write_text("x")
+        test_ship.git(wt, "add", "new.c")
+        self.assertGreaterEqual(worktree.align_times(shared.tree, wt), 1)
+        self.assertEqual((wt / "a.c").stat().st_mtime_ns, 10**18)

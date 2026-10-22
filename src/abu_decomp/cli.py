@@ -541,6 +541,19 @@ def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     )
 
 
+def _worktree_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("verb", choices=["new"], help="new: a lane's own work tree, warm from the shared tree")
+    parser.add_argument("lane", help="the lane name; the tree is <shared>/../wt/LANE")
+    parser.add_argument("--tree", type=Path, required=True, help="the shared tree the lane's worktree is seeded from")
+    parser.add_argument("--at", help="the commit (default: the branch tip, fetched)")
+
+
+def _run_worktree(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import worktree
+
+    return worktree.new(_profile(args.profile), args.tree, args.lane, args.at)
+
+
 def _repin_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tree", type=Path, required=True, help="the tree whose pin places are set (land.trees pin)")
     parser.add_argument("--to", help="the source commit or ref to pin (default: the pin config's ref, HEAD)")
@@ -714,6 +727,11 @@ COMMANDS: dict[str, Command] = {
         "land every ready input on the warm tree in one round, commit each and push fast-forward to the branch",
         _ship_arguments,
         _run_ship,
+    ),
+    "worktree": Command(
+        "make a lane's own work tree, seeded warm from the shared tree (extraction, objects, times)",
+        _worktree_arguments,
+        _run_worktree,
     ),
     "repin": Command(
         "set a tree's pin of another repository's commit in every place it is spelled, ready for ship --worktree",
