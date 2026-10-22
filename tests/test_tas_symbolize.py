@@ -62,3 +62,11 @@ class SymbolizeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ParseTests(unittest.TestCase):
+    def test_every_function_of_a_file_is_found_not_only_the_first(self):
+        from abu_decomp import evidence
+
+        text = "void a(int *x) {\n  if (x) {\n    y();\n  } else z();\n}\n\nvoid b(int *x) {\n  q();\n}\n"
+        self.assertEqual(sorted(evidence.parse(text)), ["a", "b"])

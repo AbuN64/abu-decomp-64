@@ -83,7 +83,7 @@ def parse(text: str, nm: str = "NON_MATCHING", asm: str = "INCLUDE_ASM") -> dict
             if depth == 0 and char in ";}":
                 header = ""
             elif depth == 0 and char == "{":
-                head = header.strip()
+                head, header = header.strip(), ""  # a later function never inherits this header
                 names = [m for m in re.findall(r"\b([A-Za-z_]\w*)\s*\(", head) if m not in _KEYWORDS]
                 if head.endswith(")") and names:
                     name, guarded, body = names[0], any(flag[1] for flag in stack), head + " {"
