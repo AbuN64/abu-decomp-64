@@ -144,3 +144,23 @@ def test_gate_reads_files_and_caches(tmp_path: Path, monkeypatch):
     again = evidence_gate.Gate(landing, gate.config, lambda: "v1")
     again.run()
     assert len(calls) == 2 and all(m["cached"] for m in again.measures)
+
+
+def test_landing_gate_turns_a_refusal_into_a_blocking_finding(monkeypatch):
+    from abu_decomp import evidence_gate, land
+
+    row = {
+        "function": "f",
+        "base": "behaves 3/48",
+        "new": "C unproven",
+        "why": "no behave evidence",
+        "reproduce": "decomp behave",
+    }
+    monkeypatch.setattr(evidence_gate.Gate, "run", lambda self: ([row], []))
+    landing = land.Landing.__new__(land.Landing)
+    landing.config = {"evidence": {"slow_seconds": 60}}
+    landing.clock, landing.gates, landing.findings = (lambda: 0.0), [], []
+    landing.cpu_mark = 0.0
+    assert landing.evidence() is False
+    assert landing.findings[0]["key"] == "land.evidence" and "decomp behave" in landing.findings[0]["message"]
+    assert landing.gates[0]["gate"] == "evidence" and landing.gates[0]["pass"] is False
