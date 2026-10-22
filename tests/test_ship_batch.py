@@ -206,4 +206,18 @@ class ArityTests(unittest.TestCase):
         self.assertEqual(argument_words(["int", "int", "uint64"]), 4)
         self.assertEqual(argument_words(["int", "int", "int"]), 3)
         self.assertEqual(argument_words(["int", "int64", "int"]), 5)
-        self.assertEqual(argument_words(["ptr", "int64", "int64"]), 6)  # lldiv(LldivResult *, s64, s64): a0, a2:a3, stack
+        self.assertEqual(
+            argument_words(["ptr", "int64", "int64"]), 6
+        )  # lldiv(LldivResult *, s64, s64): a0, a2:a3, stack
+
+
+class LooseTests(unittest.TestCase):
+    def test_a_rename_or_retype_inside_a_non_matching_body_needs_no_try(self) -> None:
+        from abu_decomp import evidence, provenance
+
+        old = "#ifdef NON_MATCHING\nint f(int a)\n{\n    s32 x = func_8(a);\n    return x;\n}\n#endif\n"
+        new = old.replace("func_8", "__divdi3").replace("s32", "u32")
+        edit = old.replace("x = func_8(a)", "x = func_8(a) + 1")
+        base, same, other = (evidence.parse(t) for t in (old, new, edit))
+        self.assertEqual(provenance.unproven(base, same, {}), [])
+        self.assertEqual([r["function"] for r in provenance.unproven(base, other, {})], ["f"])

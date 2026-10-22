@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import evidence
-from abu_decomp.evidence import ASM, PLAIN, Fn
+from abu_decomp.evidence import ASM, NM, PLAIN, Fn
 
 
 def inner(fn: Fn) -> str:
@@ -49,6 +49,45 @@ def shape(fn: Fn) -> str:
         inner(fn),
     )
     return "\0shape:" + body
+
+
+_TYPE_WORDS = frozenset(
+    [
+        "s8",
+        "u8",
+        "s16",
+        "u16",
+        "s32",
+        "u32",
+        "s64",
+        "u64",
+        "f32",
+        "f64",
+        "int",
+        "char",
+        "short",
+        "long",
+        "float",
+        "double",
+        "unsigned",
+        "signed",
+        "void",
+        "const",
+    ]
+)
+
+
+def loose(fn: Fn) -> str:
+    """The body with identifiers numbered by first use and every basic type word erased: bodies that differ only by
+    renames and retyped declarations or casts share it (a type edit inside a NON_MATCHING body changes no byte)."""
+    seen: dict[str, int] = {}
+
+    def word(m: re.Match[str]) -> str:
+        if m[0] in _TYPE_WORDS:
+            return "@T"
+        return m[0] if m[0] in _FIXED else f"@{seen.setdefault(m[0], len(seen))}"
+
+    return re.sub(r"[A-Za-z_]\w*", word, inner(fn))
 
 
 def edited(before: Fn | None, after: Fn) -> bool:
@@ -107,7 +146,10 @@ def unproven(base: dict[str, Fn], new: dict[str, Fn], tries: dict[str, dict[str,
             "next": f"recipe try {name}",
         }
         for name, fn in sorted(new.items())
-        if changed(base.get(name), fn) and inner(fn) not in tries and shape(fn) not in tries
+        if changed(base.get(name), fn)
+        and inner(fn) not in tries
+        and shape(fn) not in tries
+        and not (base.get(name) is not None and base[name].kind == NM and loose(base[name]) == loose(fn))
     ]
 
 
