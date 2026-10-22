@@ -255,12 +255,6 @@ class Ship:
             raise ShipError(
                 "ship.from_try", f"{file} does not exist: no candidate for {name}", next=f"recipe work {name}"
             )
-        stray = sorted((self.tree / ".unbake/inbox").glob("*.json"))
-        if stray:  # `unbake submit` lands the whole inbox: another entry would ride into this input
-            raise ShipError(
-                "ship.from_try", f"the inbox holds {len(stray)} other submission(s); they would land with {name}",
-                next="unbake land",
-            )  # fmt: skip
         overlay = self.tree / ".unbake/recipe/work" / f"{name}.overlay"  # companions: project path -> its new text
         extras = [f"{p.relative_to(overlay)}={p}" for p in sorted(overlay.rglob("*")) if p.is_file()]
         called = self.invoke("unbake", self.profile, ["submit", str(file), *extras], project=self.tree)

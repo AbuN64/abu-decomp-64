@@ -58,18 +58,13 @@ class FromTryTests(unittest.TestCase):
         self.assertEqual(git(self.tree, "status", "--porcelain", "--untracked-files=no"), "")
         self.assertEqual((self.tree / "a.c").read_text(), "int a;\n")
 
-    def test_the_overlay_files_travel_as_path_equals_file_and_a_stray_inbox_entry_refuses(self) -> None:
+    def test_the_overlay_files_travel_as_path_equals_file(self) -> None:
         self.candidate()
         overlay = self.tree / ".unbake/recipe/work/f_matched.overlay/versions/us/aliases.txt"
         overlay.parent.mkdir(parents=True)
         overlay.write_text("x\n")
         self.try_ship(landing=self.landing_applying(), invoke=self.invoker())
         self.assertEqual(self.calls[0][1][2], f"versions/us/aliases.txt={overlay}")
-        (self.tree / ".unbake/inbox").mkdir()
-        (self.tree / ".unbake/inbox/abc.json").write_text("{}")
-        with self.assertRaises(DecompError) as raised:
-            self.try_ship(invoke=self.invoker())
-        self.assertEqual(raised.exception.next, "unbake land")
 
     def test_no_candidate_file_names_recipe_work(self) -> None:
         with self.assertRaises(DecompError) as raised:
