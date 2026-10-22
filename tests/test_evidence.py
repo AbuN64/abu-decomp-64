@@ -272,7 +272,7 @@ def test_old_leftovers_pass_new_ones_block():
 
 
 # identifier-only changes ------------------------------------------------------------------------------------------
-def rename_gate(tmp_path, base, new, held, behave=None):
+def rename_gate(tmp_path, base, new, held, behave=None, *, monkeypatch):
     """A gate over one file: `held` lists (tree text per git grep) names still present in the new tree / base."""
     from abu_decomp import evidence_gate
 
@@ -301,6 +301,11 @@ def rename_gate(tmp_path, base, new, held, behave=None):
     cfg = {"suffixes": (".c",), "guard": "NON_MATCHING", "stand_in": "INCLUDE_ASM", "headers": [], "roms": []}
     cfg["slow_seconds"] = 60
     cfg["provenance"] = {"tries": []}
+    import abu_decomp.behave.run as run_module
+
+    work = tmp_path / "work"
+    monkeypatch.setattr(run_module, "configuration", lambda profile: {"work": str(work)})
+    monkeypatch.setattr(run_module, "work_dir", lambda config: work)
     gate = evidence_gate.Gate(landing, cfg, lambda: "v")
     gate.tries = lambda: {}  # nothing was ever tried
     return gate
@@ -314,31 +319,51 @@ MATCHED = "int func_1(int a) { return a + 2; }\n"
 CALLER_NM = "#ifdef NON_MATCHING\nint caller(int a) { return func_1(a); }\n#else\nINCLUDE_ASM(\"o\", caller);\n#endif\n"
 
 
-def test_a_renamed_matched_body_needs_no_try(tmp_path):
-    gate = rename_gate(tmp_path, MATCHED, MATCHED.replace("func_1", "Nice_Name"), held=set())
+def test_a_renamed_matched_body_needs_no_try(tmp_path, monkeypatch):
+    gate = rename_gate(tmp_path, MATCHED, MATCHED.replace("func_1", "Nice_Name"), held=set(), monkeypatch=monkeypatch)
     assert gate.run()[0] == []
 
 
-def test_a_renamed_call_in_an_unmatched_caller_needs_no_behave(tmp_path):
-    gate = rename_gate(tmp_path, CALLER_NM, CALLER_NM.replace("func_1", "Nice_Name"), held=set())
+def test_a_renamed_call_in_an_unmatched_caller_needs_no_behave(tmp_path, monkeypatch):
+    gate = rename_gate(
+        tmp_path,
+        CALLER_NM,
+        CALLER_NM.replace("func_1", "Nice_Name"),
+        held=set(),
+        monkeypatch=monkeypatch,
+    )
     assert gate.run()[0] == []
 
 
-def test_a_call_swapped_to_another_live_function_is_still_a_body_change(tmp_path):
-    gate = rename_gate(tmp_path, CALLER_NM, CALLER_NM.replace("func_1", "other"), held={"func_1"}, behave=NONE)
+def test_a_call_swapped_to_another_live_function_is_still_a_body_change(tmp_path, monkeypatch):
+    gate = rename_gate(
+        tmp_path,
+        CALLER_NM,
+        CALLER_NM.replace("func_1", "other"),
+        held={"func_1"},
+        behave=NONE,
+        monkeypatch=monkeypatch,
+    )
     refused = gate.run()[0]
     assert [r["function"] for r in refused] == ["caller"]
 
 
-def test_a_real_change_still_needs_a_try_even_when_a_name_also_changes(tmp_path):
+def test_a_real_change_still_needs_a_try_even_when_a_name_also_changes(tmp_path, monkeypatch):
     new = MATCHED.replace("func_1", "Nice_Name")
     nm_old = "#ifdef NON_MATCHING\nint g(int a) { return a; }\n#else\nINCLUDE_ASM(\"o\", g);\n#endif\n"
     nm_new = nm_old.replace("return a;", "return a + 1;")
-    gate = rename_gate(tmp_path, MATCHED + nm_old, new + nm_new, held=set(), behave=NONE)
+    gate = rename_gate(tmp_path, MATCHED + nm_old, new + nm_new, held=set(), behave=NONE, monkeypatch=monkeypatch)
     refused = gate.run()[0]
     assert {r["function"] for r in refused} == {"g"}
 
 
-def test_a_type_edit_is_not_a_rename(tmp_path):
-    gate = rename_gate(tmp_path, CALLER_NM, CALLER_NM.replace("int a", "unsigned a"), held=set(), behave=NONE)
+def test_a_type_edit_is_not_a_rename(tmp_path, monkeypatch):
+    gate = rename_gate(
+        tmp_path,
+        CALLER_NM,
+        CALLER_NM.replace("int a", "unsigned a"),
+        held=set(),
+        behave=NONE,
+        monkeypatch=monkeypatch,
+    )
     assert [r["function"] for r in gate.run()[0]] == ["caller"]
