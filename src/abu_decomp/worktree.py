@@ -10,6 +10,7 @@ ledger and the inbox never touch the shared tree's. A lane lands only through `d
 
 from __future__ import annotations
 
+import fcntl
 import os
 import shutil
 import subprocess
@@ -133,6 +134,24 @@ def _referenced(shared: Path, path: Path) -> list[str]:
     return why
 
 
+def _carry_skips(shared: Path, path: Path) -> int:
+    """The skips a lane recorded in its worktree move to the shared tree's stream first (a skip dies with its tree
+    otherwise, and the item ranks again); the rows already there are not written twice."""
+    source = path / ".unbake/recipe/skips.jsonl"
+    if not source.is_file():
+        return 0
+    target = shared / ".unbake/recipe/skips.jsonl"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.with_name(target.name + ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        have = set(target.read_text().splitlines()) if target.is_file() else set()
+        new = [line for line in source.read_text().splitlines() if line.strip() and line not in have]
+        if new:
+            with target.open("a") as out:
+                out.write("\n".join(new) + "\n")
+    return len(new)
+
+
 def prune(
     shared: Path, ended: list[str], results: Path | None = None
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -143,7 +162,7 @@ def prune(
     names = set(ended)
     if results is not None:
         names |= {p.parent.name for p in results.glob("*/RESULT.md")}
-    removed, kept = [], []
+    removed, kept, skipped = [], [], 0
     before = shutil.disk_usage(base).free if base.is_dir() else 0
     for name in sorted(names):
         path = base / name
@@ -152,12 +171,14 @@ def prune(
         if why := _referenced(shared, path):
             kept.append({"worktree": str(path), "why": why})
             continue
+        carried = _carry_skips(shared, path)
         _git(shared, "worktree", "remove", "--force", str(path))
         removed.append(str(path))
+        skipped += carried
     _git(shared, "worktree", "prune")
     freed = (shutil.disk_usage(base).free - before) // 2**20 if base.is_dir() else 0
     findings = [
         {"key": "worktree.referenced", "message": f"{k['worktree']} kept: {', '.join(k['why'])}", "blocking": False}
         for k in kept
     ]
-    return {"removed": removed, "kept": kept, "freed_mb": freed}, 0, findings
+    return {"removed": removed, "kept": kept, "skips_carried": skipped, "freed_mb": freed}, 0, findings

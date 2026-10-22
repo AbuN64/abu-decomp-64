@@ -236,7 +236,11 @@ class PruneTests(unittest.TestCase):
         inputs = shared.tree / ".git" / "decomp-ship.inputs"
         inputs.mkdir()
         (inputs / "1-1.json").write_text(json.dumps({"patches": [["B", str(base / "B" / "x.patch")]]}))
+        (base / "A" / ".unbake/recipe").mkdir(parents=True)
+        (base / "A" / ".unbake/recipe/skips.jsonl").write_text('{"item":"f","reason":"other"}\n')
         result, code, findings = worktree.prune(shared.tree, ["A", "B", "C"])
+        self.assertEqual(result["skips_carried"], 1)
+        self.assertIn("f", (shared.tree / ".unbake/recipe/skips.jsonl").read_text())
         self.assertEqual(code, 0)
         self.assertEqual([Path(p).name for p in result["removed"]], ["A"])
         self.assertEqual([f["key"] for f in findings], ["worktree.referenced"])
