@@ -503,25 +503,10 @@ def _land_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="LANE=PATH[:MESSAGE]",
         help="a lane's patch, in order (repeatable); MESSAGE is that lane's commit message when it matches no function",
     )
-    parser.add_argument(
-        "--credit-fall",
-        action="append",
-        default=[],
-        metavar="LANE=VERSION:BYTES:REASON",
-        help="allow that lane to lower the matched code bytes of README version VERSION by at most BYTES (repeatable)",
-    )
-    parser.add_argument(
-        "--reclass",
-        action="append",
-        default=[],
-        metavar="LANE=VERSION:+CODE/-DATA",
-        help="declare that lane moves bytes into unmatched code of README version VERSION: matched code unchanged, "
-        "the code total up by CODE, the matched data down by DATA (exact; repeatable)",
-    )
 
 
 def _run_land(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    from abu_decomp.land import land, parse_credit_falls, parse_messages, parse_patches, parse_reclasses
+    from abu_decomp.land import land, parse_messages, parse_patches
 
     return land(
         _profile(args.profile),
@@ -529,8 +514,6 @@ def _run_land(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
         args.base,
         parse_patches(args.patch),
         messages=parse_messages(args.patch),
-        credit_falls=parse_credit_falls(args.credit_fall),
-        reclasses=parse_reclasses(args.reclass),
     )
 
 
