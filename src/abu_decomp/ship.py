@@ -128,7 +128,7 @@ class Ship:
         self.weight, self.cgroup, self.notes = table["lock_weight"], cgroup, []
         self.run, self.landing, self.append, self.clock, self.lock_wait = run, landing, append, clock, lock_wait
         self.steps: list[dict[str, Any]] = []
-        self.cpu_mark = meter.cpu()
+        self.cpu_mark = self.cpu_start = meter.cpu()
         self.refused: list[dict[str, Any]] = []  # inputs the ship refused whole before the land that pushed
 
     # git ----------------------------------------------------------------------------------------------------------
@@ -680,6 +680,7 @@ class Ship:
             "pushed": sha,
             "functions": names,
             "seconds": round(self.clock() - started, 3),
+            "cpu": round(meter.cpu() - self.cpu_start, 1),  # the ship's own and its children's, beside the wall
             "steps": self.steps,
             "refused": None if sha else (refusal or {"key": "ship.refused", "message": "the land refused the inputs"}),
             "land": result,
@@ -690,11 +691,12 @@ class Ship:
             "status": "passed" if sha else "failed",
             "message": (
                 f"shipped {', '.join(shipped_lanes)} as {sha[:12]} to {self.remote}/{self.branch} in "
-                f"{shipped['seconds']:.0f}s"
+                f"{shipped['seconds']:.0f}s wall, {shipped['cpu']:.0f}s CPU"
                 + (f": {', '.join(names)}" if names else "")
                 + (f"; refused {', '.join(f'{r["lane"]} ({r["key"]})' for r in lost)}" if lost else "")
                 if sha
-                else f"ship refused {', '.join(lanes)}: {shipped['refused']['key']}"
+                else f"ship refused {', '.join(lanes)}: {shipped['refused']['key']} after "
+                f"{shipped['seconds']:.0f}s wall, {shipped['cpu']:.0f}s CPU"
             ),
             "kind": "LAND",
             "subject": {"repo": str(self.tree), "ref": sha or base},
