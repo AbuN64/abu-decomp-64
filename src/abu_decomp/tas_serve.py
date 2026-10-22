@@ -23,16 +23,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, tas, tas_eyes, tas_tabs, tas_triage
+from abu_decomp import DecompError, events, tas, tas_capture, tas_eyes, tas_tabs, tas_triage
 from abu_decomp.config import Profile
 
 KEYS = {"ArrowLeft": "Left", "ArrowRight": "Right", "ArrowUp": "Up", "ArrowDown": "Down", "Enter": "Return"}
 _LETTER = re.compile(r"[a-z]")
 _SERVE_KEYS = frozenset({"listen", "display", "fps", "ai_log"})
-_SINK = "tas"
+_SINK = tas_capture.SINK
 SAMPLE_SECONDS = 0.1  # the eyes keep a picture this often, stamped with the poll index
 SAMPLES_KEPT = 200
-PCM_SECONDS = 10
+VIDEO_SECONDS = 0.07
 # The port's keyboard bindings (platform/n64compat/n64c_input_config.c), by controller button.
 PAD_KEYS = {
     "A": "x", "B": "c", "Z": "z", "START": "Return", "L": "a", "R": "s",
@@ -59,14 +59,20 @@ def keysym(key: str) -> str | None:
     return key.lower() if len(key) == 1 and _LETTER.fullmatch(key.lower()) else None
 
 
-def window_size(args: list[str]) -> str:
-    if "--window" not in args or args.index("--window") + 1 >= len(args):
-        raise DecompError("tas.serve", "tas.args needs --window WxH so the display can match it")
-    return args[args.index("--window") + 1]
+window_size = tas_capture.window_size
 
 
-class Session:
-    """The one live port run: its recording and the movie driving it, if any."""
+def view_label(view: dict[str, Any]) -> str:
+    """One line for the page: kind, movie, poll, and how it ended."""
+    done = view["state"] != "running"
+    parts = [view["kind"], view.get("movie") or "new recording", f"poll {view.get('poll_count', 0)}"]
+    if done:
+        parts.append("ended " + str(view.get("outcome", "")) + (f" ({view['subject']})" if view.get("subject") else ""))
+    return " · ".join(parts)
+
+
+class Session(tas_capture.Capture):
+    """The page's one live port run (its recording and the movie driving it, if any) and the view of every run."""
 
     def __init__(self, profile: Profile) -> None:
         self.profile = profile
@@ -79,7 +85,8 @@ class Session:
         self.display = str(serve.get("display", ":97"))
         self.fps = int(serve.get("fps", 30))
         self.ai_log = profile.path("tas.serve.ai_log", serve["ai_log"]) if "ai_log" in serve else None
-        self.size = window_size(self.cfg["args"])
+        size = window_size(self.cfg["args"])
+        super().__init__(self.display, size, self.fps, self.cfg["runs"] / "pulse")
         self.lock = threading.Lock()
         self.port: subprocess.Popen | None = None
         self.recording: Path | None = None
@@ -90,17 +97,11 @@ class Session:
         self._claims: dict[str, Any] = {}
         self.movie: str | None = None
         self.movie_length = 0
-        self.frame = b""
-        self.frame_ready = threading.Condition()
-        self.helpers: list[subprocess.Popen] = []
-        self.pulse = self.cfg["runs"] / "pulse"
-        self.listeners: list[list[bytes]] = []
-        self.audio_ready = threading.Condition()
+        self.started = 0.0
+        self.pinned: str | None = None
         self.counter = tas_eyes.PollCounter()
         self.counter_lock = threading.Lock()
         self.samples: deque[tas_eyes.Sample] = deque(maxlen=SAMPLES_KEPT)
-        self.pcm = bytearray()
-        self.pcm_lock = threading.Lock()
 
     def polls(self) -> int:
         """Controller polls the live run has made so far."""
@@ -119,149 +120,12 @@ class Session:
                 self.samples.clear()  # a new run restarted the count
             self.samples.append((poll, frame))
 
-    def _read_pcm(self, stream) -> None:
-        keep = PCM_SECONDS * tas_eyes.RATE * tas_eyes.CHANNELS * 2
-        while chunk := stream.read1(16384):
-            with self.pcm_lock:
-                self.pcm += chunk
-                del self.pcm[:-keep]
-
-    def start_display(self) -> None:
-        width, height = self.size.split("x")
-        self.helpers.append(
-            subprocess.Popen(
-                ["Xvfb", self.display, "-screen", "0", f"{width}x{height}x24", "-nolisten", "tcp"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        )
-        grab = subprocess.Popen(
-            [
-                "ffmpeg",
-                "-loglevel",
-                "error",
-                "-f",
-                "x11grab",
-                "-draw_mouse",
-                "0",
-                "-video_size",
-                self.size,
-                "-framerate",
-                str(self.fps),
-                "-i",
-                self.display,
-                "-f",
-                "mjpeg",
-                "-q:v",
-                "3",
-                "pipe:1",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-        self.helpers.append(grab)
-        threading.Thread(target=self._read_frames, args=(grab.stdout,), daemon=True).start()
-        self.start_audio()
-
     def start_audio(self) -> None:
-        self.pulse.mkdir(parents=True, exist_ok=True)
-        socket = self.pulse / "native"
-        # No D-Bus: a second page on the same user bus would lose the org.PulseAudio1 name to the first and exit.
-        env = {
-            **os.environ,
-            "PULSE_RUNTIME_PATH": str(self.pulse),
-            "PULSE_STATE_PATH": str(self.pulse),
-            "DBUS_SESSION_BUS_ADDRESS": "disabled:",
-        }
-        self.helpers.append(
-            subprocess.Popen(
-                [
-                    "pulseaudio",
-                    "-n",
-                    "--daemonize=no",
-                    "--exit-idle-time=-1",
-                    "--use-pid-file=no",
-                    "-L",
-                    f"module-native-protocol-unix socket={socket} auth-anonymous=1",
-                    "-L",
-                    f"module-null-sink sink_name={_SINK} rate=48000",
-                    "-L",
-                    "module-always-sink",
-                ],
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        )
-        subprocess.run(
-            ["pactl", "--server", f"unix:{socket}", "info"], env=env, capture_output=True, timeout=10, check=False
-        )
-        encode = subprocess.Popen(
-            [
-                "ffmpeg",
-                "-loglevel",
-                "error",
-                "-f",
-                "pulse",
-                "-server",
-                f"unix:{socket}",
-                "-i",
-                f"{_SINK}.monitor",
-                "-ac",
-                "2",
-                "-b:a",
-                "128k",
-                "-f",
-                "mp3",
-                "pipe:1",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-        self.helpers.append(encode)
-        threading.Thread(target=self._read_audio, args=(encode.stdout,), daemon=True).start()
-        raw = subprocess.Popen(
-            [
-                "ffmpeg", "-loglevel", "error", "-f", "pulse", "-server", f"unix:{socket}",
-                "-i", f"{_SINK}.monitor", "-ac", "2", "-ar", str(tas_eyes.RATE), "-f", "s16le", "pipe:1",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )  # fmt: skip
-        self.helpers.append(raw)
-        threading.Thread(target=self._read_pcm, args=(raw.stdout,), daemon=True).start()
+        super().start_audio()
         threading.Thread(target=self._sample, daemon=True).start()
 
-    def _read_audio(self, stream) -> None:
-        while chunk := stream.read1(4096):
-            with self.audio_ready:
-                for queue in self.listeners:
-                    queue.append(chunk)
-                    del queue[:-64]  # a stalled listener drops old audio instead of growing
-                self.audio_ready.notify_all()
-
-    def _read_frames(self, stream) -> None:
-        buffer = b""
-        while chunk := stream.read1(65536):
-            buffer += chunk
-            while (end := buffer.find(b"\xff\xd9")) >= 0:
-                start = buffer.find(b"\xff\xd8")
-                if 0 <= start < end:
-                    with self.frame_ready:
-                        self.frame = buffer[start : end + 2]
-                        self.frame_ready.notify_all()
-                buffer = buffer[end + 2 :]
-
     def env(self) -> dict[str, str]:
-        return {
-            **os.environ,
-            **self.cfg["env"],
-            "DISPLAY": self.display,
-            "SDL_VIDEODRIVER": "x11",
-            "SDL_AUDIODRIVER": "pulse",
-            "PULSE_SERVER": f"unix:{self.pulse / 'native'}",
-            "PULSE_SINK": _SINK,
-        }
+        return {**os.environ, **self.cfg["env"], **self.port_env()}
 
     def new_run(self, movie: str | None = None) -> dict[str, Any]:
         """A visible run from reset, recorded; with a movie, the movie drives the pad until it ends and the
@@ -280,6 +144,7 @@ class Session:
             for key in ("N64C_TAS_PLAY", "N64C_TAS_EXIT_AFTER"):
                 env.pop(key, None)
             self.movie, self.movie_length = movie, len(polls)
+            self.started = time.time()
             if movie:
                 source = live / f"{stamp}.movie.raw"
                 source.write_text(tas.format_raw(polls))
@@ -397,8 +262,21 @@ class Session:
             "tail": tail,
             "movie": self.movie,
             "movie_polls": self.movie_length,
+            **self.view_state(),
             **tas.listing(self.profile),
         }
+
+    def view_state(self) -> dict[str, Any]:
+        """`view`: the run on screen (kind, movie, poll, outcome); `runs`: every known run, for the switcher and
+        for `tas watch`, which turns a replay's start and end into events."""
+        rows = self.views()
+        current = self.current(rows)
+        keep = ("kind", "movie", "run", "state", "outcome", "subject", "poll_count", "started")
+        runs = [{k: row[k] for k in keep if k in row} for row in rows]
+        view = next((r for r in runs if current and r["run"] == current["run"]), None)
+        if view:
+            view["label"] = view_label(view)
+        return {"view": view, "runs": runs, "pinned": self.pinned}
 
     def stop(self) -> dict[str, Any]:
         """End the live run (the page stays idle until the next /new)."""
@@ -469,8 +347,57 @@ class Session:
 
     def close(self) -> None:
         self._stop_port()
-        for helper in self.helpers:
-            helper.terminate()
+        super().close()
+
+    # --- the view: the page always shows the newest active run, the live one or a `tas play` replay ---
+
+    def live_view(self) -> dict[str, Any] | None:
+        if not self.run_dir:
+            return None
+        alive = bool(self.port and self.port.poll() is None)
+        return {
+            "kind": tas_capture.KIND_LIVE,
+            "movie": self.movie or "",
+            "run": str(self.run_dir),
+            "started": self.started,
+            "state": "running" if alive else "done",
+            "poll_count": self.polls(),
+            **(
+                {"outcome": "ok" if self.exit == 0 else f"exit {self.exit}"}
+                if not alive and self.exit is not None
+                else {}
+            ),
+        }
+
+    def views(self) -> list[dict[str, Any]]:
+        """Every run the page knows, oldest start first: the live run and the recent `tas play` replays."""
+        rows = tas_capture.read_views(self.cfg["runs"])
+        live = self.live_view()
+        if live:
+            rows.append(live)
+        return sorted(rows, key=lambda row: row.get("started", 0))
+
+    def current(self, views: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+        """The pinned run if the viewer chose one, else the newest still-active run, else the newest one."""
+        rows = views if views is not None else self.views()
+        for row in rows:
+            if row["run"] == self.pinned:
+                return row
+        active = [row for row in rows if row["state"] == "running"]
+        return (active or rows or [None])[-1]
+
+    def pin(self, run: str | None) -> dict[str, Any]:
+        self.pinned = run or None
+        return {"pinned": self.pinned}
+
+    def frame_of(self, view: dict[str, Any] | None) -> bytes:
+        if view is None or view["kind"] == tas_capture.KIND_LIVE:
+            with self.frame_ready:
+                return self.frame
+        try:
+            return Path(view["frame"]).read_bytes()
+        except OSError:
+            return b""
 
 
 PAGE = (Path(__file__).with_name("tas_page.html")).read_text
@@ -519,17 +446,19 @@ def handler(session: Session) -> type[BaseHTTPRequestHandler]:
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                 self.end_headers()
                 try:
+                    last, sent = b"", 0.0
                     while True:
-                        with session.frame_ready:
-                            session.frame_ready.wait(5)
-                            frame = session.frame
-                        self.wfile.write(
-                            b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                            + str(len(frame)).encode()
-                            + b"\r\n\r\n"
-                            + frame
-                            + b"\r\n"
-                        )
+                        frame = session.frame_of(session.current())
+                        if frame and (frame != last or time.monotonic() - sent > 1):
+                            self.wfile.write(
+                                b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                                + str(len(frame)).encode()
+                                + b"\r\n\r\n"
+                                + frame
+                                + b"\r\n"
+                            )
+                            last, sent = frame, time.monotonic()
+                        time.sleep(VIDEO_SECONDS)
                 except (BrokenPipeError, ConnectionResetError):
                     return
             elif path == "/audio":
@@ -540,12 +469,30 @@ def handler(session: Session) -> type[BaseHTTPRequestHandler]:
                 queue: list[bytes] = []
                 with session.audio_ready:
                     session.listeners.append(queue)
+                source, offset = None, 0
                 try:
                     while True:
-                        with session.audio_ready:
-                            session.audio_ready.wait(5)
-                            chunks, queue[:] = list(queue), []
-                        self.wfile.write(b"".join(chunks))
+                        view = session.current()
+                        if view and view["kind"] != tas_capture.KIND_LIVE:
+                            if source != view["run"]:  # follow a replay's sound from now on
+                                path = Path(view["audio"])
+                                source, offset = view["run"], path.stat().st_size if path.is_file() else 0
+                            try:
+                                with Path(view["audio"]).open("rb") as handle:
+                                    handle.seek(offset)
+                                    chunk = handle.read()
+                            except OSError:
+                                chunk = b""
+                            offset += len(chunk)
+                            with session.audio_ready:
+                                queue.clear()
+                            time.sleep(0.2)
+                        else:
+                            source = None
+                            with session.audio_ready:
+                                session.audio_ready.wait(0.5)
+                                chunk, queue[:] = b"".join(queue), []
+                        self.wfile.write(chunk)
                 except (BrokenPipeError, ConnectionResetError):
                     return
                 finally:
@@ -560,6 +507,8 @@ def handler(session: Session) -> type[BaseHTTPRequestHandler]:
             try:
                 if self.path == "/new":
                     self.json(session.new_run())
+                elif self.path == "/pick":
+                    self.json(session.pin(str(body.get("run", ""))))
                 elif self.path == "/stop":
                     self.json(session.stop())
                 elif self.path == "/mark":

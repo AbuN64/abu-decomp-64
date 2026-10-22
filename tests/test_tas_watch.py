@@ -69,6 +69,19 @@ class WatcherTests(unittest.TestCase):
         events = w.feed(state(run="/r/2", polls=0, marks={"count": 0, "last": None}), 1)
         self.assertEqual([e["event"] for e in events], ["start"])
 
+    def test_play_runs_become_events_beside_the_live_run(self):
+        w = Watcher()
+        play = {"kind": "proof replay", "run": "/p/1", "movie": "m", "state": "running", "poll_count": 3}
+        w.feed(state(runs=[]), 0)
+        (start,) = w.feed(state(runs=[play]), 1)
+        self.assertEqual((start["event"], start["movie"], start["run"]), ("play-start", "m", "/p/1"))
+        self.assertEqual(w.feed(state(runs=[play]), 2), [])
+        done = {**play, "state": "done", "outcome": "crash", "subject": "host-fault-1"}
+        (end,) = w.feed(state(runs=[done]), 3)
+        self.assertEqual((end["event"], end["outcome"], end["subject"]), ("play-end", "crash", "host-fault-1"))
+        self.assertEqual(w.feed(state(runs=[done]), 4), [])
+        self.assertEqual(Watcher().feed(state(runs=[done]), 0), [])
+
 
 if __name__ == "__main__":
     unittest.main()

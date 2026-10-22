@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
-from abu_decomp import DecompError, tas
+from abu_decomp import DecompError, tas, tas_capture
 from abu_decomp.config import load_profile
 
 T0 = datetime(2026, 10, 20, 19, 0, tzinfo=UTC)
@@ -108,6 +108,10 @@ class MovieTests(unittest.TestCase):
         tas.delete(self.profile, "press-a")
         self.assertEqual(tas.listing(self.profile)["movies"], [])
 
+    def unseen(self):
+        # A host without a display for the run: the replay still runs, just not on the page.
+        return mock.patch.object(tas_capture.Capture, "start_display", side_effect=OSError("no Xvfb"))
+
     def test_play_refuses_another_rom(self):
         (self.root / "movies").mkdir()
         (self.root / "movies" / "m.tas").write_text("# tas 1\n# rom-sha1 0000\nA\n")
@@ -136,7 +140,7 @@ class MovieTests(unittest.TestCase):
             def wait(self, timeout=None):
                 return 125
 
-        with mock.patch.object(tas.subprocess, "Popen", Port):
+        with mock.patch.object(tas.subprocess, "Popen", Port), self.unseen():
             result = tas.play(self.profile, "m", now=T0)
         self.assertEqual(result["outcome"], "crash")
         self.assertEqual(result["subject"], "host-fault-00002b88")
@@ -165,10 +169,60 @@ class MovieTests(unittest.TestCase):
                     raise subprocess.TimeoutExpired("port", timeout)
                 return -9
 
-        with mock.patch.object(tas.subprocess, "Popen", Port), mock.patch.object(tas.os, "killpg") as kill:
+        with (
+            mock.patch.object(tas.subprocess, "Popen", Port),
+            mock.patch.object(tas.os, "killpg") as kill,
+            self.unseen(),
+        ):
             result = tas.play(self.profile, "m", now=T0)
         kill.assert_called_once()
         self.assertEqual(result["outcome"], "hang")
+
+    def test_play_with_a_display_publishes_its_view_and_points_the_port_at_it(self):
+        (self.root / "movies").mkdir()
+        sha = hashlib.sha1(b"rom").hexdigest()
+        (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA\n")
+        seen = {}
+
+        def start(capture):
+            capture.display = ":42"
+            capture.frame = b"\xff\xd8last\xff\xd9"
+
+        class Port:
+            stdin = io.StringIO()
+
+            def __init__(self, argv, env, stdout, **kwargs):
+                seen["env"] = env
+                stdout.write("n64c-tas: done\n")
+                view = json.loads((Path(argv[argv.index("--run-dir") + 1]) / "view.json").read_text())
+                seen["during"] = view["state"]
+
+            def wait(self, timeout=None):
+                return 0
+
+        with (
+            mock.patch.object(tas.subprocess, "Popen", Port),
+            mock.patch.object(tas_capture.Capture, "start_display", start),
+            mock.patch.object(tas_capture.Capture, "close"),
+            mock.patch.object(tas_capture, "window_size", return_value="64x48"),
+        ):
+            result = tas.play(self.profile, "m", now=T0)
+        self.assertEqual(result["outcome"], "ok")
+        self.assertEqual((seen["env"]["DISPLAY"], seen["env"]["SDL_VIDEODRIVER"]), (":42", "x11"))
+        self.assertEqual(seen["during"], "running")
+        run = Path(result["run"])
+        self.assertEqual((run / "frame.jpg").read_bytes(), b"\xff\xd8last\xff\xd9")
+        (row,) = tas_capture.read_views(self.root / "runs")
+        self.assertEqual((row["state"], row["outcome"], row["movie"], row["kind"]), ("done", "ok", "m", "proof replay"))
+
+    def test_a_replay_whose_process_vanished_reads_as_died(self):
+        run = self.root / "runs" / "plays" / "20261021T000000Z-m"
+        run.mkdir(parents=True)
+        (run / "view.json").write_text(
+            json.dumps({"state": "running", "pid": 2**22 + 12345, "started": 1, "movie": "m"})
+        )
+        (row,) = tas_capture.read_views(self.root / "runs")
+        self.assertEqual((row["state"], row["outcome"]), ("done", "died"))
 
 
 if __name__ == "__main__":

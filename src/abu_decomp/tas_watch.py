@@ -2,7 +2,8 @@
 
 Events: `start` (a new run), `stop` / `crash` (the port held a stop or host fault: subject, polls, run folder, stack
 files), `hang` (running, no new poll for `HANG_SECONDS`), `end` (the port exited: exit code) and `mark` (the page's
-Weird button: poll, note, frame path, saved movie name). `Watcher` derives them from successive /state payloads and
+Weird button: poll, note, frame path, saved movie name), and `play-start` / `play-end` (a `tas play` replay by any
+agent: movie, run folder, outcome, subject). `Watcher` derives them from successive /state payloads and
 needs no server, so an agent loop calls `decomp tas watch --next` and gets exactly the next one.
 """
 
@@ -58,6 +59,7 @@ class Watcher:
         if state.get("exit") is not None and (new_run or prev.get("exit") is None) and state.get("run"):
             events.append({"event": "end", "exit": state["exit"], **base})
         old = 0 if new_run else (prev.get("marks") or {}).get("count", 0)
+        events += self._plays(prev, state)
         marks = state.get("marks") or {}
         if marks.get("count", 0) > old and marks.get("last"):
             last = marks["last"]
@@ -71,6 +73,23 @@ class Watcher:
                     **{k: v for k, v in base.items() if k == "run"},
                 }
             )
+        return events
+
+    def _plays(self, prev: dict[str, Any], state: dict[str, Any]) -> list[dict[str, Any]]:
+        """`play-start` / `play-end`: replays an agent runs (`tas play`), listed in the page's `runs`."""
+        before = {r["run"]: r for r in prev.get("runs") or []}
+        events = []
+        for row in state.get("runs") or []:
+            if row.get("kind") == "live":
+                continue
+            old = before.get(row["run"])
+            info = {"run": row["run"], "movie": row.get("movie"), "polls": row.get("poll_count", 0)}
+            if old is None:
+                events.append({"event": "play-start", **info})
+            if row.get("state") != "running" and (old is None or old.get("state") == "running"):
+                events.append(
+                    {"event": "play-end", **info, "outcome": row.get("outcome"), "subject": row.get("subject")}
+                )
         return events
 
 

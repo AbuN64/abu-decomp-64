@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,6 +49,52 @@ class ServeTests(unittest.TestCase):
             session.save("m", "")
         state = session.state()
         self.assertEqual((state["running"], state["polls"], state["movies"]), (False, 0, []))
+
+    def test_page_shows_the_newest_active_run_and_falls_back_to_the_last_finished(self):
+        session = tas_serve.Session(self.profile())
+        plays = self.root / "runs" / "plays"
+        for stamp, state, started in (("20261021T000001Z-a", "running", 10), ("20261021T000002Z-b", "running", 20)):
+            run = plays / stamp
+            run.mkdir(parents=True)
+            (run / "view.json").write_text(
+                json.dumps(
+                    {"state": state, "pid": os.getpid(), "started": started, "movie": stamp[-1], "kind": "proof replay"}
+                )
+            )
+            (run / "frame.jpg").write_bytes(b"\xff\xd8" + stamp[-1].encode() + b"\xff\xd9")
+        view = session.view_state()
+        self.assertEqual((view["view"]["movie"], len(view["runs"])), ("b", 2))
+        self.assertIn("proof replay · b · poll 0", view["view"]["label"])
+        self.assertEqual(session.frame_of(session.current()), b"\xff\xd8b\xff\xd9")
+        session.pin(str(plays / "20261021T000001Z-a"))
+        self.assertEqual(session.current()["movie"], "a")
+        session.pin(None)
+        for stamp in ("20261021T000001Z-a", "20261021T000002Z-b"):
+            (plays / stamp / "view.json").write_text(
+                json.dumps(
+                    {
+                        "state": "done",
+                        "outcome": "ok",
+                        "pid": 1,
+                        "started": 20 if stamp.endswith("b") else 10,
+                        "movie": stamp[-1],
+                    }
+                )
+            )
+        done = session.view_state()["view"]
+        self.assertEqual((done["movie"], done["state"]), ("b", "done"))
+        self.assertIn("ended ok", done["label"])
+
+    def test_an_active_replay_outranks_a_newer_but_finished_live_run(self):
+        session = tas_serve.Session(self.profile())
+        run = self.root / "runs" / "plays" / "20261021T000001Z-a"
+        run.mkdir(parents=True)
+        (run / "view.json").write_text(
+            json.dumps({"state": "running", "pid": os.getpid(), "started": 10, "movie": "a"})
+        )
+        session.run_dir, session.started = self.root / "runs" / "live" / "x", 20
+        self.assertEqual(session.live_view()["state"], "done")
+        self.assertEqual(session.current()["movie"], "a")
 
     def test_held_stop_reports_stopped_not_running(self):
         session = tas_serve.Session(self.profile())

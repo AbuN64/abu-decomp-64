@@ -29,6 +29,7 @@
 </head>
 <body>
 <div id="game">
+  <div id="view" class="dim"></div><div id="runs" class="row"></div>
   <img id="video" src="/video" tabindex="0" alt="port">
   <audio id="audio" preload="none"></audio>
   <p class="dim">Click the picture (starts sound), then play: arrows stick · X A · C B · Z Z · Enter Start · A/S L/R · I J K L C buttons · F9 marks the moment weird</p>
@@ -77,6 +78,19 @@ function row(m) {
   li.append(name, info, play, del);
   return li;
 }
+function showView(s) {
+  const v = s.view;
+  $("view").textContent = v ? v.label + (s.pinned ? " (pinned)" : " (newest active)") : "no run yet";
+  const others = (s.runs || []).filter(r => r.state === "running");
+  const shown = others.length > 1 || s.pinned ? s.runs.slice(-6) : [];
+  $("runs").replaceChildren(...shown.map(r => {
+    const b = document.createElement("button");
+    b.textContent = `${r.kind === "live" ? "live" : r.movie} ${r.state === "running" ? "▶" : "■"}`;
+    b.className = v && r.run === v.run ? "main" : "";
+    b.onclick = () => post("/pick", {run: v && r.run === v.run && s.pinned ? "" : r.run});
+    return b;
+  }));
+}
 async function refresh() {
   try {
     const s = await (await fetch("/state")).json();
@@ -84,6 +98,7 @@ async function refresh() {
     const driving = s.movie && s.polls < s.movie_polls ? `playing ${s.movie} ${s.polls}/${s.movie_polls}` : "recording";
     $("run").textContent = (s.running ? `${driving} · ${s.polls} polls` : s.exit === null ? "no run" : `ended (exit ${s.exit}) · ${s.polls} polls`) + held + (s.marks && s.marks.count ? ` · ${s.marks.count} weird` : "");
     $("run").className = held ? "bad" : "dim";
+    showView(s);
     $("tail").textContent = (s.tail || []).join("\n");
     $("movies").replaceChildren(...s.movies.map(row));
   } catch (e) { $("run").textContent = "server unreachable"; }

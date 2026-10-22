@@ -32,6 +32,10 @@ with a note of what you saw, at once, then keep going if the run lives. Keep sec
 is the first defect (determinism, [02](02-tas-behaviour-loop.md)). Replay it on the page too (`new --movie NAME`) so
 the person can watch it. The movie stays in the TAS folder as a regression test and runs after every port build.
 
+**Watching.** Every run, `tas new` or `play NAME`, gets its own display and sound card, so runs never block each other.
+The page always shows the newest active run, labelled with its kind (live / proof replay), movie, poll and outcome, and
+its switcher pins another; `tas watch` also reports `play-start` / `play-end`. No flag makes a run watched.
+
 **Triage.** Every `stop`, `crash`, `hang` or `mark` is one cycle of [02](02-tas-behaviour-loop.md), with
 `tas watch --next` available to block for the page's next event when you wait on a person instead of playing:
 

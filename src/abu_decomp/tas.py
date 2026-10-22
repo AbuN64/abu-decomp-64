@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas_triage
+from abu_decomp import DecompError, tas_capture, tas_triage
 from abu_decomp.config import Profile, check_keys
 
 SCHEMA = 1
@@ -320,21 +320,32 @@ def play(profile: Profile, name: str, *, now: datetime | None = None) -> dict[st
         "N64C_TAS_EXIT_AFTER": str(cfg["exit_after"]),
     }
     argv = supervised(cfg, run, _argv(cfg, user_dir))
-    with (run / "output.txt").open("w") as output:
-        process = subprocess.Popen(
-            argv, env=env, stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT, start_new_session=True
-        )
-        # The bridge holds a stopped port until its stdin says "continue"; a closed pipe ends it after the stacks.
-        process.stdin.close()
-        try:
-            code: int | None = process.wait(cfg["timeout_seconds"])
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
-            code = None
+    # Its own display and sound card, so the page can show it and parallel plays never share a screen.
+    view = tas_capture.PlayView.open(cfg, run, name, _stamp(now))
+    if view:
+        env.update(view.env())
+    try:
+        with (run / "output.txt").open("w") as output:
+            process = subprocess.Popen(
+                argv, env=env, stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT, start_new_session=True
+            )
+            # The bridge holds a stopped port until its stdin says "continue"; a closed pipe ends it after the stacks.
+            process.stdin.close()
+            try:
+                code: int | None = process.wait(cfg["timeout_seconds"])
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+                code = None
+    except BaseException:
+        if view:
+            view.finish({"outcome": "died"})
+        raise
     text = (run / "output.txt").read_text(errors="replace")
     reached = len(parse_raw((run / "polls.raw").read_text())) if (run / "polls.raw").is_file() else 0
     result = {"movie": name, "run": str(run), "polls": len(polls), "polls_reached": reached, **classify(code, text)}
+    if view:
+        view.finish(result)
     stacks = [str(p) for p in sorted(run.glob("*-st*.txt")) + sorted(run.glob("*-threads.txt"))]
     if stacks:
         result["stacks"] = stacks
