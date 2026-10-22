@@ -412,3 +412,40 @@ class UnwindTests(ShipTests):
         one.unwind(kept)
         self.assertEqual((asm / "a.s").read_text(), "glabel a\n")
         self.assertEqual([(build / n).exists() for n in ("x.o", "y.o", "link.ld")], [False, True, False])
+
+
+class HealthTests(ShipTests):
+    def refused_build(self, answers: list[tuple[int, str, str]]) -> Any:
+        from abu_decomp import land
+
+        def fake(profile: Any, tree: Path, base: str, patches: Any, **_: Any) -> Any:
+            gates = [{"gate": "check", "pass": False}]
+            found = [{"key": "land.check", "message": "make exited 2", "blocking": True}]
+            return {"pass": False, "lanes": [], "attempts": [{"gates": gates}]}, 1, found
+
+        builds: list[list[str]] = []
+
+        def run(argv: Any, cwd: Path, env: Any, timeout: Any) -> Any:
+            if "--" in argv and "check" in argv:
+                builds.append(list(argv))
+                return answers.pop(0)
+            return land.run_process(argv, cwd, env, timeout)
+
+        invoke = lambda *a, **k: None  # noqa: E731  unbake setup
+        got = ship(self.profile, self.tree, [("L", self.root / "l.patch")], landing=fake, run=run, invoke=invoke)
+        return got, builds
+
+    def test_a_refused_build_says_head_builds_here_so_the_input_is_to_blame(self) -> None:
+        (_, code, findings), builds = self.refused_build([(0, "", "")])
+        self.assertEqual((code, len(builds)), (1, 1))
+        self.assertIn("ship.base_ok", [f["key"] for f in findings])
+
+    def test_a_tree_where_head_fails_too_is_rebuilt_clean_for_the_versions_the_build_names(self) -> None:
+        (self.tree / "build/de").mkdir(parents=True)
+        (self.tree / "build/de/x.o").write_text("stale")
+        (_, code, findings), builds = self.refused_build(
+            [(2, "make: *** build/de/RageWars.elf Error 1", ""), (0, "", "")]
+        )
+        repaired = next(f for f in findings if f["key"] == "ship.tree_repaired")
+        self.assertEqual((code, len(builds), repaired["versions"]), (1, 2, ["de"]))
+        self.assertFalse((self.tree / "build/de/x.o").exists())

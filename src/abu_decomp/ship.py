@@ -467,10 +467,61 @@ class Ship:
                 else:
                     self.abandon()
                     self.unwind(kept)
+                    gates = [
+                        g for a in (outcome[0].get("land") or {}).get("attempts") or () for g in a.get("gates", ())
+                    ]
+                    if any(g.get("gate") == "check" and not g.get("pass") for g in gates):  # the build itself refused
+                        outcome[2].extend(self.health(outcome[0]["base"]))
                 outcome[2].extend(self.unpark())
                 return outcome
         finally:
             os.close(handle)
+
+    def health(self, base: str) -> list[dict[str, Any]]:
+        """After a refused build: does HEAD itself build on this warm tree? `unbake setup` first re-extracts what no
+        longer matches its facts, then the same check runs at the base (incremental: the unwind kept every object the
+        input did not reach). HEAD green: the refusal is the input's. HEAD red: the tree drifted from HEAD, so every
+        object of each version the build names is dropped and the check runs once more; green then is a repaired tree
+        (ship again), red still is a HEAD that does not build here (10-22: a drifted tree refused 75 min of inputs)."""
+        started = self.clock()
+        table = land.settings(self.profile, self.tree)
+        self.invoke("unbake", self.profile, ["setup", "--no-make"], project=self.tree)
+        jobs = None
+        if table["jobs"]:
+            code, out, _ = self.run(table["jobs"], self.tree, None, 60)
+            jobs = int(out.strip()) if not code and out.strip().isdigit() else None
+        env = {**os.environ, "UNBAKE_HOST": str(tools.host_file(self.profile))}
+        env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+
+        def build() -> tuple[int, str]:
+            code, out, err = self.run(land.build_command(table["check"], jobs), self.tree, env, table["timeout"])
+            return code, out + err
+
+        code, text = build()
+        found: list[dict[str, Any]] = []
+        if code == 0:
+            message = f"HEAD {base[:12]} builds on this tree: the refused build is the input's"
+            found.append({"key": "ship.base_ok", "blocking": False, "message": message})
+        else:
+            versions = sorted(set(re.findall(r"build/([\w-]+)/", text))) or [
+                p.name for p in (self.tree / "build").iterdir() if p.is_dir()
+            ]
+            for version in versions:
+                for obj in (self.tree / "build" / version).rglob("*.o"):
+                    obj.unlink()
+            code, text = build()
+            tail = "\n".join(text.strip().splitlines()[-8:])
+            found.append(
+                {"key": "ship.tree_repaired", "blocking": False, "versions": versions,
+                 "message": f"HEAD {base[:12]} did not build on this tree (drift, not the input); "
+                            f"{', '.join(versions)} rebuilt from clean and HEAD builds now: ship again"}
+                if code == 0
+                else {"key": "ship.tree_drift", "blocking": True, "versions": versions, "tail": tail,
+                      "message": f"HEAD {base[:12]} does not build on this tree, even with {', '.join(versions)} "
+                                 "rebuilt from clean: no input can land until it does"}
+            )  # fmt: skip
+        self.step("health", started, ok=code == 0)
+        return found
 
     def keep_extraction(self) -> Path | None:
         """The extraction under asm/ as the ship found it, kept as hard links: a land's sync re-extracts from the
