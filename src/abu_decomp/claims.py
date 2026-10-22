@@ -21,6 +21,7 @@ from typing import Any
 
 from abu_decomp import DecompError
 from abu_decomp.config import Profile
+from abu_decomp.events import events_path
 
 ID = re.compile(r"\b[0-9a-f]{12,32}\b")
 FUNCTION = re.compile(r"\bfunc_[0-9A-Fa-f]{8}\w*")
@@ -41,7 +42,7 @@ def state_dir(profile: Profile | None) -> Path | None:
     if profile is None:
         return None
     try:
-        return Path(profile.section("events")["path"]).parent / "invocations"
+        return events_path(profile).parent / "invocations"
     except (DecompError, KeyError, TypeError):
         return None
 

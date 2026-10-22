@@ -108,6 +108,12 @@ class ClaimTests(unittest.TestCase):
         claims.record(self.profile, "2" * 32, "behave", True, {"verdict": "same", "function": "f"}, ["behave"])
         assert claims.check(self.profile, f"the body is correct, {'2' * 32}")["problems"] == []
 
+    def test_a_relative_events_path_keeps_records_beside_the_profile(self):
+        seat = self.tmp / "seat" / "seat.json"
+        seat.parent.mkdir()
+        seat.write_text(json.dumps({"schema_version": 1, "name": "r", "events": {"path": "feed/events.jsonl"}}))
+        assert claims.state_dir(load_profile(seat)) == (self.tmp / "seat" / "feed" / "invocations").resolve()
+
     def test_other_commands_are_not_evidence(self):
         claims.record(self.profile, "e" * 32, "tas", True, {}, [])
         assert claims.check(self.profile, f"fixed {'e' * 32}")["problems"]
