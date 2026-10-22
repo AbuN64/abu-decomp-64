@@ -229,7 +229,7 @@ def test_parse_lines():
 def test_unrecorded_body_refused(tmp_path):
     tries = tries_file(tmp_path, "#include <x.h>\n" + CLEAN.replace("count", "n"))
     rows = provenance.unproven(evidence.parse(BASE), evidence.parse(CLEAN), tries)
-    assert [r["function"] for r in rows] == ["f"] and rows[0]["next"] == "recipe work f"
+    assert [r["function"] for r in rows] == ["f"] and rows[0]["next"] == "recipe try f"
     assert "not produced/proven by recipe try" in rows[0]["why"]
 
 
