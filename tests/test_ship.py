@@ -304,6 +304,8 @@ class ShipBoostTests(unittest.TestCase):
         (self.tree / "asm").mkdir()
         (self.tree / "asm/a.s").write_text("pre")
         (self.tree / "build").mkdir(exist_ok=True)
+        (self.tree / "asm.pre-ship").mkdir()  # a leftover of the earlier layout
+        (self.tree / "asm.pre-ship/old.s").write_text("stale")
         inner = self.landing(refuse="land.check")
 
         def land(profile: Any, tree: Path, base: str, patches: Any, **kw: Any) -> Any:
@@ -316,6 +318,7 @@ class ShipBoostTests(unittest.TestCase):
         self.assertEqual(got[1], 1)
         self.assertEqual((self.tree / "asm/a.s").read_text(), "pre")
         self.assertFalse((self.tree / "build/x.o").exists())
+        self.assertFalse((self.tree / ".unbake/ship-asm").exists())
         self.assertFalse((self.tree / "asm.pre-ship").exists())
         self.assertTrue((self.tree / "build.o").exists())  # warm build state it did not touch stays
 

@@ -375,10 +375,12 @@ class Ship:
     def keep_extraction(self) -> Path | None:
         """The extraction under asm/ as the ship found it, kept as hard links: a land's sync re-extracts from the
         patched symbols, and a refused land leaves that extraction (and objects built from it) under HEAD's symbols."""
-        kept = self.tree / "asm.pre-ship"
+        kept = self.tree / ".unbake/ship-asm"  # under .unbake (git-ignored): never an untracked .s of the tree
+        shutil.rmtree(self.tree / "asm.pre-ship", ignore_errors=True)  # where an earlier ship version kept it
+        shutil.rmtree(kept, ignore_errors=True)  # a killed ship's leftover
         if not (self.tree / "asm").is_dir():
             return None
-        shutil.rmtree(kept, ignore_errors=True)
+        kept.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["cp", "-al", str(self.tree / "asm"), str(kept)], check=True)
         return kept
 
