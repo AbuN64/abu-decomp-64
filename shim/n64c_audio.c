@@ -59,6 +59,9 @@ static void default_sink(void *user, const int16_t *frames, size_t count, uint32
         if (!SDL_SetAudioStreamFormat(stream, &spec, NULL)) { sink_failed = 1; return; }
         stream_rate = rate;
     }
+    /* Above a quarter second queued (a guest faster than real time, N64C_SPEED) new frames are dropped,
+     * so the queue and its latency stay bounded; the guest's AI FIFO runs on the virtual clock regardless. */
+    if (SDL_GetAudioStreamQueued(stream) > (int)rate) return;
     /* n64a_ai_submit supplies at most 256 frames per call. SDL copies the data. */
     if (!SDL_PutAudioStreamData(stream, frames, (int)(count * 2 * sizeof *frames))) sink_failed = 1;
 #else

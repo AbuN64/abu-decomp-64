@@ -233,15 +233,36 @@ int n64c_boot_frame_capture(const char *path,u32 retrace,u32 width,u32 height)
             retrace,frame.tasks,frame.audio_tasks,(unsigned long long)frame.commands,physical);
     return 1;
 }
-/* Retrace n is due n*1001/60000 s after the start (NTSC VI), exact in integer nanoseconds. */
-static void wait_retrace(const struct timespec *start,u32 n)
+int n64c_retrace_due(const struct timespec *start,u32 n,u32 speed,struct timespec *due)
 {
-    uint64_t ns=(uint64_t)start->tv_nsec+(uint64_t)n*50050000u/3u;
-    struct timespec due={start->tv_sec+(time_t)(ns/1000000000u),(long)(ns%1000000000u)};
+    if (!speed) return 0;
+    uint64_t ns=(uint64_t)start->tv_nsec+(uint64_t)n*50050000u/(3u*(uint64_t)speed);
+    due->tv_sec=start->tv_sec+(time_t)(ns/1000000000u);
+    due->tv_nsec=(long)(ns%1000000000u);
+    return 1;
+}
+int n64c_parse_speed(const char *text,u32 *speed)
+{
+    if (!text || !*text) { *speed=1; return 1; }
+    char *end;
+    unsigned long v=strtoul(text,&end,10);
+    if (*end || v>1000) return 0;
+    *speed=(u32)v;
+    return 1;
+}
+static void wait_retrace(const struct timespec *start,u32 n,u32 speed)
+{
+    struct timespec due;
+    if (!n64c_retrace_due(start,n,speed,&due)) return;
     while (clock_nanosleep(CLOCK_MONOTONIC,TIMER_ABSTIME,&due,NULL)!=0) {}
 }
 int n64c_boot_frame_live(void)
 {
+    u32 speed;
+    if (!n64c_parse_speed(getenv("N64C_SPEED"),&speed)) {
+        fprintf(stderr,"boot-frame: N64C_SPEED must be 0..1000, got %s\n",getenv("N64C_SPEED"));
+        return 0;
+    }
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC,&start);
     for (u32 n=1;!frame.closed;n++) {
@@ -263,7 +284,7 @@ int n64c_boot_frame_live(void)
         if (n%600==0)
             fprintf(stderr,"boot-step: retrace=%u tasks=%u audio=%u commands=%llu\n",osViGetRetraceCount(),
                     frame.tasks,frame.audio_tasks,(unsigned long long)frame.commands);
-        wait_retrace(&start,n);
+        wait_retrace(&start,n,speed);
     }
     fprintf(stderr,"boot-frame: window closed at retrace %u\n",osViGetRetraceCount());
     return 1;

@@ -101,6 +101,15 @@ static void start(int mode)
 int main(int argc,char **argv)
 {
     CHECK(argc==2);
+    u32 speed=7;
+    CHECK(n64c_parse_speed(NULL,&speed) && speed==1);
+    CHECK(n64c_parse_speed("0",&speed) && speed==0);
+    CHECK(n64c_parse_speed("8",&speed) && speed==8);
+    CHECK(!n64c_parse_speed("x",&speed) && !n64c_parse_speed("2x",&speed) && !n64c_parse_speed("1001",&speed));
+    struct timespec t0={5,999999999},due;
+    CHECK(!n64c_retrace_due(&t0,60,0,&due)); /* uncapped: no wait */
+    CHECK(n64c_retrace_due(&t0,60000,1,&due) && due.tv_sec==1006 && due.tv_nsec==999999999); /* 60000 retraces = 1001 s */
+    CHECK(n64c_retrace_due(&t0,60000,4,&due) && due.tv_sec==256 && due.tv_nsec==249999999); /* 250.25 s */
     char path[1024];snprintf(path,sizeof path,"%s/frame-%ld.ppm",argv[1],(long)getpid());
     CHECK(!n64c_boot_frame_start(0,2,sizeof ram,0,0,0));
     CHECK(!n64c_boot_frame_start(2,5000,sizeof ram,0,0,0));
