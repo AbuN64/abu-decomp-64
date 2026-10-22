@@ -13,6 +13,8 @@ from __future__ import annotations
 import fcntl
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -357,20 +359,50 @@ class Ship:
             # sync, check and commit rewrite tracked files and the extraction: readers of the tree (recipe try, work,
             # unbake probe) wait for the window, and their waits are the readers' to print
             with treelock.hold(self.tree, exclusive=True, who="ship"):
+                kept = self.keep_extraction()
                 try:
                     if self.from_try:
                         self.enter(self.from_try)
                     outcome = self.attempts(started)
                 except BaseException:
                     self.abandon()
+                    self.unwind(kept, started)
                     raise
                 if outcome[0].get("pushed"):
                     self.settle(outcome[0]["pushed"])
+                    self.drop(kept)
                 else:
                     self.abandon()
+                    self.unwind(kept, started)
                 return outcome
         finally:
             os.close(handle)
+
+    def keep_extraction(self) -> Path | None:
+        """The extraction under asm/ as the ship found it, kept as hard links: a land's sync re-extracts from the
+        patched symbols, and a refused land leaves that extraction (and objects built from it) under HEAD's symbols."""
+        kept = self.tree / "asm.pre-ship"
+        if not (self.tree / "asm").is_dir():
+            return None
+        shutil.rmtree(kept, ignore_errors=True)
+        subprocess.run(["cp", "-al", str(self.tree / "asm"), str(kept)], check=True)
+        return kept
+
+    def unwind(self, kept: Path | None, started: float) -> None:
+        """A ship that pushed nothing puts the extraction back and removes every object and assembly the land built
+        (newer than the ship's start, so built under its candidate Makefile and extraction): the next make rebuilds."""
+        if kept is None or not kept.is_dir():
+            return
+        shutil.rmtree(self.tree / "asm", ignore_errors=True)
+        kept.rename(self.tree / "asm")
+        since = time.time() - (self.clock() - started)
+        for path in (self.tree / "build").rglob("*"):
+            if path.suffix in (".o", ".s", ".prev", ".textsize") and path.is_file() and path.stat().st_mtime >= since:
+                path.unlink()
+
+    def drop(self, kept: Path | None) -> None:
+        if kept is not None:
+            shutil.rmtree(kept, ignore_errors=True)
 
     def attempts(self, started: float) -> Result:
         for attempt in (1, 2):

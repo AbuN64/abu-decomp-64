@@ -300,6 +300,25 @@ class ShipBoostTests(unittest.TestCase):
         got = ship(profile, self.tree, [("L", self.root / "l.patch")], landing=self.landing(), run=run, cgroup=cgroup)
         return got, calls
 
+    def test_a_refused_ship_puts_the_extraction_back_and_removes_what_its_land_built(self) -> None:
+        (self.tree / "asm").mkdir()
+        (self.tree / "asm/a.s").write_text("pre")
+        (self.tree / "build").mkdir(exist_ok=True)
+        inner = self.landing(refuse="land.check")
+
+        def land(profile: Any, tree: Path, base: str, patches: Any, **kw: Any) -> Any:
+            (tree / "asm/a.s").unlink()  # a sync re-extracts: a fresh file, not the kept one
+            (tree / "asm/a.s").write_text("candidate")
+            (tree / "build/x.o").write_text("object of the candidate")
+            return inner(profile, tree, base, patches, **kw)
+
+        got = ship(self.profile, self.tree, [("L", self.root / "l.patch")], landing=land)
+        self.assertEqual(got[1], 1)
+        self.assertEqual((self.tree / "asm/a.s").read_text(), "pre")
+        self.assertFalse((self.tree / "build/x.o").exists())
+        self.assertFalse((self.tree / "asm.pre-ship").exists())
+        self.assertTrue((self.tree / "build.o").exists())  # warm build state it did not touch stays
+
     def test_the_landing_window_holds_the_tree_lock_alone_so_readers_wait_for_it(self) -> None:
         import fcntl
 
