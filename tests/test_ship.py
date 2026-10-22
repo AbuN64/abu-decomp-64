@@ -35,7 +35,7 @@ class ShipTests(unittest.TestCase):
         git(self.other, "push", "-q", "origin", "HEAD:main")
         git(self.root, "clone", "-q", str(self.remote), str(self.tree))
         (self.tree / "build.o").write_text("warm")  # ignored build state the ship must keep
-        (self.tree / ".git/info/exclude").write_text("build.o\n")
+        (self.tree / ".git/info/exclude").write_text("build.o\n.unbake/\n")
         (self.root / "host.toml").write_text("")
         (self.root / "events.jsonl").write_text("")
         sections = {
@@ -299,6 +299,26 @@ class ShipBoostTests(unittest.TestCase):
 
         got = ship(profile, self.tree, [("L", self.root / "l.patch")], landing=self.landing(), run=run, cgroup=cgroup)
         return got, calls
+
+    def test_the_landing_window_holds_the_tree_lock_alone_so_readers_wait_for_it(self) -> None:
+        import fcntl
+
+        inner, seen = self.landing(), []
+
+        def watched(profile: Any, tree: Path, base: str, patches: Any, **kw: Any) -> Any:
+            with (tree / ".unbake" / "tree.lock").open("a") as other:
+                try:
+                    fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    seen.append("shared")
+                except BlockingIOError:
+                    seen.append("blocked")
+            return inner(profile, tree, base, patches, **kw)
+
+        got = ship(self.profile, self.tree, [("L", self.root / "l.patch")], landing=watched)
+        self.assertEqual(got[1], 0)
+        self.assertEqual(seen, ["blocked"])
+        with (self.tree / ".unbake" / "tree.lock").open("a") as after:
+            fcntl.flock(after, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released once the ship returns
 
     def test_the_lock_holder_gets_the_profiles_weight_on_its_own_scope(self) -> None:
         (result, code, findings), calls = self.boosted(1000, lambda: self.SCOPE)

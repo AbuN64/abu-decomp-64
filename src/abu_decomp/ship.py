@@ -19,6 +19,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from unbake import treelock
+
 from abu_decomp import DecompError, events, land, meter, nextcmd, priority, tools
 from abu_decomp.config import Profile
 
@@ -315,18 +317,21 @@ class Ship:
         started = self.clock()
         handle = self.lock()
         try:
-            try:
-                if self.from_try:
-                    self.enter(self.from_try)
-                outcome = self.attempts(started)
-            except BaseException:
-                self.abandon()
-                raise
-            if outcome[0].get("pushed"):
-                self.settle(outcome[0]["pushed"])
-            else:
-                self.abandon()
-            return outcome
+            # sync, check and commit rewrite tracked files and the extraction: readers of the tree (recipe try, work,
+            # unbake probe) wait for the window, and their waits are the readers' to print
+            with treelock.hold(self.tree, exclusive=True, who="ship"):
+                try:
+                    if self.from_try:
+                        self.enter(self.from_try)
+                    outcome = self.attempts(started)
+                except BaseException:
+                    self.abandon()
+                    raise
+                if outcome[0].get("pushed"):
+                    self.settle(outcome[0]["pushed"])
+                else:
+                    self.abandon()
+                return outcome
         finally:
             os.close(handle)
 
