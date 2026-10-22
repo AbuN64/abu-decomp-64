@@ -581,6 +581,17 @@ def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     )
 
 
+def _repin_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--tree", type=Path, required=True, help="the tree whose pin places are set (land.trees pin)")
+    parser.add_argument("--to", help="the source commit or ref to pin (default: the pin config's ref, HEAD)")
+
+
+def _run_repin(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp.repin import repin
+
+    return repin(_profile(args.profile), args.tree, args.to)
+
+
 def _standalone_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tree", type=Path, required=True, help="a game repo checkout")
     parser.add_argument("--against", help="judge only the lines the work tree adds over this git revision")
@@ -744,6 +755,11 @@ COMMANDS: dict[str, Command] = {
         "land every ready input on the warm tree in one round, commit each and push fast-forward to the branch",
         _ship_arguments,
         _run_ship,
+    ),
+    "repin": Command(
+        "set a tree's pin of another repository's commit in every place it is spelled, ready for ship --worktree",
+        _repin_arguments,
+        _run_repin,
     ),
     "behave": Command(
         "run the original and a candidate on the same inputs and compare their behaviour",

@@ -66,7 +66,7 @@ class Ship:
             raise ShipError("ship.arguments", "ship needs at least one --patch, or --worktree NAME")
         if len({lane for lane, _ in self.patches}) != len(self.patches):
             raise ShipError("ship.arguments", "two --patch inputs carry one lane name; each input needs its own")
-        table = land.settings(profile)
+        table = land.settings(profile, tree)
         self.remote, self.branch, self.author = table["remote"], table["branch"], table["author"]
         self.weight, self.cgroup, self.notes = table["lock_weight"], cgroup, []
         self.run, self.landing, self.append, self.clock, self.lock_wait = run, landing, append, clock, lock_wait
@@ -363,7 +363,7 @@ class Ship:
         }
         lost = [row for row in inputs if row["status"] == "refused"]
         record = {
-            "actor": land.settings(self.profile)["actor"],
+            "actor": land.settings(self.profile, self.tree)["actor"],
             "status": "passed" if sha else "failed",
             "message": (
                 f"shipped {', '.join(shipped_lanes)} as {sha[:12]} to {self.remote}/{self.branch} in "

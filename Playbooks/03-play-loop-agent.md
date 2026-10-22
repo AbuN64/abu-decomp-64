@@ -66,6 +66,9 @@ its switcher pins another; `tas watch` also reports `play-start` / `play-end`. N
    reads the evidence rung at the parent and at the candidate: asm, C unproven, behaves k/n (`decomp behave
    --function SYM` with the C as candidate), matches. It refuses a step down, and a non-matching body that does not
    raise k unless its linked bytes are identical; a refusal prints the function, both rungs and the behave command.
+   The port takes the same verb: `decomp ship --tree PORT --worktree LANE:MESSAGE` builds it and replays every movie
+   (`tas play --all`, worse must be empty) before it pushes to the port's own remote. When RW moved past the port's pin
+   run `decomp repin --tree PORT` first (it sets every pin place; its `next` is the ship command); never edit pins by hand.
    The same gate also refuses a body that `recipe try` never produced (hand-written: `recipe work SYM`, edit the
    candidate file, `recipe try SYM`, then copy that body unchanged) and a body that adds m2c leftovers (`spNN`,
    `temp_*`, `var_*`, `M2C_FIELD`/offset casts, raw `0x80...` pointers, `void *` field access); it names each finding

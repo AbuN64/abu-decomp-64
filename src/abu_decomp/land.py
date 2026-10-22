@@ -159,6 +159,7 @@ GATES = (
     "readme",
 )
 OPTIONAL_GATES = ("recipe", "evidence", "arity")
+PLAIN_GATES = ("base", "apply", "check", "pin")
 # A failed build gate that can be the fault of one input (not the admit command or the tree's own state).
 BISECTABLE = frozenset({"land.setup", "land.check", "land.sync_after", "land.audit"})
 DEFAULT_SUBJECT_LIMIT = 72
@@ -420,38 +421,113 @@ def arity_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
     return arity.settings(given)
 
 
-def settings(profile: Profile) -> dict[str, Any]:
+LAND_KEYS = frozenset(
+    {
+        "check",
+        "jobs",
+        "markers",
+        "union_paths",
+        "regenerated_paths",
+        "asm_suffix",
+        "readme",
+        "timeout_seconds",
+        "actor",
+        "recipe",
+        "recipe_suffixes",
+        "rename_inert",
+        "subject_limit",
+        "remote",
+        "branch",
+        "author",
+        "lock_weight",
+        "evidence",
+        "arity",
+        "claims",
+    }
+)
+# What the profile-wide `land` table passes on to a tree of `land.trees`; every other key is the tree's own to set.
+TREE_INHERITED = frozenset({"actor", "author", "lock_weight", "subject_limit", "timeout_seconds"})
+TREE_KEYS = (LAND_KEYS - {"claims"}) | {"mode", "steps", "pin"}
+
+
+def tree_entry(profile: Profile, table: dict[str, Any], tree: Path | None) -> dict[str, Any] | None:
+    """The `land.trees` entry for this work tree (keys are paths, relative to the profile file), None when the tree
+    has none: it then lands as the profile-wide `land` table says."""
+    trees = table.get("trees")
+    if trees is None or tree is None:
+        return None
+    if not isinstance(trees, dict):
+        raise LandError("config.schema", f"{profile.source_file}:land.trees: expected an object keyed by tree path")
+    here = tree.expanduser().resolve()
+    for key, entry in trees.items():
+        if profile.path(f"land.trees.{key}", key) == here:
+            check_keys(profile.source_file, f"land.trees.{key}", entry, frozenset(), TREE_KEYS)
+            return entry
+    return None
+
+
+def step_list(profile: Profile, where: str, given: Any) -> list[dict[str, Any]]:
+    if not isinstance(given, list) or not given:
+        raise LandError("config.schema", f"{profile.source_file}:{where}: expected a nonempty list of steps")
+    steps = []
+    for row in given:
+        keys = frozenset({"name", "argv"})
+        check_keys(profile.source_file, where, row, keys, keys)
+        argv = row["argv"]
+        if not isinstance(row["name"], str) or not row["name"]:
+            raise LandError("config.schema", f"{profile.source_file}:{where}.name: expected a nonempty string")
+        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
+            raise LandError("config.schema", f"{profile.source_file}:{where}.argv: expected a nonempty list of strings")
+        steps.append({"name": row["name"], "argv": list(argv)})
+    return steps
+
+
+def pin_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
+    """`pin`: where a tree spells the commit of another repository it builds from. `source` is that repository's
+    checkout (its `ref`, default HEAD, is what the pin should follow); each `files` row names a file and a `pattern`
+    whose one group is the 40-hex pin there; `fetched` is the checkout the build fetched (it must sit at the pin)."""
+    if given is None:
+        return None
+    where = f"{profile.source_file}:land.trees.pin"
+    allowed = frozenset({"source", "ref", "files", "fetched"})
+    check_keys(profile.source_file, "land.trees.pin", given, frozenset({"source", "files"}), allowed)
+    rows = given["files"]
+    if not isinstance(rows, list) or not rows:
+        raise LandError("config.schema", f"{where}.files: expected a nonempty list")
+    files = []
+    for row in rows:
+        keys = frozenset({"path", "pattern"})
+        check_keys(profile.source_file, "land.trees.pin.files", row, keys, keys)
+        try:
+            pattern = re.compile(row["pattern"])
+        except (re.error, TypeError) as error:
+            raise LandError("config.schema", f"{where}.files.pattern: {error}") from None
+        if pattern.groups != 1:
+            raise LandError("config.schema", f"{where}.files.pattern: expected exactly one group (the pin)")
+        files.append({"path": str(row["path"]), "pattern": pattern})
+    return {
+        "source": profile.path("land.trees.pin.source", given["source"]),
+        "ref": str(given.get("ref", "HEAD")),
+        "files": files,
+        "fetched": profile.path("land.trees.pin.fetched", given["fetched"]) if given.get("fetched") else None,
+    }
+
+
+def settings(profile: Profile, tree: Path | None = None) -> dict[str, Any]:
+    """The land settings that apply to `tree`: its `land.trees` entry (kept apart from the profile-wide table; only
+    the identity and limits carry over) when it has one, else the profile-wide table."""
     table = profile.section("land")
-    check_keys(
-        profile.source_file,
-        "land",
-        table,
-        frozenset({"check"}),
-        frozenset(
-            {
-                "check",
-                "jobs",
-                "markers",
-                "union_paths",
-                "regenerated_paths",
-                "asm_suffix",
-                "readme",
-                "timeout_seconds",
-                "actor",
-                "recipe",
-                "recipe_suffixes",
-                "rename_inert",
-                "subject_limit",
-                "remote",
-                "branch",
-                "author",
-                "lock_weight",
-                "evidence",
-                "arity",
-                "claims",
-            }
-        ),
-    )
+    check_keys(profile.source_file, "land", table, frozenset({"check"}), LAND_KEYS | {"trees"})
+    entry = tree_entry(profile, table, tree)
+    mode, steps, pin = "unbake", [], None
+    if entry is not None:
+        table = {**{k: v for k, v in table.items() if k in TREE_INHERITED}, **entry}
+        mode = str(entry.get("mode", "unbake"))
+        if mode not in ("unbake", "plain"):
+            raise LandError("config.schema", f"{profile.source_file}:land.trees.mode: expected unbake or plain")
+        if mode == "plain":
+            steps = step_list(profile, "land.trees.steps", entry.get("steps"))
+        pin = pin_settings(profile, entry.get("pin"))
 
     def argv(key: str) -> list[str] | None:
         value = table.get(key)
@@ -505,6 +581,9 @@ def settings(profile: Profile) -> dict[str, Any]:
         "remote": str(table.get("remote", "origin")),  # where `decomp ship` pushes
         "branch": str(table.get("branch", "main")),
         "author": str(table["author"]) if table.get("author") else None,  # "Name <email>" of shipped commits
+        "mode": mode,  # plain: only the tree's own steps build it (no unbake setup, sync or audit)
+        "steps": steps,
+        "pin": pin,
     }
 
 
@@ -864,7 +943,7 @@ class Landing:
         behave: Callable[[Any], tuple[dict[str, Any], int, list[dict[str, Any]]]] | None = None,
     ) -> None:
         self.behave = behave
-        self.config = settings(profile)
+        self.config = settings(profile, tree)
         self.tree = tree.expanduser().resolve()
         if not self.tree.is_dir():
             raise LandError("land.tree", f"proof tree {self.tree} is not a directory")
@@ -887,7 +966,10 @@ class Landing:
         self.recipe_summary: dict[str, Any] | None = None
         # the tool checks the real invoke makes on this tree, made before any input is written to it (a fake invoke
         # runs no installed tool, so it has none to check)
-        self.ready = ready or ((lambda: tools.ready(profile, self.tree)) if invoke is tools.invoke else (lambda: None))
+        plain = self.config["mode"] == "plain"
+        self.ready = ready or (
+            (lambda: tools.ready(profile, self.tree)) if invoke is tools.invoke and not plain else (lambda: None)
+        )
         self.splat_check = splat_check or self.run_splat_check
         self.splat_file_check = splat_file_check or self.run_splat_file_check
         self.base_tree = ""  # the tree of the base commit: what a replay starts from
@@ -1524,6 +1606,45 @@ class Landing:
         result = called.document.get("result") or {}
         return {key: result.get(key) for key in ("against", "base", "tree", "files", "renames", "map", "inert")}
 
+    def expand(self, argv: Sequence[str]) -> list[str]:
+        """A step's argv: `{decomp}` is this tool under the same profile (so a step can run `decomp tas play --all`)."""
+        me = [sys.executable, "-m", "abu_decomp", "--profile", str(self.profile.source_file)]
+        return [word for item in argv for word in (me if item == "{decomp}" else [item])]
+
+    def steps(self) -> bool:
+        """A plain tree's check: each configured step runs in order in the tree, output streaming to stderr, and the
+        first non-zero exit refuses the input (its CPU and wall ride the gate row beside the step name)."""
+        started, rows = self.clock(), []
+        env = dict(os.environ)
+        env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+        for step in self.config["steps"]:
+            begun, mark = self.clock(), meter.cpu()
+            command = self.expand(step["argv"])
+            code, out, err = self.build(command, self.tree, env, self.config["timeout"])
+            rows.append(
+                {"step": step["name"], "exit": code, "seconds": round(self.clock() - begun, 1),
+                 "cpu": round(meter.cpu() - mark, 1)}
+            )  # fmt: skip
+            if code:
+                tail = "\n".join((out + err).strip().splitlines()[-12:])
+                self.fail("land.check", f"step {step['name']} ({' '.join(step['argv'])}) exited {code}", tail=tail)
+                break
+        return self.gate("check", all(row["exit"] == 0 for row in rows), started, steps=rows)
+
+    def pin_check(self) -> bool:
+        """The pin gate: every pin place reads the same commit, the checkout the build fetched sits at it, and a pin
+        behind the source's ref is a note (`decomp repin` is the next step), never a refusal."""
+        from abu_decomp import repin
+
+        started = self.clock()
+        found = repin.check(self.config["pin"], self.tree, self.run)
+        for row in found["findings"]:
+            if row["blocking"]:
+                self.fail(row["key"], row["message"], next=row.get("next"))
+            else:
+                self.findings.append(row)
+        return self.gate("pin", not any(f["blocking"] for f in found["findings"]), started, pin=found["pin"])
+
     def check(self) -> bool:
         started = self.clock()
         jobs = None
@@ -1966,6 +2087,8 @@ class Landing:
 
     # run --------------------------------------------------------------------------------------------------------
     def build_stages(self) -> list[Callable[[], bool]]:
+        if self.config["mode"] == "plain":
+            return [self.steps, *([self.pin_check] if self.config["pin"] else [])]
         unbake = self.unbake
         return [
             self.prove,
@@ -1976,6 +2099,12 @@ class Landing:
         ]
 
     def after_stages(self) -> list[Callable[[], bool]]:
+        if self.config["mode"] == "plain":  # the decomp gates apply only where the tree configures them
+            return [
+                *([self.evidence] if self.config["evidence"] else []),
+                *([self.arity] if self.config["arity"] else []),
+                *([self.recipe] if self.config["recipe"] else []),
+            ]
         return [
             self.attribute,
             self.markers,
@@ -2179,7 +2308,8 @@ class Landing:
                     failed = True
                     break
         done = {row["gate"] for row in self.gates}
-        for name in (*GATES, *(g for g in OPTIONAL_GATES if self.config[g])):
+        plain = self.config["mode"] == "plain"
+        for name in (*(PLAIN_GATES if plain else GATES), *(g for g in OPTIONAL_GATES if self.config[g])):
             if name not in done:
                 self.gates.append({"gate": name, "pass": None, "skipped": True})
         result: dict[str, Any] = {

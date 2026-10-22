@@ -473,7 +473,7 @@ def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) ->
     The recorded standing is the best row so far in `runs/standing.json`, moved only when a movie is not worse, so a
     regression stays `worse` until fixed. Exit status 1 when any movie is worse."""
     import json
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     cfg = settings(profile)
     names = sorted(p.stem for p in cfg["movies"].glob("*.tas")) if cfg["movies"].is_dir() else []
@@ -486,8 +486,22 @@ def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) ->
         except DecompError as error:
             return {"movie": name, "outcome": "refused", "subject": str(error), "polls_reached": 0}
 
+    def progress(row: dict[str, Any]) -> None:
+        reached = f"{row.get('polls_reached', 0)}/{row.get('polls', 0)}"
+        outcome = row["outcome"] + (f" {row['subject']}" if row.get("subject") else "")
+        sys.stderr.write(
+            f"tas: {row['movie']} {outcome} {reached} "
+            f"{row.get('wall_seconds', 0)}/{row.get('cpu_seconds', 0)} s (wall/cpu)\n"
+        )
+        sys.stderr.flush()
+
+    done: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=max(1, min(jobs, len(names) or 1))) as pool:
-        results = list(pool.map(one, names))
+        for future in as_completed([pool.submit(one, name) for name in names]):
+            row = future.result()
+            progress(row)  # one row per movie as each finishes; the table and JSON below are unchanged
+            done[row["movie"]] = row
+    results = [done[name] for name in names]
     path = cfg["runs"] / "standing.json"
     try:
         standing = json.loads(path.read_text())
