@@ -221,3 +221,24 @@ class LooseTests(unittest.TestCase):
         base, same, other = (evidence.parse(t) for t in (old, new, edit))
         self.assertEqual(provenance.unproven(base, same, {}), [])
         self.assertEqual([r["function"] for r in provenance.unproven(base, other, {})], ["f"])
+
+
+class PruneTests(unittest.TestCase):
+    def test_an_ended_lanes_worktree_goes_unless_a_queued_ship_names_it(self) -> None:
+        from abu_decomp import worktree
+
+        shared = test_ship.ShipTests()
+        shared.setUp()
+        self.addCleanup(shared.doCleanups)
+        base = shared.tree.parent / "wt"
+        for lane in ("A", "B"):
+            test_ship.git(shared.tree, "worktree", "add", "--detach", "-q", str(base / lane))
+        inputs = shared.tree / ".git" / "decomp-ship.inputs"
+        inputs.mkdir()
+        (inputs / "1-1.json").write_text(json.dumps({"patches": [["B", str(base / "B" / "x.patch")]]}))
+        result, code, findings = worktree.prune(shared.tree, ["A", "B", "C"])
+        self.assertEqual(code, 0)
+        self.assertEqual([Path(p).name for p in result["removed"]], ["A"])
+        self.assertEqual([f["key"] for f in findings], ["worktree.referenced"])
+        self.assertFalse((base / "A").exists())
+        self.assertTrue((base / "B").exists())

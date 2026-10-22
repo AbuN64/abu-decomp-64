@@ -542,8 +542,15 @@ def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 
 
 def _worktree_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("verb", choices=["new"], help="new: a lane's own work tree, warm from the shared tree")
-    parser.add_argument("lane", help="the lane name; the tree is <shared>/../wt/LANE")
+    parser.add_argument(
+        "verb",
+        choices=["new", "prune"],
+        help="new: a lane's own work tree, warm from the shared tree; prune: remove ended lanes'",
+    )
+    parser.add_argument(
+        "lane", nargs="*", help="new: the lane name (tree <shared>/../wt/LANE); prune: ended lane names"
+    )
+    parser.add_argument("--results", type=Path, help="prune: also every lane with a RESULT.md under this lanes dir")
     parser.add_argument("--tree", type=Path, required=True, help="the shared tree the lane's worktree is seeded from")
     parser.add_argument("--at", help="the commit (default: the branch tip, fetched)")
 
@@ -551,7 +558,11 @@ def _worktree_arguments(parser: argparse.ArgumentParser) -> None:
 def _run_worktree(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import worktree
 
-    return worktree.new(_profile(args.profile), args.tree, args.lane, args.at)
+    if args.verb == "prune":
+        return worktree.prune(args.tree, args.lane, args.results)
+    if len(args.lane) != 1:
+        raise DecompError("worktree.arguments", "new takes exactly one lane name")
+    return worktree.new(_profile(args.profile), args.tree, args.lane[0], args.at)
 
 
 def _repin_arguments(parser: argparse.ArgumentParser) -> None:

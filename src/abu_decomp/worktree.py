@@ -112,3 +112,52 @@ def new(
     }
     findings = [] if called.ok else [{"key": "worktree.setup", "message": "unbake setup refused", "blocking": True}]
     return result, int(not called.ok), findings
+
+
+def _referenced(shared: Path, path: Path) -> list[str]:
+    """Why a worktree may not go: a queued ship's published input, or a live process, names a file inside it."""
+    why = []
+    common = shared / ".git"
+    for entry in (
+        sorted((common / "decomp-ship.inputs").glob("*.json")) if (common / "decomp-ship.inputs").is_dir() else []
+    ):
+        if str(path) in entry.read_text(errors="replace"):
+            why.append(f"queued ship input {entry.name}")
+    for proc in Path("/proc").glob("[0-9]*"):
+        try:
+            line = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if "decomp" in line and " ship " in line and str(path) in line and proc.name != str(os.getpid()):
+            why.append(f"ship process {proc.name}")
+    return why
+
+
+def prune(
+    shared: Path, ended: list[str], results: Path | None = None
+) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    """Remove the worktrees of ended lanes: the names given, and every lane with a RESULT.md under `results`. A
+    worktree a queued ship still names is kept and reported. The disk freed is the result's `freed_mb`."""
+    shared = shared.expanduser().resolve()
+    base = shared.parent / "wt"
+    names = set(ended)
+    if results is not None:
+        names |= {p.parent.name for p in results.glob("*/RESULT.md")}
+    removed, kept = [], []
+    before = shutil.disk_usage(base).free if base.is_dir() else 0
+    for name in sorted(names):
+        path = base / name
+        if not path.is_dir():
+            continue
+        if why := _referenced(shared, path):
+            kept.append({"worktree": str(path), "why": why})
+            continue
+        _git(shared, "worktree", "remove", "--force", str(path))
+        removed.append(str(path))
+    _git(shared, "worktree", "prune")
+    freed = (shutil.disk_usage(base).free - before) // 2**20 if base.is_dir() else 0
+    findings = [
+        {"key": "worktree.referenced", "message": f"{k['worktree']} kept: {', '.join(k['why'])}", "blocking": False}
+        for k in kept
+    ]
+    return {"removed": removed, "kept": kept, "freed_mb": freed}, 0, findings
