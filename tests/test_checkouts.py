@@ -113,21 +113,19 @@ class CheckoutTests(unittest.TestCase):
             calls.append(list(argv))
             return deploy.run_command(argv, cwd) if argv[0] == "git" else (0, "ok")
 
+        real = self.root / "venv.0"
+        (real / "bin").mkdir(parents=True)
+        (real / "bin" / "python").write_text("")
         venv = self.root / "venv"
-        (venv / "bin").mkdir(parents=True)
-        (venv / "bin" / "python").write_text("")
+        venv.symlink_to(real)
         with mock.patch("abu_decomp.deploy.plan", return_value=(self.requirements(), [])):
             (self.copy / "f").write_text("mine")
-            _, code, findings = deploy.deploy(
-                self.profile, "a" * 40, [venv], {}, run=run, migrate=True, users=lambda _: []
-            )
+            _, code, findings = deploy.deploy(self.profile, "a" * 40, [venv], {}, run=run)
             self.assertEqual((code, findings[0]["key"], calls), (1, "deploy.checkout_dirty", []))
             (self.copy / "f").write_text("2")
             git(self.copy, "checkout", "-q", "--", "f")
             git(self.copy, "reset", "-q", "--hard", self.old)
-            result, code, findings = deploy.deploy(
-                self.profile, "a" * 40, [venv], {}, run=run, migrate=True, users=lambda _: []
-            )
+            result, code, findings = deploy.deploy(self.profile, "a" * 40, [venv], {}, run=run)
         self.assertEqual(code, 1 if any(f["key"] == "deploy.smoke" for f in findings) else 0)
         self.assertEqual(tools.checkout_head(self.copy), self.new)
         self.assertEqual(result["checkouts"][0]["ok"], True)
