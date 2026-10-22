@@ -3,7 +3,8 @@ CPU-s of preprocessing and setup before its first `recipe work`, over the 5-minu
 
 A new git worktree has no extraction, no objects and fresh source times, so make preprocesses every unit again. The
 seed makes it what the shared tree is at the same commit: the extraction, the objects, the preprocessed texts and the
-unbake facts are copied (read under the tree's shared lock, so no ship is half way through writing them), and every
+unbake facts are copied (WITHOUT the tree lock, which a ship holds for its whole landing; a file a ship rewrote
+during the copy is dropped and the worktree's own build makes it again), and every
 tracked file whose bytes equal the shared tree's file gets that file's time, so make finds the copied outputs current
 and rebuilds only what the commit changed. The worktree keeps its own `.unbake` state: recipe leases, tries, the
 ledger and the inbox never touch the shared tree's. A lane lands only through `decomp ship --tree SHARED --patch`."""
@@ -77,6 +78,53 @@ def align_times(shared: Path, tree: Path) -> int:
     return count
 
 
+def _files(root: Path) -> dict[str, tuple[int, int]]:
+    found = {}
+    for base, _dirs, names in os.walk(root):
+        for name in names:
+            path = Path(base) / name
+            try:
+                st = path.lstat()
+            except OSError:
+                continue
+            found[str(path.relative_to(root))] = (st.st_size, st.st_mtime_ns)
+    return found
+
+
+def seed(shared: Path, target: Path) -> int:
+    """Copy the shared tree's outputs and facts without its lock: a ship holds that lock for the whole landing, and a
+    new lane must not wait behind it. A file a ship rewrote while it was copied (size or time differs from the source
+    afterwards) is deleted from the copy, and the worktree's own warm build makes it again. Returns files dropped."""
+    for name in LINKED:
+        if (shared / name).exists() and not (target / name).exists():
+            (target / name).symlink_to(shared / name)
+    sources = [*COPIED, *OWN]
+    facts = [Path(".unbake") / f for f in FACTS]
+    (target / ".unbake").mkdir(exist_ok=True)
+    for name in (*sources, *facts):
+        try:
+            _copy(shared / name, target / name)
+        except (subprocess.CalledProcessError, OSError):
+            shutil.rmtree(target / name, ignore_errors=True)  # vanished mid-copy: the build makes it again
+    dropped = 0
+    for name in (*sources, *facts):
+        src, copy = shared / name, target / name
+        if not copy.exists():
+            continue
+        if src.is_dir():
+            theirs = _files(src)
+            for key, have in _files(copy).items():
+                if key in theirs and have != theirs[key]:
+                    (copy / key).unlink(missing_ok=True)
+                    dropped += 1
+        elif src.exists():
+            a, b = src.lstat(), copy.lstat()
+            if (a.st_size, a.st_mtime_ns) != (b.st_size, b.st_mtime_ns):
+                copy.unlink(missing_ok=True)
+                dropped += 1
+    return dropped
+
+
 def new(
     profile: Profile, shared: Path, lane: str, rev: str | None = None
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -91,21 +139,17 @@ def new(
         rev = _git(shared, "rev-parse", "--verify", "FETCH_HEAD^{commit}").strip()
     target.parent.mkdir(parents=True, exist_ok=True)
     _git(shared, "worktree", "add", "--detach", "-q", str(target), rev)
-    with treelock.hold(shared, who=f"worktree {lane}"):  # no ship writes the outputs while they are copied
-        for name in LINKED:
-            if (shared / name).exists() and not (target / name).exists():
-                (target / name).symlink_to(shared / name)
-        for name in (*COPIED, *OWN):
-            _copy(shared / name, target / name)
-        (target / ".unbake").mkdir(exist_ok=True)
-        for name in FACTS:
-            _copy(shared / ".unbake" / name, target / ".unbake" / name)
-        aligned = align_times(shared, target)
+    epoch = treelock.epoch(shared)  # the shared tree's lock is never taken: a ship may hold it for an hour
+    dropped = seed(shared, target)
+    aligned = align_times(shared, target)
+    if treelock.epoch(shared) != epoch:
+        print("worktree.seed: a ship ended while the outputs were copied; torn files were dropped", flush=True)
     called = tools.invoke("unbake", profile, ["setup", "--no-make"], project=target)
     result = {
         "worktree": str(target),
         "rev": rev,
         "aligned": aligned,
+        "dropped": dropped,
         "setup_ok": called.ok,
         "seconds": round(time.monotonic() - started, 1),
         "cpu": round(meter.cpu() - cpu, 1),

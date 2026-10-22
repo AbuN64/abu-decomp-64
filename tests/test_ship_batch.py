@@ -202,6 +202,37 @@ class SeedTests(unittest.TestCase):
         self.assertEqual((wt / "a.c").stat().st_mtime_ns, 10**18)
 
 
+class SeedWithoutLockTests(unittest.TestCase):
+    def test_seeding_never_takes_the_tree_lock_and_drops_a_file_rewritten_mid_copy(self) -> None:
+        import tempfile
+        from unittest import mock
+
+        from unbake import treelock
+
+        from abu_decomp import worktree
+
+        with tempfile.TemporaryDirectory() as raw:
+            shared, target = Path(raw) / "shared", Path(raw) / "wt"
+            (shared / "build").mkdir(parents=True)
+            (shared / ".unbake").mkdir()
+            (target).mkdir()
+            (shared / "build/ok.o").write_text("ok")
+            (shared / "build/torn.o").write_text("old")
+            real = worktree._copy
+
+            def rewriting(source: Path, dest: Path) -> None:
+                real(source, dest)
+                if source.name == "build":
+                    (shared / "build/torn.o").write_text("newer content")  # a ship rewrites it after the copy
+
+            with mock.patch.object(treelock, "hold", side_effect=AssertionError("tree lock taken")):
+                with mock.patch.object(worktree, "_copy", rewriting):
+                    dropped = worktree.seed(shared, target)
+            self.assertEqual(dropped, 1)
+            self.assertTrue((target / "build/ok.o").exists())
+            self.assertFalse((target / "build/torn.o").exists())
+
+
 class ArityTests(unittest.TestCase):
     def test_a_64_bit_argument_starts_at_an_even_word(self) -> None:
         from abu_decomp.arity import argument_words
