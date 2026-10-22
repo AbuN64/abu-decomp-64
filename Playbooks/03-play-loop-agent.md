@@ -65,6 +65,10 @@ its switcher pins another; `tas watch` also reports `play-start` / `play-end`. N
    reads the evidence rung at the parent and at the candidate: asm, C unproven, behaves k/n (`decomp behave
    --function SYM` with the C as candidate), matches. It refuses a step down, and a non-matching body that does not
    raise k unless its linked bytes are identical; a refusal prints the function, both rungs and the behave command.
+   The same gate also refuses a body that `recipe try` never produced (hand-written: `recipe work SYM`, edit the
+   candidate file, `recipe try SYM`, then copy that body unchanged) and a body that adds m2c leftovers (`spNN`,
+   `temp_*`, `var_*`, `M2C_FIELD`/offset casts, raw `0x80...` pointers, `void *` field access); it names each finding
+   with its line and `recipe style FILE`. Leftovers the parent already held do not block.
    A PreToolUse hook (`~/.claude-local/hooks/guard-git.py`, repo list in `guard-git.json`) refuses raw `git commit` and
    `git push` in those repos and names this command.
 6. **Report in three lines**: what you saw, why it happened, what changed. Then play the next section.

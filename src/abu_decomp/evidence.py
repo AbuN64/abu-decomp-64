@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 ASM, NM, PLAIN = "asm", "nm", "plain"
 _COND = re.compile(r"^\s*#\s*(ifdef|ifndef|if|elif|else|endif)\b(.*)$")
@@ -29,6 +29,8 @@ _KEYWORDS = frozenset({"if", "while", "for", "switch", "else", "do", "return", "
 class Fn:
     kind: str  # ASM, NM or PLAIN
     text: str  # whitespace-normalized, comments removed: equal text is an untouched function
+    start: int = field(default=0, compare=False)  # 0-based line of the opening brace in the source
+    end: int = field(default=0, compare=False)  # 0-based line of the closing brace
 
 
 @dataclass(frozen=True)
@@ -57,8 +59,8 @@ def parse(text: str, nm: str = "NON_MATCHING", asm: str = "INCLUDE_ASM") -> dict
     stand_in = re.compile(rf"\b{re.escape(asm)}\s*\(\s*[^,()]+,\s*(\w+)")
     found: dict[str, Fn] = {}
     stack: list[list[bool]] = []  # per open #if: [is the guard, the guard is active on this branch]
-    depth, header, body, name, guarded = 0, "", "", "", False
-    for line in stripped.splitlines():
+    depth, header, body, name, guarded, opened = 0, "", "", "", False, 0
+    for number, line in enumerate(stripped.splitlines()):
         cond = _COND.match(line)
         if cond:
             word, rest = cond.group(1), cond.group(2)
@@ -78,7 +80,7 @@ def parse(text: str, nm: str = "NON_MATCHING", asm: str = "INCLUDE_ASM") -> dict
             continue
         if depth == 0:
             for hit in stand_in.finditer(line):
-                found.setdefault(hit.group(1), Fn(ASM, normalize(hit.group(0))))
+                found.setdefault(hit.group(1), Fn(ASM, normalize(hit.group(0)), number, number))
         for char in line + "\n":
             if depth == 0 and char in ";}":
                 header = ""
@@ -87,7 +89,7 @@ def parse(text: str, nm: str = "NON_MATCHING", asm: str = "INCLUDE_ASM") -> dict
                 names = [m for m in re.findall(r"\b([A-Za-z_]\w*)\s*\(", head) if m not in _KEYWORDS]
                 if head.endswith(")") and names:
                     name, guarded, body = names[0], any(flag[1] for flag in stack), head + " {"
-                    depth = 1
+                    depth, opened = 1, number
                 else:
                     depth, name = 1, ""
                 continue
@@ -99,7 +101,7 @@ def parse(text: str, nm: str = "NON_MATCHING", asm: str = "INCLUDE_ASM") -> dict
                 if name:
                     body += char
                 if depth == 0 and name:
-                    found[name] = Fn(NM if guarded else PLAIN, normalize(body))
+                    found[name] = Fn(NM if guarded else PLAIN, normalize(body), opened, number)
                     name, body = "", ""
                 continue
             else:

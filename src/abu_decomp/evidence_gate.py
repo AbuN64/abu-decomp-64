@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from abu_decomp import DecompError, evidence, meter, tools
+from abu_decomp import DecompError, evidence, meter, provenance, tools
 
 if TYPE_CHECKING:
     from abu_decomp.land import Landing
@@ -137,6 +137,43 @@ class Gate:
         result, _, _ = call(options)
         return result
 
+    def tries(self) -> dict[str, dict[str, Any]] | None:
+        """The bodies `recipe try` recorded (None: the provenance check is off)."""
+        given = self.config.get("provenance")
+        if given is None:
+            return None
+        root = Path(str(tools.project_dir(self.landing.profile)))
+        return provenance.recorded([root / t for t in given["tries"]])
+
+    def provenance(
+        self,
+        relative: str,
+        base_fns: dict[str, evidence.Fn],
+        new_fns: dict[str, evidence.Fn],
+        old: str,
+        new: str,
+        tries: dict[str, dict[str, Any]] | None,
+    ) -> list[dict[str, str]]:
+        """Refusals for a body no `recipe try` produced and for machine-generated leftovers it adds."""
+        rows = [] if tries is None else provenance.unproven(base_fns, new_fns, tries)
+        rows += provenance.leftover_names(base_fns, new_fns, old, new, self.config.get("names") or [])
+        profile = self.landing.profile.source_file
+        out = []
+        for row in rows:
+            leftover = "leftovers" in row["why"]
+            command = f"recipe style {relative}" if leftover else row["next"]
+            out.append(
+                {
+                    "function": row["function"],
+                    "base": "body",
+                    "new": "leftover names" if leftover else "unproven body",
+                    "why": row["why"],
+                    "file": relative,
+                    "reproduce": f"decomp --profile {profile} {command}",
+                }
+            )
+        return out
+
     def run(self) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
         landing, cfg = self.landing, self.config
         refused: list[dict[str, str]] = []
@@ -146,6 +183,7 @@ class Gate:
             str, str
         ] = {}  # function -> the file whose base held its body or INCLUDE_ASM line and the tree lacks it
         gained: dict[str, str] = {}  # function -> a file that holds it now and did not at the base
+        tries = self.tries()
         for relative in files:
             old = landing.git("show", f"{landing.extra['base']}:{relative}", ok=False)
             path = landing.tree / relative
@@ -161,8 +199,11 @@ class Gate:
             ) -> evidence.Score:
                 return self.measure(side, relative, texts[side], function)
 
+            # a body no try produced, or full of leftovers, is refused without paying for its behave measure
+            blocked = self.provenance(relative, base_fns, new_fns, old, new, tries)
+            judged = {n: f for n, f in new_fns.items() if n not in {row["function"] for row in blocked}}
             try:
-                bad, good = evidence.judge(base_fns, new_fns, measure)
+                bad, good = evidence.judge(base_fns, judged, measure)
             except EvidenceError as exc:
                 bad, good = [{"function": relative, "base": "?", "new": "?", "why": exc.detail}], []
             profile = landing.profile.source_file
@@ -173,7 +214,7 @@ class Gate:
                     f"decomp --profile {profile} behave --function {row['function']} --candidate {new_path} "
                     f"--project {landing.tree}"
                 )
-            refused += bad
+            refused += bad + blocked
             checked += [{**row, "file": relative} for row in good]
         for name in sorted(lost.keys() & gained.keys()):
             home, there = lost[name], gained[name]

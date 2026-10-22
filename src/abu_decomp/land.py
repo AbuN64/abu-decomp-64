@@ -357,7 +357,7 @@ def evidence_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
     if given is None:
         return None
     unknown = (
-        set(given) - {"suffixes", "guard", "stand_in", "headers", "roms", "slow_seconds"}
+        set(given) - {"suffixes", "guard", "stand_in", "headers", "roms", "slow_seconds", "provenance", "names"}
         if isinstance(given, dict)
         else {"?"}
     )
@@ -372,7 +372,39 @@ def evidence_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
         "headers": list(given.get("headers", ["include"])),
         "roms": list(given.get("roms", [])),
         "slow_seconds": float(given.get("slow_seconds", 60)),
+        "provenance": provenance_settings(profile, given.get("provenance")),
+        "names": names_settings(profile, given.get("names")),
     }
+
+
+def provenance_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
+    """`land.evidence.provenance` (absent: off): `tries`, the Recipe tries streams a changed body must appear in
+    (relative paths resolve against the profile's project; default `.unbake/recipe/tries.jsonl`)."""
+    if given is None:
+        return None
+    if not isinstance(given, dict) or set(given) - {"tries"}:
+        raise LandError("config.schema", f"{profile.source_file}:land.evidence.provenance: expected {{tries: [...]}}")
+    return {"tries": [str(t) for t in given.get("tries", [".unbake/recipe/tries.jsonl"])]}
+
+
+def names_settings(profile: Profile, given: Any) -> list[dict[str, str]]:
+    """`land.evidence.names.rules` (absent: none): the machine-generated leftovers a changed body may not add, each
+    {id, pattern (regex over a code line), hint}."""
+    if given is None:
+        return []
+    rules = given.get("rules") if isinstance(given, dict) and set(given) <= {"rules"} else None
+    if not isinstance(rules, list):
+        raise LandError("config.schema", f"{profile.source_file}:land.evidence.names: expected {{rules: [...]}}")
+    out = []
+    for rule in rules:
+        if not isinstance(rule, dict) or set(rule) - {"id", "pattern", "hint"} or not {"id", "pattern"} <= set(rule):
+            raise LandError("config.schema", f"{profile.source_file}:land.evidence.names: bad rule {rule!r}")
+        try:
+            re.compile(rule["pattern"])
+        except re.error as exc:
+            raise LandError("config.schema", f"{profile.source_file}:land.evidence.names: {rule['id']}: {exc}") from exc
+        out.append({"id": str(rule["id"]), "pattern": str(rule["pattern"]), "hint": str(rule.get("hint", ""))})
+    return out
 
 
 def arity_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
