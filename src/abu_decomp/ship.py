@@ -194,9 +194,17 @@ class Ship:
         self.steps.append({"step": name, "seconds": round(self.clock() - started, 3), "cpu": round(spent, 2), **detail})
 
     def identity(self) -> dict[str, str]:
-        """GIT_AUTHOR/COMMITTER for the commits: `land.author` ("Name <email>"), else the tree's own git config."""
+        """GIT_AUTHOR/COMMITTER for the commits: `land.author` ("Name <email>"), else the user's global git identity.
+        A tree-local `user.*` (a stray `t <t@t>` once wrote nine commits) is never used; no identity refuses."""
         if not self.author:
-            return {}
+            name = self.git("config", "--global", "user.name", ok=False)
+            email = self.git("config", "--global", "user.email", ok=False)
+            if name[0] or email[0] or not name[1].strip() or not email[1].strip():
+                raise ShipError("config.identity", "no land.author and no global git user.name/user.email: refusing to commit")
+            return {
+                "GIT_AUTHOR_NAME": name[1].strip(), "GIT_AUTHOR_EMAIL": email[1].strip(),
+                "GIT_COMMITTER_NAME": name[1].strip(), "GIT_COMMITTER_EMAIL": email[1].strip(),
+            }
         found = IDENTITY.match(self.author)
         if not found:
             raise ShipError("config.schema", f"land.author: expected 'Name <email>', got {self.author!r}")
