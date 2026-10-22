@@ -128,7 +128,19 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, arity, claims, events, evidence_gate, meter, proposals, retarget, standalone, tools
+from abu_decomp import (
+    DecompError,
+    arity,
+    claims,
+    events,
+    evidence,
+    evidence_gate,
+    meter,
+    proposals,
+    retarget,
+    standalone,
+    tools,
+)
 from abu_decomp.config import Profile, check_keys
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
@@ -163,6 +175,7 @@ REFUSAL_KEYS = frozenset(
         "land.commit_subject",
         "land.commit_hook",
         "land.claim_uncited",
+        "land.unit",
     }
 )
 _PERCENT = re.compile(r"\bcode\s+\[[^\]\n]*\]\s*(\d+(?:\.\d+)?)%")  # the `code [bar] NN.NN%` row, not the `<code>` tags
@@ -1288,6 +1301,7 @@ class Landing:
                 "net": len(removed) - len(added_lines),
                 "names": sorted({n for n in map(function_name, removed) if n}),
             }
+            self.before_input = before
             why = self.input_refusal(row, changed, mark)
             if why is not None:
                 self.git("read-tree", "-u", "--reset", before)
@@ -1356,6 +1370,30 @@ class Landing:
             refused=[{"lane": r["lane"], **f} for r in self.lanes for f in r.get("refused", [])],
         )
 
+    def unit_moves(self, changed: dict[str, Any]) -> list[tuple[str, str, str]]:
+        """(function, unit it left, unit it entered) for each function whose body or stand-in left a unit this input
+        touched and appeared in another: a body stays in the unit that holds its assembly (evidence.py parses both)."""
+        cfg = self.config["evidence"] or {
+            "suffixes": (".c", ".cpp"),
+            "guard": "NON_MATCHING",
+            "stand_in": "INCLUDE_ASM",
+        }
+        lost: dict[str, str] = {}
+        gained: dict[str, str] = {}
+        for file in sorted(changed):
+            if not file.lower().endswith(tuple(cfg["suffixes"])):
+                continue
+            old = evidence.parse(
+                self.git("show", f"{self.before_input}:{file}", ok=False), cfg["guard"], cfg["stand_in"]
+            )
+            path = self.tree / file
+            new = evidence.parse(
+                path.read_text(errors="replace") if path.is_file() else "", cfg["guard"], cfg["stand_in"]
+            )
+            lost |= {n: file for n in old if n not in new}
+            gained |= {n: file for n in new if n not in old}
+        return [(n, lost[n], gained[n]) for n in sorted(lost.keys() & gained.keys())]
+
     def input_refusal(self, row: dict[str, Any], changed: dict[str, Any], mark: int) -> str | None:
         """Why this input cannot land, None when it can: checked against the state the earlier inputs left, before any
         build. Its symbol facts must merge (a name at another address, a line splat rejects) and the fact files it
@@ -1367,6 +1405,20 @@ class Landing:
             return f"{symbol[0]['message']}" + (
                 f" (and {len(symbol) - 1} more symbol facts)" if len(symbol) > 1 else ""
             )
+        if moved := self.unit_moves(changed):
+            name, home, there = moved[0]
+            message = (
+                f"lane {lane}: {name} moved from unit {home} to unit {there}; its body belongs in place of its "
+                f"INCLUDE_ASM line in {home}"
+            )
+            self.fail(
+                "land.unit",
+                message,
+                lane=lane,
+                file=there,
+                next=f"git -C {self.tree} diff {self.before_input} -- {home} {there}",
+            )
+            return message
         facts = sorted(n for n, (added, _) in changed.items() if self.is_fact_file(n) and any(map(symbol_line, added)))
         bad = (self.splat_file_check(facts) or {}) if facts else {}
         for name, why in sorted(bad.items()):

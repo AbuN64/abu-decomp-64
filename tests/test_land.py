@@ -416,6 +416,26 @@ class LandTests(unittest.TestCase):
         self.assertEqual([f["key"] for f in findings][:1], ["land.commit_subject"])
         self.assertEqual(self.unbake, [])
 
+    def test_a_body_moved_out_of_the_unit_of_its_stand_in_is_refused_before_the_build(self):
+        stub = 'INCLUDE_ASM("o", func_9);\n'
+        body = "int func_9(void) { return 9; }\n"
+        (self.tree / "a.c").write_text(A_C + stub)
+        git(self.tree, "commit", "-qam", "stand-in")
+        self.base = git(self.tree, "rev-parse", "HEAD").strip()
+        moved = self.patch("moved", {"a.c": A_C, "b.c": B_C + body})
+        _, code, findings = self.landing([moved], {"moved": "Move func_9"}).execute()
+        self.assertEqual(code, 1)
+        unit = next(f for f in findings if f["key"] == "land.unit")
+        self.assertIn(
+            "func_9 moved from unit a.c to unit b.c; its body belongs in place of its INCLUDE_ASM line in a.c",
+            unit["message"],
+        )
+        self.assertIn("git -C", unit["next"])
+        self.assertEqual(self.unbake, [])
+        in_place = self.patch("home", {"a.c": A_C + body})
+        _, code, findings = self.landing([in_place], {"home": "Match func_9"}).execute()
+        self.assertNotIn("land.unit", [f["key"] for f in findings])
+
     def test_a_refused_message_refuses_that_input_alone_before_the_build(self):
         self.hook('#!/bin/sh\nif [ "$(head -n1 "$1" | wc -c)" -gt 31 ]; then echo \'subject too long\'; exit 1; fi\n')
         seen = []
