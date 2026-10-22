@@ -275,11 +275,6 @@ def _tools_arguments(parser: argparse.ArgumentParser) -> None:
     for tool in ("unbake", "recipe", "taste"):
         deploy.add_argument(f"--{tool}", help=f"the {tool} commit to deploy (default: the one decomp pins)")
     deploy.add_argument("--venv", type=Path, required=True, nargs="+", help="live venv paths (symlinks) to deploy to")
-    deploy.add_argument(
-        "--migrate",
-        action="store_true",
-        help="convert a live venv that is still a real directory (once, needs it idle)",
-    )
     again = actions.add_parser(
         "restart", help="restart the stream units still running code from an older venv than the live one"
     )
@@ -300,7 +295,6 @@ def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
         args.sha,
         live,
         commits,
-        migrate=args.migrate,
         restart=(lambda path: deploy.restart_services(profile, path)) if args.restart else None,
     )
 

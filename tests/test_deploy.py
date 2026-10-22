@@ -53,7 +53,6 @@ class DeployTests(unittest.TestCase):
         }
         self.commands = []
         self.fail = None
-        self.busy = {}
 
     @staticmethod
     def make_venv(path):
@@ -91,8 +90,6 @@ class DeployTests(unittest.TestCase):
             {"unbake": None, "recipe": None, "taste": None, **commits},
             fetch=self.fetch,
             run=self.runner,
-            users=lambda path: self.busy.get(path.name, []),
-            stamp="T",
             **extra,
         )
 
@@ -214,73 +211,11 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(result["venvs"][0]["swap"]["previous"], str(self.root / f"venv-a.{D1[:12]}"))
         self.assertTrue((self.root / f"venv-a.{D1[:12]}" / "bin" / "python").is_file())
 
-    def test_a_real_directory_needs_migrate_and_an_idle_tree(self):
-        real = self.root / "venv-c"
-        self.make_venv(real)
+    def test_a_real_directory_is_refused_not_migrated(self):
+        self.make_venv(self.root / "venv-c")
         with self.assertRaises(deploy.DeployError) as caught:
             self.deploy(venvs=("venv-c",))
-        self.assertEqual(caught.exception.key, "deploy.migrate")
-        self.busy = {"venv-c": [4242]}
-        _, code, findings = self.deploy(venvs=("venv-c",), extra={"migrate": True})
-        self.assertEqual((code, findings[0]["key"]), (1, "deploy.migrate_busy"))
-        self.assertIn("4242", findings[0]["message"])
-        self.assertFalse(real.is_symlink())  # nothing moved while a process used it
-        self.assertFalse((self.root / f"venv-c.{D1[:12]}").exists())
-        self.busy = {}
-        result, code, findings = self.deploy(venvs=("venv-c",), extra={"migrate": True})
-        self.assertEqual((code, findings), (0, []))
-        swap = result["venvs"][0]["swap"]
-        self.assertTrue(real.is_symlink() and swap["readback"])
-        self.assertEqual(os.path.realpath(real), str(self.root / f"venv-c.{D1[:12]}"))
-        self.assertTrue((self.root / "venv-c.legacy-T" / "bin" / "python").is_file())
-        self.assertEqual(swap["previous"], str(self.root / "venv-c.legacy-T"))
-
-    def test_users_of_finds_processes_by_argv_and_cwd(self):
-        proc = self.root / "proc"
-        for pid, argv, cwd in (
-            ("11", f"{self.root}/v/bin/python\0x", "/"),
-            ("12", "sh\0-c", f"{self.root}/v/lib"),
-            ("13", "sh", "/"),
-            ("14", f"{self.root}/vv/bin/python", "/"),
-        ):
-            (proc / pid).mkdir(parents=True)
-            (proc / pid / "cmdline").write_text(argv)
-            (proc / pid / "cwd").symlink_to(cwd)
-            (proc / pid / "maps").write_text("")
-        (proc / "self").mkdir()
-        self.assertEqual(deploy.users_of(self.root / "v", proc), [11, 12])
-
-    def fake_proc(self, rows):
-        """rows: pid -> (ppid, argv, environ words); every process has cwd / and no maps."""
-        proc = self.root / "proc"
-        for pid, (ppid, argv, environ) in rows.items():
-            (proc / str(pid)).mkdir(parents=True)
-            (proc / str(pid) / "stat").write_text(f"{pid} (name with ) paren) S {ppid} 1 1 0\n")
-            (proc / str(pid) / "cmdline").write_text(argv)
-            (proc / str(pid) / "environ").write_text("\0".join(environ))
-            (proc / str(pid) / "cwd").symlink_to("/")
-            (proc / str(pid) / "maps").write_text("")
-        return proc
-
-    def test_users_of_skips_the_deploys_own_ancestors_and_marked_children(self):
-        me = os.getpid()
-        venv = f"{self.root}/v"
-        proc = self.fake_proc(
-            {
-                me: (500, f"{venv}/bin/decomp\0tools\0deploy\0--venv\0{venv}", []),
-                500: (400, f"timeout\0300\0{venv}/bin/decomp\0--venv\0{venv}", []),  # wrapper that started us
-                400: (1, f"sh\0-c\0{venv}/bin/decomp", []),
-                21: (me, f"{venv}/bin/python\0-m\0pip", [f"{deploy.MARK}={me}"]),  # a child
-                22: (1, f"{venv}/bin/python\0collector", ["HOME=/x", f"{deploy.MARK}={me}"]),  # detached grandchild
-                23: (1, f"{venv}/bin/python\0job", ["HOME=/x"]),  # an unmarked user
-                24: (1, f"{venv}/bin/python\0job", [f"{deploy.MARK}={me + 1}"]),  # another deploy's child
-            }
-        )
-        self.assertEqual(deploy.users_of(self.root / "v", proc), [23, 24])
-
-    def test_run_command_marks_what_it_starts(self):
-        code, output = deploy.run_command(["sh", "-c", f"echo ${deploy.MARK}"])
-        self.assertEqual((code, output.strip()), (0, str(os.getpid())))
+        self.assertEqual(caught.exception.key, "deploy.venv")
 
     def test_cache_report_reads_unbake_stage_telemetry(self):
         stages = {

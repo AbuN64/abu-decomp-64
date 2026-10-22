@@ -19,20 +19,16 @@ script shebangs point into it), the smoke test (`decomp dependencies` for proven
 on the project) runs against the fresh venv, and only then is the symlink swapped with rename(2). Processes started
 through PATH's console scripts keep their versioned tree; superseded versions stay until purge removes them (policy
 `venv_versions`: not the live target, not the newest rollback, no process using it). A live path that is still a real
-directory is migrated once, with `--migrate`: refused while any process uses it, then the real directory and a
-symlink to the fresh venv are exchanged with renameat2(RENAME_EXCHANGE) (no instant without a venv at PATH), the old
-directory is kept as `PATH.legacy-<stamp>`, and the link is read back.
+directory is refused (a deploy only swaps symlinks), and the link is read back.
 """
 
 from __future__ import annotations
 
-import ctypes
 import os
 import re
 import shutil
 import subprocess
 import tempfile
-import time
 import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -45,8 +41,6 @@ DECOMP_URL = "https://github.com/AbuN64/abu-decomp-64"
 SHA = re.compile(r"[0-9a-f]{40}")
 _PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)\s*@\s*git\+(?P<url>https://[^@\s]+)@(?P<commit>[0-9a-f]{40})$")
 
-# Every process the deploy starts carries this variable (value: the deploy's pid), and so do their descendants.
-MARK = "ABU_DECOMP_DEPLOY"
 
 Fetch = Callable[[str, str, str], str]
 Run = Callable[[Sequence[str], Path | None], "tuple[int, str]"]
@@ -72,8 +66,7 @@ def fetch_file(url: str, sha: str, path: str) -> str:
 
 
 def run_command(argv: Sequence[str], cwd: Path | None = None) -> tuple[int, str]:
-    env = {**os.environ, MARK: str(os.getpid())}
-    done = subprocess.run(list(argv), cwd=cwd, env=env, capture_output=True, text=True, check=False)
+    done = subprocess.run(list(argv), cwd=cwd, capture_output=True, text=True, check=False)
     return done.returncode, (done.stdout + done.stderr)[-2000:]
 
 
@@ -143,90 +136,15 @@ def versioned_path(live: Path, decomp: str) -> Path:
     return candidate
 
 
-def _ancestors(proc: Path, pid: int) -> set[int]:
-    """`pid` and the chain of processes that started it (a `timeout`, shell or ssh wrapper carries the deploy's own
-    `--venv LIVE` argv and waits for it, so it is the deploy, not another user)."""
-    chain: set[int] = set()
-    while pid > 0 and pid not in chain:
-        chain.add(pid)
-        try:
-            stat = (proc / str(pid) / "stat").read_text()
-            pid = int(stat[stat.rindex(")") + 2 :].split()[1])
-        except (OSError, ValueError, IndexError):
-            break
-    return chain
-
-
-def _marked(entry: Path) -> bool:
-    """Whether the process descends from this deploy (it carries MARK with this deploy's pid). An unreadable
-    environment is not marked: a process that cannot be shown to be ours counts as a user."""
-    try:
-        return f"{MARK}={os.getpid()}".encode() in (entry / "environ").read_bytes().split(b"\0")
-    except OSError:
-        return False
-
-
-def users_of(path: Path, proc: Path = Path("/proc")) -> list[int]:
-    """PIDs with an argv word, a working directory or a mapped file at or under `path` (a venv is in use when a
-    process was started from it or has loaded a file of it), other than this deploy: its ancestors and every
-    process it started (marked with MARK, detached ones too)."""
-    prefix = str(path).rstrip("/")
-    inside = (prefix, prefix + "/")
-    own = _ancestors(proc, os.getpid())
-    found = []
-    for entry in sorted(proc.iterdir(), key=lambda e: e.name):
-        if not entry.name.isdigit() or int(entry.name) in own or _marked(entry):
-            continue
-        try:
-            argv = (entry / "cmdline").read_bytes().decode(errors="replace").split("\0")
-            hit = any(word == prefix or word.startswith(inside[1]) for word in argv)
-            hit = hit or (cwd := os.readlink(entry / "cwd")) == prefix or cwd.startswith(inside[1])
-            if not hit:
-                with open(entry / "maps", errors="replace") as maps:
-                    hit = any(" " + inside[1] in line for line in maps)
-        except OSError:
-            continue
-        if hit:
-            found.append(int(entry.name))
-    return found
-
-
-def exchange(first: Path, second: Path) -> None:
-    """Atomically swap two paths (renameat2 RENAME_EXCHANGE): works between a directory and a symlink."""
-    libc = ctypes.CDLL(None, use_errno=True)
-    code = libc.renameat2(-100, os.fsencode(first), -100, os.fsencode(second), 2)
-    if code:
-        error = ctypes.get_errno()
-        raise DeployError("deploy.swap", f"cannot exchange {first} and {second}: {os.strerror(error)}")
-
-
-def point(live: Path, target: Path, *, migrate: bool, users: Callable[[Path], list[int]], stamp: str) -> dict[str, Any]:
-    """Make `live` a symlink to `target`, atomically. A symlink is replaced with rename(2) of a fresh link; a real
-    directory is exchanged with one (needs `migrate`, and no process using it) and kept as `<live>.legacy-<stamp>`."""
+def point(live: Path, target: Path) -> dict[str, Any]:
+    """Make `live` a symlink to `target`, atomically: a fresh link is renamed over it (rename(2))."""
     fresh = live.with_name(f".{live.name}.{os.getpid()}.new")
     fresh.unlink(missing_ok=True)
     fresh.symlink_to(target)
     row: dict[str, Any] = {"live": str(live), "target": str(target)}
     try:
-        if live.is_symlink() or not live.exists():
-            row["previous"] = os.path.realpath(live) if live.exists() else ""
-            os.rename(fresh, live)
-        else:
-            if not migrate:
-                raise DeployError(
-                    "deploy.migrate", f"{live} is a real directory; run once with --migrate to convert it"
-                )
-            busy = users(live)
-            if busy:
-                raise DeployError(
-                    "deploy.migrate_busy",
-                    f"{live} is used by pids {busy}: moving it would break their later imports; "
-                    "let them end, then run --migrate again",
-                )
-            exchange(fresh, live)
-            legacy = live.with_name(f"{live.name}.legacy-{stamp}")
-            os.rename(fresh, legacy)
-            row["previous"] = str(legacy)
+        row["previous"] = os.path.realpath(live) if live.exists() else ""
+        os.rename(fresh, live)
     finally:
         fresh.unlink(missing_ok=True)
     row["readback"] = os.path.realpath(live) == os.path.realpath(target) and live.is_symlink()
@@ -339,9 +257,6 @@ def deploy(
     *,
     fetch: Fetch = fetch_file,
     run: Run = run_command,
-    migrate: bool = False,
-    users: Callable[[Path], list[int]] = users_of,
-    stamp: str | None = None,
     restart: Callable[[Path], tuple[list[dict[str, Any]], list[dict[str, Any]]]] | None = None,
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     check_sha("--sha", decomp)
@@ -351,10 +266,8 @@ def deploy(
     for venv in venvs:
         if not (venv / "bin" / "python").is_file():
             raise DeployError("deploy.venv", f"{venv} is not a venv (no bin/python)")
-        if not venv.is_symlink() and not migrate:
-            raise DeployError(
-                "deploy.migrate", f"{venv} is a real directory, not a symlink; run once with --migrate to convert it"
-            )
+        if not venv.is_symlink():
+            raise DeployError("deploy.venv", f"{venv} is a real directory, not a symlink")
     project = tools.project_dir(profile)
     requirements, moves = plan(decomp, wanted, fetch)
     findings = [
@@ -380,7 +293,6 @@ def deploy(
     result["checkouts"], findings = align_checkouts(wanted, run)
     if findings:
         return result, 1, findings
-    stamp = stamp or time.strftime("%Y%m%d-%H%M%S")
     for live in venvs:
         venv = versioned_path(live, decomp)
         steps = install(venv, live, requirements, run)
@@ -407,7 +319,7 @@ def deploy(
             shutil.rmtree(venv, ignore_errors=True)  # our own half-built venv, never linked, so nothing uses it
             continue
         try:
-            row["swap"] = point(live, venv, migrate=migrate, users=users, stamp=stamp)
+            row["swap"] = point(live, venv)
         except DeployError as error:
             findings.append({"key": error.key, "blocking": True, "message": str(error)})
             shutil.rmtree(venv, ignore_errors=True)  # built but never linked, so nothing uses it
@@ -426,7 +338,7 @@ def deploy(
                 # busy hold lock touched nothing, so the new venv stays and `decomp tools restart` finishes the job
                 came_back = all(f.get("key") != "deploy.restart_failed" for f in failed)
                 if previous and not came_back:
-                    row["rollback"] = point(live, Path(previous), migrate=False, users=users, stamp=stamp)
+                    row["rollback"] = point(live, Path(previous))
                     row["rollback"]["restarts"] = restart(live)[0]
     return result, int(bool(findings)), findings
 
