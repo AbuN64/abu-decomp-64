@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError, narrate
-from abu_decomp.behave import abi, compare, describe, inputs, prototype
+from abu_decomp.behave import abi, classify, compare, describe, inputs, prototype
 from abu_decomp.behave import candidate as build_candidate
 from abu_decomp.config import Profile
 from abu_decomp.tools import drain_cache, invoke, settings
@@ -597,6 +597,17 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
     summary = compare.overall(rows, labels, int(config["min_compared"]))
     notes = sorted({n for row in rows for n in row["notes"]})
     shown = [dict(r, inputs=labels[i]) for i, r in enumerate(rows) if r["verdict"] != compare.SAME][:12]
+    classification = classify.classify(
+        summary,
+        original["cases"],
+        changed["cases"],
+        stack,
+        own,
+        opaque,
+        options.function,
+        candidate_file,
+        profile.source_file,
+    )
     result = {
         "mode": "compare",
         **common,
@@ -611,6 +622,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
             "closure": changed["record"]["closure"],
         },
         "notes": notes[:20],
+        **({"classification": classification} if classification else {}),
         **({"opaque_callees": sorted(opaque)} if opaque else {}),
         "cases_detail": shown,
         "timing": timing(stages, started, cache),

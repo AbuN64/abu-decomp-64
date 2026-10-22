@@ -596,6 +596,30 @@ def _run_behave(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dic
     return run(_profile(args.profile), options)
 
 
+def _claims_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "verb", choices=["check"], help="check: validate that a text's result claims cite recorded runs"
+    )
+    parser.add_argument("file", type=Path, help="a text file (commit message, inbox or RESPONSE entry)")
+
+
+def _run_claims(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import claims
+
+    report = claims.check(_profile(args.profile), args.file.read_text(errors="replace"))
+    findings = [
+        {
+            "key": "claims.uncited",
+            "message": claims.refusal_text(p),
+            "blocking": True,
+            "line": p["line"],
+            "next": p["next"],
+        }
+        for p in report["problems"]
+    ]
+    return {"file": str(args.file), **report}, (1 if findings else 0), findings
+
+
 def _served_elsewhere(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     raise DecompError("internal.dispatch", f"{args.command} is served by main, not by a command handler")
 
@@ -640,6 +664,11 @@ COMMANDS: dict[str, Command] = {
         "run the original and a candidate on the same inputs and compare their behaviour",
         _behave_arguments,
         _run_behave,
+    ),
+    "claims": Command(
+        "check that a text's result claims (fixed, behaves, ...) cite runs whose recorded outcome supports them",
+        _claims_arguments,
+        _run_claims,
     ),
     "tas": Command("record, save, list and replay controller movies against the port", _tas_arguments, _run_tas),
     "describe": Command("list every command and its arguments as JSON", _none, _run_describe),
@@ -718,6 +747,16 @@ def _tool_call(args: list[str]) -> argparse.Namespace | None:
     return argparse.Namespace(profile=profile, command=command, project=found["project"], host=found["host"], args=rest)
 
 
+def _record_claim(profile: Path | None, invocation: str, command: str, ok: bool, result: Any, argv: list[str]) -> None:
+    """Persist the run so a later claim can cite its invocation id; never fails the command."""
+    try:
+        from abu_decomp import claims
+
+        claims.record(load_profile(profile) if profile else None, invocation, command, ok, result, argv)
+    except Exception:  # recording is best effort
+        return
+
+
 def _own_version(args: list[str]) -> bool:
     return args[-1:] == ["--version"] and (len(args) == 1 or (len(args) == 3 and args[0] == "--profile"))
 
@@ -738,9 +777,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     findings: list[dict[str, Any]] = []
     code = 0
     command = "parse"
+    parsed_profile: Path | None = None
     try:
         parsed = _tool_call(args) or parser().parse_args(args)
         command = parsed.command
+        parsed_profile = parsed.profile
         if command == "mcp":
             from abu_decomp.mcp import serve
 
@@ -761,6 +802,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:
         sys.stderr.write(traceback.format_exc())
         code, findings = 3, [{"key": "internal.error", "message": repr(exc), "blocking": True}]
+    _record_claim(parsed_profile, invocation, command, code == 0, result, args)
     envelope = {
         "ok": code == 0,
         "result": result,

@@ -6,8 +6,8 @@ import json
 import select
 import sys
 import threading
-from pathlib import Path
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
 
 from abu_decomp.stream.inotify import CLOSE_WRITE, CREATE, MODIFY, MOVED_TO, drain, watch
@@ -56,7 +56,9 @@ def follow(
     buttons = buttons or []
     if buttons:
         print('{"version":1,"click_events":true}\n[', file=out, flush=True)
-        threading.Thread(target=listen, args=(clicks if clicks is not None else sys.stdin, buttons, run), daemon=True).start()
+        threading.Thread(
+            target=listen, args=(clicks if clicks is not None else sys.stdin, buttons, run), daemon=True
+        ).start()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = watch(path.parent, MODIFY | CREATE | MOVED_TO | CLOSE_WRITE)
     reader = EventReader(path)

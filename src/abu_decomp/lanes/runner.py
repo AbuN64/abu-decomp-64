@@ -370,7 +370,16 @@ def self_test():
         (lane / "rw/.git/sentinel").write_text("git protected")
         (lane / "rw/outside").symlink_to(outside, target_is_directory=True)
         (lane / "rw-external").symlink_to(outside, target_is_directory=True)
-        evidence = ("RESULT.md", "brief.md", "fix.patch", "fix.untracked", "proof.log", "data.json", "draft.c", "draft.h")
+        evidence = (
+            "RESULT.md",
+            "brief.md",
+            "fix.patch",
+            "fix.untracked",
+            "proof.log",
+            "data.json",
+            "draft.c",
+            "draft.h",
+        )
         for name in evidence:
             (lane / name).write_text("evidence")
         assert cleanup_lane(lane, dry_run=True)

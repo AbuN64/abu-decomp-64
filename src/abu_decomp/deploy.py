@@ -435,6 +435,8 @@ def restart_services(profile: Profile, live: Path) -> tuple[list[dict[str, Any]]
     """Restart the stream's units that run code from a venv `live` no longer points to (see stream.services)."""
     from abu_decomp.stream import services, tiles
 
+    if "stream" not in profile.describe()["sections"]:
+        return [], []  # a seat without a stream runs no stream units: nothing to restart, not a failure
     up = tiles.up_config(profile)
     run_dir = profile.resolve_path(up["run_dir"])
     unit = up.get("restart", {}).get("unit", "m2-stream.service")

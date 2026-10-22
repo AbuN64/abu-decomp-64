@@ -187,9 +187,11 @@ class Ship:
         whole: the tree goes back to `base` and the others land again without it."""
         while True:
             outcome = self.landing(self.profile, self.tree, base, inputs, messages=self.messages)
-            _, code, findings = outcome
+            result, code, findings = outcome
             split = [f for f in findings if f.get("key") == "land.file_refused"]
-            if code or not split:
+            if code and not split:
+                split = self.evidence_refusals(result, findings)  # only the input whose function the gate refused
+            if not split or (code and not any(f.get("key") == "land.evidence" for f in split)):
                 return outcome
             self.clean(base)
             lanes = {f.get("lane") for f in split}
@@ -198,9 +200,23 @@ class Ship:
                 return {**outcome[0], "pass": False}, 1, findings
             for lane in sorted(lane for lane in lanes if lane):
                 reason = "; ".join(f["message"] for f in split if f.get("lane") == lane)
-                self.refused.append({"lane": lane, "key": "land.file_refused", "message": reason})
+                key = next(f["key"] for f in split if f.get("lane") == lane)
+                self.refused.append({"lane": lane, "key": key, "message": reason})
                 self.notes.append({"key": "ship.input_refused", "message": f"{lane}: {reason}", "blocking": False})
             inputs = kept
+
+    def evidence_refusals(self, result: dict[str, Any], findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The evidence gate's refusals, each tagged with the lane(s) whose files carry the refused function."""
+        owners: dict[str, list[str]] = {}
+        for row in result.get("lanes") or []:
+            for item in row.get("files") or []:
+                owners.setdefault(item if isinstance(item, str) else str(item.get("file", "")), []).append(row["lane"])
+        found = []
+        for finding in findings:
+            if finding.get("key") == "land.evidence" and owners.get(finding.get("file", "")):
+                found += [{**finding, "lane": lane} for lane in owners[finding["file"]]]
+        blocking = [f for f in findings if f.get("blocking") and f.get("key") != "land.evidence"]
+        return [] if blocking else found
 
     def execute(self) -> Result:
         started = self.clock()

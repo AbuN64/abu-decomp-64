@@ -38,7 +38,7 @@ class StatusButtonTests(unittest.TestCase):
         ran = []
         with tempfile.TemporaryDirectory() as tmp:
             out = io.StringIO()
-            clicks = ['[\n', '{"name":"event","button":1},\n', '{"name":"button-0","button":1}\n']
+            clicks = ["[\n", '{"name":"event","button":1},\n', '{"name":"button-0","button":1}\n']
             follow(Path(tmp) / "e.jsonl", out, iterations=1, buttons=buttons, run=ran.append, clicks=clicks)
             lines = out.getvalue().splitlines()
             assert json.loads(lines[0]) == {"version": 1, "click_events": True}
