@@ -11,6 +11,7 @@ branch; a push the remote refuses because the branch moved lands the inputs agai
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import re
 import shutil
@@ -44,6 +45,15 @@ PER_INPUT = ("land.evidence", "land.arity")
 
 class ShipError(DecompError):
     pass
+
+
+def _parked_line(row: dict[str, Any]) -> str:
+    """The one line a parked-change notice prints (Recipe prints the same rows from `.unbake/ship-parked.json`)."""
+    who = ", ".join(row["owners"]) or "owner unknown (no live lease names them)"
+    return (
+        f"ship.parked: {' '.join(row['files'])} set aside by a ship at {row['time']} no longer apply; owners: {who}; "
+        f"git apply --3way {row['patch']} then delete it"
+    )
 
 
 def _changed(asm: Path, kept: Path) -> dict[str, set[str]]:
@@ -270,42 +280,74 @@ class Ship:
         self.patches = [(self.worktree or "worktree", path)]
 
     def park(self) -> None:
-        """Tracked changes that are no input of this ship (a lane's landing or fuzzy save left in the shared tree) never
-        block it: saved beside the ship lock and the tree checked out clean, under unbake's landing lock so no landing
-        is caught half written; `unpark` puts them back once the ship is done."""
+        """Tracked changes that are no input of this ship never block it. A generated file (`unbake sync` output: the
+        Makefile, a file whose HEAD copy carries the generated mark) is no one's work: it goes back to HEAD and the
+        land's own sync writes it again. The rest (a lane's landing or fuzzy save left in the shared tree) is saved
+        beside the ship lock and the tree checked out clean, under unbake's landing lock so no landing is caught half
+        written; `unpark` puts it back once the ship is done."""
         with self.landing_lock():
-            diff = self.git("diff", "HEAD", "--binary", "--full-index")[1]
             files = self.git("diff", "HEAD", "--name-only")[1].split()
-            if not diff:
-                return
-            common = Path(self.git("rev-parse", "--git-common-dir")[1].strip())
-            path = (
-                common if common.is_absolute() else self.tree / common
-            ) / f"decomp-ship-parked-{time.time_ns()}.patch"
-            path.write_text(diff)
+            made = [f for f in files if self.generated(f)]
+            kept = [f for f in files if f not in made]
+            diff = self.git("diff", "HEAD", "--binary", "--full-index", "--", *kept)[1] if kept else ""
+            path = self.common() / f"decomp-ship-parked-{time.time_ns()}.patch"
+            if diff:
+                path.write_text(diff)
             self.git("checkout", "-q", "--force", "--detach", "HEAD")  # tracked paths only; the patch holds them
-        self.parked.append((path, files))
-        sys.stderr.write(
-            f"decomp: set aside {len(files)} tracked change(s) of other work for this ship: {' '.join(files)}\n"
-        )
+        if made:
+            sys.stderr.write(f"decomp: dropped {len(made)} generated file(s) unbake sync rewrites: {' '.join(made)}\n")
+        if diff:
+            self.parked.append((path, kept))
+            sys.stderr.write(f"decomp: set aside {len(kept)} tracked change(s) of other work: {' '.join(kept)}\n")
+
+    def generated(self, name: str) -> bool:
+        head = self.git("show", f"HEAD:{name}", ok=False)
+        return name == "Makefile" or (not head[0] and any(mark in head[1][:400] for mark in land.GENERATED_MARKS))
+
+    def common(self) -> Path:
+        common = Path(self.git("rev-parse", "--git-common-dir")[1].strip())
+        return common if common.is_absolute() else self.tree / common
 
     def unpark(self) -> list[dict[str, Any]]:
-        """The parked changes back on the tree as the ship leaves it; one that no longer applies (the ship changed the
-        same lines) stays in its patch file, named in a finding."""
+        """The parked changes back on the tree as the ship leaves it, file by file. A file that no longer applies (the
+        ship changed the same lines) stays in the patch: the finding and `.unbake/ship-parked.json` name it with the
+        lanes whose leased items it touches, and every later ship and recipe command prints it until the patch is
+        gone (`git apply PATCH` by its owner, then delete the patch)."""
         found = []
         with self.landing_lock():
             for path, files in self.parked:
-                code, text = self.git("apply", "--binary", str(path), ok=False)
-                if code:
-                    message = f"set-aside changes of {' '.join(files)} do not apply on the shipped tree: kept in {path}"
-                    found.append(
-                        {"key": "ship.parked", "message": f"{message} ({text.strip()[-200:]})", "blocking": False}
-                    )
-                    sys.stderr.write(f"decomp: {message}\n")
-                else:
+                lost = [f for f in files if self.git("apply", "--binary", f"--include={f}", str(path), ok=False)[0]]
+                if not lost:
                     path.unlink(missing_ok=True)
+                    continue
+                owners = self.owners(path.read_text(errors="replace"))
+                row = {"patch": str(path), "files": lost, "owners": owners, "time": time.strftime("%H:%M")}
+                notice = self.tree / ".unbake/ship-parked.json"
+                rows = [*self.notices(), row]
+                notice.write_text(json.dumps(rows))
+                message = _parked_line(row)
+                found.append({"key": "ship.parked", "message": message, "blocking": False})
+                sys.stderr.write(f"decomp: {message}\n")
         self.parked = []
         return found
+
+    def owners(self, text: str) -> list[str]:
+        """`SESSION (item)` for each live recipe lease whose item the patch text names."""
+        out = []
+        for lease in sorted((self.tree / ".unbake/recipe/leases").glob("*.json")):
+            with suppress(OSError, ValueError):
+                row = json.loads(lease.read_text())
+                if row.get("session") and re.search(rf"\b{re.escape(row['item'])}\b", text):
+                    out.append(f"{row['session']} ({row['item']})")
+        return out
+
+    def notices(self) -> list[dict[str, Any]]:
+        """The parked-change notices whose patch still exists (its owner has not applied and deleted it yet)."""
+        try:
+            rows = json.loads((self.tree / ".unbake/ship-parked.json").read_text())
+        except (OSError, ValueError):
+            return []
+        return [r for r in rows if Path(r.get("patch", "")).is_file()]
 
     @contextmanager
     def landing_lock(self) -> Iterator[None]:
@@ -448,6 +490,9 @@ class Ship:
         started = self.clock()
         handle = self.lock()
         try:
+            for row in self.notices():  # every ship says it until the owner takes the parked change back
+                self.notes.append({"key": "ship.parked", "message": _parked_line(row), "blocking": False})
+                sys.stderr.write(f"decomp: {_parked_line(row)}\n")
             # sync, check and commit rewrite tracked files and the extraction: readers of the tree (recipe try, work,
             # unbake probe) wait for the window, and their waits are the readers' to print
             with treelock.hold(self.tree, exclusive=True, who="ship"):
