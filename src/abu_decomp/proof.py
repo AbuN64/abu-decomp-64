@@ -17,6 +17,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from unbake import treelock
+
 from abu_decomp import DecompError, land, narrate, tools
 from abu_decomp.config import Profile
 
@@ -46,24 +48,26 @@ def run(
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     chosen = tools.settings(profile, project, host)
     argv = command(profile, chosen.project, list(args))
-    environment = dict(os.environ, UNBAKE_HOST=str(chosen.host))
     started, tail = time.monotonic(), deque(maxlen=TAIL_LINES)
     lane = narrate.lane_of(project or chosen.project)
     try:
-        with subprocess.Popen(
-            argv,
-            cwd=chosen.project,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-        ) as child:
-            assert child.stdout is not None
-            for line in child.stdout:
-                sys.stderr.write(line)
-                tail.append(line.rstrip())
-            code = child.wait()
+        # make rewrites build/ and the extraction a ship's check reads: it holds the tree lock as the ship does
+        with treelock.hold(chosen.project, exclusive=True, who="make"):
+            environment = dict(os.environ, UNBAKE_HOST=str(chosen.host))  # after the hold: it marks its children
+            with subprocess.Popen(
+                argv,
+                cwd=chosen.project,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors="replace",
+            ) as child:
+                assert child.stdout is not None
+                for line in child.stdout:
+                    sys.stderr.write(line)
+                    tail.append(line.rstrip())
+                code = child.wait()
     except OSError as exc:
         raise DecompError("proof.process", f"cannot execute {argv[0]}: {exc}") from exc
     wall = round(time.monotonic() - started, 1)

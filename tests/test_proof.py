@@ -51,6 +51,13 @@ class ProofTests(unittest.TestCase):
         self.assertEqual([(e[0], e[1], e[2]) for e in events], [("X", "passed", "MATCH")])
         self.assertEqual(events[0][4]["op"], "build")
 
+    def test_the_build_holds_the_trees_lock_exclusively_and_marks_its_child(self):
+        (_, code, _), _ = self.build('test -n "$UNBAKE_TREE_LOCK"', "check")
+        self.assertEqual(code, 0)  # the child ran inside the hold (a ship's write window cannot overlap the build)
+        with mock.patch("abu_decomp.proof.treelock.hold", wraps=proof.treelock.hold) as held:
+            self.build("true", "check")
+        self.assertEqual(held.call_args.kwargs, {"exclusive": True, "who": "make"})
+
     def test_a_failing_build_writes_run_fail_with_the_tail(self):
         (result, code, findings), events = self.build("echo boom; exit 2", "check")
         self.assertEqual((code, result["exit"]), (1, 2))
