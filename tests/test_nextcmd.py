@@ -121,13 +121,6 @@ class ProducerTests(test_port_tree.PortTreeTests):
         self.assertIn("--worktree", refusal["next"])
         self.assertNotIn("--patch", refusal["next"])
 
-    def test_a_dirty_tree_refusal_carries_a_next(self) -> None:
-        patch = self.patch({"decomp.cmake": f"GIT_TAG {self.pin1}\nset(y)\n"})
-        (self.tree / "README.md").write_text("dirty\n")
-        with self.assertRaises(Exception) as caught:
-            ship(self.profile, self.tree, [patch], append=lambda p, r: {"ok": True})
-        self.check(caught.exception.finding().get("next"))
-
 
 class TriageTests(unittest.TestCase):
     def test_tas_triage_nexts_are_valid(self) -> None:

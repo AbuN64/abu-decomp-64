@@ -17,7 +17,8 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from abu_decomp.config import Profile
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
 IDENTITY = re.compile(r"^\s*(?P<name>[^<>]+?)\s*<(?P<email>[^<>\s]+)>\s*$")
 LOCK_WAIT_SECONDS = 7200.0
+WAIT_BEAT = 15.0  # seconds between the lines a waiting ship prints
 # The findings that refuse one input of a ship that pushed the others: blocking for that input only.
 INPUT_REFUSALS = frozenset({"land.file_refused", "land.input_build_failed", "land.function_split", *land.REFUSAL_KEYS})
 PRIORITY = "UNBAKE_PRIORITY"  # unbake's pool: a command whose environment says "1" takes host slots first
@@ -40,6 +42,23 @@ PER_INPUT = ("land.evidence", "land.arity")
 
 class ShipError(DecompError):
     pass
+
+
+def _flocked(handle: int) -> bool:
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
+
+
+def _process(pid: str) -> str:
+    """`pid N: its command line` (cut short), for a line that says what a wait waits on."""
+    try:
+        words = Path(f"/proc/{int(pid)}/cmdline").read_bytes().split(b"\0")
+    except (OSError, ValueError):
+        return f"pid {pid}"
+    return f"pid {pid}: " + " ".join(w.decode(errors="replace") for w in words if w)[:160]
 
 
 class Ship:
@@ -64,6 +83,7 @@ class Ship:
         self.from_try, self.invoke = from_try, invoke  # from_try: the function whose proven candidate is the input
         self.worktree: str | None = worktree  # the work tree's own tracked changes are the input (see capture)
         self.saved: dict[str, Any] | None = None
+        self.parked: list[tuple[Path, list[str]]] = []  # other work's tracked changes, set aside for the ship (park)
         self.tree = tree.expanduser().resolve()
         if not (self.tree / ".git").exists():
             raise ShipError("ship.tree", f"{self.tree} is not a git checkout")
@@ -119,18 +139,22 @@ class Ship:
         mine = tickets / f"{time.time_ns():020d}-{os.getpid()}"
         mine.touch()
         handle = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-        deadline = self.clock() + self.lock_wait
+        began, said = self.clock(), None
         try:
             while True:
-                if self.first(tickets, mine):
-                    try:
-                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        self.boost()
-                        return handle
-                    except BlockingIOError:
-                        pass
-                if self.clock() > deadline:
+                if self.first(tickets, mine) and _flocked(handle):
+                    self.boost()
+                    return handle
+                if self.clock() - began > self.lock_wait:
                     raise ShipError("ship.busy", f"another ship held {path} for {self.lock_wait:g}s")
+                if said is None or self.clock() - said >= WAIT_BEAT:
+                    said = self.clock()
+                    ahead = [t for t in sorted(tickets.iterdir()) if t < mine]
+                    who = _process(ahead[0].name.rpartition("-")[2]) if ahead else "the ship holding the lock"
+                    sys.stderr.write(
+                        f"decomp: waiting for the ship lock, {len(ahead)} ship(s) ahead; first: {who}"
+                        f" ({said - began:.0f}s)\n"
+                    )
                 time.sleep(2)
         except BaseException:
             os.close(handle)
@@ -193,13 +217,8 @@ class Ship:
         dirty = self.git("status", "--porcelain", "--untracked-files=no")[1].splitlines()
         if dirty and self.worktree and self.saved is None:
             self.capture(sha)
-            dirty = []
-        if dirty:
-            raise ShipError(
-                "ship.dirty",
-                f"{self.tree} has {len(dirty)} tracked changes; ship never resets over them",
-                next=f"git -C {self.tree} status --short --untracked-files=no",
-            )
+        elif dirty:
+            self.park()
         if self.git("rev-parse", "HEAD")[1].strip() != sha:
             self.git("checkout", "-q", "--detach", sha)
         self.step("tip", started, sha=sha)
@@ -229,6 +248,65 @@ class Ship:
                 next=f"git -C {self.tree} log -5 --oneline FETCH_HEAD",
             )
         self.patches = [(self.worktree or "worktree", path)]
+
+    def park(self) -> None:
+        """Tracked changes that are no input of this ship (a lane's landing or fuzzy save left in the shared tree) never
+        block it: saved beside the ship lock and the tree checked out clean, under unbake's landing lock so no landing
+        is caught half written; `unpark` puts them back once the ship is done."""
+        with self.landing_lock():
+            diff = self.git("diff", "HEAD", "--binary", "--full-index")[1]
+            files = self.git("diff", "HEAD", "--name-only")[1].split()
+            if not diff:
+                return
+            common = Path(self.git("rev-parse", "--git-common-dir")[1].strip())
+            path = (
+                common if common.is_absolute() else self.tree / common
+            ) / f"decomp-ship-parked-{time.time_ns()}.patch"
+            path.write_text(diff)
+            self.git("checkout", "-q", "--force", "--detach", "HEAD")  # tracked paths only; the patch holds them
+        self.parked.append((path, files))
+        sys.stderr.write(
+            f"decomp: set aside {len(files)} tracked change(s) of other work for this ship: {' '.join(files)}\n"
+        )
+
+    def unpark(self) -> list[dict[str, Any]]:
+        """The parked changes back on the tree as the ship leaves it; one that no longer applies (the ship changed the
+        same lines) stays in its patch file, named in a finding."""
+        found = []
+        with self.landing_lock():
+            for path, files in self.parked:
+                code, text = self.git("apply", "--binary", str(path), ok=False)
+                if code:
+                    message = f"set-aside changes of {' '.join(files)} do not apply on the shipped tree: kept in {path}"
+                    found.append(
+                        {"key": "ship.parked", "message": f"{message} ({text.strip()[-200:]})", "blocking": False}
+                    )
+                    sys.stderr.write(f"decomp: {message}\n")
+                else:
+                    path.unlink(missing_ok=True)
+        self.parked = []
+        return found
+
+    @contextmanager
+    def landing_lock(self) -> Iterator[None]:
+        """unbake's landing (journal) lock of the tree: a landing writes, builds and restores its files under it."""
+        path = self.tree / ".unbake" / "journal.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+        began, said = self.clock(), None
+        try:
+            while not _flocked(handle):
+                if said is None or self.clock() - said >= WAIT_BEAT:
+                    said, holder = self.clock(), os.pread(handle, 200, 0).decode(errors="replace").split()
+                    who = _process(holder[0]) if holder else "another process"
+                    sys.stderr.write(
+                        f"decomp: ship waits for an unbake landing to finish writing the tree: {who}"
+                        f" ({said - began:.0f}s)\n"
+                    )
+                time.sleep(0.5)
+            yield
+        finally:
+            os.close(handle)
 
     def restore(self) -> None:
         """Put the work tree back as the ship found it: its commit (and branch), then its captured changes."""
@@ -361,6 +439,7 @@ class Ship:
                 except BaseException:
                     self.abandon()
                     self.unwind(kept, started)
+                    self.unpark()
                     raise
                 if outcome[0].get("pushed"):
                     self.settle(outcome[0]["pushed"])
@@ -368,6 +447,7 @@ class Ship:
                 else:
                     self.abandon()
                     self.unwind(kept, started)
+                outcome[2].extend(self.unpark())
                 return outcome
         finally:
             os.close(handle)
@@ -455,7 +535,7 @@ class Ship:
     ) -> Result:
         lanes = [lane for lane, _ in self.patches]
         findings = [*self.notes, *findings]
-        if self.worktree:  # a refusal of a --worktree ship names the --worktree form (--patch would fail ship.dirty)
+        if self.worktree:  # a refusal of a --worktree ship names the --worktree form
             findings = [
                 {**f, "next": nextcmd.as_worktree(f["next"], self.worktree)} if f.get("next") else f for f in findings
             ]

@@ -131,12 +131,28 @@ class ShipTests(unittest.TestCase):
         result, code, _ = ship(self.profile, self.tree, [("L", self.root / "l.patch")], landing=fake)
         self.assertEqual((code, result["refused"]["key"], self.remote_tip()), (1, "ship.empty", base))
 
-    def test_a_tree_with_tracked_changes_is_refused_and_kept(self) -> None:
+    def test_other_work_left_in_the_tree_is_set_aside_for_the_ship_and_put_back(self) -> None:
+        (self.other / "c.c").write_text("int c;\n")
+        git(self.other, "add", ".")
+        git(self.other, "commit", "-q", "-m", "c")
+        git(self.other, "push", "-q", "origin", "HEAD:main")
+        git(self.tree, "pull", "-q")
+        (self.tree / "c.c").write_text("int c; /* a lane's fuzzy save */\n")
+        result, code, findings = self.ship()
+        self.assertEqual((code, result["pushed"]), (0, self.remote_tip()))
+        self.assertNotIn("fuzzy", git(self.remote, "show", "main:c.c"))  # never shipped with the input
+        self.assertEqual((self.tree / "c.c").read_text(), "int c; /* a lane's fuzzy save */\n")
+        self.assertEqual(git(self.tree, "status", "--porcelain", "--untracked-files=no").split(), ["M", "c.c"])
+        self.assertEqual([f for f in findings if f["key"] == "ship.parked"], [])
+
+    def test_set_aside_work_the_ship_conflicts_with_stays_in_its_patch_named_in_a_finding(self) -> None:
         (self.tree / "a.c").write_text("work\n")
-        with self.assertRaises(DecompError) as raised:
-            self.ship()
-        self.assertEqual(raised.exception.key, "ship.dirty")
-        self.assertEqual((self.tree / "a.c").read_text(), "work\n")
+        _, code, findings = self.ship()
+        parked = [f for f in findings if f["key"] == "ship.parked"]
+        self.assertEqual((code, len(parked)), (0, 1))
+        kept = Path(parked[0]["message"].split("kept in ")[1].split(" (")[0])
+        self.assertIn("+work", kept.read_text())
+        self.assertIn("f_matched", (self.tree / "a.c").read_text())
 
     def batch(self, split: str | None = None, broken: str | None = None) -> Any:
         """A land of several inputs: each lane adds its own file and gets its own commit; `split` lands only in part
