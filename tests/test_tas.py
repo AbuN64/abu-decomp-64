@@ -58,6 +58,16 @@ class CodecTests(unittest.TestCase):
         self.assertEqual(tas.classify(1, "boom"), {"outcome": "exit", "subject": "exit 1"})
 
 
+def _fake_wait(process, timeout):
+    """tas._wait over a mocked Popen: its wait() stands in for wait4; the CPU reads 1.5 s."""
+    try:
+        return process.wait(timeout), 1.5
+    except subprocess.TimeoutExpired:
+        tas.os.killpg(process.pid, 9)
+        process.wait()
+        return None, 1.5
+
+
 class MovieTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -84,6 +94,9 @@ class MovieTests(unittest.TestCase):
             )
         )
         self.profile = load_profile(seat)
+        patch = mock.patch.object(tas, "_wait", _fake_wait)
+        patch.start()
+        self.addCleanup(patch.stop)
         self.live = self.root / "runs" / "live"
         self.live.mkdir(parents=True)
 
@@ -150,6 +163,35 @@ class MovieTests(unittest.TestCase):
         self.assertIn(tas.STOP_FUNCTION, seen["argv"])
         user = seen["argv"][-1]
         self.assertTrue(user.endswith("/user") and Path(user).is_dir())
+
+    def test_cheap_play_uses_the_replay_args_without_a_view_and_reports_cpu(self):
+        (self.root / "movies").mkdir()
+        sha = hashlib.sha1(b"rom").hexdigest()
+        (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA\n")
+        cfg = tas.settings(self.profile)
+        cfg["replay"] = {"args": ["--window", "64x48", "--user-dir", "{user_dir}"], "view": False}
+        seen = {}
+
+        class Port:
+            stdin = io.StringIO()
+            pid = 1
+
+            def __init__(self, argv, env, stdout, **kwargs):
+                seen["argv"] = argv
+                stdout.write("n64c-tas: done\n")
+
+            def wait(self, timeout=None):
+                return 0
+
+        with (
+            mock.patch.object(tas.subprocess, "Popen", Port),
+            mock.patch.object(tas, "settings", return_value=cfg),
+            mock.patch.object(tas_capture.PlayView, "open") as view,
+        ):
+            cheap = tas.play(self.profile, "m", now=T0, cheap=True)
+        view.assert_not_called()
+        self.assertIn("64x48", seen["argv"])
+        self.assertEqual((cheap["outcome"], cheap["cpu_seconds"]), ("ok", 1.5))
 
     def test_play_kills_a_hang(self):
         (self.root / "movies").mkdir()

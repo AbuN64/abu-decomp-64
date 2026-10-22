@@ -648,9 +648,17 @@ def _owes_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _run_owes(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    from abu_decomp import owes
+    from abu_decomp import owes, tas, tas_health, tas_rank
 
-    return owes.run(_profile(args.profile), args.project, args.top), 0, []
+    profile = _profile(args.profile)
+    result = owes.run(profile, args.project, args.top)
+    try:  # the ranked open-work list over the recorded standing (no replay); owes does not need a tas section
+        cfg = tas.settings(profile)
+        ranked = tas.ranked_work(profile, cfg, tas_health.read(cfg), tas.standing_rows(cfg), result)
+    except DecompError:
+        return result, 0, []
+    print(tas_rank.render(ranked), file=sys.stderr)
+    return {**result, "ranked": ranked, "next": ranked[0]["next"] if ranked else result["next"]}, 0, []
 
 
 def _claims_arguments(parser: argparse.ArgumentParser) -> None:

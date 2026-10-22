@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from abu_decomp import tas, tas_health, tas_symbolize
+from abu_decomp import tas, tas_health, tas_rank, tas_symbolize
 
 
 class HealthTests(unittest.TestCase):
@@ -99,7 +99,7 @@ class CompareTests(unittest.TestCase):
             (root / "m").mkdir()
             for name in ("a", "b"):
                 (root / "m" / f"{name}.tas").write_text("# tas 1\n")
-            cfg = {"movies": root / "m", "runs": root / "r", "build": {}}
+            cfg = {"movies": root / "m", "runs": root / "r", "build": {}, "rank": tas_rank.settings(None)}
             results = {
                 "a": {"movie": "a", "outcome": "ok", "polls": 9, "polls_reached": 9},
                 "b": {"movie": "b", "outcome": "stop", "subject": "f", "polls": 9, "polls_reached": 3, "next": "n"},
@@ -115,3 +115,6 @@ class CompareTests(unittest.TestCase):
                 self.assertEqual((code, out["worse"]), (1, ["a"]))
                 self.assertEqual(out["movies"][0]["recorded"]["outcome"], "ok")
                 self.assertIn("worse", tas.table(out))
+                self.assertEqual(out["ranked"][0]["where"], "f")
+                self.assertEqual(out["next"], "n")
+                self.assertTrue(tas.table(out).splitlines()[-1].startswith("next: "))

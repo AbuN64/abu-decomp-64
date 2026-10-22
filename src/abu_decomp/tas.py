@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas_capture, tas_health, tas_symbolize
+from abu_decomp import DecompError, tas_capture, tas_health, tas_rank, tas_symbolize
 from abu_decomp.config import Profile, check_keys
 
 SCHEMA = 1
@@ -55,7 +55,21 @@ _BIT = dict(BUTTONS)
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 _RAW = re.compile(r"([0-9a-fA-F]{1,4}) (-?\d{1,3}) (-?\d{1,3})")
 _KEYS = frozenset(
-    {"movies", "runs", "port", "args", "rom", "env", "exit_after", "timeout_seconds", "gdb", "serve", "build"}
+    {
+        "movies",
+        "runs",
+        "port",
+        "args",
+        "rom",
+        "env",
+        "exit_after",
+        "timeout_seconds",
+        "gdb",
+        "serve",
+        "build",
+        "replay",
+        "rank",
+    }
 )
 _REQUIRED = frozenset({"movies", "runs", "port", "args", "rom"})
 STOP_FUNCTION = "n64c_boot_stopped"
@@ -89,7 +103,20 @@ def settings(profile: Profile) -> dict[str, Any]:
         "timeout_seconds": int(table.get("timeout_seconds", 300)),
         "gdb": str(table.get("gdb", "gdb")),
         "build": _build(profile, table.get("build")),
+        "replay": _replay(profile, table.get("replay")),
+        "rank": tas_rank.settings(table.get("rank")),
     }
+
+
+def _replay(profile: Profile, table: Any) -> dict[str, Any]:
+    """Section `tas.replay`: the cheap mode `play --all` uses: {args: port arguments (default tas.args), view: false}.
+
+    The picture a replay is rendered at costs most of its CPU and the outcome never reads it, so the cheap mode runs
+    the same port at a tiny window with no capture. A watched `tas play NAME` keeps `tas.args` and its view."""
+    table = table or {}
+    check_keys(profile.source_file, "tas.replay", table, frozenset(), frozenset({"args", "view"}))
+    args = [str(a) for a in table["args"]] if "args" in table else None
+    return {"args": args, "view": bool(table.get("view", False))}
 
 
 def parse_raw(text: str) -> list[Poll]:
@@ -321,10 +348,38 @@ def movie_polls(cfg: dict[str, Any], name: str) -> list[Poll]:
     return polls
 
 
+def _wait(process: subprocess.Popen, timeout: float) -> tuple[int | None, float]:
+    """(exit code or None after a kill at the timeout, CPU seconds of the run's whole process tree).
+
+    wait4 returns the rusage of the child and every descendant it reaped, so one replay's CPU is its own even while
+    other replays run in this process."""
+    end = time.monotonic() + timeout
+    while True:
+        pid, status, usage = os.wait4(process.pid, os.WNOHANG)
+        if pid:
+            process.returncode = os.waitstatus_to_exitcode(status)
+            return process.returncode, round(usage.ru_utime + usage.ru_stime, 1)
+        if time.monotonic() > end:
+            os.killpg(process.pid, signal.SIGKILL)
+            _, status, usage = os.wait4(process.pid, 0)
+            process.returncode = os.waitstatus_to_exitcode(status)
+            return None, round(usage.ru_utime + usage.ru_stime, 1)
+        time.sleep(0.05)
+
+
 def play(
-    profile: Profile, name: str, *, now: datetime | None = None, health: dict[str, Any] | None = None
+    profile: Profile,
+    name: str,
+    *,
+    now: datetime | None = None,
+    health: dict[str, Any] | None = None,
+    cheap: bool = False,
 ) -> dict[str, Any]:
+    """Replay one movie. `cheap` (what `play --all` sets) uses `tas.replay`: its args and no display capture."""
     cfg = settings(profile)
+    began = time.monotonic()
+    if cheap and cfg["replay"]["args"] is not None:
+        cfg = {**cfg, "args": cfg["replay"]["args"]}
     health = tas_health.read(cfg) if health is None else health
     polls = movie_polls(cfg, name)
     run = cfg["runs"] / "plays" / f"{_stamp(now)}-{name}"
@@ -340,7 +395,7 @@ def play(
     }
     argv = supervised(cfg, run, _argv(cfg, user_dir))
     # Its own display and sound card, so the page can show it and parallel plays never share a screen.
-    view = tas_capture.PlayView.open(cfg, run, name, _stamp(now))
+    view = None if cheap and not cfg["replay"]["view"] else tas_capture.PlayView.open(cfg, run, name, _stamp(now))
     if view:
         env.update(view.env())
     try:
@@ -350,12 +405,7 @@ def play(
             )
             # The bridge holds a stopped port until its stdin says "continue"; a closed pipe ends it after the stacks.
             process.stdin.close()
-            try:
-                code: int | None = process.wait(cfg["timeout_seconds"])
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
-                code = None
+            code, cpu = _wait(process, cfg["timeout_seconds"])
     except BaseException:
         if view:
             view.finish({"outcome": "died"})
@@ -363,6 +413,7 @@ def play(
     text = (run / "output.txt").read_text(errors="replace")
     reached = len(parse_raw((run / "polls.raw").read_text())) if (run / "polls.raw").is_file() else 0
     result = {"movie": name, "run": str(run), "polls": len(polls), "polls_reached": reached, **classify(code, text)}
+    result["wall_seconds"], result["cpu_seconds"] = round(time.monotonic() - began, 1), cpu
     if view:
         view.finish(result)
     stacks = [str(p) for p in sorted(run.glob("*-st*.txt")) + sorted(run.glob("*-threads.txt"))]
@@ -394,22 +445,25 @@ def table(result: dict[str, Any]) -> str:
     lines += [f"  failed {row['unit']}: {row['error']}" for row in build.get("failed", [])]
     if build.get("stale"):
         lines.append(f"  stale: {build['stale']}; next: {build.get('rebuild', '')}")
-    head = ("movie", "outcome", "polls", "vs recorded", "next")
+    head = ("movie", "outcome", "polls", "vs recorded", "wall/cpu s", "next")
     rows = [
         (
             r["movie"],
             r["outcome"] + (f" {r['subject']}" if r["subject"] else ""),
             f"{r['polls_reached']}/{r['polls']}",
             r["vs_recorded"],
+            f"{r.get('wall_seconds', 0)}/{r.get('cpu_seconds', 0)}",
             r["next"],
         )
         for r in result["movies"]
     ]
-    widths = [max(len(str(x[i])) for x in [head, *rows]) for i in range(4)]
+    widths = [max(len(str(x[i])) for x in [head, *rows]) for i in range(5)]
     for row in [head, *rows]:
-        lines.append("  ".join(str(c).ljust(w) for c, w in zip(row[:4], widths, strict=True)) + "  " + row[4])
+        lines.append("  ".join(str(c).ljust(w) for c, w in zip(row[:5], widths, strict=True)) + "  " + row[5])
     if "wall_seconds" in result:
         lines.append(f"wall {result['wall_seconds']} s, cpu {result['cpu_seconds']} s (children)")
+    if "ranked" in result:
+        lines.append(tas_rank.render(result["ranked"]))
     return "\n".join(lines)
 
 
@@ -428,7 +482,7 @@ def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) ->
 
     def one(name: str) -> dict[str, Any]:
         try:
-            return play(profile, name, now=now, health=health)
+            return play(profile, name, now=now, health=health, cheap=True)
         except DecompError as error:
             return {"movie": name, "outcome": "refused", "subject": str(error), "polls_reached": 0}
 
@@ -444,7 +498,9 @@ def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) ->
         recorded = standing.get(result["movie"])
         verdict = compare(recorded, result)
         if verdict != "worse":
-            standing[result["movie"]] = {k: result.get(k) for k in ("outcome", "subject", "polls_reached")}
+            standing[result["movie"]] = {
+                k: result.get(k) for k in ("outcome", "subject", "polls_reached", "kind", "next", "owner")
+            }
         rows.append(
             {
                 "movie": result["movie"],
@@ -456,7 +512,10 @@ def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) ->
                 "vs_recorded": verdict,
                 "kind": result.get("kind", ""),
                 "next": result.get("next", ""),
+                "owner": result.get("owner", ""),
                 "run": result.get("run", ""),
+                "wall_seconds": result.get("wall_seconds", 0),
+                "cpu_seconds": result.get("cpu_seconds", 0),
             }
         )
     cpu1 = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -465,4 +524,35 @@ def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) ->
     path.write_text(json.dumps(standing, indent=1, sort_keys=True) + "\n")
     worse = [r["movie"] for r in rows if r["vs_recorded"] == "worse"]
     timing = {"wall_seconds": round(time.monotonic() - began, 1), "cpu_seconds": cpu}
-    return {"build": tas_health.header(health), "movies": rows, "worse": worse, **timing}, int(bool(worse))
+    ranked = ranked_work(profile, cfg, health, rows)
+    result = {"build": tas_health.header(health), "movies": rows, "worse": worse, **timing, "ranked": ranked}
+    return {**result, "next": ranked[0]["next"] if ranked else "nothing open"}, int(bool(worse))
+
+
+def ranked_work(
+    profile: Profile,
+    cfg: dict[str, Any],
+    health: dict[str, Any],
+    movies: list[dict[str, Any]],
+    owed: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """The ranked open-work list (module tas_rank) for these movie rows and the current build health."""
+    from abu_decomp import owes
+
+    if owed is None:
+        try:
+            owed = owes.run(profile, None, cfg["rank"]["owes_rows"] + len(movies))
+        except Exception:
+            owed = None
+    return tas_rank.rank(cfg["rank"], health, movies, owed)
+
+
+def standing_rows(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Movie rows from the recorded standing (no replay), for the ranked list outside `play --all`."""
+    import json
+
+    try:
+        standing = json.loads((cfg["runs"] / "standing.json").read_text())
+    except (OSError, ValueError):
+        return []
+    return [{"movie": name, **row} for name, row in sorted(standing.items())]
