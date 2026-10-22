@@ -9,6 +9,7 @@ run the page starts is a recording from reset (`N64C_TAS_RECORD`), so Save alway
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -23,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, tas, tas_capture, tas_eyes, tas_tabs, tas_triage
+from abu_decomp import DecompError, events, tas, tas_capture, tas_eyes, tas_symbolize, tas_tabs
 from abu_decomp.config import Profile
 
 KEYS = {"ArrowLeft": "Left", "ArrowRight": "Right", "ArrowUp": "Up", "ArrowDown": "Down", "Enter": "Return"}
@@ -245,7 +246,7 @@ class Session(tas_capture.Capture):
             stacks = [str(p) for p in sorted(self.run_dir.glob("*.txt"))] if self.run_dir else []
             key = (str(self.run_dir), stopped.get("subject"), len(stacks))
             if self._claims.get("key") != key:  # the page polls /state: classify once per stop
-                self._claims = {"key": key, "claim": tas_triage.claim(self.profile, stopped, stacks)}
+                self._claims = {"key": key, "claim": tas_symbolize.claim(self.profile, stopped, stacks)}
             stopped = {**stopped, **self._claims["claim"]}
         running = running and not stopped
         tail = text.splitlines()[-3:]
@@ -400,6 +401,11 @@ class Session(tas_capture.Capture):
             return b""
 
 
+# Shown at once when the page's run changes and the new run has no picture yet, so the switch is visible.
+STARTING_FRAME = base64.b64decode(
+    "/9j/4AAQSkZJRgABAgAAAQABAAD//gAQTGF2YzYxLjE5LjEwMQD/2wBDAAg+Pkk+SVVVVVVVVWRdZGhoaGRkZGRoaGhwcHCDg4NwcHBoaHBwfHyDg4+Tj4eHg4eTk5ubm7q6srLZ2eD/////xABLAAEBAAAAAAAAAAAAAAAAAAAACAEBAAAAAAAAAAAAAAAAAAAAABABAAAAAAAAAAAAAAAAAAAAABEBAAAAAAAAAAAAAAAAAAAAAP/AABEIAPABQAMBIgACEQADEQD/2gAMAwEAAhEDEQA/AJ/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB//9k="
+)
+
 PAGE = (Path(__file__).with_name("tas_page.html")).read_text
 
 
@@ -446,9 +452,14 @@ def handler(session: Session) -> type[BaseHTTPRequestHandler]:
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                 self.end_headers()
                 try:
-                    last, sent = b"", 0.0
+                    last, sent, shown = b"", 0.0, None
                     while True:
-                        frame = session.frame_of(session.current())
+                        view = session.current()
+                        frame = session.frame_of(view)
+                        run = view["run"] if view else None
+                        if run != shown:  # the active run changed: this stream follows it in place, no reload
+                            shown, last = run, b""
+                            frame = frame or STARTING_FRAME
                         if frame and (frame != last or time.monotonic() - sent > 1):
                             self.wfile.write(
                                 b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "

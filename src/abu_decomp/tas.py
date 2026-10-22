@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas_capture, tas_triage
+from abu_decomp import DecompError, tas_capture, tas_symbolize
 from abu_decomp.config import Profile, check_keys
 
 SCHEMA = 1
@@ -350,5 +350,5 @@ def play(profile: Profile, name: str, *, now: datetime | None = None) -> dict[st
     if stacks:
         result["stacks"] = stacks
     # Kind, blocking, what cannot help, owner, arity note and one next command (the arity note comes first when set).
-    result.update(tas_triage.claim(profile, result, stacks))
+    result.update(tas_symbolize.claim(profile, result, stacks))
     return result

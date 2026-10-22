@@ -50,6 +50,17 @@ const $ = id => document.getElementById(id);
 const post = (path, body) => fetch(path, {method: "POST", body: JSON.stringify(body || {})}).then(r => r.json());
 const say = (text, bad) => { $("msg").textContent = text; $("msg").className = bad ? "bad" : "dim"; };
 const held = new Set();
+let bound = null;
+// A new active run swaps picture and sound in place: the stream elements are re-bound, never the page reloaded.
+function follow(v) {
+  const run = v ? v.run : null;
+  if (run === bound) return;
+  const first = bound === null; bound = run;
+  if (first) return;
+  $("video").src = "/video?run=" + encodeURIComponent(run || "") + "&t=" + Date.now();
+  const a = $("audio");
+  if (!a.paused) { a.src = "/audio?" + Date.now(); a.play().catch(() => {}); }
+}
 function sound() { const a = $("audio"); if (a.paused) { a.src = "/audio?" + Date.now(); a.play().catch(() => {}); } }
 $("video").addEventListener("click", sound);
 $("video").addEventListener("focus", sound);
@@ -80,6 +91,7 @@ function row(m) {
 }
 function showView(s) {
   const v = s.view;
+  follow(v);
   $("view").textContent = v ? v.label + (s.pinned ? " (pinned)" : " (newest active)") : "no run yet";
   const others = (s.runs || []).filter(r => r.state === "running");
   const shown = others.length > 1 || s.pinned ? s.runs.slice(-6) : [];
