@@ -258,7 +258,7 @@ class PrepareTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = pathlib.Path(tmp)
             (tmp / "include").mkdir()
-            (tmp / "src" / "libgcc").mkdir(parents=True)
+            (tmp / "src" / "sdk" / "libgcc").mkdir(parents=True)
             (tmp / "include" / "h.h").write_text("#define K 3\n")
             (tmp / "src" / "a.c").write_text('#include "h.h"\nint f(void) { return K; }\n')
             deps = []

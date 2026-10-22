@@ -130,7 +130,7 @@ def drop_moved(d, facts):
     stale = []
     for sym, why in d["stops"].items():
         unit = needsfeed.unit_of(why)
-        if unit and unit not in facts.text and not unit.startswith("src/libgcc/"):
+        if unit and unit not in facts.text and not unit.startswith("src/sdk/libgcc/"):
             stale.append(sym)
     for sym in stale:
         del d["stops"][sym]
@@ -204,11 +204,29 @@ def rebind(d, facts):
             d["bindings"][sym] = name
 
 
+_HOST_RUNTIME = []
+
+
+def host_runtime():
+    """The compiler-runtime helpers (__udivdi3, __divdi3, ...) the host libgcc.a of the 32-bit link provides. The decomp
+    names its libgcc2 functions by their real names, so they are not libultra to bind: the host archive links them."""
+    if not _HOST_RUNTIME:
+        path = subprocess.run(["gcc", "-m32", "-print-file-name=libgcc.a"], capture_output=True, text=True).stdout.strip()
+        names = set()
+        if pathlib.Path(path).is_absolute() and pathlib.Path(path).exists():
+            out = subprocess.run(["nm", "-g", "--defined-only", path], capture_output=True, text=True).stdout
+            names = {row.split()[-1] for row in out.splitlines() if len(row.split()) == 3 and row.split()[-1].startswith("__")}
+        _HOST_RUNTIME.append(frozenset(names))
+    return _HOST_RUNTIME[0]
+
+
 def route(d, sym, facts, deny, pin, frontier, fresh):
     """Route one undefined symbol into d. Returns (kind, detail); kind is added, routed, need or skip."""
     if sym in d["stops"] or sym in d["data"] or sym in d["bindings"] or sym in d.get("rom_offsets", {}):
         return "skip", ""
     addrs = facts.addrs
+    if sym in host_runtime() and sym not in d["bindings"]:
+        return "skip", ""  # the host libgcc.a defines it
     if (address := facts.sdk(sym)):
         if (osname := facts.shim_name(sym)):
             d["bindings"][sym] = osname
@@ -218,6 +236,11 @@ def route(d, sym, facts, deny, pin, frontier, fresh):
                            else "; not identified for the shim") + f" at {pin} (SDK: shim binding decision)")
         return "routed", "stop " + d["stops"][sym]
     found = facts.definers(sym)
+    if sym.startswith("fz_D_") and not found and sym[3:] in addrs and int(addrs[sym[3:]][0], 16) >= 0x80000000:
+        # RW's fuzzy drafts name a file-local view of a global `#define D_x fz_D_x` (its own type for the same address):
+        # the storage is the pinned address of D_x, never a function stop.
+        d["data"][sym] = addrs[sym[3:]][0]
+        return "routed", "data (fz_ view of " + sym[3:] + ") " + addrs[sym[3:]][0]
     if any(facts.sdk_unit(h) for h in found):
         if sym.startswith("D_"):
             return "need", f"{sym} | original SDK data needs a clean provider; refusing its code unit"

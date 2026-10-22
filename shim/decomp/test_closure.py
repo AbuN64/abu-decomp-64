@@ -311,6 +311,17 @@ class RouteTests(unittest.TestCase):
                "a.o: in function `f': undefined reference to `func_80200000_de'\n")
         self.assertEqual(closure.undefined_symbols(log), ["func_80200000_de", "func_802953FC_us_rev1"])
 
+    def test_fuzzy_view_of_a_global_binds_the_globals_address(self):
+        self.assertEqual(self.route("fz_D_80100000"), ("routed", "data (fz_ view of D_80100000) 0x80104000"))
+        self.assertEqual(self.d["data"]["fz_D_80100000"], "0x80104000")
+        self.assertEqual(self.route("fz_D_80100000"), ("skip", ""))
+        self.assertEqual(self.route("fz_D_80999999")[0], "routed")  # no pinned address: not bound as the global
+        self.assertNotIn("fz_D_80999999", self.d["data"])
+    def test_host_libgcc_helper_is_neither_bound_nor_stopped(self):
+        self.facts.addrs["__udivdi3"] = ("0x802C5E90", " // type:func")
+        self.facts.numeric["__udivdi3"] = 0x802C5E90
+        self.assertEqual(self.route("__udivdi3"), ("skip", ""))
+        self.assertNotIn("__udivdi3", self.d["stops"])
     def test_data_is_never_a_stop(self):
         kind, detail = self.route("D_80999999")
         self.assertEqual(kind, "need")

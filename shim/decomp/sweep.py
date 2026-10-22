@@ -103,7 +103,7 @@ def build_unit(rw, unit, work, python="python3"):
     """Port-compile one unit and return its graph record; every intermediate file is removed."""
     stem = work / unit.replace("/", "__")
     pp = ["-DNON_MATCHING", "-DVERSION_US_REV1", "-D_LANGUAGE_C", "-DF3DEX_GBI_2", "-include",
-          str(HERE / "native.h"), f"-I{rw}/include", f"-I{rw}/src/libgcc"]
+          str(HERE / "native.h"), f"-I{rw}/include", f"-I{rw}/src/sdk/libgcc"]
     files = {s: str(stem) + s for s in (".i", ".stubs.c", ".json", ".d", ".o")}
     rec = {"unit": unit, "ok": False}
     try:

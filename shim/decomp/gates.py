@@ -102,7 +102,7 @@ def preprocess_flags(source, adapter=HERE):
     source = pathlib.Path(source)
     return ["-DNON_MATCHING", "-DVERSION_US_REV1", "-D_LANGUAGE_C", "-DF3DEX_GBI_2", "-include",
             str(pathlib.Path(adapter) / "native.h"), "-I" + str(source / "include"),
-            "-I" + str(source / "src" / "libgcc")]
+            "-I" + str(source / "src" / "sdk" / "libgcc")]
 
 
 def run(command, timeout=TIMEOUT):

@@ -25,6 +25,10 @@ def pinned(source, version):
             if match[1] in table and int(table[match[1]][0], 16) != int(match[2], 16):
                 raise ValueError("conflicting pinned address: " + match[1])
             table.setdefault(match[1], (match[2], match[3]))
+    # RW's fuzzy drafts keep a file-local view of a global (`#define D_x fz_D_x`: its own type, the same storage):
+    # fz_D_x is pinned wherever D_x is.
+    for name in [n for n in table if n.startswith("D_")]:
+        table.setdefault("fz_" + name, table[name])
     return table
 
 
