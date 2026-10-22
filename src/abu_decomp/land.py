@@ -923,8 +923,10 @@ class Landing:
         ready: Callable[[], None] | None = None,
         behave: Callable[[Any], tuple[dict[str, Any], int, list[dict[str, Any]]]] | None = None,
         carry: bool = False,
+        objects: bool = False,
     ) -> None:
         self.behave = behave
+        self.objects = objects  # a header-only round (the types train): object identity may stand for the build
         self.carry = carry  # every input brings a proof that still holds (shipproof.judge): nothing is built here
         self.config = settings(profile, tree)
         self.tree = tree.expanduser().resolve()
@@ -1573,13 +1575,14 @@ class Landing:
         own `make check` was a second build per round and per bisect or credit build (10-20)."""
         started = self.clock()
         if self.proof is not None:  # a proved pure rename changes no object: no extraction to bring up to date
-            return self.gate("setup", True, started, skipped="pure rename proved before setup")
+            what = "header objects" if self.proof.get("kind") == "objects" else "pure rename"
+            return self.gate("setup", True, started, skipped=f"{what} proved before setup")
         return self.unbake("setup", "setup", "setup", "--no-make")
 
     def prove(self) -> bool:
         """The rename proof, before setup: it reads the tree and the base, never the extraction, and a pure rename
         then skips both setup (a 5-version re-extract, ~150 s CPU) and the build."""
-        self.proof = self.rename_proof()
+        self.proof = self.rename_proof() or (self.object_proof() if self.objects else None)
         return True
 
     def rename_proof(self) -> dict[str, Any] | None:
@@ -1601,6 +1604,45 @@ class Landing:
             return None
         result = called.document.get("result") or {}
         return {key: result.get(key) for key in ("against", "base", "tree", "files", "renames", "map", "inert")}
+
+    def object_proof(self) -> dict[str, Any] | None:
+        """A header-only round proved by object identity (objproof): only the units that read the changed headers are
+        preprocessed, the ones whose text moved are compiled, and each unit's text and compiler output must equal what
+        the tip's build left. Then no object changed, the ROMs on disk are the base's (`unbake verify 0` hashes them)
+        and setup, the build and the relink are skipped. Anything else: the reasons ride `object_proof_refused` and
+        the build runs (the objects it needs are already made)."""
+        from abu_decomp import objproof
+
+        jobs = None
+        if self.config["jobs"]:
+            code, out, _ = self.run(self.config["jobs"], self.tree, None, 60)
+            jobs = int(out.strip()) if not code and out.strip().isdigit() and int(out) > 0 else None
+        env = dict(os.environ)
+        env["UNBAKE_HOST"] = str(tools.host_file(self.profile))
+        env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+
+        def make(targets: list[str]) -> tuple[int, str]:
+            command = build_command([*self.config["check"][:1], *targets], jobs)
+            code, out, err = self.build(command, self.tree, env, self.config["timeout"])
+            return code, out + err
+
+        started, mark = self.clock(), meter.cpu()
+        found = objproof.prove(self.tree, self.changed_files(), make)
+        if not found["ok"]:
+            self.extra["object_proof_refused"] = found["reasons"][:6]
+            return None
+        verdict = self.invoke("unbake", self.profile, ["verify", "0"], project=self.tree)
+        if not verdict.ok:
+            self.extra["object_proof_refused"] = [
+                "objects identical, but the tree holds no verified ROMs to carry over"
+            ]
+            return None
+        return {
+            "kind": "objects",
+            **{k: v for k, v in found.items() if k != "ok"},
+            "seconds": round(self.clock() - started, 1),
+            "cpu": round(meter.cpu() - mark, 1),
+        }
 
     def expand(self, argv: Sequence[str]) -> list[str]:
         """A step's argv: `{decomp}` is this tool under the same profile (so a step can run `decomp tas play --all`)."""
@@ -1655,7 +1697,8 @@ class Landing:
             jobs = int(text)
         proof = self.proof
         if proof is not None:
-            return self.gate("check", True, started, jobs=jobs, rename_proof=proof)
+            key = "object_proof" if proof.get("kind") == "objects" else "rename_proof"
+            return self.gate("check", True, started, jobs=jobs, **{key: proof})
         command = build_command(self.config["check"], jobs)
         env = dict(os.environ)
         env["UNBAKE_HOST"] = str(tools.host_file(self.profile))
@@ -2265,11 +2308,7 @@ class Landing:
             "lanes": self.lanes,
             "untracked_other": self.extra.get("untracked_other", []),
             **({"symbol_check": self.extra["symbol_check"]} if "symbol_check" in self.extra else {}),
-            **(
-                {"rename_proof_refused": self.extra["rename_proof_refused"]}
-                if "rename_proof_refused" in self.extra
-                else {}
-            ),
+            **{k: self.extra[k] for k in ("rename_proof_refused", "object_proof_refused") if k in self.extra},
             **self.groups(),
             "refused_inputs": self.refused_inputs,
             "attempts": self.attempts,

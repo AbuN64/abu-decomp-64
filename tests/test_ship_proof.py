@@ -492,6 +492,7 @@ class TypesTrainTests(CarriedShipTests):
         lanes = [lane for lane, _ in patches]
         if lanes == ["L-types"]:
             self.train_lands.append(lanes)
+            self.train_objects = kw.get("objects")
             (tree / "include").mkdir(exist_ok=True)
             (tree / "include/t.H").write_text(self.header)
             test_ship.git(tree, "add", "include/t.H")
@@ -520,6 +521,8 @@ class TypesTrainTests(CarriedShipTests):
         result, code, findings = self.go()
         self.assertEqual(code, 0, findings)
         self.assertEqual(self.train_lands, [["L-types"]])
+        self.assertTrue(self.train_objects)  # the train may prove its header halves by object identity
+        self.assertNotIn("objects", self.lands[0])  # the body never does
         self.assertEqual([row.get("carry") for row in self.lands], [True])
         self.assertTrue(result["carried"])
         subjects = test_ship.git(self.remote, "log", "--format=%s", "-3").splitlines()

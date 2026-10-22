@@ -200,6 +200,44 @@ class LandTests(unittest.TestCase):
         self.assertEqual(self.renameproofs, [("renameproof", "--against", self.base)])
         self.assertNotIn("rename_proof_refused", result)
 
+    def header_patch(self):
+        (self.tree / "t.h").write_text("int a;\n")
+        git(self.tree, "add", ".")
+        git(self.tree, "commit", "-q", "-m", "header")
+        self.base = git(self.tree, "rev-parse", "HEAD").strip()
+        return self.patch("L1", {"t.h": "int a;\nint b;\n"})
+
+    def land_objects(self, patches):
+        landing = Landing(
+            self.profile, self.tree, self.base, patches, invoke=self.invoke, run=self.runner, build=self.runner,
+            append=lambda path, record: {"ok": True}, pin=lambda: "u1", objects=True,
+        )  # fmt: skip
+        return landing.execute()
+
+    def test_identical_objects_skip_setup_check_and_the_relink(self) -> None:
+        one = self.header_patch()
+        proof = {"ok": True, "units": 4, "preprocessed": 4, "recompiled": 1, "identical": 4, "headers": ["t.h"]}
+        with mock.patch("abu_decomp.objproof.prove", return_value=proof) as prove:
+            result, code, _ = self.land_objects([one])
+        self.assertEqual(code, 0)
+        self.assertEqual(prove.call_args.args[1], ["t.h"])
+        self.assertNotIn(("setup", "--no-make"), self.unbake)
+        self.assertIn(("verify", "0"), self.unbake)
+        self.assertEqual({c[0] for c in self.commands}, {("admit", "8")})  # no make check
+        row = next(g for g in result["gates"] if g["gate"] == "check")
+        self.assertEqual((row["pass"], row["object_proof"]["kind"], row["object_proof"]["units"]), (True, "objects", 4))
+
+    def test_a_moved_object_takes_the_full_round_and_says_why(self) -> None:
+        one = self.header_patch()
+        with mock.patch("abu_decomp.objproof.prove", return_value={"ok": False, "reasons": ["a.CPP changed"]}):
+            result, code, _ = self.land_objects([one])
+        self.assertEqual(code, 0)
+        self.assertIn(("setup", "--no-make"), self.unbake)
+        self.assertEqual(len([c for c in self.commands if c[0][0] != "admit"]), 1)  # the make check
+        self.assertEqual(result["object_proof_refused"], ["a.CPP changed"])
+        row = next(g for g in result["gates"] if g["gate"] == "check")
+        self.assertNotIn("object_proof", row)
+
     def test_every_gate_row_and_the_result_carry_the_cpu_the_children_used(self):
         one = self.patch("L1", {"c.c": C_C + "// x\n"})
         result, code, _ = self.land([one])

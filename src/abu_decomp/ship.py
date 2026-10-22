@@ -724,6 +724,8 @@ class Ship:
         whole: the tree goes back to `base` and the others land again without it."""
         while True:
             more = {"carry": True} if self.carry else {}
+            if self.train_round:
+                more["objects"] = True  # header halves only: object identity may prove them without a relink
             outcome = self.landing(self.profile, self.tree, base, inputs, messages=self.messages, **more)
             result, code, findings = outcome
             split = [f for f in findings if f.get("key") == "land.file_refused"]
