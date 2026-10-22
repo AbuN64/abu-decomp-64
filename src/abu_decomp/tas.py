@@ -1,4 +1,4 @@
-"""`decomp tas record|save|list|show|delete|play`: controller movies replayed against the port.
+"""`decomp tas save|list|show|delete|play`: controller movies replayed against the port.
 
 Section `tas`: {"movies", "runs", "port", "args", "rom", "env", "exit_after", "timeout_seconds", "gdb"}.
 `movies` is the folder of named movies (kept in a repository), `runs` holds recordings and replay runs, `port` is
@@ -301,23 +301,6 @@ def supervised(cfg: dict[str, Any], run_dir: Path, argv: list[str]) -> list[str]
         "--",
         *argv,
     ]
-
-
-def record(profile: Profile, *, now: datetime | None = None, extra_env: dict[str, str] | None = None) -> dict[str, Any]:
-    """Run the port with live input and log every poll; returns when the port exits."""
-    cfg = settings(profile)
-    stamp = _stamp(now)
-    run = cfg["runs"] / "live"
-    user_dir = cfg["runs"] / "users" / stamp
-    user_dir.mkdir(parents=True, exist_ok=True)
-    log = run / f"{stamp}.raw"
-    run.mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, **cfg["env"], **(extra_env or {}), "N64C_TAS_RECORD": str(log)}
-    for key in ("N64C_TAS_PLAY", "N64C_TAS_EXIT_AFTER"):
-        env.pop(key, None)
-    code = subprocess.run(_argv(cfg, user_dir), env=env, check=False).returncode
-    polls = len(parse_raw(log.read_text())) if log.is_file() else 0
-    return {"recording": str(log), "polls": polls, "exit": code}
 
 
 def classify(code: int | None, output: str) -> dict[str, Any]:

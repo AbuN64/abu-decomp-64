@@ -339,7 +339,6 @@ def _run_probe(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
 
 def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
-    actions.add_parser("record", help="run the port with live input and log every controller poll")
     save = actions.add_parser("save", help="save a recording (default: the newest) as a named movie")
     save.add_argument("name", help="lower-case words joined by '-', saying what the movie does")
     save.add_argument("--from", dest="source", type=Path, help="raw recording to save")
@@ -380,8 +379,6 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
     from abu_decomp import tas
 
     profile = _profile(args.profile)
-    if args.action == "record":
-        return tas.record(profile), 0, []
     if args.action == "save":
         return tas.save(profile, args.name, source=args.source, note=args.note, replace=args.replace), 0, []
     if args.action == "list":
