@@ -106,12 +106,10 @@ def classify(
         index = first["index"] - 1
         out["call_index"] = first["index"]
         out["kind"] = "call order" if sorted(names_a) == sorted(names_b) else "call count"
-        involved = (
-            set(names_a[index:]) ^ set(names_b[index:])
-            if out["kind"] == "call count"
-            else set(names_a[index : index + 1] + names_b[index : index + 1])
-        )
-        if out["kind"] == "call order" and first["got"] in names_a[index:]:
+        involved = {first["expected"], first["got"]}
+        if out["kind"] == "call count":
+            involved |= {n for n in set(names_a) | set(names_b) if names_a.count(n) != names_b.count(n)}
+        elif first["got"] in names_a[index:]:
             involved |= set(names_a[index : names_a.index(first["got"], index) + 1])
         involved.discard("return")
         reasons = {name: writes(originals, name, stack, own) for name in involved}
@@ -123,8 +121,8 @@ def classify(
                 "only the order of side-effect-free calls differs"
             )
         else:
-            name, reason = next(iter(sorted(dirty.items())), (first.get("expected"), "unknown"))
-            why = f"{name}: {reason}; the {out['kind']} changes shared state, so the difference is real"
+            name, reason = sorted(dirty.items())[0] if dirty else ("the calls", "their effects are unknown")
+            why = f"{name}: {reason}; the {out['kind']} may change shared state, so the difference is real"
         found = source_line(candidate, function, str(first.get("got")))
         if found:
             out["candidate_line"] = {"file": str(candidate), "line": found[0], "text": found[1]}
@@ -140,7 +138,11 @@ def classify(
     else:
         fix = "make the candidate behave as the original in this case"
     out["why"] = why
-    where = f" at {out['candidate_line']['file']}:{out['candidate_line']['line']}" if "candidate_line" in out else ""
+    where = (
+        f" (candidate line {out['candidate_line']['file']}:{out['candidate_line']['line']})"
+        if "candidate_line" in out
+        else ""
+    )
     out["fix"] = f"{fix}{where}"
     out["next"] = f"decomp --profile {profile_file} behave --function {function}" + (
         f" --candidate {candidate}" if candidate else ""
