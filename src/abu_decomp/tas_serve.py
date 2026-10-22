@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, events, tas, tas_eyes, tas_tabs
+from abu_decomp import DecompError, events, tas, tas_eyes, tas_tabs, tas_triage
 from abu_decomp.config import Profile
 
 KEYS = {"ArrowLeft": "Left", "ArrowRight": "Right", "ArrowUp": "Up", "ArrowDown": "Down", "Enter": "Return"}
@@ -87,6 +87,7 @@ class Session:
         self.run_dir: Path | None = None
         self.exit: int | None = None
         self.ended_by_page = False
+        self._claims: dict[str, Any] = {}
         self.movie: str | None = None
         self.movie_length = 0
         self.frame = b""
@@ -375,6 +376,12 @@ class Session:
         # A debug-reason line: the gdb bridge holds the stop: process alive, picture frozen, not a hang.
         held = tas.classify(None if running and "debug-reason:" not in text else self.exit or 0, text) if text else {}
         stopped = held if held.get("outcome") in ("stop", "crash") and not self.ended_by_page else {}
+        if stopped:
+            stacks = [str(p) for p in sorted(self.run_dir.glob("*.txt"))] if self.run_dir else []
+            key = (str(self.run_dir), stopped.get("subject"), len(stacks))
+            if self._claims.get("key") != key:  # the page polls /state: classify once per stop
+                self._claims = {"key": key, "claim": tas_triage.claim(self.profile, stopped, stacks)}
+            stopped = {**stopped, **self._claims["claim"]}
         running = running and not stopped
         tail = text.splitlines()[-3:]
         return {

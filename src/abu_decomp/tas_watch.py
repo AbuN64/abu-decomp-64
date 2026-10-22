@@ -14,7 +14,7 @@ import time
 import urllib.request
 from typing import Any
 
-from abu_decomp import DecompError, arity, tas
+from abu_decomp import DecompError, tas, tas_triage
 from abu_decomp.config import Profile
 
 HANG_SECONDS = 15.0
@@ -47,7 +47,7 @@ class Watcher:
             events.append(
                 {
                     "event": stopped.get("outcome", "stop"),
-                    "subject": stopped.get("subject"),
+                    **{k: v for k, v in stopped.items() if k != "outcome"},
                     **base,
                     "stacks": state.get("stacks", []),
                 }
@@ -99,10 +99,13 @@ def watch(profile: Profile, *, once: bool, interval: float = 1.0) -> int:
                 raise DecompError("tas.watch", f"cannot read {url}: {error}") from error
             events = []  # the page restarting is not an event
         for event in events:
-            if event.get("stacks"):
-                found = arity.notes(profile, arity.frame_names(event["stacks"]))
-                if found:
-                    event["arity"] = found
+            if event["event"] in ("hang", "end") and not (event["event"] == "end" and event.get("exit") == 0):
+                what = (
+                    {"outcome": "hang"}
+                    if event["event"] == "hang"
+                    else {"outcome": "exit", "subject": f"exit {event['exit']}"}
+                )
+                event.update(tas_triage.claim(profile, what))
             sys.stdout.write(json.dumps(event, sort_keys=True) + "\n")
             sys.stdout.flush()
             if once:

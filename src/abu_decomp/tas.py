@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, arity
+from abu_decomp import DecompError, tas_triage
 from abu_decomp.config import Profile, check_keys
 
 SCHEMA = 1
@@ -338,7 +338,6 @@ def play(profile: Profile, name: str, *, now: datetime | None = None) -> dict[st
     stacks = [str(p) for p in sorted(run.glob("*-st*.txt")) + sorted(run.glob("*-threads.txt"))]
     if stacks:
         result["stacks"] = stacks
-        found = arity.notes(profile, arity.frame_names(stacks))
-        if found:
-            result["arity"] = found  # the first thing to fix: the failing frame's function disagrees with its callers
+    # Kind, blocking, what cannot help, owner, arity note and one next command (the arity note comes first when set).
+    result.update(tas_triage.claim(profile, result, stacks))
     return result
