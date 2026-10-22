@@ -27,7 +27,7 @@ from typing import Any
 from unbake import build as unbake_build
 from unbake import treelock
 
-from abu_decomp import DecompError, claims, events, land, meter, nextcmd, priority, tools
+from abu_decomp import DecompError, claims, events, land, meter, nextcmd, priority, shipproof, tools
 from abu_decomp.config import Profile
 from abu_decomp.ship_batch import Batch, restrict
 
@@ -134,7 +134,21 @@ class Ship:
         worktree: str | None = None,
         from_try: str | None = None,
         invoke: Callable[..., Any] = tools.invoke,
+        build: land.Run = land.build_process,
+        proof: bool = True,
+        prove: Callable[..., dict[str, Any]] = shipproof.prove,
+        regen: bool = False,
+        regen_min: int = 6,
+        regen_age: float = 900.0,
+        regen_now: bool = False,
+        spawn: Callable[[], None] | None = None,
     ) -> None:
+        self.proof, self.prove, self.spawn, self.build = proof, prove, spawn, build
+        self.regen, self.regen_min, self.regen_age, self.regen_now = regen, regen_min, regen_age, regen_now
+        self.records: dict[str, dict[str, Any]] = {}  # lane -> its proof record (shipproof), when it has one
+        self.carry, self.kept = False, None  # this round builds nothing / the extraction kept for a refused land
+        self.landed: dict[str, str] = {}  # lane -> its commit
+        self.held = 0.0  # when this ship took the lock
         self.profile, self.patches, self.messages = profile, list(patches), dict(messages or {})
         self.from_try, self.invoke = from_try, invoke  # from_try: the function whose proven candidate is the input
         self.worktree: str | None = worktree  # the work tree's own tracked changes are the input (see capture)
@@ -145,7 +159,9 @@ class Ship:
             raise ShipError("ship.tree", f"{self.tree} is not a git checkout")
         if sum(map(bool, (self.worktree, self.patches, self.from_try))) > 1:
             raise ShipError("ship.arguments", "--patch, --worktree and --from-try are each the input; give one")
-        if not (self.patches or self.worktree or self.from_try):
+        if self.regen and (self.patches or self.worktree or self.from_try):
+            raise ShipError("ship.arguments", "--regen takes no input")
+        if not (self.patches or self.worktree or self.from_try or self.regen):
             raise ShipError("ship.arguments", "ship needs at least one --patch, --worktree NAME or --from-try F")
         if len({lane for lane, _ in self.patches}) != len(self.patches):
             raise ShipError("ship.arguments", "two --patch inputs carry one lane name; each input needs its own")
@@ -241,13 +257,55 @@ class Ship:
         """The inputs of the ships queued behind this one land in this round (one commit per input)."""
         if self.batch is None or self.from_try:
             return
-        rows = self.batch.adopt({lane for lane, _ in self.patches})
+        rows = self.batch.adopt({lane for lane, _ in self.patches}, self.accepts())
         self.patches += rows
         self.messages.update(self.batch.messages)
         if rows:
             lanes = ", ".join(lane for lane, _ in rows)
             self.steps.append({"step": "batch", "seconds": 0.0, "adopted": [lane for lane, _ in rows]})
             sys.stderr.write(f"decomp: landing the queued inputs of {lanes} in this round\n")
+
+    def proven(self, rows: Sequence[tuple[str, Path]]) -> list[dict[str, Any]] | None:
+        """The passing proof records of `rows` (built here or stored by their own ship), None if any input has none."""
+        found = []
+        for lane, path in rows:
+            try:
+                record = self.records.get(lane) or shipproof.load(self.common(), shipproof.patch_hash(path))
+            except OSError:
+                return None
+            if not record or not record.get("pass"):
+                return None
+            found.append(record)
+        return found
+
+    def accepts(self) -> Callable[[list[tuple[str, Path]]], bool] | None:
+        """Which queued inputs may join this round (10-22: an unproven input in a batch of 8 broke the build and the
+        bisect held the lock 58 min): none unless this ship's own inputs carry passing proofs, and then only inputs
+        with their own passing proof whose fact-file rows (name or address) clash with no input already in the round.
+        While the round carries over, an input must also hold on the branch tip."""
+        if self.worktree or self.from_try:
+            return None
+        own = self.proven(self.patches) if self.proof else None
+        if own is None:
+            return lambda rows: False
+        try:
+            tip = self.peek()
+        except DecompError:
+            return lambda rows: False
+        carrying = self.carry_mode(tip, self.patches)
+        taken = {row for record in own for ids in record["rows"].values() for row in ids}
+
+        def accept(rows: list[tuple[str, Path]]) -> bool:
+            records = self.proven(rows)
+            if records is None or (carrying and not self.carry_mode(tip, rows)):
+                return False
+            ids = {row for record in records for found in record["rows"].values() for row in found}
+            if ids & taken:
+                return False
+            taken.update(ids)
+            return True
+
+        return accept
 
     @staticmethod
     def first(tickets: Path, mine: Path) -> bool:
@@ -294,6 +352,78 @@ class Ship:
             if not (why.startswith("this process runs in no systemd") or "not found" in why):
                 sys.stderr.write(f"decomp: {message}\n")
             self.notes.append({"key": "ship.boost", "message": message, "blocking": False})
+
+    def peek(self) -> str:
+        """The branch tip, fetched; the tree stays where it is."""
+        self.git("fetch", "-q", self.remote, self.branch)
+        return self.git("rev-parse", "--verify", "FETCH_HEAD^{commit}")[1].strip()
+
+    def generated_globs(self) -> tuple[str, ...]:
+        return tuple(land.settings(self.profile, self.tree)["regenerated_paths"])
+
+    def proofs(self) -> dict[str, Any] | None:
+        """Before the queue wait: every `--patch` input that has a work tree (`<tree>/../wt/<LANE>`) gets its proof
+        record, built there in the lane's own time (shipproof.prove) and stored beside the lock. A patch whose proof
+        build fails is refused here, at once, not after the queue. The refusing finding, None when all pass."""
+        if not self.proof or self.worktree or self.from_try:
+            return None
+        common = self.common()
+        for lane, path in self.patches:
+            try:
+                digest = shipproof.patch_hash(path)
+            except OSError:
+                continue  # a missing patch file is the land's refusal
+            record = shipproof.load(common, digest)
+            if record is None or not record["pass"]:
+                if shipproof.worktree_of(self.tree, lane) is None:
+                    continue
+                began = self.clock()
+                try:
+                    record = self.prove(self.profile, self.tree, lane, path, run=self.run)
+                except shipproof.NoProof as why:
+                    self.notes.append({"key": why.key, "message": f"{lane}: {why.detail}", "blocking": False})
+                    continue
+                self.step("proof", began, lane=lane, ok=record["pass"], units=len(record["units"]))
+                shipproof.store(common, record)
+                if not record["pass"]:
+                    broken = [v for v, row in record["roms"].items() if not row["ok"]]
+                    why = f"ROM {', '.join(broken)} differs" if broken else "the build in the work tree failed"
+                    return {
+                        "key": "ship.proof_failed",
+                        "message": f"lane {lane}: the proof build of this patch failed in its work tree ({why}); "
+                        "`--no-proof` lands it with the full gates",
+                        "blocking": True,
+                        "lane": lane,
+                        "tail": record.get("tail", ""),
+                    }
+            self.records[lane] = record
+        return None
+
+    def carry_mode(self, tip: str, rows: Sequence[tuple[str, Path]]) -> bool:
+        """Whether every input of `rows` brings a proof that still holds on `tip` (shipproof.judge): such a round
+        builds nothing. The reason of the first input that does not is kept in `self.carry_why`."""
+        if not self.proof or self.worktree or self.from_try or not rows:
+            return False
+        common, generated = self.common(), self.generated_globs()
+        for lane, path in rows:
+            try:
+                digest = shipproof.patch_hash(path)
+            except OSError:
+                self.carry_why = f"{lane}: patch file unreadable"
+                return False
+            ok, why = shipproof.judge(
+                self.records.get(lane) or shipproof.load(common, digest),
+                digest,
+                tip,
+                lambda *args: self.git(*args, ok=False),
+                generated,
+            )
+            if not ok:
+                self.carry_why = f"{lane}: {why}"
+                return False
+        return True
+
+    carry_why = ""
 
     def tip(self) -> str:
         """Fetch the branch and move the tree to its tip: only the files that differ are rewritten, so the build
@@ -503,6 +633,7 @@ class Ship:
             self.git("update-index", "--add", "--remove", "--", *plan["files"])
             body = ["-m", plan["body"]] if plan["body"] else []
             self.git("commit", "-q", "-m", plan["message"], *body, "--", *plan["files"], env=env)
+            self.landed[plan["lane"]] = self.git("rev-parse", "HEAD")[1].strip()
         sha = self.git("rev-parse", "HEAD")[1].strip()
         self.step("commit", started, sha=sha)
         return sha
@@ -522,7 +653,8 @@ class Ship:
         """Land the inputs on `base` in one round. An input that lands only in part (`land.file_refused`) is refused
         whole: the tree goes back to `base` and the others land again without it."""
         while True:
-            outcome = self.landing(self.profile, self.tree, base, inputs, messages=self.messages)
+            more = {"carry": True} if self.carry else {}
+            outcome = self.landing(self.profile, self.tree, base, inputs, messages=self.messages, **more)
             result, code, findings = outcome
             split = [f for f in findings if f.get("key") == "land.file_refused"]
             if code and not split:
@@ -585,11 +717,22 @@ class Ship:
         return None
 
     def execute(self) -> Result:
+        outcome = self.locked()
+        self.after_lock(outcome)
+        return outcome
+
+    def locked(self) -> Result:
         started = self.clock()
         if refusal := self.precheck():
             lanes = ", ".join(lane for lane, _ in self.patches) or self.worktree or self.from_try or ""
             shipped = {"lane": lanes, "inputs": [], "base": None, "pushed": None, "functions": [], "seconds": 0.0,
                        "cpu": 0.0, "steps": [], "refused": refusal, "land": {}}  # fmt: skip
+            return shipped, 1, [refusal]
+        if refusal := self.proofs():  # the lane's own work tree proves the patch before it takes a turn
+            lanes = ", ".join(lane for lane, _ in self.patches)
+            shipped = {"lane": lanes, "inputs": [], "base": None, "pushed": None, "functions": [], "seconds":
+                       round(self.clock() - started, 3), "cpu": 0.0, "steps": self.steps, "refused": refusal,
+                       "land": {}}  # fmt: skip
             return shipped, 1, [refusal]
         try:
             handle = self.lock()
@@ -597,29 +740,40 @@ class Ship:
             shipped, code, findings = adopted.result
             return {**shipped, "seconds": round(self.clock() - started, 3)}, code, findings
         self.step("queue", started)  # the wait for the ticket and the ship lock, apart from the ship's own work
+        self.held = self.clock()
         try:
+            if self.regen:
+                with treelock.hold(self.tree, exclusive=True, who="ship regen"):
+                    regenerated = self.regenerate()
+                    regenerated[2].extend(self.unpark())
+                    return regenerated
             for row in self.notices():  # every ship says it until the owner takes the parked change back
                 self.notes.append({"key": "ship.parked", "message": _parked_line(row), "blocking": False})
                 sys.stderr.write(f"decomp: {_parked_line(row)}\n")
             # sync, check and commit rewrite tracked files and the extraction: readers of the tree (recipe try, work,
             # unbake probe) wait for the window, and their waits are the readers' to print
             with treelock.hold(self.tree, exclusive=True, who="ship"):
-                kept = self.keep_extraction()
+                # a round whose inputs all carry proofs that hold builds nothing: the extraction is not touched
+                try:
+                    self.carry = self.carry_mode(self.peek(), self.patches)
+                except DecompError:
+                    self.carry = False
+                self.kept = None if self.carry else self.keep_extraction()
                 try:
                     if self.from_try:
                         self.enter(self.from_try)
                     outcome = self.attempts(started)
                 except BaseException:
                     self.abandon()
-                    self.unwind(kept)
+                    self.unwind(self.kept)
                     self.unpark()
                     raise
                 if outcome[0].get("pushed"):
                     self.settle(outcome[0]["pushed"])
-                    self.drop(kept)
+                    self.drop(self.kept)
                 else:
                     self.abandon()
-                    self.unwind(kept)
+                    self.unwind(self.kept)
                     gates = [
                         g for a in (outcome[0].get("land") or {}).get("attempts") or () for g in a.get("gates", ())
                     ]
@@ -726,6 +880,9 @@ class Ship:
     def attempts(self, started: float) -> Result:
         for attempt in (1, 2):
             base = self.tip()
+            self.carry = self.carry_mode(base, self.patches)
+            if not self.carry and self.kept is None:
+                self.kept = self.keep_extraction()  # the branch moved under a carried round: this one builds
             self.refused = []
             landing = self.clock()
             result, code, findings = self.land_all(base, list(self.patches))
@@ -742,6 +899,7 @@ class Ship:
                 )
                 return self.finish({**result, "pass": False}, findings, base, None, started)
             if self.push():
+                self.stamp(base, result)
                 return self.finish(result, findings, base, sha, started)
             self.clean(base)  # the landed commits stay local only; the next tip moves on
             if attempt == 2:
@@ -795,6 +953,8 @@ class Ship:
             "pushed": sha,
             "functions": names,
             "seconds": round(self.clock() - started, 3),
+            "lock_seconds": round(self.clock() - self.held, 1) if self.held else 0.0,  # holding the ship lock
+            "carried": self.carry,  # no build: the lanes' proofs held on the branch tip
             "cpu": round(meter.cpu() - self.cpu_start, 1),  # the ship's own and its children's, beside the wall
             "steps": self.steps,
             "refused": None if sha else (refusal or {"key": "ship.refused", "message": "the land refused the inputs"}),
@@ -831,6 +991,136 @@ class Ship:
         if sha:  # what refused an input is that input's outcome (`inputs`), not the ship's
             findings = [{**f, "blocking": False} if f.get("key") in INPUT_REFUSALS else f for f in findings]
         return shipped, int(sha is None), findings
+
+    # proof records and the batch regeneration -------------------------------------------------------------------
+    def stamp(self, base: str, result: dict[str, Any]) -> None:
+        """Store the proof with each commit this ship pushed: `decomp-ship.landed/<sha>.json` and a git note under
+        refs/notes/ship-proof (pushed after the lock is released). A commit of a full land carries the gates it ran."""
+        folder = self.common() / shipproof.LANDED
+        folder.mkdir(exist_ok=True)
+        gates = [{k: g.get(k) for k in ("gate", "pass", "seconds")} for g in result.get("gates", [])]
+        for lane, sha in self.landed.items():
+            body = {
+                "v": shipproof.VERSION,
+                "lane": lane,
+                "commit": sha,
+                "base": base,
+                "mode": "carried" if self.carry else "full",
+                "proof": self.records.get(lane),
+                "gates": gates,
+                "lock_seconds": round(self.clock() - self.held, 1),
+            }
+            (folder / f"{sha}.json").write_text(json.dumps(body, default=str))
+            note = {**body, "proof": body["proof"] and {k: v for k, v in body["proof"].items() if k != "units"}}
+            code, text = shipproof.annotate(self.run, self.tree, sha, note, self.identity())
+            if code:
+                self.notes.append({"key": "ship.proof_note", "message": f"no note on {sha[:12]}: {text.strip()[-200:]}",
+                                   "blocking": False})  # fmt: skip
+
+    def after_lock(self, outcome: Result) -> None:
+        """With the ship lock released: the notes go to the remote, and a carried push starts the batch regeneration
+        of the generated files (README, maps, overview, progress) that no carried commit wrote."""
+        if not outcome[0].get("pushed") or self.regen or not self.held:  # only the ship that held the lock
+            return
+        code, text = self.git("push", "-q", self.remote, f"refs/notes/{shipproof.NOTES}", ok=False)
+        if code:
+            sys.stderr.write(f"decomp: proof notes not pushed: {text.strip()[-200:]}\n")
+        if outcome[0].get("carried"):
+            with suppress(OSError, DecompError):
+                (self.spawn or self.start_regen)()
+
+    def start_regen(self) -> None:
+        """`decomp ship --regen` detached (one at a time): it takes a ticket like any ship and regenerates when due."""
+        from abu_decomp.ship_batch import alive
+
+        pending = self.common() / "decomp-ship.regen.pending"
+        with suppress(OSError, ValueError):
+            if alive(int(pending.read_text())):
+                return
+        argv = [sys.executable, "-m", "abu_decomp", "--profile", str(self.profile.source_file),
+                "ship", "--tree", str(self.tree), "--regen"]  # fmt: skip
+        with (self.common() / "decomp-regen.log").open("a") as log:
+            child = subprocess.Popen(
+                argv, cwd=self.tree, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True
+            )
+        pending.write_text(str(child.pid))
+
+    def regenerate(self) -> Result:
+        """`--regen` (the ship lock and the tree lock held): once enough carried ships or enough time passed since the
+        last regeneration, build the branch tip (the verifier: red is a finding), run `unbake sync --settle` and commit
+        the generated files it changes in one commit. Not due, or nothing changed: no commit."""
+        started = self.clock()
+        common = self.common()
+        mark_path, pending = common / "decomp-regen.json", common / "decomp-ship.regen.pending"
+        try:
+            mark = json.loads(mark_path.read_text())
+        except (OSError, ValueError):
+            mark = {}
+        try:
+            sha = self.tip()
+            last = mark.get("sha")
+            span = f"{last}..{sha}" if last and self.git("cat-file", "-e", last, ok=False)[0] == 0 else sha
+            subjects = self.git("log", "--format=%s", span)[1].splitlines()
+            count = len([s for s in subjects if not s.startswith("Regenerate ")])
+            age = time.time() - mark.get("time", 0.0)
+            due = self.regen_now or (count > 0 and (count >= self.regen_min or age >= self.regen_age))
+            report: dict[str, Any] = {"due": due, "pending": count, "tip": sha}
+            if not due:
+                return {"lane": "regen", "pushed": None, "regen": report, "steps": self.steps}, 0, self.notes
+            table = land.settings(self.profile, self.tree)
+            began = self.clock()
+            self.invoke("unbake", self.profile, ["setup", "--no-make"], project=self.tree)
+            jobs = None
+            if table["jobs"]:
+                code, out, _ = self.run(table["jobs"], self.tree, None, 60)
+                jobs = int(out.strip()) if not code and out.strip().isdigit() else None
+            env = {**os.environ, "UNBAKE_HOST": str(tools.host_file(self.profile))}
+            env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+            code, out, err = self.build(land.build_command(table["check"], jobs), self.tree, env, table["timeout"])
+            verdict = self.invoke("unbake", self.profile, ["verify", str(code)], project=self.tree)
+            self.step("regen_build", began, ok=code == 0)
+            red = common / "decomp-ship.red.json"
+            if code or not verdict.ok:
+                tail = "\n".join((out + err).strip().splitlines()[-12:])
+                red.write_text(json.dumps({"sha": sha, "time": time.time(), "tail": tail}))
+                self.clean(sha)
+                finding = {"key": "ship.main_red", "blocking": True, "tail": tail,
+                           "message": f"{self.remote}/{self.branch} {sha[:12]} does not build all five ROMs "
+                                      f"({red}): a forward fix on main"}  # fmt: skip
+                return {"lane": "regen", "pushed": None, "regen": report, "steps": self.steps}, 1, [finding]
+            red.unlink(missing_ok=True)
+            began = self.clock()
+            called = self.invoke("unbake", self.profile, ["sync", "--settle"], project=self.tree)
+            self.step("regen_sync", began, ok=bool(called.ok))
+            if not called.ok:
+                self.clean(sha)
+                found = [{"key": "ship.regen_sync", "blocking": True, "message": "unbake sync --settle refused"}]
+                return {"lane": "regen", "pushed": None, "regen": report, "steps": self.steps}, 1, found
+            result = called.document.get("result") if isinstance(called.document, dict) else None
+            written = {w for w in (result or {}).get("written", []) if isinstance(w, str)}
+            names = set(self.git("diff", "HEAD", "--name-only", "--no-renames")[1].splitlines())
+            names |= written & set(self.git("ls-files", "--others", "--exclude-standard")[1].splitlines())
+            files = sorted(names)
+            pushed = None
+            if files:
+                self.git("update-index", "--add", "--remove", "--", *files)
+                self.git("commit", "-q", "-m", f"Regenerate maps and progress after {count} ships", "--", *files,
+                         env=self.identity())  # fmt: skip
+                pushed = self.git("rev-parse", "HEAD")[1].strip()
+                if not self.push():
+                    self.clean(sha)
+                    pushed = None
+                    moved = "the branch moved during the regeneration; the next one redoes it"
+                    self.notes.append({"key": "ship.moved", "blocking": False, "message": moved})
+                    return {"lane": "regen", "pushed": None, "regen": report, "steps": self.steps}, 0, self.notes
+            mark_path.write_text(json.dumps({"sha": pushed or sha, "time": time.time()}))
+            report["files"] = files
+            return {"lane": "regen", "pushed": pushed, "regen": report, "steps": self.steps,
+                    "seconds": round(self.clock() - started, 1)}, 0, self.notes  # fmt: skip
+        finally:
+            with suppress(OSError, ValueError):
+                if int(pending.read_text()) == os.getpid():
+                    pending.unlink()
 
 
 def ship(profile: Profile, tree: Path, patches: Sequence[tuple[str, Path]], **hooks: Any) -> Result:

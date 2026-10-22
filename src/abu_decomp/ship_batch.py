@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +76,9 @@ class Batch:
         except (OSError, ValueError):
             return None
 
-    def adopt(self, taken: set[str]) -> list[tuple[str, Path]]:
+    def adopt(
+        self, taken: set[str], accept: Callable[[list[tuple[str, Path]]], bool] | None = None
+    ) -> list[tuple[str, Path]]:
         """Take the live, intact inputs waiting behind this ship, oldest first; the lanes they add come back as
         (lane, patch) rows and their messages as `self.messages`."""
         rows: list[tuple[str, Path]] = []
@@ -93,6 +96,8 @@ class Batch:
             if not alive(pid) or not lanes or any(lane in taken for lane, _ in lanes):
                 continue
             if any(not file.is_file() for _, file in lanes):
+                continue
+            if accept is not None and not accept(lanes):  # left in the queue: it lands in its own turn
                 continue
             claimed = path.with_name(f"{path.stem}.claimed-{os.getpid()}")
             try:

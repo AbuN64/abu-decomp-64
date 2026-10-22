@@ -512,6 +512,23 @@ def _ship_arguments(parser: argparse.ArgumentParser) -> None:
         "it back exactly as it was",
     )
     parser.add_argument(
+        "--no-proof",
+        action="store_true",
+        help="land every input with the full gates under the lock: no proof is built in the lane's work tree and none "
+        "is carried over",
+    )
+    parser.add_argument(
+        "--regen",
+        action="store_true",
+        help="regenerate README, maps, overview and progress in one commit once enough carried ships landed (a carried "
+        "ship starts this itself); the branch tip is built first, red is a finding",
+    )
+    parser.add_argument("--regen-now", action="store_true", help="with --regen: regenerate even when not yet due")
+    parser.add_argument("--regen-min", type=int, default=6, help="with --regen: carried ships that make it due")
+    parser.add_argument(
+        "--regen-age", type=float, default=900.0, help="with --regen: seconds since the last that make it due"
+    )
+    parser.add_argument(
         "--from-try",
         metavar="F[:MESSAGE]",
         help="the candidate `recipe try F` proved exact is the input: `unbake submit` writes it into the tree (no diff "
@@ -523,6 +540,13 @@ def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     from abu_decomp.land import parse_messages, parse_patches
     from abu_decomp.ship import ship
 
+    if args.regen:
+        if args.patch or args.worktree or args.from_try:
+            raise DecompError("ship.arguments", "--regen is a ship of its own; give it no input")
+        return ship(
+            _profile(args.profile), args.tree, [], regen=True, regen_now=args.regen_now,
+            regen_min=args.regen_min, regen_age=args.regen_age,
+        )  # fmt: skip
     if args.from_try:
         name, _, message = args.from_try.partition(":")
         messages = {name: message.strip()} if message.strip() else {}
@@ -530,7 +554,13 @@ def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     if args.patch and args.worktree:
         raise DecompError("ship.arguments", "--worktree is the input itself; give it without --patch")
     if args.patch:
-        return ship(_profile(args.profile), args.tree, parse_patches(args.patch), messages=parse_messages(args.patch))
+        return ship(
+            _profile(args.profile),
+            args.tree,
+            parse_patches(args.patch),
+            messages=parse_messages(args.patch),
+            proof=not args.no_proof,
+        )
     name, _, message = (args.worktree or "worktree").partition(":")
     return ship(
         _profile(args.profile),

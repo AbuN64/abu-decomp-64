@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import threading
@@ -13,6 +14,7 @@ from typing import Any
 
 import test_ship
 
+from abu_decomp import shipproof
 from abu_decomp.ship import ship
 from abu_decomp.ship_batch import Batch, restrict
 
@@ -43,6 +45,9 @@ class BatchTests(unittest.TestCase):
     def test_two_queued_ships_land_in_one_round_and_each_gets_its_own_result(self) -> None:
         calls: list[list[str]] = []
         common = self.tree / ".git"
+        empty = hashlib.sha256(b"").hexdigest()  # both patch files end up empty: one passing proof serves both
+        proof = shipproof.build_record("L", "B", empty, shipproof.describe(""), {}, {}, {"check": True})
+        shipproof.store(common, proof)  # only a proven input joins another ship's round
         held = os.open(common / "decomp-ship.lock", os.O_RDWR | os.O_CREAT)
         fcntl.flock(held, fcntl.LOCK_EX)
         out: dict[str, Any] = {}

@@ -922,8 +922,10 @@ class Landing:
         splat_file_check: Callable[[Sequence[str]], dict[str, str] | None] | None = None,
         ready: Callable[[], None] | None = None,
         behave: Callable[[Any], tuple[dict[str, Any], int, list[dict[str, Any]]]] | None = None,
+        carry: bool = False,
     ) -> None:
         self.behave = behave
+        self.carry = carry  # every input brings a proof that still holds (shipproof.judge): nothing is built here
         self.config = settings(profile, tree)
         self.tree = tree.expanduser().resolve()
         if not self.tree.is_dir():
@@ -2015,7 +2017,18 @@ class Landing:
             os.unlink(name)
 
     # run --------------------------------------------------------------------------------------------------------
+    def carried(self) -> bool:
+        """The build gates of a round whose inputs carry their proofs: the lanes built and verified these exact files
+        in their own work trees (shipproof), so setup, check, sync and audit are recorded as carried, not run. What
+        `unbake sync` would write (README, maps, progress) is regenerated in a batch after the push (ship --regen)."""
+        started = self.clock()
+        for name in ("setup", "check", "sync_after", "audit"):
+            self.gate(name, True, started, carried=True)
+        return True
+
     def build_stages(self) -> list[Callable[[], bool]]:
+        if self.carry and self.config["mode"] != "plain":
+            return [self.carried]
         if self.config["mode"] == "plain":
             return [self.steps, *([self.pin_check] if self.config["pin"] else [])]
         unbake = self.unbake
@@ -2035,11 +2048,11 @@ class Landing:
                 *([self.recipe] if self.config["recipe"] else []),
             ]
         return [
-            self.attribute,
+            *([] if self.carry else [self.attribute]),
             self.markers,
             self.untracked,
             self.standalone,
-            self.readme,
+            *([] if self.carry else [self.readme]),
             *([self.evidence] if self.config["evidence"] else []),
             *([self.arity] if self.config["arity"] else []),
             *([self.recipe] if self.config["recipe"] else []),
@@ -2246,6 +2259,7 @@ class Landing:
             "base": self.extra.get("base", self.base),
             "head": self.extra.get("head"),
             "pass": not failed,
+            **({"carried": True} if self.carry else {}),
             "gates": self.gates,
             "cpu": round(self.cpu_mark - self.cpu_start, 2),  # the gates' CPU, summed
             "lanes": self.lanes,
