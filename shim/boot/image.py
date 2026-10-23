@@ -31,6 +31,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import addrscan
 import policy  # noqa: E402
+import srcfiles  # noqa: E402
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 FUNCTION = re.compile(r"INCLUDE_ASM|\)\s*\{|^\{", re.M)
@@ -97,7 +98,7 @@ def placements(source, version=None):
             current = ((match[1], int(match[2], 16)), int(match[3], 16))
             continue
         match = INPUT.match(line)
-        if match and match[1].endswith((".CPP", ".c")):
+        if match and srcfiles.is_source(match[1]):
             rows.append((match[1], *(current or (None, None)), line[match.end():]))
     return rows
 

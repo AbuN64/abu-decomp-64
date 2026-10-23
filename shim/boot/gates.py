@@ -46,6 +46,7 @@ import tempfile
 import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import portdir  # noqa: E402
+import srcfiles  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
@@ -67,9 +68,7 @@ PROBE_VERSION = 1  # bump when probe_source/probe_unit change what a struct's pr
 def unit_list(source):
     """Every original unit, as the cmake glob sees it (libgcc excluded), sorted src-relative paths."""
     source = pathlib.Path(source)
-    out = [str(p.relative_to(source)) for p in (source / "src").rglob("*")
-           if p.suffix in (".CPP", ".c") and "/libgcc/" not in str(p)]
-    return sorted(out)
+    return sorted(str(p.relative_to(source)) for p in srcfiles.sources(source))
 
 
 def load_policy(adapter=HERE):
@@ -705,7 +704,7 @@ def subword_rows(source, version, pin):
               "signed char": 1}
     decl = re.compile(r"\bextern\s+(?:volatile\s+)?((?:unsigned |signed )?\w+)\s+(\*?)\s*(D_\w+)\s*;")
     types, users = {}, {}
-    for p in list((source / "src").rglob("*.CPP")) + list((source / "include").rglob("*.H")):
+    for p in srcfiles.sources(source) + srcfiles.headers(source):
         for m in decl.finditer(p.read_text(errors="replace")):
             types.setdefault(m.group(3), set()).add("ptr" if m.group(2) else m.group(1))
             users.setdefault(m.group(3), set()).add(str(p.relative_to(source)))

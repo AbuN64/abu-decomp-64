@@ -18,7 +18,7 @@ triggers nothing, except that with `propose` its new commits run the proposals a
 
     "cycle": {
       "sources": ["src", "include"],          relative to tools.project; watched recursively
-      "suffixes": [".c", ".h", ".s"],         a change counts only for these suffixes (case-sensitive)
+      "suffixes": [".c", ".h", ".s"],         a change counts only for these suffixes (case-blind)
       "exclude": ["build"],                   directory names never watched
       "settle_seconds": 2,
       "recipe": ["check", "--all"],           Recipe Maker command and arguments; omit for report-only
@@ -88,7 +88,7 @@ def settings(profile: Profile) -> dict[str, Any]:
     project = tools.project_dir(profile) if sources or report or table.get("recipe") or propose else None
     return {
         "sources": [project / value for value in sources] if project else [],
-        "suffixes": tuple(table.get("suffixes", ())),
+        "suffixes": tuple(s.lower() for s in table.get("suffixes", ())),
         "exclude": frozenset(table.get("exclude", ())),
         "settle": float(table.get("settle_seconds", 2)),
         "recipe": list(table["recipe"]) if table.get("recipe") else None,
@@ -164,9 +164,9 @@ class Cycle:
             if mask & ISDIR:
                 if mask & (CREATE | MOVED_TO) and path.name not in self.config["exclude"] and path.is_dir():
                     self.add_tree(path)
-                    found.extend(str(item) for item in path.rglob("*") if item.name.endswith(self.config["suffixes"]))
+                    found.extend(str(item) for item in path.rglob("*") if item.name.lower().endswith(self.config["suffixes"]))
                 continue
-            if path.name.endswith(self.config["suffixes"]):
+            if path.name.lower().endswith(self.config["suffixes"]):
                 found.append(str(path))
         return found
 

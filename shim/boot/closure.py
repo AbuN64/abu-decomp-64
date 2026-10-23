@@ -31,6 +31,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(HERE))
 import needs as needsfeed  # noqa: E402
 import policy  # noqa: E402
+import srcfiles  # noqa: E402
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import portdir  # noqa: E402
 NAMED = re.compile(r"D_auto_(8[0-9A-F]{7})")
@@ -45,8 +46,7 @@ class Facts:
     """The pinned source tree, its us-rev1 addresses and the shim's libultra identifications."""
 
     def __init__(self, source, shim_dir, shim_bindings, game=frozenset()):
-        units = sorted(p for p in (source / "src").rglob("*")
-                       if p.suffix in (".CPP", ".c") and "/libgcc/" not in str(p))
+        units = srcfiles.sources(source)
         self.source = source
         self.text = {str(p.relative_to(source)): p.read_text(errors="replace") for p in units}
         self.addrs = policy.pinned(source, "us-rev1")

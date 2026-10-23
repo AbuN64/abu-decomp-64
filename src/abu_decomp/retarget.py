@@ -111,8 +111,8 @@ def rewrite(text: str, renames: Renames) -> str:
         )
         text = pattern.sub(lambda m: renames.symbols[m[1]], text)
     for old, new in renames.files.items():
-        if old.endswith(
-            (".H", ".h", ".hpp")
+        if old.lower().endswith(
+            (".h", ".hh", ".hpp", ".hxx")
         ):  # the includes that name a moved header, spelled with or without include/
             for spelled, target in ((old, new), (old.removeprefix("include/"), new.removeprefix("include/"))):
                 text = re.sub(
