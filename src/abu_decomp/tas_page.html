@@ -892,7 +892,7 @@ function coverageSection() {
     const b = btn((k === "oracle_only" ? "oracle reaches, port never " : "nobody reaches ") + (st[k.replace("_", "-")] || 0), () => { ui.covTab = k; renderWork(); }, ui.covTab === k ? "on" : "");
     return b;
   }));
-  const rows = (d[ui.covTab] || []).slice(0, 40).map(r => el("div", "item", el("div", "l1", el("span", "grow ell mono", r.name), el("span", "mono dim", `${r.size} B`)),
+  const rows = (d[ui.covTab] || []).slice(0, 40).map(r => el("div", "item", el("div", "l1", el("span", "grow ell mono", (() => { const a = el("a", "", r.name); a.href = "/fn/" + encodeURIComponent(r.name); a.title = "behave runs, coverage and call tree"; return a; })()), el("span", "mono dim", `${r.size} B`)),
     el("div", "l2", `${r.file || "?"} · port ${r.port.hit ? `${r.port.movie} @${r.port.poll}` : r.port_linked === false ? "not linked" : "never"} · oracle ${r.oracle.hit ? `${r.oracle.movie} @${r.oracle.poll}` : "never"}`)));
   const link = el("a", "", "full report"); link.href = "/coverage/"; link.target = "_blank";
   return section("Coverage", link, sum, tabs, ...rows);
@@ -1558,7 +1558,7 @@ async function openCell(i) {
   p.replaceChildren(el("h2", "", "Call tree"), title);
   if (!k || !k.graph) { p.append(el("div", "empty", "no static call graph for this function (the coverage ELF is not readable here)")); return; }
   p.append(el("div", "mono dim", `${k.callers.length} callers above, ${k.callees.length} callees below · ${k.path_kind} · per-run call stacks are not kept`));
-  if (k.path.length > 1) p.append(el("div", "mz-path mono", "static path: " + k.path.slice().reverse().join(" → ")));
+  if (k.path.length > 1) p.append(el("div", "mz-path mono", "static path: " + k.path.join(" → ")));
   const list = (items, dir, none) => items.length ? items.slice(0, 80).map(n => nodeRow(n, dir, 0)) : [el("div", "mono dim", none)];
   p.append(el("div", "mz-side", el("div", "mz-h", "callers"), ...list(k.callers, "up", "none (a root, or reached only through a pointer)")),
     el("div", "mz-self mono", c.name), el("div", "mz-side", el("div", "mz-h", "callees"), ...list(k.callees, "down", "none")));

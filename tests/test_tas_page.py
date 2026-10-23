@@ -342,6 +342,36 @@ def bmp(width: int = 320, height: int = 240, rgb: tuple = (40, 90, 140)) -> byte
     return head + info + pixels
 
 
+MAZE = {
+    "generated": 1,
+    "version": "us-rev1",
+    "exact": True,
+    "total": 4,
+    "covered": 3,
+    "real_c": 3,
+    "covered_pct": 75.0,
+    "real_pct": 75.0,
+    "modules": [
+        {"name": "game/a", "cells": [["func_A_de", 16, "exact", 1, 0], ["func_B_de", 32, "fuzzy", 1, 1]]},
+        {"name": "game/b", "cells": [["func_C_de", 8, "none", 1, 1], ["func_D_de", 8, "exact", 0, -1]]},
+    ],
+    "replays": [
+        {"name": "movie-one", "start": "power-on", "status": "ok", "polls": 9, "cells": [0, 1]},
+        {"name": "movie-two", "start": "boot", "status": "crash", "polls": 3, "cells": [1, 2]},
+    ],
+    "movies": ["movie-one", "movie-two"],
+}
+CALLS = {
+    "name": "func_A_de",
+    "self": {"name": "func_A_de", "size": 16, "state": "exact", "covered": True, "by_movie": None},
+    "callers": [{"name": "func_Caller_de", "size": 4, "state": "fuzzy", "covered": True, "by_movie": None}],
+    "callees": [{"name": "func_Callee_de", "size": 4, "state": "none", "covered": False, "by_movie": None}],
+    "path": ["func_Caller_de", "func_A_de"],
+    "path_kind": "static (jal targets of the ELF)",
+    "graph": True,
+}
+
+
 class Stub:
     """Serves the page and the contract endpoints from mock data; records POSTs."""
 
@@ -368,6 +398,10 @@ class Stub:
                     self.reply(json.dumps(stub.state).encode(), "application/json")
                 elif path == "/api/coverage":
                     self.reply(json.dumps(COVERAGE).encode(), "application/json")
+                elif path == "/api/maze":
+                    self.reply(json.dumps(MAZE).encode(), "application/json")
+                elif path.startswith("/api/calls/"):
+                    self.reply(json.dumps(CALLS).encode(), "application/json")
                 elif path == "/api/corpus":
                     self.reply(json.dumps(CORPUS).encode(), "application/json")
                 elif path == "/api/board":
@@ -520,6 +554,25 @@ class PageTests(unittest.TestCase):
                 ).stdout
             for text in texts:
                 self.assertIn(text, dom, f"{tab}: {text}")
+
+    def test_headless_render_of_the_maze_and_its_call_tree(self):
+        chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("no chromium")
+        stub = Stub(mock_state())
+        self.addCleanup(stub.close)
+        for hash_, texts in {
+            "maze": ("75.0% covered", "movie-one", "movie-two", "only here", "real C 75%"),
+            "maze:func_A_de": ("Call tree", "func_Caller_de", "func_Callee_de", "static path: func_Caller_de"),
+        }.items():
+            with tempfile.TemporaryDirectory() as profile:
+                argv = [chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run"]
+                argv += [f"--user-data-dir={profile}", "--window-size=390,900", "--virtual-time-budget=4000"]
+                dom = subprocess.run(
+                    [*argv, "--dump-dom", stub.url + f"#{hash_}"], capture_output=True, text=True, timeout=60
+                ).stdout
+            for text in texts:
+                self.assertIn(text, dom, f"{hash_}: {text}")
 
 
 if __name__ == "__main__":
