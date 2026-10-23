@@ -59,6 +59,19 @@ class RankTests(unittest.TestCase):
         self.assertEqual(tas_rank.rank(cfg, HEALTH, MOVIES, OWES)[0]["kind"], "owes a match")
 
 
+class FaultFrameRankTests(unittest.TestCase):
+    def test_crashes_are_ranked_by_their_faulting_frame_not_by_the_accessed_address(self):
+        crash = {"outcome": "crash", "kind": "host fault", "next": "arity show f", "frame": "func_80208000_de+0x313"}
+        movies = [
+            {**crash, "movie": "a", "subject": "host-fault-00000010"},
+            {**crash, "movie": "b", "subject": "host-fault-00000014"},
+            {"movie": "c", "outcome": "crash", "subject": "host-fault-1", "kind": "host fault", "next": "x"},
+        ]
+        rows = tas_rank.block_rows(movies)
+        found = [(r["where"], r["blocks"]) for r in rows]
+        self.assertEqual(found, [("func_80208000_de+0x313", ["a", "b"]), ("host-fault-1", ["c"])])
+
+
 if __name__ == "__main__":
     unittest.main()
 

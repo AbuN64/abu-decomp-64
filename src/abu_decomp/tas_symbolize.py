@@ -1,9 +1,9 @@
-"""A host fault names its function: the faulting PC resolved against the port binary the run used.
-
-The gdb bridge names a native fault `host-fault-<pc>` but its stacks only show the boot loop after the fault. This
-module reads the port's own symbol table (`nm -n`, cached by path and mtime), turns the PC into `function+offset`,
-and overlays the tas stop classification with that frame's source site, arity note, evidence level and one `next`.
-A game function (func_* or a name defined in the project) outranks port/shim frames, and both are shown.
+"""A host fault names its function: the faulting EIP of the run's signal frame (tas_fault) resolved against the port
+binary the run used. The gdb bridge names a native fault `host-fault-<address>`, the accessed address, and its stacks
+only show the frame loop that reported it. This module reads the port's own symbol table (`nm -n`, cached by path and
+mtime), turns the EIP into `function+offset`, and overlays the tas stop classification with that frame's source site,
+arity note, evidence level and one `next`. A game function (func_* or a name defined in the project) outranks
+port/shim frames: when the EIP is in a port frame the first game function on its return chain owns the fault.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from typing import Any
 
 from abu_decomp import arity, evidence, recipe_needs, tas_triage
 
-_FAULT = re.compile(r"host-fault-([0-9A-Fa-f]+)$")
 _GAME = re.compile(r"func_[0-9A-Fa-f]{8}\w*")
 _CACHE: dict[tuple[str, int], tuple[list[int], list[str]]] = {}
 
@@ -72,28 +71,31 @@ def level_of(project: Path | None, name: str) -> str:
 
 def overlay(profile: Any, outcome: dict[str, Any], out: dict[str, Any]) -> dict[str, Any]:
     """`out` (tas_triage.claim) with the host fault's function+offset, site, evidence, arity note and next."""
-    match = _FAULT.match(str(outcome.get("subject") or ""))
-    if not match or out.get("kind") != "host fault":
-        return out
-    pc = int(match[1], 16)
+    fault = outcome.get("fault")
+    if not isinstance(fault, dict) or "eip" not in fault or out.get("kind") != "host fault":
+        return out  # the subject's suffix is the accessed address, never a pc: only a fault record names the frame
     from abu_decomp import tas
 
     try:
         port = tas.settings(profile)["port"]
-        found = resolve(port, pc)
+        chain = [(a, resolve(port, a)) for a in (int(x, 16) for x in (fault["eip"], *fault.get("frames", [])))]
     except Exception:
         return out
-    if found is None:
+    named = [(a, found) for a, found in chain if found]
+    if not named:
         return out
-    name, offset = found
-    frame = f"{name}+{offset:#x}"
+    first = named[0][1]
+    game = next(((a, found) for a, found in named if _GAME.fullmatch(found[0])), None)
+    frame = f"{first[0]}+{first[1]:#x}"
     project = tas_triage._project(profile)
     out["frame"] = frame
-    if not _GAME.fullmatch(name):
-        out["note"] = (
-            f"{frame} is a port/shim frame; the nearest game function in the stacks is {out.get('owner', 'unknown')}"
-        )
+    if game is None:
+        out["note"] = f"{frame} is a port/shim frame and no game function is on its return chain"
         return out
+    if game[1] != first:
+        out["note"] = f"{frame} is a port/shim frame called from {game[1][0]}+{game[1][1]:#x}"
+    pc, (name, offset) = game
+    out["frame"] = frame = f"{name}+{offset:#x}"
     site = tas_triage.definition_site(project, name) or tas_triage.include_asm_site(project, name)
     out["owner"] = f"{frame} at {site}" if site else frame
     out["evidence"] = level_of(project, name)

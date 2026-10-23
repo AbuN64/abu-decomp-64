@@ -21,6 +21,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <ucontext.h>
+#include <sys/syscall.h>
+#include <sys/uio.h>
 
 enum { PAGE_BYTES=4096, MAX_MAPS=12, RESUME_SIGNAL=SIGUSR2, TLB_ENTRIES=32 };
 static const u32 devices[]={0x04400000,0x04500000,0x04600000,0x04800000};
@@ -205,6 +207,54 @@ static int host_traced(void)
     text[got]=0;
     return n64c_memory_tracer_in_status(text);
 }
+/* Words at a host address, 1 when all were readable (a bad frame pointer is no second fault). */
+static int read_words(uintptr_t at,u32 *words,unsigned count)
+{
+    struct iovec local={words,count*sizeof *words},remote={(void *)at,count*sizeof *words};
+    return process_vm_readv(getpid(),&local,1,&remote,1,0)==(ssize_t)(count*sizeof *words);
+}
+int n64c_memory_fault_json(char *out,size_t cap,int signo,const void *given,const void *opaque,int tid)
+{
+    const siginfo_t *info=given;
+    const greg_t *g=((const ucontext_t *)opaque)->uc_mcontext.gregs;
+    static const struct { const char *name; int reg; } regs[]={{"eax",REG_EAX},{"ecx",REG_ECX},{"edx",REG_EDX},
+        {"ebx",REG_EBX},{"esp",REG_ESP},{"ebp",REG_EBP},{"esi",REG_ESI},{"edi",REG_EDI}};
+    const unsigned err=(unsigned)g[REG_ERR];
+    size_t used=0;
+    u32 words[8];
+#define PUT(...) do { int n_=snprintf(out+used,cap-used,__VA_ARGS__); if (n_<0 || (size_t)n_>=cap-used) return 0; used+=(size_t)n_; } while (0)
+    PUT("{\"signal\":%d,\"code\":%d,\"si_addr\":\"0x%08x\",\"access\":\"%s\",\"tid\":%d,\"eip\":\"0x%08x\","
+        "\"eflags\":\"0x%08x\",\"regs\":{",signo,info->si_code,(unsigned)(uintptr_t)info->si_addr,
+        (err&16) ? "exec" : (err&2) ? "write" : "read",tid,(unsigned)g[REG_EIP],(unsigned)g[REG_EFL]);
+    for (unsigned i=0;i<sizeof regs/sizeof *regs;i++) PUT("%s\"%s\":\"0x%08x\"",i ? "," : "",regs[i].name,(unsigned)g[regs[i].reg]);
+    PUT("},\"stack\":[");
+    const unsigned stack_words=read_words((uintptr_t)g[REG_ESP],words,8) ? 8 : 0;
+    for (unsigned i=0;i<stack_words;i++) PUT("%s\"0x%08x\"",i ? "," : "",words[i]);
+    PUT("],\"args\":[");
+    if (read_words((uintptr_t)g[REG_EBP]+8,words,4))
+        for (unsigned i=0;i<4;i++) PUT("%s\"0x%08x\"",i ? "," : "",words[i]);
+    PUT("],\"frames\":[");
+    uintptr_t frame=(uintptr_t)g[REG_EBP];
+    for (unsigned depth=0;depth<8 && read_words(frame,words,2);depth++) {
+        PUT("%s\"0x%08x\"",depth ? "," : "",words[1]);
+        if (words[0]<=frame) break;
+        frame=words[0];
+    }
+    PUT("]}\n");
+#undef PUT
+    return (int)used;
+}
+/* Where a host fault is recorded for the supervisor: N64C_FAULT_FRAME names the file (the run folder's). */
+static void fault_record(const siginfo_t *info,const ucontext_t *context)
+{
+    const char *path=getenv("N64C_FAULT_FRAME");
+    char text[2048];
+    const int length=path ? n64c_memory_fault_json(text,sizeof text,SIGSEGV,info,context,(int)syscall(SYS_gettid)) : 0;
+    const int fd=length>0 ? open(path,O_WRONLY|O_CREAT|O_TRUNC,0644) : -1;
+    if (fd<0) return;
+    (void)write(fd,text,(size_t)length);
+    (void)close(fd);
+}
 static void signal_handler(int signal_number,siginfo_t *info,void *opaque)
 {
     ucontext_t *context=opaque;
@@ -253,6 +303,7 @@ static void signal_handler(int signal_number,siginfo_t *info,void *opaque)
     /* Run-on (the walk's diagnostic boot) records a host fault and returns from the faulting original function. */
     if (signal_number==SIGSEGV && transaction.stage==0 &&
         n64c_diag_fault && n64c_diag_fault(signal_number,info,context)) return;
+    if (signal_number==SIGSEGV) fault_record(info,context);
     /* Preserve real faults outside the hardware windows. We install only over
      * default handlers; returning retries the fault under the default action. */
     if (signal_number==SIGSEGV && n64c_boot_missing && host_traced()) {

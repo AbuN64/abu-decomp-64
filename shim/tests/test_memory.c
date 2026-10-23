@@ -298,6 +298,34 @@ int main(void)
     CHECK(!n64c_memory_tracer_in_status("Name:\tx\nTracerPid:\t0\nUid:\t1\n"));
     CHECK(n64c_memory_tracer_in_status("Name:\tx\nTracerPid:\t4242\nUid:\t1\n"));
     CHECK(!n64c_memory_tracer_in_status("Name:\tx\nPid:\t7\n"));
+    {
+        /* a fault record names the signal frame: eip, registers, the address and direction, the argument words and
+         * the return addresses up the ebp chain (the frame below is read through a real stack, a bad one is skipped) */
+        u32 frame[12]={0,0x08002222,7,8,9,10,0,0x08001111};
+        frame[0]=(u32)(uintptr_t)(frame+6);
+        ucontext_t context;
+        siginfo_t info;
+        char text[2048];
+        memset(&context,0,sizeof context);
+        memset(&info,0,sizeof info);
+        info.si_code=1;
+        info.si_addr=(void *)(uintptr_t)0x10;
+        context.uc_mcontext.gregs[REG_EIP]=0x0812f313;
+        context.uc_mcontext.gregs[REG_ESP]=(greg_t)(uintptr_t)frame;
+        context.uc_mcontext.gregs[REG_EBP]=(greg_t)(uintptr_t)frame;
+        context.uc_mcontext.gregs[REG_ESI]=0x08124630;
+        context.uc_mcontext.gregs[REG_ERR]=6;
+        CHECK(n64c_memory_fault_json(text,sizeof text,SIGSEGV,&info,&context,4242)>0);
+        CHECK(strstr(text,"\"si_addr\":\"0x00000010\"") && strstr(text,"\"access\":\"write\"") && strstr(text,"\"tid\":4242"));
+        CHECK(strstr(text,"\"eip\":\"0x0812f313\"") && strstr(text,"\"esi\":\"0x08124630\""));
+        CHECK(strstr(text,"\"args\":[\"0x00000007\",\"0x00000008\",\"0x00000009\",\"0x0000000a\"]"));
+        CHECK(strstr(text,"\"frames\":[\"0x08002222\",\"0x08001111\"]"));
+        context.uc_mcontext.gregs[REG_ERR]=4;
+        context.uc_mcontext.gregs[REG_EBP]=8; /* an unreadable frame pointer: no args, no frames, no second fault */
+        CHECK(n64c_memory_fault_json(text,sizeof text,SIGSEGV,&info,&context,1)>0 && strstr(text,"\"access\":\"read\""));
+        CHECK(strstr(text,"\"args\":[]") && strstr(text,"\"frames\":[]"));
+        CHECK(n64c_memory_fault_json(text,40,SIGSEGV,&info,&context,1)==0); /* too small: refused, not truncated */
+    }
     child_failure(0,78);
     child_failure(1,SIGSEGV);
     child_failure(3,78); /* a TLB miss is a named boot stop */

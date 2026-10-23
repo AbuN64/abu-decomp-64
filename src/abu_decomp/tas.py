@@ -51,7 +51,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas_coverage, tas_health, tas_oracle, tas_rank, tas_symbolize
+from abu_decomp import DecompError, tas_coverage, tas_fault, tas_health, tas_oracle, tas_rank, tas_symbolize
 from abu_decomp.config import Profile, check_keys
 
 SCHEMA = 1
@@ -870,6 +870,7 @@ def play(
         "N64C_TAS_RECORD": str(run / "polls.raw"),
         "N64C_TAS_HASH": str(run / HASH),
         "N64C_VIEW": str(run / VIEW),
+        "N64C_FAULT_FRAME": str(run / tas_fault.FILE),  # a host fault leaves its signal frame here (shim)
         "N64C_SPEED": str(speed),
         "N64C_INPUT": input_address(run),
         "N64C_AUDIO_OUT": str(run / AUDIO),
@@ -954,6 +955,9 @@ def play(
         result["subject"] = "stopped from the page"
     result["wall_seconds"], result["cpu_seconds"] = round(time.monotonic() - began, 1), cpu
     stacks = [str(p) for p in sorted(run.glob("*-st*.txt")) + sorted(run.glob("*-threads.txt"))]
+    if result["outcome"] == "crash" and (fault := tas_fault.capture(run, cfg["port"])):
+        result["fault"] = fault
+        stacks.insert(0, str(run / tas_fault.STACK))  # the signal frame's own stack ranks before the supervisor's
     if stacks:
         result["stacks"] = stacks
     # Kind, blocking, what cannot help, owner, arity note and one next command (the arity note comes first when set).
@@ -972,7 +976,7 @@ def play(
             taken=True, same_twice=None, compared_with=None, saved=save_taken(profile, cfg, run, name, human, pak, mode)
         )
     keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
-    keep += ("taken", "saved", "coverage")
+    keep += ("taken", "saved", "coverage", "frame", "fault")
     if oracle_waiter:
         oracle_waiter.join()
         wall, polls = oracle_end["wall"], tas_oracle.reached(run)
@@ -1137,6 +1141,7 @@ def play_all(
                 "run": result.get("run", ""),
                 "same_twice": result.get("same_twice"),
                 "fn": result.get("fn"),
+                "frame": result.get("frame", ""),
                 "wall_seconds": result.get("wall_seconds", 0),
                 "cpu_seconds": result.get("cpu_seconds", 0),
             }

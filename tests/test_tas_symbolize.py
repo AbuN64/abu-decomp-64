@@ -43,7 +43,10 @@ class SymbolizeTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_fault_pc_is_named_with_offset_evidence_and_arity(self):
-        out = tas_symbolize.claim(self.profile, {"outcome": "crash", "subject": "host-fault-080f2e1c"}, [])
+        fault = {"eip": "0x080f2e1c", "si_addr": "0x00000010"}
+        out = tas_symbolize.claim(
+            self.profile, {"outcome": "crash", "subject": "host-fault-00000010", "fault": fault}, []
+        )
         self.assertEqual(out["frame"], "func_80209CD8_de+0x1c")
         self.assertEqual(out["evidence"], "C unproven")
         self.assertEqual(out["arity"][0]["function"], "func_80209CD8_de")
@@ -51,9 +54,22 @@ class SymbolizeTests(unittest.TestCase):
         self.assertIn("func_80209CD8_de+0x1c", out["claim"])
 
     def test_shim_frame_is_shown_but_not_owner(self):
-        out = tas_symbolize.claim(self.profile, {"outcome": "crash", "subject": "host-fault-080f3010"}, [])
+        fault = {"eip": "0x080f3010", "frames": ["0x080f2e1c"]}
+        out = tas_symbolize.claim(
+            self.profile, {"outcome": "crash", "subject": "host-fault-00000010", "fault": fault}, []
+        )
+        self.assertEqual(out["frame"], "func_80209CD8_de+0x1c")  # the game caller on the return chain owns it
+        self.assertIn("n64c_y+0x10 is a port/shim frame called from func_80209CD8_de+0x1c", out["note"])
+        alone = {"eip": "0x080f3010"}
+        out = tas_symbolize.claim(
+            self.profile, {"outcome": "crash", "subject": "host-fault-00000010", "fault": alone}, []
+        )
         self.assertEqual(out["frame"], "n64c_y+0x10")
         self.assertNotIn("evidence", out)
+
+    def test_a_subject_alone_is_no_pc(self):
+        out = tas_symbolize.claim(self.profile, {"outcome": "crash", "subject": "host-fault-080f2e1c"}, [])
+        self.assertNotIn("frame", out)
 
     def test_other_stops_pass_through(self):
         out = tas_symbolize.claim(self.profile, {"outcome": "hang"}, [])

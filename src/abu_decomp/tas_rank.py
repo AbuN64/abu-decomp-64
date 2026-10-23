@@ -6,7 +6,8 @@ side item. Rule order is configuration (`tas.rank.order`, default build, stale, 
           concrete `next`; `tas.rank.layers` rules `{match: regex on the error, layer, next}` name the owning layer
           (compile flags/config vs game source); the first matching rule wins, no match means game source;
   stale   the port binary is older than its sources: the rebuild command;
-  blocks  each stop or crash subject, ranked by how many movies it blocks (then by polls its movies miss);
+  blocks  each stop or crash subject (a crash by its faulting frame), ranked by how many movies it blocks (then by
+          polls its movies miss);
   owes    functions that owe a match, ranked by how many play runs reached them (module `owes`).
 The last line is always `next: <command>`: row 1's.
 """
@@ -67,7 +68,7 @@ def block_rows(movies: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for row in movies:
         if row.get("outcome") != "ok":
-            groups.setdefault(str(row.get("subject") or row.get("outcome")), []).append(row)
+            groups.setdefault(str(row.get("frame") or row.get("subject") or row.get("outcome")), []).append(row)
     out = []
     for subject, group in groups.items():
         first = group[0]
