@@ -275,6 +275,79 @@ class HttpTests(Base):
         self.assertTrue((run / "stopped").is_file())
         self.assertEqual(self.post("/api/stop", {"id": "missing"})[0], 400)
 
+    def test_new_human_run_take_and_input_reach_the_run_socket(self):
+        import socket
+
+        started = []
+
+        def fake_play(profile, movie, *, speed=0, run_id=None, port=None, label=None, **kwargs):
+            started.append((movie, speed, run_id, label))
+            hold.wait(10)
+            return {}
+
+        hold = threading.Event()
+        with mock.patch.object(tas, "play", fake_play):
+            status, reply = self.post("/api/play", {"label": "owner"})
+            self.assertEqual(status, 200)
+            self.assertTrue(reply["movie"].startswith("play-"))
+            for _ in range(100):
+                if started:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(started, [(None, 1, reply["id"], "owner")])
+            row = {r["id"]: r for r in json.loads(self.get("/api/state")[2])["runs"]}[reply["id"]]
+            self.assertEqual((row["input"], row["label"], row["speed"]), ("human", "owner", 1))
+            self.assertEqual(self.post("/api/play", {})[0], 400)  # one live-input run at a time
+            hold.set()
+        for _ in range(100):  # the placeholder goes once its run ends
+            if not self.server.human_running():
+                break
+            time.sleep(0.01)
+        run = self.make_run("r5", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid())
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(sock.close)
+        sock.bind("\0" + tas.input_address(run)[1:])
+        self.assertEqual(
+            self.post("/api/input", {"id": "r5", "seq": 1, "buttons": 1, "x": 0, "y": 0})[0], 400
+        )  # not taken
+        self.assertEqual(self.post("/api/take", {"id": "r5"}), (200, {"id": "r5", "taken": True}))
+        self.assertTrue((run / "taken").is_file())
+        self.assertEqual(sock.recv(64), b"take")
+        self.assertEqual(
+            self.post("/api/input", {"id": "r5", "seq": 7, "buttons": 0x9000, "x": -80, "y": 5}), (200, {"ok": True})
+        )
+        self.assertEqual(sock.recv(64), b"7 9000 -80 5")
+        self.assertEqual(self.post("/api/input", {"id": "r5", "seq": 8, "buttons": 0x10000})[0], 400)
+        state = {r["id"]: r for r in json.loads(self.get("/api/state")[2])["runs"]}
+        self.assertEqual(state["r5"]["input"], "human")
+        self.assertEqual(self.post("/api/play", {})[0], 400)  # r5 is driven by live input now
+        self.assertEqual(self.post("/api/take", {"id": "nope"})[0], 400)
+
+    def test_frame_long_poll_names_the_frame_and_the_input_it_shows(self):
+        run = self.make_run("r6", movie="boot-idle", status="running", speed=1, started=1.0, pid=os.getpid())
+        picture = bytearray(b"BM" + bytes(60))
+        picture[6:10] = (42).to_bytes(4, "little")
+        (run / "view.bmp").write_bytes(bytes(picture))
+        request = urllib.request.urlopen(self.base + "/frame/r6", timeout=10)
+        stamp = int(request.headers["X-Frame"])
+        self.assertEqual((request.headers["X-Input-Seq"], request.read()), ("42", bytes(picture)))
+        began = time.monotonic()
+        with urllib.request.urlopen(self.base + f"/frame/r6?after={stamp}", timeout=10) as reply:
+            self.assertEqual(reply.status, 204)  # nothing newer within a second
+        self.assertGreater(time.monotonic() - began, 0.9)
+
+        def newer():
+            time.sleep(0.2)
+            picture[6:10] = (43).to_bytes(4, "little")
+            (run / "view.tmp").write_bytes(bytes(picture))
+            os.utime(run / "view.tmp", ns=(stamp * 1000 + 5_000_000,) * 2)
+            (run / "view.tmp").replace(run / "view.bmp")
+
+        threading.Thread(target=newer, daemon=True).start()
+        with urllib.request.urlopen(self.base + f"/frame/r6?after={stamp}", timeout=10) as reply:
+            self.assertEqual((reply.status, reply.headers["X-Input-Seq"]), (200, "43"))
+            self.assertGreater(int(reply.headers["X-Frame"]), stamp)
+
 
 if __name__ == "__main__":
     unittest.main()

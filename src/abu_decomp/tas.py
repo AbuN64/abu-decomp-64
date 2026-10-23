@@ -326,17 +326,24 @@ def movie_polls(cfg: dict[str, Any], name: str) -> list[Poll]:
     return polls
 
 
-def _wait(process: subprocess.Popen, timeout: float) -> tuple[int | None, float]:
+def _wait(process: subprocess.Popen, timeout: float, run: Path | None = None) -> tuple[int | None, float]:
     """(exit code or None after a kill at the timeout, CPU seconds of the run's whole process tree).
 
-    wait4 returns the rusage of the child and every descendant it reaped, so one replay's CPU is its own even while
-    other replays run in this process."""
+    Once live input drives the run (`run/taken`), the timeout no longer applies: it is a hang after STALL_SECONDS
+    without a poll. wait4 returns the rusage of the child and every descendant it reaped, so one replay's CPU is its
+    own even while other replays run in this process."""
     end = time.monotonic() + timeout
+    last, moved = -1, time.monotonic()
     while True:
         pid, status, usage = os.wait4(process.pid, os.WNOHANG)
         if pid:
             process.returncode = os.waitstatus_to_exitcode(status)
             return process.returncode, round(usage.ru_utime + usage.ru_stime, 1)
+        if run is not None and (run / TAKEN).exists():
+            poll = last_poll(run / HASH)
+            if poll != last:
+                last, moved = poll, time.monotonic()
+            end = moved + STALL_SECONDS
         if time.monotonic() > end:
             os.killpg(process.pid, signal.SIGKILL)
             _, status, usage = os.wait4(process.pid, 0)
@@ -346,6 +353,9 @@ def _wait(process: subprocess.Popen, timeout: float) -> tuple[int | None, float]
 
 
 VIEW, HASH, AUDIO, RECORD = "view.bmp", "hash.txt", "audio.pcm", "run.json"
+TAKEN = "taken"  # present once live input drives the run
+HUMAN_LABEL = "owner"
+STALL_SECONDS = 20.0  # a run driven by live input is a hang after this long without a poll
 _builds: dict[tuple[str, int, int], str] = {}
 
 
@@ -454,6 +464,8 @@ def previous_run(cfg: dict[str, Any], name: str, build: str, before: str) -> Pat
     for run, row in reversed(run_rows(cfg)):
         if run.name >= before or row.get("movie") != name or row.get("build") != build:
             continue
+        if row.get("taken"):
+            continue
         if row.get("status") == "done" and not row.get("stopped") and row.get("outcome") and (run / HASH).is_file():
             return run
     return None
@@ -464,6 +476,31 @@ def same_hashes(a: Path, b: Path) -> bool:
         return (a / HASH).read_bytes() == (b / HASH).read_bytes()
     except OSError:
         return False
+
+
+def input_address(run: Path) -> str:
+    """The run's live input socket, `@name` in the Linux abstract namespace (a run folder path can be longer than a
+    socket path may be): the port binds it, `tas serve` sends to it."""
+    return "@abu-tas-" + hashlib.sha1(str(run.resolve()).encode()).hexdigest()[:24]
+
+
+def human_movie_name(now: datetime | None = None) -> str:
+    return "play-" + (now or datetime.now(UTC)).strftime("%Y%m%d-%H%M%S")
+
+
+def save_taken(profile: Profile, cfg: dict[str, Any], run: Path, movie: str, human: bool) -> str | None:
+    """Save a run that live input drove as a movie: the human's run under its own name, a takeover as
+    `<movie>-take-STAMP` (the original movie's prefix plus the human's polls). None when it reached no poll."""
+    source = run / "polls.raw"
+    if not source.is_file() or not read_raw(source):
+        return None
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    name = movie if human else f"{movie[:40]}-take-{stamp}"
+    note = f"live input from the TAS page, run {run.name}" + ("" if human else f", taken over from {movie}")
+    try:
+        return save(profile, name, source=source, note=note, replace=False)["name"]
+    except DecompError:
+        return None
 
 
 def fn_of(result: dict[str, Any]) -> str | None:
@@ -477,7 +514,7 @@ def fn_of(result: dict[str, Any]) -> str | None:
 
 def play(
     profile: Profile,
-    name: str,
+    name: str | None,
     *,
     speed: int = 0,
     now: datetime | None = None,
@@ -488,30 +525,43 @@ def play(
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
-    lane's own build), `label` tags the run with the lane that started it; both show on the page."""
+    lane's own build), `label` tags the run with the lane that started it; both show on the page.
+
+    Every run listens for live input (`input_address`, module tas_serve's /api/take and /api/input): once it is taken
+    over the recording goes on, and at the end its polls are saved as a new movie (`saved`). `name` None is a new
+    human run: a fresh boot at speed 1 driven by live input from the first poll, saved as `play-STAMP`."""
     cfg = with_port(settings(profile), port)
     check_label(label)
     if not 0 <= speed <= 1000:
         raise DecompError("tas.play", f"speed is 0 (turbo) .. 1000, not {speed}")
     began = time.monotonic()
     health = tas_health.read(cfg, profile) if health is None else health
-    polls = movie_polls(cfg, name)
+    human = name is None
+    if human:
+        speed, label = 1, label or HUMAN_LABEL
+        name = human_movie_name(now)
+        polls: list[Poll] = []
+    else:
+        polls = movie_polls(cfg, name)
     run = cfg["runs"] / "plays" / (run_id or new_run_id(cfg, name, now))
     user_dir = run / "user"
     user_dir.mkdir(parents=True)
-    (run / "movie.raw").write_text(format_raw(polls))
     env = {
         **os.environ,
         **cfg["env"],
-        "N64C_TAS_PLAY": str(run / "movie.raw"),
         "N64C_TAS_RECORD": str(run / "polls.raw"),
-        "N64C_TAS_EXIT_AFTER": str(cfg["exit_after"]),
         "N64C_TAS_HASH": str(run / HASH),
         "N64C_VIEW": str(run / VIEW),
         "N64C_SPEED": str(speed),
+        "N64C_INPUT": input_address(run),
+        "N64C_AUDIO_OUT": str(run / AUDIO),
     }
-    if speed == 1:
-        env["N64C_AUDIO_OUT"] = str(run / AUDIO)
+    if human:
+        (run / TAKEN).write_text("new run\n")
+        env["N64C_VIEW_FPS"] = "60"
+    else:
+        (run / "movie.raw").write_text(format_raw(polls))
+        env.update(N64C_TAS_PLAY=str(run / "movie.raw"), N64C_TAS_EXIT_AFTER=str(cfg["exit_after"]))
     build = build_id(cfg["port"])
     # At real speed a movie takes its own length in wall time; the timeout is the allowance beyond that.
     timeout = cfg["timeout_seconds"] + ((len(polls) + cfg["exit_after"]) / (60 * speed) if speed else 0)
@@ -526,6 +576,7 @@ def play(
         "pid": os.getpid(),
         "port": str(cfg["port"]),
         "label": label or None,
+        "input": "human" if human else "movie",
     }
     _write_record(run, record)
     argv = supervised(cfg, run, _argv(cfg, user_dir))
@@ -537,7 +588,7 @@ def play(
             _write_record(run, {**record, "pgid": process.pid})
             # The bridge holds a stopped port until its stdin says "continue"; a closed pipe ends it after the stacks.
             process.stdin.close()
-            code, cpu = _wait(process, timeout)
+            code, cpu = _wait(process, timeout, run)
     except BaseException:
         _write_record(run, {**record, "status": "done", "outcome": None, "ended": time.time()})
         raise
@@ -561,7 +612,11 @@ def play(
     if before:
         result["compared_with"] = before.name
     result["fn"] = fn_of(result)
+    taken = (run / TAKEN).is_file()
+    if taken:
+        result.update(taken=True, same_twice=None, compared_with=None, saved=save_taken(profile, cfg, run, name, human))
     keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
+    keep += ("taken", "saved")
     _write_record(
         run,
         {**record, **{k: result.get(k) for k in keep}, "status": "done", "stopped": stopped, "ended": time.time()},

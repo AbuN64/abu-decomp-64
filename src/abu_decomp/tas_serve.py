@@ -1,13 +1,16 @@
 """`decomp tas serve`: the TAS page and the API behind it (orch plans/TAS-PAGE-CONTRACT.md).
 
-Section `tas.serve`: {"listen": "HOST:PORT", "jobs": N, "inbox": path, "states": path, "pin": path}. Every replay
-(started here, by `tas play` in a shell, or by `play --all`) is a folder under `runs/plays` whose `run.json` the
-port's run writes (module tas); the page sees all of them: the port's own latest picture (`view.bmp`), its log and,
-at speed 1, its sound (`audio.pcm`, served as a growing WAV). `inbox` is the integration train's inbox (lines marked
-`| LANDED` / `| DROPPED`), `states` the decomp progress states (its `none_fns`), `pin` the git folder of the decomp
-source the port was built from, `lanes` the folder of cycle lane dirs mirrored from the orchestrator (brief.md,
-STATUS.md, RESULT.md, cycle.json each), shown as the cycle panel. Function state (exact / fuzzy / none) is read from the decomp source, as the
-progress states define it: a NON_MATCHING body is fuzzy, INCLUDE_ASM alone is none.
+Section `tas.serve`: {"listen": "HOST:PORT", "jobs": N, "inbox": path, "states": path, "pin": path, "lanes": path}.
+Every run (started here, by `tas play` in a shell, or by `play --all`) is a folder under `runs/plays` whose
+`run.json` the port's run writes (module tas); the page sees all of them: the port's own latest picture
+(`view.bmp`), its log and its sound (`audio.pcm`, served as a growing WAV). Any running run can be taken over by
+live input (`/api/take`, `/api/input`: datagrams to the run's input socket, tas.input_address), and `/api/play`
+without a movie starts a human run; one run is driven by live input at a time. `inbox` is the integration train's
+inbox (lines marked `| LANDED` / `| DROPPED`), `states` the decomp progress states (its `none_fns`), `pin` the git
+folder of the decomp source the port was built from, `lanes` the folder of cycle lane dirs mirrored from the
+orchestrator (brief.md, STATUS.md, RESULT.md, cycle.json each), shown as the cycle panel. Function state (exact /
+fuzzy / none) is read from the decomp source, as the progress states define it: a NON_MATCHING body is fuzzy,
+INCLUDE_ASM alone is none.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import json
 import os
 import re
 import signal
+import socket
 import struct
 import subprocess
 import threading
@@ -205,6 +209,8 @@ class Server:
                     "frame": f"/frame/{run.name}",
                     "label": row.get("label") or None,
                     "port": row.get("port") or str(self.cfg["port"]),
+                    "input": "human" if (run / tas.TAKEN).exists() else "movie",
+                    "saved": row.get("saved") or None,
                 }
             )
         shown = [r for r in runs if r["status"] == "running"] + queued
@@ -232,7 +238,7 @@ class Server:
             standing = {}
         latest: dict[str, dict[str, Any]] = {}
         for _, row in rows:
-            if row.get("status") == "done" and row.get("outcome") and not row.get("stopped"):
+            if row.get("status") == "done" and row.get("outcome") and not row.get("stopped") and not row.get("taken"):
                 latest[row.get("movie", "")] = row
         folder = self.cfg["movies"]
         out = []
@@ -280,7 +286,7 @@ class Server:
             polls = self.movie_polls(self.cfg["movies"] / f"{movie}.tas")
         row = {"id": run_id, "movie": movie, "status": "running", "speed": speed, "poll": 0, "polls": polls}
         row.update(outcome=None, subject=None, started=time.time(), frame=f"/frame/{run_id}")
-        row.update(label=label or None, port=str(port))
+        row.update(label=label or None, port=str(port), input="movie", saved=None)
         with self.lock:
             self.queued[run_id] = row
 
@@ -288,7 +294,68 @@ class Server:
         with self.lock:
             self.queued.pop(run_id, None)
 
+    def human_running(self) -> str | None:
+        """The run live input drives now, if any (one at a time)."""
+        for run, row in tas.run_rows(self.cfg):
+            if row.get("status") == "running" and (run / tas.TAKEN).exists():
+                return run.name
+        with self.lock:
+            return next((k for k, r in self.queued.items() if r.get("input") == "human"), None)
+
+    def new_human(self, port: str | None, label: str | None) -> dict[str, Any]:
+        busy = self.human_running()
+        if busy:
+            raise DecompError("tas.live", f"live input already drives {busy}; stop it first")
+        tas.check_label(label)
+        exe = tas.with_port(self.cfg, port)["port"]
+        movie = tas.human_movie_name()
+        with self.lock:
+            run_id = tas.new_run_id(self.cfg, movie)
+        self._placeholder(run_id, movie, 1, exe, label or tas.HUMAN_LABEL)
+        with self.lock:
+            self.queued[run_id]["input"] = "human"
+
+        def go() -> None:
+            try:
+                tas.play(self.profile, None, speed=1, run_id=run_id, port=port or None, label=label or None)
+            except Exception:
+                pass
+            finally:
+                self._forget(run_id)
+
+        threading.Thread(target=go, daemon=True).start()  # never takes a replay slot
+        return {"id": run_id, "movie": movie}
+
+    def take(self, run_id: str) -> dict[str, Any]:
+        run = self.run_dir(run_id)
+        if not run or not tas.running(run):
+            raise DecompError("tas.take", f"no running run {run_id}")
+        busy = self.human_running()
+        if busy and busy != run_id:
+            raise DecompError("tas.take", f"live input already drives {busy}; stop it first")
+        (run / tas.TAKEN).write_text("page\n")
+        self.send(run, b"take")
+        return {"id": run_id, "taken": True}
+
+    def input(self, run_id: str, seq: int, buttons: int, x: int, y: int) -> dict[str, Any]:
+        run = self.run_dir(run_id)
+        if not run or not (run / tas.TAKEN).exists():
+            raise DecompError("tas.input", f"run {run_id} is not driven by live input")
+        if not (0 <= buttons <= 0xFFFF and -128 <= x <= 127 and -128 <= y <= 127 and seq >= 0):
+            raise DecompError("tas.input", "buttons 0..0xffff, x and y -128..127, seq >= 0")
+        self.send(run, f"{seq} {buttons:x} {x} {y}".encode())
+        return {"ok": True}
+
+    def send(self, run: Path, data: bytes) -> None:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+                sock.sendto(data, "\0" + tas.input_address(run)[1:])
+        except OSError as error:
+            raise DecompError("tas.input", f"the run's input socket is not there yet: {error}") from error
+
     def play(self, movie: str, speed: int, port: str | None = None, label: str | None = None) -> dict[str, Any]:
+        if not movie:
+            return self.new_human(port, label)
         tas.movie_polls(self.cfg, movie)  # refuse a missing movie or another ROM here, not in the thread
         if not 0 <= speed <= 1000:
             raise DecompError("tas.play", f"speed is 0 (turbo) .. 1000, not {speed}")
@@ -393,7 +460,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 elif path == "/api/state":
                     self.json(server.state())
                 elif head == "frame" and run_id:
-                    self.frame(server.run_dir(run_id))
+                    self.frame(server.run_dir(run_id), query)
                 elif head == "log" and run_id:
                     self.log(server.run_dir(run_id), query)
                 elif head == "audio" and run_id:
@@ -403,14 +470,46 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             except (BrokenPipeError, ConnectionResetError):
                 return
 
-        def frame(self, run: Path | None) -> None:
+        def frame(self, run: Path | None, query: str) -> None:
+            after = None
+            for part in query.split("&"):
+                key, _, value = part.partition("=")
+                if key == "after" and value.isdigit():
+                    after = int(value)
+            path = run / tas.VIEW if run else None
+            stamp = 0
+            if path and after is not None:  # long poll: the next picture, or 204 after a second
+                deadline = time.monotonic() + 1.0
+                while True:
+                    with contextlib.suppress(OSError):
+                        stamp = path.stat().st_mtime_ns // 1000
+                    if stamp > after or time.monotonic() > deadline:
+                        break
+                    time.sleep(0.004)
+                if stamp <= after:
+                    self.send_response(HTTPStatus.NO_CONTENT)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return None
             try:
-                body = (run / tas.VIEW).read_bytes() if run else b""
-            except OSError:
+                with path.open("rb") as handle:  # type: ignore[union-attr]
+                    stamp = os.fstat(handle.fileno()).st_mtime_ns // 1000
+                    body = handle.read()
+            except (OSError, AttributeError):
                 body = b""
             if not body:
                 return self.missing()
-            self.reply(body, "image/bmp")
+            seq = struct.unpack_from("<I", body, 6)[0] if len(body) >= 10 else 0
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/bmp")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Frame", str(stamp))
+            self.send_header("X-Input-Seq", str(seq))
+            self.send_header("Access-Control-Expose-Headers", "X-Frame, X-Input-Seq")
+            self.end_headers()
+            self.wfile.write(body)
+            return None
 
         def log(self, run: Path | None, query: str) -> None:
             if not run:
@@ -430,7 +529,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
 
         def audio(self, run: Path | None) -> None:
             row = tas.read_record(run) if run else None
-            if not run or not row or int(row.get("speed") or 0) != 1:
+            if not run or not row:
                 return self.missing()
             pcm, rate_file = run / tas.AUDIO, run / (tas.AUDIO + ".rate")
             deadline = time.monotonic() + 10
@@ -468,7 +567,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 if self.path == "/api/play":
                     self.json(
                         server.play(
-                            str(body.get("movie", "")),
+                            str(body.get("movie") or ""),
                             int(body.get("speed", 0)),
                             str(body.get("port") or "") or None,
                             str(body.get("label") or "") or None,
@@ -478,6 +577,18 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.json(server.play_all())
                 elif self.path == "/api/stop":
                     self.json(server.stop(str(body.get("id", ""))))
+                elif self.path == "/api/take":
+                    self.json(server.take(str(body.get("id", ""))))
+                elif self.path == "/api/input":
+                    self.json(
+                        server.input(
+                            str(body.get("id", "")),
+                            int(body.get("seq", 0)),
+                            int(body.get("buttons", 0)),
+                            int(body.get("x", 0)),
+                            int(body.get("y", 0)),
+                        )
+                    )
                 else:
                     self.missing()
             except (DecompError, ValueError, TypeError) as error:

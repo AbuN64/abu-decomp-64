@@ -58,7 +58,7 @@ class CodecTests(unittest.TestCase):
         self.assertEqual(tas.classify(1, "boom"), {"outcome": "exit", "subject": "exit 1"})
 
 
-def _fake_wait(process, timeout):
+def _fake_wait(process, timeout, run=None):
     """tas._wait over a mocked Popen: its wait() stands in for wait4; the CPU reads 1.5 s."""
     try:
         return process.wait(timeout), 1.5
@@ -221,7 +221,9 @@ class MovieTests(unittest.TestCase):
         run = Path(result["run"])
         self.assertEqual((env["N64C_VIEW"], env["N64C_TAS_HASH"]), (str(run / "view.bmp"), str(run / "hash.txt")))
         self.assertEqual(env["N64C_SPEED"], "0")
-        self.assertNotIn("N64C_AUDIO_OUT", env)
+        self.assertEqual(env["N64C_AUDIO_OUT"], str(run / "audio.pcm"))  # every speed (the port paces turbo sound)
+        self.assertEqual(env["N64C_INPUT"], tas.input_address(run))  # any run can be taken over
+        self.assertRegex(env["N64C_INPUT"], r"^@abu-tas-[0-9a-f]{24}$")  # abstract: no socket path length limit
         self.assertEqual((during["status"], during["movie"], during["speed"], during["polls"]), ("running", "m", 0, 2))
         record = tas.read_record(run)
         self.assertEqual((record["status"], record["outcome"], record["polls_reached"]), ("done", "ok", 2))
@@ -245,11 +247,50 @@ class MovieTests(unittest.TestCase):
         with self.assertRaises(DecompError):
             tas.play(self.profile, "m", label="no spaces")
 
+    def test_a_human_run_and_a_taken_run_are_saved_as_movies(self):
+        self.movie()
+        seen = []
+        with self.port("1 aa\n2 bb\n", seen):
+            human = tas.play(self.profile, None, now=T0)
+        env, during = seen
+        self.assertNotIn("N64C_TAS_PLAY", env)
+        self.assertEqual((env["N64C_SPEED"], env["N64C_VIEW_FPS"]), ("1", "60"))
+        self.assertEqual(
+            (during["input"], during["label"], during["movie"]), ("human", "owner", "play-20261020-190000")
+        )
+        self.assertEqual(human["saved"], "play-20261020-190000")
+        _, polls = tas.decode((self.root / "movies" / "play-20261020-190000.tas").read_text())
+        self.assertEqual(polls, [(0x8000, 0, 0)] * 2)
+        self.assertIsNone(human["same_twice"])
+
+        def take(argv, env, stdout, **kwargs):  # the page takes the replay over while it runs
+            Path(argv[argv.index("--run-dir") + 1], "taken").write_text("page\n")
+
+        with self.port("1 aa\n2 bb\n", []):
+            first = tas.play(self.profile, "m", now=T0)
+        port = self.port("1 aa\n2 cc\n", [])
+        with port as Port:
+            init = Port.__init__
+
+            def both(self_, argv, env, stdout, **kwargs):
+                init(self_, argv, env, stdout, **kwargs)
+                take(argv, env, stdout)
+
+            Port.__init__ = both
+            taken = tas.play(self.profile, "m", now=T0)
+        self.assertTrue(taken["taken"])
+        self.assertTrue(taken["saved"].startswith("m-take-"))
+        self.assertIsNone(taken["same_twice"])  # never compared with the movie's replays ...
+        with self.port("1 aa\n2 bb\n", []):
+            again = tas.play(self.profile, "m", now=T0)
+        self.assertEqual(again["compared_with"], Path(first["run"]).name)  # ... and never their reference
+        self.assertIs(again["same_twice"], True)
+
     def test_speed_one_plays_sound_and_waits_for_the_movie_in_real_time(self):
         self.movie("A *600\n")
         seen, waited = [], []
 
-        def wait(process, timeout):
+        def wait(process, timeout, run=None):
             waited.append(timeout)
             return process.wait(), 1.0
 
@@ -301,6 +342,37 @@ class MovieTests(unittest.TestCase):
         text = tas.table({"movies": [{**row, "same_twice": True, "next": ""}]})
         self.assertIn("same_twice", text)
         self.assertIn(" yes ", text)
+
+
+class StallTests(unittest.TestCase):
+    def test_a_taken_run_is_a_hang_only_after_its_polls_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "taken").write_text("page\n")
+            clock = [0.0]
+
+            def monotonic():
+                clock[0] += 1.0
+                return clock[0]
+
+            def wait4(pid, flags):
+                if flags == 0:  # the kill's reap
+                    return pid, 9, mock.Mock(ru_utime=1.0, ru_stime=0.0)
+                return 0, 0, None
+
+            process = mock.Mock(pid=4242)
+            with (
+                mock.patch.object(tas.os, "wait4", wait4),
+                mock.patch.object(tas.time, "sleep"),
+                mock.patch.object(tas.time, "monotonic", monotonic),
+                mock.patch.object(tas.os, "killpg") as kill,
+                mock.patch.object(tas, "last_poll", lambda path: int(min(clock[0], 100))),  # polls stop at t=100
+                mock.patch.object(tas.os, "waitstatus_to_exitcode", return_value=-9),
+            ):
+                code, _ = tas._wait(process, timeout=5.0, run=run)
+            self.assertIsNone(code)
+            kill.assert_called_once()
+            self.assertGreater(clock[0], 100 + tas.STALL_SECONDS - 2)  # not at the 5 s timeout: after the stall
 
 
 if __name__ == "__main__":

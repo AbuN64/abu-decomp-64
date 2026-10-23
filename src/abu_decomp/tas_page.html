@@ -93,6 +93,28 @@
   #latest { position: absolute; right: 16px; bottom: 12px; background: var(--panel); display: none; }
   #latest.on { display: block; }
 
+  #stage { display: none; flex: none; padding: 10px 12px 4px; border-bottom: 1px solid var(--line); }
+  #stage.on { display: block; }
+  #stage .bar { display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; white-space: nowrap; }
+  #stage .bar .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #stage canvas { display: block; margin: 0 auto; background: #000; image-rendering: pixelated; border: 1px solid var(--line);
+                  border-radius: 2px; outline: none; }
+  #stage canvas.ctl { border-color: var(--ok); }
+  #stage .hint { text-align: center; color: var(--dim); font-size: 12px; margin-top: 4px; }
+  .tile .take { font: 11px var(--mono); padding: 0 5px; border: 1px solid var(--ok); color: var(--ok); border-radius: 2px;
+                background: none; cursor: pointer; display: none; }
+  .tile.sel .take.can { display: inline; }
+  dialog { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 0;
+           min-width: 340px; max-width: min(720px, 92vw); }
+  dialog::backdrop { background: rgba(0, 0, 0, .55); }
+  dialog .dh { display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  dialog .dh b { flex: 1; font-weight: 600; }
+  dialog .db { padding: 10px 14px 14px; }
+  dialog .row { display: flex; gap: 14px; align-items: center; padding: 6px 0; }
+  dialog .row > span:first-child { width: 90px; color: var(--dim); }
+  dialog label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
+  dialog table td, dialog table th { max-width: none; }
+  dialog h4 { margin: 12px 0 4px; font-weight: 500; color: var(--dim); font-size: 12px; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
     #left { border-right: 0; border-bottom: 1px solid var(--line); } .keys { display: none; } }
 </style>
@@ -104,12 +126,22 @@
   <span class="grow"></span>
   <span id="conn" class="dim"></span>
   <span class="keys dim"><kbd>space</kbd> play 1x · <kbd>a</kbd> all · <kbd>x</kbd> stop · <kbd>↑↓</kbd>/click pick</span>
-  <button id="sound" title="Sound for the 1x run">sound on</button>
+  <button id="newrun" title="Start your own run: fresh boot, your controller, recorded as a movie">new run</button>
   <button id="all" title="Replay every movie at turbo (a)">play all</button>
   <button id="clear" title="Stop every running replay and close every picture">close all</button>
+  <button id="ctlbtn" title="Keyboard and gamepad map">controls</button>
+  <button id="setbtn" title="Settings">settings</button>
 </header>
 <main>
   <section id="left">
+    <div id="stage">
+      <div class="bar"><b id="stitle"></b><span id="sinfo" class="grow mono dim"></span><span id="sstats" class="mono dim"></span>
+        <button id="sctl" title="Send your keyboard / gamepad to this run">control</button>
+        <button id="sstop" title="End this run; its polls are saved as a movie">stop</button>
+        <button id="sclose" class="close" title="Close the big view">✕</button></div>
+      <canvas id="scanvas" width="320" height="240" tabindex="0"></canvas>
+      <div id="shint" class="hint"></div>
+    </div>
     <div id="tiles"></div>
     <div id="movies">
       <div class="head"><b>movies</b><span id="mcount" class="grow"></span></div>
@@ -133,6 +165,22 @@
     </div>
   </section>
 </main>
+<dialog id="settings">
+  <div class="dh"><b>settings</b><button class="x" data-close>✕</button></div>
+  <div class="db">
+    <div class="row"><span>sound</span>
+      <label><input type="radio" name="snd" value="on"> on (every run, turbo too)</label>
+      <label><input type="radio" name="snd" value="off"> off</label></div>
+    <div class="row"><span>which runs</span>
+      <label><input type="radio" name="scope" value="all"> all running</label>
+      <label><input type="radio" name="scope" value="focus"> focused run only</label></div>
+    <div class="row"><span></span><span id="sndstate" class="dim"></span></div>
+  </div>
+</dialog>
+<dialog id="controls">
+  <div class="dh"><b>controls</b><button class="x" data-close>✕</button></div>
+  <div class="db" id="ctlbody"></div>
+</dialog>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -182,7 +230,9 @@ function render() {
   const b = S.build || {};
   $("build").textContent = b.pin ? `${String(b.pin).slice(0, 9)} · built ${ago(b.built)}` : "no build";
   $("build").title = b.port || "";
-  renderTiles(); renderMovies(); renderLanes(); renderInbox(); followLog(); followAudio();
+  const h = humanRun();
+  if (h && !P.id && P.closedId !== h.id) stageOn(h.id, false);  // a live-input run always gets the big view
+  renderStage(); renderTiles(); renderMovies(); renderLanes(); renderInbox(); followLog(); followAudio();
 }
 
 /* ---------- live tiles ---------- */
@@ -193,19 +243,22 @@ function tileRuns() {
   const live = S.runs.filter(r => r.status === "running" && !closed.has(r.id) && mine(r)).sort((a, b) => a.started - b.started);
   let done = S.runs.filter(r => r.status === "done" && !closed.has(r.id) && mine(r) && (now() - r.started < KEEP_DONE_S || sel.lane)).sort((a, b) => b.started - a.started);
   if (!live.length && !done.length) done = S.runs.filter(r => !closed.has(r.id) && mine(r)).slice().sort((a, b) => b.started - a.started).slice(0, 1);
-  return live.concat(done).slice(0, MAX_TILES);
+  return live.concat(done).filter(r => r.id !== P.id).slice(0, MAX_TILES);
 }
 function makeTile(r) {
   const node = el("div", "tile"), canvas = el("canvas");
   canvas.width = 320; canvas.height = 240;
   const cap = el("div", "cap"), mv = el("span", "mv"), badge = el("span", "badge"), count = el("span", "cnt mono dim");
+  const take = el("button", "take", "take");
+  take.title = "take control: from the next poll this run follows your keyboard / gamepad (recorded)";
+  take.onclick = e => { e.stopPropagation(); takeRun(t.run); };
   const close = el("button", "close", "✕");
   close.title = "stop this replay, or close it when finished";
   close.onclick = e => { e.stopPropagation(); closeRun(t.run); };
-  cap.append(mv, badge, count, close);
+  cap.append(mv, badge, count, take, close);
   const bar = el("div", "bar"), fill = el("i"); bar.append(fill);
   node.append(canvas, cap, bar);
-  const t = { node, canvas, ctx: canvas.getContext("2d"), mv, badge, count, fill, run: r, busy: false, got: false, misses: 0 };
+  const t = { node, canvas, ctx: canvas.getContext("2d"), mv, badge, count, fill, take, run: r, busy: false, got: false, misses: 0 };
   t.ctx.imageSmoothingEnabled = false;
   node.onclick = () => select(t.run.movie, t.run.id);  // select only: replays start from space, a or a row double-click
   return t;
@@ -233,6 +286,7 @@ function renderTiles() {
     t.count.textContent = `${r.poll}/${r.polls}`;
     t.fill.style.width = r.polls ? `${Math.min(100, 100 * r.poll / r.polls)}%` : "0";
     t.node.classList.toggle("done", r.status === "done");
+    t.take.classList.toggle("can", r.status === "running" && !humanRun());
     t.node.classList.toggle("sel", !!cur && cur.id === r.id);
     t.node.title = r.subject ? `${r.movie}: ${r.subject}` : r.movie;
     if (!t.busy && (r.status === "running" || !t.got || !wasDone)) frame(t);
@@ -408,13 +462,19 @@ setInterval(() => {
   if (S) { renderMovies(); const b = S.build || {}; if (b.pin) $("build").textContent = `${String(b.pin).slice(0, 9)} · built ${ago(b.built)}`; }
 }, 1000);
 
-/* ---------- audio: one stream, the 1x run (selected first), on by default ---------- */
-const A = { on: true, ctx: null, id: null, abort: null, head: 0 };
-try { A.on = localStorage.getItem("tas.sound") !== "off"; } catch (e) {}
+/* ---------- audio: per viewer settings (sound on/off, all running runs or the focused one), on by default ---------- */
+const A = { on: true, scope: "all", ctx: null, streams: new Map() };   // id -> {abort, head}
+const MAX_STREAMS = 8;
+try {
+  A.on = localStorage.getItem("tas.sound") !== "off";
+  A.scope = localStorage.getItem("tas.scope") === "focus" ? "focus" : "all";
+} catch (e) {}
 function soundLabel() {
-  const waiting = A.on && A.id && (!A.ctx || A.ctx.state !== "running");
-  $("sound").textContent = !A.on ? "sound off" : waiting ? "sound on · click anywhere" : "sound on";
-  $("sound").className = A.on && A.id && !waiting ? "ok" : "";
+  const waiting = A.on && A.streams.size && (!A.ctx || A.ctx.state !== "running");
+  $("sndstate").textContent = !A.on ? "sound is off" : waiting ? "click anywhere on the page to start the sound" :
+    `${A.streams.size} run${A.streams.size === 1 ? "" : "s"} audible`;
+  $("setbtn").className = A.on && A.streams.size && !waiting ? "ok" : "";
+  $("setbtn").title = "Settings · sound " + (A.on ? (A.scope === "all" ? "on, all runs" : "on, focused run") : "off");
 }
 function wake() {
   if (!A.on) return;
@@ -425,38 +485,42 @@ function wake() {
 }
 document.addEventListener("pointerdown", wake, true);
 document.addEventListener("keydown", wake, true);
-$("sound").onclick = () => {
-  A.on = !A.on;
-  try { localStorage.setItem("tas.sound", A.on ? "on" : "off"); } catch (e) {}
-  if (!A.on) stopAudio(); else wake();
-  followAudio(); soundLabel();
-};
+function saveSound() {
+  try { localStorage.setItem("tas.sound", A.on ? "on" : "off"); localStorage.setItem("tas.scope", A.scope); } catch (e) {}
+}
+document.querySelectorAll('#settings input[name="snd"]').forEach(i => i.onchange = () => { A.on = i.value === "on"; saveSound(); if (A.on) wake(); followAudio(); });
+document.querySelectorAll('#settings input[name="scope"]').forEach(i => i.onchange = () => { A.scope = i.value; saveSound(); followAudio(); });
+function focusedRun() {
+  const st = stageRun();
+  if (st && st.status === "running") return st;
+  const r = selectedRun();
+  return r && r.status === "running" ? r : null;
+}
 function followAudio() {
-  let want = null;
+  let want = [];
   if (A.on && S) {
-    const ones = S.runs.filter(r => r.status === "running" && r.speed === 1).sort((a, b) => b.started - a.started);
-    const cur = selectedRun();
-    want = cur && ones.includes(cur) ? cur.id : ones.length ? ones[0].id : null;
+    if (A.scope === "focus") { const f = focusedRun(); if (f) want = [f.id]; }
+    else want = S.runs.filter(r => r.status === "running").sort((a, b) => b.started - a.started).slice(0, MAX_STREAMS).map(r => r.id);
   }
-  if (want !== A.id) { stopAudio(); A.id = want; if (want) streamAudio(want); }
+  for (const [id, st] of A.streams) if (!want.includes(id)) { st.abort.abort(); A.streams.delete(id); }
+  for (const id of want) if (!A.streams.has(id)) streamAudio(id);
   soundLabel();
 }
-function stopAudio() { if (A.abort) A.abort.abort(); A.abort = null; A.id = null; A.head = 0; }
 async function streamAudio(id) {
-  const ctl = new AbortController(); A.abort = ctl;
+  const st = { abort: new AbortController(), head: 0 }; A.streams.set(id, st);
   try {
-    const r = await fetch(`/audio/${encodeURIComponent(id)}`, { signal: ctl.signal });
-    if (!r.ok || !r.body) return;
+    const r = await fetch(`/audio/${encodeURIComponent(id)}`, { signal: st.abort.signal });
+    if (!r.ok || !r.body) { setTimeout(() => { if (A.streams.get(id) === st) A.streams.delete(id); }, 3000); return; }
     const reader = r.body.getReader();
     let buf = new Uint8Array(0), fmt = null;
     for (;;) {
       const { value, done } = await reader.read();
-      if (done || ctl.signal.aborted) break;
+      if (done || st.abort.signal.aborted) break;
       const joined = new Uint8Array(buf.length + value.length); joined.set(buf); joined.set(value, buf.length); buf = joined;
       if (!fmt) { const h = wavHeader(buf); if (!h) continue; fmt = h; buf = buf.slice(h.data); }
       const n = Math.floor(buf.length / fmt.align);
       if (!n) continue;
-      pcm(buf.subarray(0, n * fmt.align), fmt, n);
+      pcm(st, buf.subarray(0, n * fmt.align), fmt, n);
       buf = buf.slice(n * fmt.align);
     }
   } catch (e) {}
@@ -478,7 +542,7 @@ function wavHeader(b) {
   }
   return null;
 }
-function pcm(bytes, fmt, n) {
+function pcm(st, bytes, fmt, n) {
   const c = A.ctx;
   if (!c || c.state !== "running") return;               // no gesture yet: drop, never queue up lag
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.length), ab = c.createBuffer(fmt.channels, n, fmt.rate);
@@ -487,9 +551,176 @@ function pcm(bytes, fmt, n) {
     for (let i = 0; i < n; i++) out[i] = v.getInt16(i * fmt.align + ch * 2, true) / 32768;
   }
   const src = c.createBufferSource(); src.buffer = ab; src.connect(c.destination);
-  if (A.head < c.currentTime + 0.03 || A.head > c.currentTime + 0.4) A.head = c.currentTime + 0.05;
-  src.start(A.head); A.head += ab.duration;
+  if (st.head < c.currentTime + 0.03 || st.head > c.currentTime + 0.4) st.head = c.currentTime + 0.05;
+  src.start(st.head); st.head += ab.duration;
 }
+
+/* ---------- live input: your own run ("new run") or a running replay taken over ("take"), in the big view ----------
+   Keys and the gamepad are sent as pad state (POST /api/input) on every change while you control the run; the port takes
+   the newest per poll. Latency = input sent -> first picture drawn after the port applied it (X-Input-Seq). */
+const B = { A: 0x8000, B: 0x4000, Z: 0x2000, START: 0x1000, UP: 0x0800, DOWN: 0x0400, LEFT: 0x0200, RIGHT: 0x0100,
+            L: 0x0020, R: 0x0010, CUP: 0x0008, CDOWN: 0x0004, CLEFT: 0x0002, CRIGHT: 0x0001 };
+const KEYS = [  // [KeyboardEvent.code, label, button or stick direction]
+  ["ArrowUp", "↑", "stick up"], ["ArrowDown", "↓", "stick down"], ["ArrowLeft", "←", "stick left"], ["ArrowRight", "→", "stick right"],
+  ["KeyX", "X", "A"], ["KeyC", "C", "B"], ["KeyZ", "Z", "Z"], ["Enter", "Enter", "START"], ["KeyA", "A", "L"], ["KeyS", "S", "R"],
+  ["KeyI", "I", "CUP"], ["KeyK", "K", "CDOWN"], ["KeyJ", "J", "CLEFT"], ["KeyL", "L", "CRIGHT"],
+  ["KeyT", "T", "UP"], ["KeyG", "G", "DOWN"], ["KeyF", "F", "LEFT"], ["KeyH", "H", "RIGHT"],
+];
+const PAD_BUTTONS = [[0, "A (bottom)", "A"], [1, "B (right)", "B"], [2, "X (left)", "B"], [3, "Y (top)", "CUP"], [4, "LB", "L"], [5, "RB", "R"],
+  [6, "LT", "Z"], [7, "RT", "Z"], [9, "Start", "START"], [12, "d-pad up", "UP"], [13, "d-pad down", "DOWN"], [14, "d-pad left", "LEFT"],
+  [15, "d-pad right", "RIGHT"]];
+const STICK = 80, DEADZONE = 0.15;
+const P = { id: null, control: false, seq: 0, sent: new Map(), keys: new Set(), last: "", stamp: 0, loop: 0, ctx: null,
+            frames: [], lat: [], gotSeq: 0, closedId: null };
+P.ctx = $("scanvas").getContext("2d"); P.ctx.imageSmoothingEnabled = false;
+function stageRun() { return S && P.id ? S.runs.find(r => r.id === P.id) || null : null; }
+function humanRun() { return S ? S.runs.find(r => r.status === "running" && r.input === "human") || null : null; }
+function keyPad() {
+  let buttons = 0, x = 0, y = 0;
+  for (const [code, , what] of KEYS) {
+    if (!P.keys.has(code)) continue;
+    if (what === "stick up") y += STICK; else if (what === "stick down") y -= STICK;
+    else if (what === "stick left") x -= STICK; else if (what === "stick right") x += STICK;
+    else buttons |= B[what];
+  }
+  for (const g of navigator.getGamepads ? navigator.getGamepads() : []) {
+    if (!g) continue;
+    for (const [i, , what] of PAD_BUTTONS) if (g.buttons[i] && g.buttons[i].pressed) buttons |= B[what];
+    const ax = v => Math.abs(v) < DEADZONE ? 0 : Math.round((v - Math.sign(v) * DEADZONE) / (1 - DEADZONE) * STICK);
+    if (g.axes.length >= 2) { x += ax(g.axes[0]); y -= ax(g.axes[1]); }
+    if (g.axes.length >= 4) {
+      if (g.axes[2] > 0.5) buttons |= B.CRIGHT;
+      if (g.axes[2] < -0.5) buttons |= B.CLEFT;
+      if (g.axes[3] > 0.5) buttons |= B.CDOWN;
+      if (g.axes[3] < -0.5) buttons |= B.CUP;
+    }
+  }
+  const c = v => Math.max(-STICK, Math.min(STICK, v));
+  return { buttons, x: c(x), y: c(y) };
+}
+function sendPad() {
+  if (!P.id || !P.control) return;
+  const pad = keyPad(), key = `${pad.buttons} ${pad.x} ${pad.y}`;
+  if (key === P.last) return;
+  P.last = key; P.seq++;
+  P.sent.set(P.seq, performance.now());
+  if (P.sent.size > 600) P.sent.delete(P.sent.keys().next().value);
+  post("/api/input", { id: P.id, seq: P.seq, buttons: pad.buttons, x: pad.x, y: pad.y });
+}
+function gamepadLoop() { sendPad(); requestAnimationFrame(gamepadLoop); }
+requestAnimationFrame(gamepadLoop);
+function controlling() {
+  const r = stageRun();
+  return !!(P.id && P.control && r && r.status === "running" && !document.querySelector("dialog[open]"));
+}
+function stageOn(id, control) {
+  if (P.id !== id) {
+    Object.assign(P, { id, control, stamp: 0, frames: [], lat: [], gotSeq: 0, last: "", keys: new Set() });
+    P.loop++; stageFrames(P.loop);
+  } else P.control = P.control || control;
+  if (control) { sendPad(); setTimeout(() => $("scanvas").focus(), 0); }
+  renderStage();
+}
+async function newRun() {
+  wake();
+  const r = await post("/api/play", { label: "owner" });
+  if (r.id) stageOn(r.id, true); else alert(r.error || "could not start a run");
+}
+async function takeRun(run) {
+  wake();
+  const r = await post("/api/take", { id: run.id });
+  if (r.taken) stageOn(run.id, true); else alert(r.error || "could not take this run");
+}
+// The big view's picture: long-poll /frame?after=<stamp>, so each new picture arrives as soon as the port writes it.
+async function stageFrames(gen) {
+  while (gen === P.loop && P.id) {
+    const run = stageRun();
+    try {
+      const r = await fetch(`/frame/${encodeURIComponent(P.id)}?after=${P.stamp}`, { cache: "no-store" });
+      if (gen !== P.loop) return;
+      if (r.status === 200) {
+        P.stamp = +r.headers.get("X-Frame") || P.stamp;
+        const seq = +r.headers.get("X-Input-Seq") || 0, bmp = await createImageBitmap(await r.blob());
+        if (gen !== P.loop) return;
+        P.ctx.drawImage(bmp, 0, 0, 320, 240);
+        const t = performance.now();
+        P.frames.push(t);
+        while (P.frames.length && t - P.frames[0] > 2000) P.frames.shift();
+        if (seq > P.gotSeq) {
+          if (P.sent.has(seq)) { P.lat.push(t - P.sent.get(seq)); if (P.lat.length > 30) P.lat.shift(); }
+          P.gotSeq = seq;
+        }
+      } else if (r.status !== 204) await new Promise(ok => setTimeout(ok, 300));
+    } catch (e) { await new Promise(ok => setTimeout(ok, 500)); }
+    if (run && run.status === "done" && P.frames.length) { renderStage(); return; }
+  }
+}
+function median(v) { if (!v.length) return null; const s = v.slice().sort((a, b) => a - b); return s[s.length >> 1]; }
+function renderStage() {
+  const run = stageRun(), box = $("stage");
+  box.classList.toggle("on", !!P.id);
+  if (!P.id) return;
+  const live = !!(run && run.status === "running");
+  $("stitle").textContent = run ? (run.label ? `[${run.label}] ` : "") + run.movie : P.id;
+  $("sinfo").textContent = !run ? "starting…" : live
+    ? `poll ${run.poll}` + (run.input === "human" ? " · live input" : ` of ${run.polls} · ${speedText(run.speed)}`)
+    : `${run.outcome || "done"}${run.subject ? " · " + run.subject : ""}${run.saved ? " · saved as " + run.saved : ""}`;
+  $("sinfo").className = "grow mono " + (live || !run ? "dim" : OUT[run.outcome] || "dim");
+  const n = P.frames.length, fps = n > 1 ? (n - 1) * 1000 / (P.frames[n - 1] - P.frames[0]) : 0, lat = median(P.lat);
+  $("sstats").textContent = `${fps ? fps.toFixed(0) : "–"} fps · input→frame ${lat == null ? "–" : Math.round(lat) + " ms"}`;
+  $("sstats").title = "pictures drawn per second here (last 2 s); median time from sending an input to drawing the first picture " +
+    "the port made after applying it (last 30 inputs)";
+  $("sctl").style.display = live && !P.control ? "" : "none";
+  $("sstop").style.display = live ? "" : "none";
+  $("scanvas").classList.toggle("ctl", live && P.control);
+  $("shint").textContent = live
+    ? (P.control ? "your keyboard and gamepad drive this run (see controls) · recorded, saved as a movie when it ends" : "control: drive this run")
+    : run && run.saved ? `saved as movie ${run.saved} · replay: decomp tas play ${run.saved}` : "";
+  const W = $("left").clientWidth - 24, H = Math.max(240, window.innerHeight * 0.62);
+  const w = Math.max(320, Math.floor(Math.min(W, H * 4 / 3)));
+  $("scanvas").style.width = `${w}px`; $("scanvas").style.height = `${Math.floor(w * 3 / 4)}px`;
+}
+$("newrun").onclick = newRun;
+$("sctl").onclick = () => { const r = stageRun(); if (r && r.input === "human") stageOn(r.id, true); else if (r) takeRun(r); };
+$("sstop").onclick = () => { if (P.id) post("/api/stop", { id: P.id }); };
+$("sclose").onclick = () => {
+  const r = stageRun();
+  if (r && r.status === "running") return;
+  P.closedId = P.id; P.id = null; P.loop++; renderStage(); render();
+};
+setInterval(() => { if (P.id) renderStage(); }, 500);
+window.addEventListener("blur", () => { P.keys.clear(); sendPad(); });
+document.addEventListener("keyup", e => { if (P.keys.delete(e.code)) { e.preventDefault(); sendPad(); } }, true);
+
+/* ---------- modals: settings (sound) and controls (key map) ---------- */
+function openModal(id) {
+  if (id === "settings") {
+    document.querySelector(`#settings input[name="snd"][value="${A.on ? "on" : "off"}"]`).checked = true;
+    document.querySelector(`#settings input[name="scope"][value="${A.scope}"]`).checked = true;
+    soundLabel();
+  }
+  $(id).showModal();
+}
+function renderControls() {
+  const tbl = (head, rows) => {
+    const t = el("table"), h = el("tr");
+    head.forEach(x => h.append(el("th", "", x))); t.append(h);
+    rows.forEach(r => { const tr = el("tr"); r.forEach((x, i) => tr.append(el("td", i ? "" : "mono", x))); t.append(tr); });
+    return t;
+  };
+  $("ctlbody").replaceChildren(
+    el("h4", "", "keyboard (while you control a run)"), tbl(["key", "N64"], KEYS.map(([, k, w]) => [k, w])),
+    el("h4", "", "gamepad (standard layout)"),
+    tbl(["button", "N64"], PAD_BUTTONS.map(([, k, w]) => [k, w]).concat([["left stick", "stick"], ["right stick", "C buttons"]])),
+    el("h4", "", "page keys (when not controlling a run)"),
+    tbl(["key", "does"], [["space", "replay the selected movie at 1x"], ["a", "replay every movie at turbo"],
+      ["x", "stop the selected run"], ["↑ ↓", "pick a movie"]]));
+}
+renderControls();
+$("ctlbtn").onclick = () => openModal("controls");
+$("setbtn").onclick = () => openModal("settings");
+document.querySelectorAll("dialog [data-close]").forEach(b => { b.onclick = () => b.closest("dialog").close(); });
+document.querySelectorAll("dialog").forEach(d => d.addEventListener("click", e => { if (e.target === d) d.close(); }));
 
 /* ---------- actions ---------- */
 async function play(movie, speed) {
@@ -500,11 +731,17 @@ async function play(movie, speed) {
 }
 $("all").onclick = () => post("/api/play-all", {});
 $("clear").onclick = () => {
-  for (const r of S ? S.runs : []) { if (r.status === "running") post("/api/stop", { id: r.id }); closed.add(r.id); }
+  for (const r of S ? S.runs : []) {
+    if (r.id === P.id) continue;   // your own live run stays (stop it in the big view)
+    if (r.status === "running") post("/api/stop", { id: r.id });
+    closed.add(r.id);
+  }
   render();
 };
 document.addEventListener("keydown", e => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (controlling() && KEYS.some(k => k[0] === e.code)) { e.preventDefault(); P.keys.add(e.code); sendPad(); return; }
+  if (document.querySelector("dialog[open]")) return;
   if (e.key === " ") { e.preventDefault(); const r = selectedRun(); play(sel.movie || (r && r.movie), 1); }
   else if (e.key === "a") post("/api/play-all", {});
   else if (e.key === "x") { const r = selectedRun(); if (r && r.status === "running") post("/api/stop", { id: r.id }); }

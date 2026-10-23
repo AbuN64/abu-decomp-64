@@ -13,7 +13,17 @@ from pathlib import Path
 from urllib.request import urlopen
 
 PAGE = Path(__file__).resolve().parents[1] / "src" / "abu_decomp" / "tas_page.html"
-CONTRACT = {"/api/state", "/frame/", "/audio/", "/log/", "/api/play", "/api/play-all", "/api/stop"}
+CONTRACT = {
+    "/api/state",
+    "/frame/",
+    "/audio/",
+    "/log/",
+    "/api/play",
+    "/api/play-all",
+    "/api/stop",
+    "/api/take",
+    "/api/input",
+}
 NOW = 1_800_000_000
 
 
