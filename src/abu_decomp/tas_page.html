@@ -733,7 +733,27 @@ function renderWork() {
     list.push(it);
   });
   const genAt = w && w.generated ? el("span", "dim mono", ago(w.generated)) : null;
-  $("p-work").replaceChildren(section("Next up", genAt, ...list), section("Movies", el("span", "dim mono", `${S.movies.length}`), ...movieRows()), corpusSection(), coverageSection());
+  $("p-work").replaceChildren(section("Next up", genAt, ...list), triageSection(), section("Movies", el("span", "dim mono", `${S.movies.length}`), ...movieRows()), corpusSection(), coverageSection());
+}
+/* Buckets (tas_buckets): the findings of batch runs, sweeps and checks by root cause; a cycle lane takes a whole bucket */
+function triageSection() {
+  const t = BD && BD.triage, rows = t && t.rows;
+  if (!t || rows == null || (!rows.length && !t.error)) return section("Buckets", null, el("div", "empty", t && t.error ? "buckets failed: " + t.error : "no findings yet: tas play --all and decomp sweep --findings fill them"));
+  const all = ui.open.has("triage-all"), shown = all ? rows : rows.slice(0, 8);
+  const list = shown.map(b => {
+    const cls = b.movies.length ? "bad" : "warn";
+    const it = el("div", "item", el("div", "l1", el("span", "mono faint", `${b.rank}.`), badge(b.level, cls), el("span", "grow ell", b.title)));
+    const bits = [`${b.count} finding${b.count === 1 ? "" : "s"}`, b.movies.length ? `blocks ${b.movies.length} movie${b.movies.length === 1 ? "" : "s"}` : `${b.sites} site${b.sites === 1 ? "" : "s"} in source`];
+    if (b.fn) bits.push(b.fn + (b.callers && b.callers.length ? ` <- ${b.callers[0]}` : ""));
+    if (b.site) bits.push(b.site);
+    it.append(el("div", "l2", bits.join(" · ")));
+    if (b.movies.length) it.append(el("div", "chips", ...b.movies.slice(0, 12).map(m => btn(m, () => play(m, 1), "", null, `replay ${m} at 1x`))));
+    b.members.filter(m => !m.movie).slice(0, 3).forEach(m => it.append(el("div", "l2 mono ell", `${m.evidence || ""}`.slice(-70) + (m.text ? `  ${m.text}` : ""))));
+    if (b.next) it.append(copyable(b.next));
+    return it;
+  });
+  const more = rows.length > 8 ? btn(all ? "top 8" : `all ${rows.length}`, () => { all ? ui.open.delete("triage-all") : ui.open.add("triage-all"); renderPanes(); }, "ghost") : null;
+  return section("Buckets", el("span", "dim mono", `${rows.length}`), ...list, ...(more ? [more] : []));
 }
 function movieRows() {
   const names = new Set(S.movies.map(m => m.name));

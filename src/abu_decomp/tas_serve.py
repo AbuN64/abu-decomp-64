@@ -41,8 +41,10 @@ from abu_decomp import (
     evidence,
     tas,
     tas_board,
+    tas_buckets,
     tas_corpus,
     tas_coverage,
+    tas_findings,
     tas_health,
     tas_oracle,
     tas_triage,
@@ -53,6 +55,7 @@ _SERVE_KEYS = frozenset({"listen", "jobs", "inbox", "states", "pin", "lanes", "k
 RECENT_SHOWN = 12  # newest finished runs in /api/state (all running and queued ones are always there)
 HISTORY_PAGE = 60  # runs per /api/runs page
 INBOX_SHOWN = 12
+TRIAGE_ROWS = 30  # buckets in /api/board `triage`
 CACHE_SECONDS = 30.0
 ARCHIVE_SECONDS = 3600.0  # how often old runs are archived
 GATE_CHECK_SECONDS = 60.0  # how often serve looks for a port build the regression corpus has not been gated on
@@ -92,6 +95,7 @@ class Server:
         self.lanes_dir = profile.path("tas.serve.lanes", serve["lanes"]) if "lanes" in serve else None
         self.keep_days = float(serve.get("keep_days", 3))
         self.work = tas_board.Work(self.ranked, self.cfg["runs"] / "standing.json")
+        self.triage = tas_board.Work(self.buckets, tas_findings.path(self.cfg["runs"]))
         self.oracles: dict[str, tuple[int, Any]] = {}  # run id -> (record mtime, summary) of finished runs
         self.pool = ThreadPoolExecutor(max_workers=max(1, self.jobs))
         self.lock = threading.Lock()
@@ -166,12 +170,19 @@ class Server:
         health = tas_health.read(self.cfg, self.profile)
         return tas.ranked_work(self.profile, self.cfg, health, tas.standing_rows(self.cfg))
 
+    def buckets(self) -> list[dict[str, Any]]:
+        """The findings feed grouped by root cause (module tas_buckets), the first TRIAGE_ROWS buckets."""
+        rows = tas_buckets.build(tas_findings.read(self.cfg["runs"]), str(self.profile.source_file), None, TRIAGE_ROWS)
+        tas_buckets.enrich(tas_triage._project(self.profile), rows)
+        return rows
+
     def board(self) -> dict[str, Any]:
         project = tas_triage._project(self.profile)
         return {
             "decomp": self._cached("progress", lambda: tas_board.progress(self.states)),
             "landed": self._cached("landed", lambda: tas_board.landed(project)),
             "work": self.work.view(),
+            "triage": self.triage.view(),
         }
 
     def coverage(self) -> dict[str, Any]:

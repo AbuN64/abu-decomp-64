@@ -279,6 +279,30 @@ BOARD = {
         ],
     },
     "landed": [{"sha": "718492a18aa", "time": NOW - 300, "subject": "Match func_802013E0_de"}],
+    "triage": {
+        "generated": NOW - 20,
+        "error": None,
+        "rows": [
+            {
+                "rank": 1,
+                "key": "datum D_800E42D8",
+                "level": "datum",
+                "title": "datum D_800E42D8 [unsigned int D_800E42D8[35]] touched at +0x2",
+                "count": 8,
+                "movies": ["model-preview", "boot-idle"],
+                "sites": 8,
+                "kinds": {"crash": 7, "sweep": 1},
+                "offsets": [2],
+                "datum": "D_800E42D8",
+                "fn": "func_8041F2A0_us_rev1",
+                "callers": ["func_80402000_de"],
+                "site": "src/game/DATA/OVLTBL_8/800E42D8.CPP:3",
+                "declared": "unsigned int D_800E42D8[35]",
+                "members": [{"kind": "crash", "movie": "model-preview", "poll": 40, "run": "r1", "evidence": "/r/r1"}],
+                "next": "decomp --profile p.json tas play model-preview --speed 1",
+            }
+        ],
+    },
     "work": {
         "generated": NOW - 30,
         "error": None,
@@ -404,7 +428,8 @@ class PageTests(unittest.TestCase):
         fields |= set(BOARD["work"]) | set(BOARD["work"]["rows"][0]) | set(BOARD["landed"][0])
         fields |= set(CORPUS) | set(CORPUS["entries"][0]) - {"reasons"} | set(CORPUS["spots"][0])
         fields |= set(CORPUS["gate"]) | set(CORPUS["gate"]["failed"][0])
-        fields -= {"frame", "vi_drift_note", "ends"}
+        fields |= set(BOARD["triage"]) | set(BOARD["triage"]["rows"][0])
+        fields -= {"frame", "vi_drift_note", "ends", "key", "kinds", "offsets", "datum", "declared"}
         for name in sorted(fields | {"state", "more"}):
             self.assertRegex(js, rf"\.{name}\b", name)
 
@@ -480,6 +505,7 @@ class PageTests(unittest.TestCase):
             "decomp": ("us-rev1", "90.72%", "Match func_802013E0_de", "LANDED", "units in"),
             "lanes": ("copyright splash off center", "17:47 start", "watch 1"),
             "runs": ("title-to-player-select", "taken @400", "★"),
+            "work": ("Buckets", "D_800E42D8", "blocks 2 movies", "func_8041F2A0_us_rev1 <- func_80402000_de"),
         }
         for tab, texts in expect.items():
             with tempfile.TemporaryDirectory() as profile:

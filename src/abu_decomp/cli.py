@@ -337,6 +337,14 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     coverage.add_argument("--no-oracle", action="store_true", help="do not replay runs that lack an oracle trace")
     coverage.add_argument("--jobs", type=int, default=4, help="parallel oracle replays (default 4)")
     actions.add_parser("serve", help="serve the TAS page: every replay's picture, sound, log and the cycle state")
+    triage = actions.add_parser(
+        "triage", help="the findings of batch runs, sweeps and checks grouped by root cause, strongest bucket first"
+    )
+    triage.add_argument("--batch", help="only this batch's findings (a play --all stamp)")
+    triage.add_argument("--top", type=int, default=0, help="only the first N buckets")
+    triage.add_argument(
+        "--backfill", action="store_true", help="first add findings for each movie's newest recorded run"
+    )
     corpus = actions.add_parser("corpus", help="the regression corpus of movies, problem spots and the speedrun gate")
     verbs = corpus.add_subparsers(dest="verb", required=True, parser_class=_Parser)
     verbs.add_parser("list", help="corpus entries, problem spots, coverage features and the last gate")
@@ -437,6 +445,8 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
             raise DecompError("tas.coverage", "the profile has no tas.coverage section")
         print(tas_coverage.line(report), file=sys.stderr)
         return tas_coverage.lists(report, 25), 0, []
+    if args.action == "triage":
+        return _run_triage(profile, args)
     if args.action == "corpus":
         return _run_corpus(profile, args)
     if args.action == "show":
@@ -466,6 +476,23 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         return twice, 0, []
     played = tas.play(profile, args.name, **options, **inspect)
     return played, 0, []
+
+
+def _run_triage(profile: Any, args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import tas, tas_buckets, tas_findings, tas_triage
+
+    cfg = tas.settings(profile)
+    project = tas_triage._project(profile)
+    added = tas_findings.backfill(cfg["runs"], project) if args.backfill else 0
+    rows = tas_findings.read(cfg["runs"])
+    buckets = tas_buckets.build(rows, str(profile.source_file), args.batch, args.top)
+    tas_buckets.enrich(project, buckets)
+    print(tas_buckets.render(buckets), file=sys.stderr)
+    return (
+        {"findings": len(rows), "added": added, "buckets": buckets, "next": buckets[0]["next"] if buckets else ""},
+        0,
+        [],
+    )
 
 
 def _run_corpus(profile: Any, args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -814,6 +841,57 @@ def _run_owes(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     return {**result, "ranked": ranked, "next": ranked[0]["next"] if ranked else result["next"]}, 0, []
 
 
+def _sweep_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--rules", action="append", type=Path, required=True, metavar="FILE", help="a rules TOML file (repeat)"
+    )
+    parser.add_argument(
+        "--tree", action="append", default=[], metavar="LABEL=DIR", help="a tree the rules read (repeat)"
+    )
+    parser.add_argument("--rule", action="append", default=[], metavar="ID", help="run only this rule (repeat)")
+    parser.add_argument("--baseline", type=Path, help="hits listed in this file are known; the rest are new")
+    parser.add_argument("--update-baseline", action="store_true", help="rewrite --baseline with every hit now")
+    parser.add_argument("--findings", action="store_true", help="append the hits to the profile's findings feed")
+    parser.add_argument("--show", type=int, default=5, help="new hits listed per rule (default 5)")
+    parser.add_argument("--strict", action="store_true", help="exit 1 on any new hit, not only a block rule's")
+
+
+def _run_sweep(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import sweep, tas_findings
+
+    trees = {}
+    for item in args.tree:
+        label, sep, directory = item.partition("=")
+        if not sep or not label or not directory:
+            raise DecompError("sweep.tree", f"--tree takes LABEL=DIR, not {item!r}")
+        trees[label] = Path(directory).expanduser().resolve()
+    rules = sweep.load_rules(args.rules)
+    result = sweep.run(rules, trees, only=args.rule, baseline=args.baseline)
+    if args.update_baseline:
+        if args.baseline is None:
+            raise DecompError("sweep.baseline", "--update-baseline needs --baseline FILE")
+        result["baseline_written"] = sweep.write_baseline(args.baseline, result["hits"])
+    if args.findings:
+        profile = _profile(args.profile)
+        runs = profile.path("tas.runs", profile.section("tas")["runs"])
+        result["findings_added"] = tas_findings.append(runs, sweep.to_findings(result, trees))
+    print(sweep.render(result, args.show), file=sys.stderr)
+    failing = [h for h in result["hits"] if h["new"] and (args.strict or h["severity"] == "block")]
+    findings = [
+        {
+            "key": f"sweep.{h['rule']}",
+            "blocking": True,
+            "message": f"{h['tree']}/{h['file']}:{h['line']}: {h['text'][:120]}",
+            "file": h["file"],
+            "next": f"sed -n '{max(1, h['line'] - 3)},{h['line'] + 6}p' {trees[h['tree']] / h['file']}",
+        }
+        for h in failing[:50]
+    ]
+    result["hits_total"] = len(result["hits"])
+    result["hits"] = [h for h in result["hits"] if h["new"]][:200]  # the envelope lists new hits; the feed has all
+    return result, int(bool(failing)), findings
+
+
 def _claims_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "verb", choices=["check"], help="check: validate that a text's result claims cite recorded runs"
@@ -897,6 +975,11 @@ COMMANDS: dict[str, Command] = {
         "functions that owe a match (NON_MATCHING bodies, reached INCLUDE_ASM) by evidence level, most reached first",
         _owes_arguments,
         _run_owes,
+    ),
+    "sweep": Command(
+        "find the siblings of fixed root causes: project rules (TOML) over source trees, new hits vs a baseline",
+        _sweep_arguments,
+        _run_sweep,
     ),
     "claims": Command(
         "check that a text's result claims (fixed, behaves, ...) cite runs whose recorded outcome supports them",

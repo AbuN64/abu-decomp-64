@@ -160,6 +160,36 @@ class MovieTests(unittest.TestCase):
         user = seen["argv"][-1]
         self.assertTrue(user.endswith("/user") and Path(user).is_dir())
 
+    def test_a_crash_is_a_finding_of_its_batch_and_a_clean_replay_clears_it(self):
+        from abu_decomp import tas_buckets, tas_findings
+
+        (self.root / "movies").mkdir()
+        sha = hashlib.sha1(b"rom").hexdigest()
+        (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA *2\n")
+        outcome = {"code": 125, "text": "debug-reason: host-fault-00000010\n"}
+
+        class Port:
+            def __init__(self, argv, env, stdout, **kwargs):
+                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n")
+                stdout.write(outcome["text"])
+                stdout.flush()
+                self.pid, self.stdin = 1, io.StringIO()
+
+            def wait(self, timeout=None):
+                return outcome["code"]
+
+        runs = self.root / "runs"
+        with mock.patch.object(tas.subprocess, "Popen", Port):
+            tas.play(self.profile, "m", now=T0, batch="b1")
+            (found,) = tas_findings.read(runs)
+            self.assertEqual((found["kind"], found["movie"], found["poll"], found["batch"]), ("crash", "m", 1, "b1"))
+            self.assertEqual(found["subject"], "host-fault-00000010")
+            self.assertEqual(len(tas_buckets.build(tas_findings.read(runs))), 1)
+            outcome.update(code=0, text="n64c-tas: done\n")
+            tas.play(self.profile, "m", now=T0 + timedelta(seconds=9))
+        self.assertEqual([r["kind"] for r in tas_findings.read(runs)], ["crash", "clear"])
+        self.assertEqual(tas_buckets.build(tas_findings.read(runs)), [])
+
     def test_play_kills_a_hang(self):
         (self.root / "movies").mkdir()
         sha = hashlib.sha1(b"rom").hexdigest()

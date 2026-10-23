@@ -58,7 +58,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas_coverage, tas_fault, tas_health, tas_oracle, tas_rank, tas_symbolize
+from abu_decomp import (
+    DecompError,
+    tas_coverage,
+    tas_fault,
+    tas_findings,
+    tas_health,
+    tas_oracle,
+    tas_rank,
+    tas_symbolize,
+)
 from abu_decomp.config import Profile, check_keys
 
 SCHEMA = 1
@@ -825,6 +834,7 @@ def play(
     source: str | None = None,
     take_at: int | None = None,
     fps_unlock: bool = False,
+    batch: str | None = None,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
@@ -1036,6 +1046,8 @@ def play(
         result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
     final = {**record, **{k: result.get(k) for k in keep}, "status": "done", "stopped": stopped, "ended": time.time()}
     _write_record(run, final)
+    if not human:  # a crash, stop, hang or exit is a finding (module tas_findings); a clean replay clears its movie's
+        tas_findings.record_run(profile, cfg, {**final, "id": run.name}, run, batch)
     if not human and not retry:  # a run reaching code no corpus movie reaches keeps its movie (tas_corpus)
         from abu_decomp import tas_corpus
 
@@ -1146,6 +1158,7 @@ def play_all(
     cfg = settings(profile)
     names = sorted(p.stem for p in cfg["movies"].glob("*.tas")) if cfg["movies"].is_dir() else []
     health = tas_health.read(cfg, profile)
+    options.setdefault("batch", _stamp(now) + "-all")  # the findings of this run share one batch id
     began, cpu0 = time.monotonic(), resource.getrusage(resource.RUSAGE_CHILDREN)
 
     def one(name: str) -> dict[str, Any]:
