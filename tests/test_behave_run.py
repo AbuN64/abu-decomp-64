@@ -589,7 +589,10 @@ class RealStateTests(unittest.TestCase):
     def parts(self, statuses):
         cases = [{"name": n, "labels": {"seed": "seed-f-hit1"} if n.startswith("seed") else {"a": n}} for n in statuses]
         cases[0]["labels"] = {"seed": "seed-f-hit1"}
-        result = {"record": {}, "cases": [{"status": st, "detail": "unmapped 0 4 last 0"} for st in statuses.values()]}
+        result = {
+            "record": {},
+            "cases": [{"status": st, "detail": "unmapped 00000004 4 last 0"} for st in statuses.values()],
+        }
         return cases, result
 
     def real(self, *names):
@@ -620,5 +623,11 @@ class RealStateTests(unittest.TestCase):
 
     def test_nothing_changes_when_the_captured_entry_itself_did_not_run(self):
         cases, result = self.parts({"seed-f-hit1": "unmapped", "g1": "unmapped"})
+        got, original, swapped = run._real_states(cases, result, self.ENTRY, mock.Mock(), lambda k: 1 / 0)
+        self.assertEqual((got, original, swapped), (cases, result, None))
+
+    def test_a_read_of_other_unmapped_memory_stays_for_the_lenient_rerun(self):
+        cases, result = self.parts({"seed-f-hit1": "ok", "g1": "unmapped"})
+        result["cases"][1]["detail"] = "unmapped 0000B402 4 last 0"
         got, original, swapped = run._real_states(cases, result, self.ENTRY, mock.Mock(), lambda k: 1 / 0)
         self.assertEqual((got, original, swapped), (cases, result, None))

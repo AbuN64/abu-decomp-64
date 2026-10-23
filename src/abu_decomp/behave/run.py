@@ -460,9 +460,9 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
     mark = lap("original", mark)
     swapped: dict[str, int] | None = None
     if options.seeded:
-        # over a real call state, a generated case the original cannot run (a null or unmapped argument the game
-        # never passes) is no state to compare: it is swapped for a real one (the entry with one argument moved)
-        # when there is one, else dropped, and the result says how many
+        # over a real call state, a generated case that dereferences a null argument (the game never passes one) is
+        # no state to compare: it is swapped for a real one (the entry with one argument moved) when there is one,
+        # else dropped, and the result says how many
         cases, original, swapped = _real_states(
             cases,
             original,
@@ -703,6 +703,12 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
     return result, 0, findings
 
 
+def _null_deref(case: dict[str, Any]) -> bool:
+    """The case read through a null pointer: a crash on the console, never a state the game passes. (A read of
+    other unmapped memory is a case lacking state the game built: the lenient re-run answers it, it is kept.)"""
+    return _unmapped(case) and not _unmapped(case, floor=NULL_PAGE)
+
+
 def _real_states(
     cases: list[dict[str, Any]],
     original: dict[str, Any],
@@ -713,12 +719,12 @@ def _real_states(
     """Cases and the original's results with the generated cases that did not run swapped for real call states.
     Real is the captured entry and the entry with one argument moved off its real value (`inputs.around`): their
     pointers stay where the game aimed them. Nothing changes unless the captured entry itself ran; a generated case
-    is only judged unrunnable when the original stopped on memory it was not given (null or unmapped pointer)."""
+    is only judged unrunnable when the original dereferenced a null pointer."""
     pairs = list(zip(cases, original["cases"], strict=True))
     real = [(c, r) for c, r in pairs if "seed" in c["labels"]]
     if not any(c["labels"] == {"seed": entry["name"]} and r["status"] == "ok" for c, r in real):
         return cases, original, None
-    failed = [i for i, (c, r) in enumerate(pairs) if "seed" not in c["labels"] and _unmapped(r)]
+    failed = [i for i, (c, r) in enumerate(pairs) if "seed" not in c["labels"] and _null_deref(r)]
     if not failed:
         return cases, original, None
     have = {c["name"] for c in cases}
