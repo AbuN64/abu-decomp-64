@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -46,6 +47,39 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(got["failed"], [{"unit": "MENU/a.CPP", "error": "src/MENU/a.CPP:5 #error nope"}])
         self.assertEqual(got["summary"], "build: 1 units failed")
         self.assertFalse(got["stale"])
+
+    def pinned(self, built):
+        stamp = self.port.parent / "pins.json"
+        stamp.write_text(json.dumps({"rage_ports": built}))
+        self.cfg["build"].update(pins=stamp, pins_repo=self.port.parent / "ports")
+        with mock.patch("abu_decomp.tas_health.subprocess.run") as run:
+            run.return_value = SimpleNamespace(returncode=0, stdout="b" * 40 + "\n")
+            return tas_health.read(self.cfg)
+
+    def test_port_built_at_older_pins_is_named(self):
+        got = self.pinned("a" * 40)
+        self.assertEqual(
+            got["pins_stale"], "page port older than pins: built at rage-ports aaaaaaaaa, pins are at bbbbbbbbb"
+        )
+        self.assertIn("page port older than pins", got["summary"])
+        self.assertEqual(tas_health.header(got)["rebuild"], "make port")
+
+    def test_port_built_at_the_pins_is_current(self):
+        self.assertEqual(self.pinned("b" * 40)["pins_stale"], "")
+
+    def test_missing_stamp_counts_as_older(self):
+        self.cfg["build"].update(pins=self.port.parent / "none.json", pins_repo=self.port.parent)
+        with mock.patch("abu_decomp.tas_health.subprocess.run") as run:
+            run.return_value = SimpleNamespace(returncode=0, stdout="c" * 40)
+            self.assertIn("built at rage-ports unknown", tas_health.read(self.cfg)["pins_stale"])
+
+    def test_play_on_the_page_port_refuses_when_older_than_pins(self):
+        health = {"pins_stale": "page port older than pins: x", "rebuild": "page-port ensure"}
+        with (
+            mock.patch("abu_decomp.tas.settings", return_value=self.cfg),
+            self.assertRaisesRegex(Exception, "page port older than pins: x; rebuild it first: page-port ensure"),
+        ):
+            tas.play(self.profile, "m", health=health)
 
     def test_binary_older_than_a_source_is_stale(self):
         self.old_binary()

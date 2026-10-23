@@ -5,17 +5,21 @@ holding the first compile error, and the link denies the unit, so a function ins
 looks like a game defect. Likewise a binary older than its sources runs old code. Both are read here so neither can be
 mistaken for a game stop. Section `tas.build`: {"units": folder holding the `*.failed` markers (the build's unit tree),
 "sources": text file listing the absolute source paths the build used, "rebuild": the command that rebuilds}.
-Nothing here blocks a play; it only makes the state impossible to miss.
+Nothing here blocks a play except a page port older than the port tree's pins (`pins_stale`): a binary built before the
+last pin bump rejects what the movies pass (10-22: a Controller Pak flag), and every replay then exited 2 with no word
+why. "pins" is the stamp the page-port build writes ({"rage_ports": sha}); "pins_repo" is the port tree it must match.
 """
 
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError, tas_triage
 
-BUILD_KEYS = frozenset({"units", "sources", "rebuild"})
+BUILD_KEYS = frozenset({"units", "sources", "rebuild", "pins", "pins_repo"})
 
 
 def failed_units(units: Path) -> list[dict[str, str]]:
@@ -43,6 +47,23 @@ def newest_source(listing: Path) -> tuple[float, str] | None:
     return newest
 
 
+def pins_lag(build: dict[str, Any]) -> str:
+    """Empty when the port binary was built at the port tree's HEAD (or no stamp is configured), else why not."""
+    if not (build.get("pins") and build.get("pins_repo")):
+        return ""
+    try:
+        built = json.loads(Path(build["pins"]).read_text()).get("rage_ports", "")
+    except (OSError, ValueError, AttributeError):
+        built = ""
+    done = subprocess.run(
+        ["git", "-C", str(build["pins_repo"]), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+    )
+    now = done.stdout.strip()
+    if done.returncode or not now or built == now:
+        return ""
+    return f"page port older than pins: built at rage-ports {built[:9] or 'unknown'}, pins are at {now[:9]}"
+
+
 def read(cfg: dict[str, Any], profile: Any = None) -> dict[str, Any]:
     """{failed: [...], stale: bool, stale_by, rebuild, summary}; {} when the profile configures no build section."""
     build = cfg.get("build")
@@ -56,7 +77,10 @@ def read(cfg: dict[str, Any], profile: Any = None) -> dict[str, Any]:
         newest = newest_source(Path(sources))
         if newest and newest[0] > port.stat().st_mtime:
             out["stale"], out["stale_by"] = True, newest[1]
+    out["pins_stale"] = pins_lag(build)
     parts = []
+    if out["pins_stale"]:
+        parts.append(out["pins_stale"])
     if out["failed"]:
         parts.append(f"build: {len(out['failed'])} units failed")
     if out["stale"]:
@@ -72,6 +96,10 @@ def header(health: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {"summary": health["summary"]}
     if health["failed"]:
         out["failed"] = health["failed"]
+    if health.get("pins_stale"):
+        out["pins_stale"] = health["pins_stale"]
+        if health["rebuild"]:
+            out["rebuild"] = health["rebuild"]
     if health["stale"]:
         out["stale"] = f"binary older than source: {health['stale_by']}"
         if health["rebuild"]:

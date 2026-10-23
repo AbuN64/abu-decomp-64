@@ -704,6 +704,9 @@ def play(
         raise DecompError("tas.play", f"speed is 0 (turbo) .. 1000, not {speed}")
     began = time.monotonic()
     health = tas_health.read(cfg, profile) if health is None else health
+    if port is None and health and health.get("pins_stale"):
+        rebuild = health.get("rebuild") or "(no tas.build.rebuild set)"
+        raise DecompError("tas.play", f"{health['pins_stale']}; rebuild it first: {rebuild}")
     check_inspect(shots_every, dump_ram_at, trace_draws)
     check_pak(pak)
     check_cpak(cpak)
