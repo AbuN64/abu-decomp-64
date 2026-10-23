@@ -1,6 +1,7 @@
 """`decomp behave --precapture` (behave/precapture.py): the list, the plan from behave's own describe runs, one batch
 call to the oracle tool and the report, with the tools mocked."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -44,6 +45,7 @@ class PrecaptureTests(unittest.TestCase):
             self.invoke(captures),
             mock.patch.object(precapture.behave_run, "work_dir", return_value=self.root),
             mock.patch.object(precapture.behave_run, "configuration", return_value={}),
+            mock.patch.object(precapture.behave_run, "capture_movie", return_value=(None, None)),
             mock.patch.object(precapture.tools, "project_dir", return_value=self.root),
         ):
             return precapture.run(profile, self.options, spec)
@@ -94,6 +96,7 @@ class PrecaptureTests(unittest.TestCase):
             self.invoke([{"function": "f", "status": "captured", "cached": False}]),
             mock.patch.object(precapture.behave_run, "work_dir", return_value=self.root),
             mock.patch.object(precapture.behave_run, "configuration", return_value={}),
+            mock.patch.object(precapture.behave_run, "capture_movie", return_value=(None, None)),
             mock.patch.object(precapture.tools, "project_dir", return_value=self.root),
             mock.patch.object(precapture.meter, "cpu", side_effect=[0.0, 1.0, 999.0, 999.0, 999.0, 999.0]),
         ):
@@ -152,3 +155,28 @@ class PrecaptureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_a_planned_function_carries_its_movie_and_one_nothing_reaches_is_left_out(self):
+        table = {
+            "f": {"function": "f", "status": "planned", "sets": [(1, ["g"])]},
+            "h": {"function": "h", "status": "planned", "sets": [(1, [])]},
+        }
+        own = {"env": {"N64R_TAS_PLAY": "/m/a.raw"}, "seconds": 90, "movie": "a", "poll": 4}
+        verdict = {"key": "behave.no_movie", "blocking": False, "message": "none reaches it"}
+        profile = mock.Mock()
+        with (
+            self.plans(table),
+            self.invoke([{"function": "f", "status": "captured", "cached": False}]),
+            mock.patch.object(precapture.behave_run, "work_dir", return_value=self.root),
+            mock.patch.object(precapture.behave_run, "configuration", return_value={}),
+            mock.patch.object(
+                precapture.behave_run,
+                "capture_movie",
+                lambda p, c, name, v: (own, None) if name == "f" else (None, verdict),
+            ),
+            mock.patch.object(precapture.tools, "project_dir", return_value=self.root),
+        ):
+            _, _, findings = precapture.run(profile, self.options, "f,h")
+        rows = json.loads(self.calls[0][2])
+        self.assertEqual(rows, [{"function": "f", "stubs": ["g"], "env": own["env"], "seconds": 90}])
+        self.assertIn("h: none reaches it", [f["message"] for f in findings if f["key"] == "behave.no_movie"])

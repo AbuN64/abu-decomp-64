@@ -118,13 +118,27 @@ def run(
     mark = time.monotonic()
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, tuple[str, ...]]] = set()
+    config = behave_run.configuration(profile)
+    findings: list[dict[str, Any]] = []
     for row in planned:
+        # the movie the coverage table says reaches it, as a live `behave` would ask for: the same capture key
+        own, no_movie = (
+            behave_run.capture_movie(profile, config, row["function"], version) if row.get("sets") else (None, None)
+        )
+        if no_movie:
+            findings.append({**no_movie, "message": f"{row['function']}: {no_movie['message']}"})
+            continue
         for _, stubs in row.get("sets", []):
             if (row["function"], tuple(stubs)) not in seen:
                 seen.add((row["function"], tuple(stubs)))
-                rows.append({"function": row["function"], "stubs": stubs})
+                rows.append(
+                    {
+                        "function": row["function"],
+                        "stubs": stubs,
+                        **({"env": own["env"], "seconds": own["seconds"]} if own else {}),
+                    }
+                )
     captured: list[dict[str, Any]] = []
-    findings: list[dict[str, Any]] = []
     if rows:
         with tempfile.TemporaryDirectory(
             prefix="precapture-", dir=behave_run.work_dir(behave_run.configuration(profile))

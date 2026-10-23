@@ -115,6 +115,21 @@ def port_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
     return env
 
 
+def movie_env(play: Path, pak: str, pads: int, exit_after: int, card: Path | None) -> dict[str, str]:
+    """The host variables that replay a movie: the deterministic clock (guest time from the work done), the
+    Expansion Pak, the pads, the poll-keyed movie, when the host stops and the Controller Pak card, if any."""
+    env = {
+        "N64R_CLOCK": "entries",
+        "N64R_PAK": pak,
+        "N64R_PADS": str(pads),  # controllers the guest sees; each movie.raw line holds that many pads
+        "N64R_TAS_PLAY": str(play),
+        "N64R_TAS_EXIT_AFTER": str(exit_after),
+    }
+    if card:
+        env["N64R_CPAK"] = str(card)
+    return env
+
+
 def start(
     oracle: dict[str, Any],
     run: Path,
@@ -133,10 +148,7 @@ def start(
         "SDL_AUDIODRIVER": "dummy",
         "N64R_CLOCK": "entries",
         **oracle["env"],
-        "N64R_PAK": pak,
-        "N64R_PADS": str(pads),  # controllers the guest sees; each movie.raw line holds that many pads
-        "N64R_TAS_PLAY": str(run / "movie.raw"),
-        "N64R_TAS_EXIT_AFTER": str(exit_after),
+        **movie_env(run / "movie.raw", pak, pads, exit_after, None),
         "N64R_VIEW": str(run / VIEW),
         "N64R_AUDIO_OUT": str(run / AUDIO),
         "N64R_TAS_SHOT_EVERY": str(oracle["shot_every"]),  # the host's entry-count checkpoints (behaviour) follow it

@@ -376,6 +376,42 @@ class RunTests(unittest.TestCase):
         self.assertEqual(called, [])
         self.assertIn("behave.lenient", [f["key"] for f in json.loads(stdout.getvalue())["findings"]])
 
+    def test_the_capture_runs_the_movie_the_coverage_table_names_and_says_which(self):
+        asked = []
+        own = {"env": {"N64R_TAS_PLAY": "/m/walk.raw"}, "seconds": 160, "movie": "walk", "poll": 200}
+
+        def grab(*a):
+            asked.append(a)
+            return self.seed(), "", ""
+
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(run, "probe", self.seeded_probe),
+            mock.patch.object(run, "capture_seed", grab),
+            mock.patch.object(run, "capture_movie", lambda *a: (own, None)),
+            mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
+            contextlib.redirect_stdout(stdout),
+        ):
+            main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6"])
+        self.assertEqual(asked[0][-1], own)
+        seeded = [f for f in json.loads(stdout.getvalue())["findings"] if f["key"] == "behave.seed"]
+        self.assertIn("movie walk poll 200", seeded[0]["message"])
+
+    def test_a_function_no_movie_reaches_skips_the_capture_and_says_so(self):
+        asked = []
+        verdict = {"key": "behave.no_movie", "blocking": False, "message": "no recorded movie reaches f"}
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(run, "probe", self.seeded_probe),
+            mock.patch.object(run, "capture_seed", lambda *a: asked.append(a) or (None, "", "")),
+            mock.patch.object(run, "capture_movie", lambda *a: (None, verdict)),
+            mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
+            contextlib.redirect_stdout(stdout),
+        ):
+            main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6"])
+        self.assertEqual(asked, [])  # the oracle's time limit is not spent on a function nothing reaches
+        self.assertIn("behave.no_movie", [f["key"] for f in json.loads(stdout.getvalue())["findings"]])
+
     def test_a_probe_with_other_stubs_asks_for_its_own_capture(self):
         asked = []
 
@@ -385,8 +421,8 @@ class RunTests(unittest.TestCase):
             return done
 
         def grab(*a):
-            asked.append(a[-1])
-            return {**self.seed(), "capture": {**self.seed()["capture"], "stubs": list(a[-1])}}, "", ""
+            asked.append(a[4])
+            return {**self.seed(), "capture": {**self.seed()["capture"], "stubs": list(a[4])}}, "", ""
 
         stdout = io.StringIO()
         with (

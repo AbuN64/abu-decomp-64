@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError, arity
-from abu_decomp.behave import abi, classify, compare, describe, inputs, prototype
+from abu_decomp.behave import abi, classify, compare, describe, inputs, movie, prototype
 from abu_decomp.behave import candidate as build_candidate
 from abu_decomp.config import Profile
 from abu_decomp.tools import drain_cache, invoke, settings
@@ -30,6 +30,7 @@ DEFAULTS: dict[str, Any] = {
     "event_budget": 20000,  # call/stub/store events one case may write; a case over it ends fatal event-budget
     "event_budget_cap": 300000,  # the most the budget is raised to for a function that needs more
     "depth_cap": 3,  # calls deep the original callees may run when no case ran to completion with fewer
+    "capture_poll_seconds": 0.5,  # oracle seconds a movie needs per poll up to the function's first call (time limit)
     "learn_cases": 8,
     "learn_rounds": 8,
     "min_compared": compare.MIN_COMPARED,  # cases that must compare before the verdict may be `same`
@@ -143,8 +144,22 @@ def probe(profile: Profile, work: Path, name: str, request: dict[str, Any], func
 SETUP_FAILURES = ("repro.capture.stale_host", "repro.capture.host_build", "repro.capture.display")
 
 
+def capture_movie(
+    profile: Profile, config: dict[str, Any], name: str, version: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """The movie the coverage table says reaches `name` (its host variables and time limit), or the finding that
+    none does (behave.no_movie); (None, None) when the table cannot say and the profile's fixed script stands."""
+    return movie.choose(
+        profile,
+        work_dir(config),
+        name,
+        version,
+        float(config.get("capture_poll_seconds", DEFAULTS["capture_poll_seconds"])),
+    )
+
+
 def capture_seed(
-    profile: Profile, version: str, function: str, hit: int, stubs: list[str]
+    profile: Profile, version: str, function: str, hit: int, stubs: list[str], own: dict[str, Any] | None = None
 ) -> tuple[dict[str, Any] | None, str, str]:
     """One `taste repro capture`: the oracle run to the function's entry, with what each of `stubs` (the callees the
     probe cuts off) returned and wrote on the way out. The seed (RDRAM image, entry stack pointer and the entry
@@ -164,6 +179,8 @@ def capture_seed(
             "--hit",
             str(hit),
             *(["--stubs", ",".join(stubs)] if stubs else []),
+            *(a for k, v in sorted((own or {}).get("env", {}).items()) for a in ("--env", f"{k}={v}")),
+            *(["--seconds", str(own["seconds"])] if own else []),
         ],
     )
     if not called.ok:
@@ -461,8 +478,16 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         # and both bodies run again over that memory, with its entry registers (and variations around them) as more
         # cases. Only when that is not available do the static image and, for a starved case, the lenient memory below
         # stand in, under a named finding.
-        seed, why, key = capture_seed(profile, version, target, options.hit, sorted(record.get("stubs", {})))
-        if seed is None:
+        own, no_movie = capture_movie(profile, config, options.function, version)
+        seed, why, key = (
+            (None, "", "")
+            if no_movie  # nothing recorded reaches it: the cases stay synthetic and the time limit is not spent
+            else capture_seed(profile, version, target, options.hit, sorted(record.get("stubs", {})), own)
+        )
+        if no_movie:
+            findings.append(no_movie)
+            options = replace(options, capture=False)
+        elif seed is None:
             findings.append(_no_seed(why, key))
             options = replace(options, capture=False)
         else:
@@ -473,7 +498,8 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
                     "key": "behave.seed",
                     "blocking": False,
                     "message": f"seeded from the oracle at entry {shown['hit']} of {shown['function']} (rdram "
-                    f"{shown['rdram_sha256'][:12]}, rom sha1 {shown['rom_sha1'][:12]})",
+                    f"{shown['rdram_sha256'][:12]}, rom sha1 {shown['rom_sha1'][:12]})"
+                    + (f"; movie {own['movie']} poll {own['poll']}" if own else ""),
                 }
             )
             return again, code, [*findings, *more]
@@ -482,7 +508,14 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         # the probe's call): a probe with other stubs (another depth) needs its own capture
         asked = set(options.seeded["capture"].get("stubs", []))
         if set(record.get("stubs", {})) - asked:
-            seed, why, key = capture_seed(profile, version, target, options.hit, sorted(record["stubs"]))
+            seed, why, key = capture_seed(
+                profile,
+                version,
+                target,
+                options.hit,
+                sorted(record["stubs"]),
+                capture_movie(profile, config, options.function, version)[0],
+            )
             if seed is None:
                 findings.append(_no_seed(why, key, stubs=True))
                 options = replace(options, capture=False)
