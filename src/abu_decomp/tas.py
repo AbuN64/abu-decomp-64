@@ -14,6 +14,12 @@ The header's `pak` (`on` or `off`) says whether the run had the Expansion Pak (8
 without one ran with it. A replay keeps what the movie ran with (`play --pak` overrides, the page's "new run" picks),
 the port gets `--pak off` for a run without it, and the run's record and the page's tile show it.
 
+The header's `cpak` says what Controller Pak (32 KiB save card) the run started with: `none` (the slot is empty; a movie
+without the line ran so), `fresh` (a newly formatted card) or the SHA-256 of the starting card, whose bytes sit beside
+the movie as `<sha256>.mpk`. A replay never touches the user's card: it gets a copy in its run folder (`cpak.mpk`, the
+card as it ended; `cpak-start.mpk`, as it began), so the same movie ends on the same card every time. The owner's own
+runs on the page use the profile's card (`controller-pak.mpk` beside the runs) and keep what the game saves to it; the
+movie saved from such a run names the card it started with. `play --cpak on|off` and the page's checkbox override.
 Every replay is the same one kind of run, and every one is visible: the port writes its latest picture to the run
 folder (`N64C_VIEW`, a BMP at most ~15 times a second), a per-poll RAM hash (`N64C_TAS_HASH`) and, at speed 1 only,
 the sound it plays (`N64C_AUDIO_OUT`). Speed 0 (turbo, the default) skips the retrace sleep; the game's own clock
@@ -91,6 +97,34 @@ STOP_SUBJECT = "*(char**)&n64c_boot_stop_symbol"
 
 Poll = tuple[int, int, int]
 PAKS = ("on", "off")
+CPAKS = ("on", "off")
+CARD, CARD_START, PROFILE_CARD = "cpak.mpk", "cpak-start.mpk", "controller-pak.mpk"
+CARD_BYTES = 0x8000
+_CARD_MODE = re.compile(r"none|fresh|[0-9a-f]{64}")
+
+
+def fresh_card() -> bytes:
+    """A newly formatted Controller Pak, byte for byte what the port makes for a missing card file (the shim's
+    n64c_cpak_format): four id blocks with a fixed serial, an index table with every data page free, no notes."""
+    image = bytearray(CARD_BYTES)
+    for at in (0x20, 0x60, 0x80, 0xC0):
+        block = image[at : at + 32]
+        for i in range(24):
+            block[i] = 0xA5 ^ (i * 29 & 0xFF)
+        block[0x18:0x1C] = bytes([0, 1, 1, 1])
+        total = sum(int.from_bytes(block[i : i + 2], "big") for i in range(0, 28, 2)) & 0xFFFF
+        block[0x1C:0x20] = total.to_bytes(2, "big") + ((0xFFF2 - total) & 0xFFFF).to_bytes(2, "big")
+        image[at : at + 32] = block
+    for page in range(1, 128):
+        image[0x100 + page * 2 : 0x102 + page * 2] = (1 if page < 5 else 3).to_bytes(2, "big")
+    image[0x101] = (3 * 123) & 0xFF
+    image[0x200:0x300] = image[0x100:0x200]
+    return bytes(image)
+
+
+def check_cpak(cpak: str | None) -> None:
+    if cpak is not None and cpak not in CPAKS:
+        raise DecompError("tas.cpak", f"the Controller Pak is 'on' or 'off', not {cpak!r}")
 
 
 def _build(profile: Profile, table: Any) -> dict[str, Any]:
@@ -234,9 +268,13 @@ def save(
     replace: bool,
     now: datetime | None = None,
     pak: str = "on",
+    cpak: str = "none",
+    cpak_image: Path | None = None,
 ) -> dict[str, Any]:
     cfg = settings(profile)
     check_pak(pak)
+    if not _CARD_MODE.fullmatch(cpak):
+        raise DecompError("tas.save", f"the cpak header is none, fresh or a SHA-256, not {cpak!r}")
     path = _movie(cfg, name)
     if path.exists() and not replace:
         raise DecompError("tas.save", f"{path.name} exists; pass --replace to overwrite it")
@@ -249,10 +287,22 @@ def save(
     polls = parse_raw(text[: text.rfind("\n") + 1])  # a live recording may end in a half-written line
     if not polls:
         raise DecompError("tas.save", f"{source} holds no polls")
-    header = {"rom-sha1": _sha1(cfg["rom"]), "recorded": _stamp(now), "polls": str(len(polls)), "pak": pak}
+    header = {
+        "rom-sha1": _sha1(cfg["rom"]),
+        "recorded": _stamp(now),
+        "polls": str(len(polls)),
+        "pak": pak,
+        "cpak": cpak,
+    }
     if note:
         header["note"] = " ".join(note.split())
     cfg["movies"].mkdir(parents=True, exist_ok=True)
+    if len(cpak) == 64:
+        card = cfg["movies"] / f"{cpak}.mpk"
+        if not card.is_file():
+            if cpak_image is None or hashlib.sha256(cpak_image.read_bytes()).hexdigest() != cpak:
+                raise DecompError("tas.save", f"the starting card {cpak} is not at hand to keep beside the movie")
+            card.write_bytes(cpak_image.read_bytes())
     path.write_text(encode(polls, header))
     return {"movie": str(path), "name": name, "polls": len(polls), "source": str(source)}
 
@@ -274,6 +324,7 @@ def listing(profile: Profile) -> dict[str, Any]:
                 "note": header.get("note", ""),
                 "recorded": header.get("recorded", ""),
                 "pak": header.get("pak", "on"),
+                "cpak": header.get("cpak", "none"),
             }
         )
     live = [{"path": str(p), "polls": len(read_raw(p))} for p in recordings(cfg)[-5:]]
@@ -297,8 +348,11 @@ def delete(profile: Profile, name: str) -> dict[str, Any]:
     return {"deleted": str(path)}
 
 
-def _argv(cfg: dict[str, Any], user_dir: Path, pak: str = "on") -> list[str]:
-    argv = [str(cfg["port"])] + [arg.replace("{user_dir}", str(user_dir)) for arg in cfg["args"]]
+def _argv(cfg: dict[str, Any], user_dir: Path, pak: str = "on", card: Path | None = None) -> list[str]:
+    """The port's command line. The Controller Pak is always named: `--cpak off` for an empty slot (the port's own
+    default is a card), else the card file the run owns."""
+    argv = [str(cfg["port"]), "--cpak", str(card) if card else "off"]
+    argv += [arg.replace("{user_dir}", str(user_dir)) for arg in cfg["args"]]
     return [*argv, "--pak", "off"] if pak == "off" else argv
 
 
@@ -342,6 +396,30 @@ def movie_pak(cfg: dict[str, Any], name: str) -> str:
     pak = decode(_movie(cfg, name).read_text())[0].get("pak", "on")
     check_pak(pak)
     return pak
+
+
+def movie_cpak(cfg: dict[str, Any], name: str) -> str:
+    """The card a saved movie started with: its header's `cpak`; `none` for a movie from before the card."""
+    mode = decode(_movie(cfg, name).read_text())[0].get("cpak", "none")
+    if not _CARD_MODE.fullmatch(mode):
+        raise DecompError("tas.cpak", f"{name}: the cpak header is none, fresh or a SHA-256, not {mode!r}")
+    return mode
+
+
+def start_card(cfg: dict[str, Any], mode: str) -> bytes | None:
+    """A replay card start: None for an empty slot, a fresh card, or the image kept beside the movie."""
+    if mode == "none":
+        return None
+    if mode == "fresh":
+        return fresh_card()
+    kept = cfg["movies"] / f"{mode}.mpk"
+    if not kept.is_file() or hashlib.sha256(kept.read_bytes()).hexdigest() != mode:
+        raise DecompError("tas.cpak", f"the starting card {kept} is missing or does not match its name")
+    return kept.read_bytes()
+
+
+def card_mode(image: bytes) -> str:
+    return "fresh" if image == fresh_card() else hashlib.sha256(image).hexdigest()
 
 
 def movie_polls(cfg: dict[str, Any], name: str) -> list[Poll]:
@@ -489,13 +567,15 @@ def last_poll(path: Path) -> int:
     return 0
 
 
-def previous_run(cfg: dict[str, Any], name: str, build: str, before: str, pak: str = "on") -> Path | None:
+def previous_run(
+    cfg: dict[str, Any], name: str, build: str, before: str, pak: str = "on", cpak: str = "none"
+) -> Path | None:
     """The newest finished run of `name` on this build with the same Expansion Pak setting (by folder name, older
     than `before`) with a hash file."""
     for run, row in reversed(run_rows(cfg)):
         if run.name >= before or row.get("movie") != name or row.get("build") != build:
             continue
-        if row.get("pak", "on") != pak:
+        if row.get("pak", "on") != pak or row.get("cpak", "none") != cpak:
             continue
         if row.get("taken"):
             continue
@@ -522,7 +602,7 @@ def human_movie_name(now: datetime | None = None) -> str:
 
 
 def save_taken(
-    profile: Profile, cfg: dict[str, Any], run: Path, movie: str, human: bool, pak: str = "on"
+    profile: Profile, cfg: dict[str, Any], run: Path, movie: str, human: bool, pak: str = "on", cpak: str = "none"
 ) -> str | None:
     """Save a run that live input drove as a movie: the human's run under its own name, a takeover as
     `<movie>-take-STAMP` (the original movie's prefix plus the human's polls). None when it reached no poll."""
@@ -533,7 +613,17 @@ def save_taken(
     name = movie if human else f"{movie[:40]}-take-{stamp}"
     note = f"live input from the TAS page, run {run.name}" + ("" if human else f", taken over from {movie}")
     try:
-        return save(profile, name, source=source, note=note, replace=False, pak=pak)["name"]
+        kept = run / CARD_START
+        return save(
+            profile,
+            name,
+            source=source,
+            note=note,
+            replace=False,
+            pak=pak,
+            cpak=cpak,
+            cpak_image=kept if kept.is_file() else None,
+        )["name"]
     except DecompError:
         return None
 
@@ -594,6 +684,7 @@ def play(
     trace_draws: int | None = None,
     pak: str | None = None,
     oracle: bool = False,
+    cpak: str | None = None,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
@@ -601,7 +692,9 @@ def play(
     the same movie in the original game beside it (module tas_oracle): pictures at the same polls, scored poll by
     poll; the result's `oracle` says how it ended and the worst score (`max_diff`, at `max_poll`).
 
-    `pak` ("on"/"off") sets the Expansion Pak: the movie's own by default, `on` for a new run.
+    `pak` ("on"/"off") sets the Expansion Pak: the movie's own by default, `on` for a new run. `cpak` ("on"/"off") sets
+    the Controller Pak the same way: a replay starts from a copy of the card its movie started with (`on` over a movie
+    without one: a fresh card), a new run uses the profile's own card file.
     Every run listens for live input (`input_address`, module tas_serve's /api/take and /api/input): once it is taken
     over the recording goes on, and at the end its polls are saved as a new movie (`saved`). `name` None is a new
     human run: a fresh boot at speed 1 driven by live input from the first poll, saved as `play-STAMP`."""
@@ -613,6 +706,7 @@ def play(
     health = tas_health.read(cfg, profile) if health is None else health
     check_inspect(shots_every, dump_ram_at, trace_draws)
     check_pak(pak)
+    check_cpak(cpak)
     human = name is None
     if oracle and human:
         raise DecompError("tas.oracle", "the oracle replays a movie; a human run has none")
@@ -629,6 +723,30 @@ def play(
     run = cfg["runs"] / "plays" / (run_id or new_run_id(cfg, name, now))
     user_dir = run / "user"
     user_dir.mkdir(parents=True)
+    card, mode, oracle_card = None, "none", None
+    if human:
+        if cpak != "off":
+            card = cfg["runs"] / PROFILE_CARD  # the owner's own card: the game's saves stay in it
+            if card.exists():
+                start = card.read_bytes()
+                if len(start) != CARD_BYTES:
+                    raise DecompError("tas.cpak", f"{card} is not a 32 KiB Controller Pak image")
+            else:
+                start = fresh_card()
+            (run / CARD_START).write_bytes(start)
+            mode = card_mode(start)
+    else:
+        mode = movie_cpak(cfg, name)
+        if cpak == "off":
+            mode = "none"
+        elif cpak == "on" and mode == "none":
+            mode = "fresh"
+        start = start_card(cfg, mode)
+        if start is not None:
+            card, oracle_card = run / CARD, run / "oracle-cpak.mpk"
+            card.write_bytes(start)
+            (run / CARD_START).write_bytes(start)
+            oracle_card.write_bytes(start)
     env = {
         **os.environ,
         **cfg["env"],
@@ -664,13 +782,14 @@ def play(
         "label": label or None,
         "input": "human" if human else "movie",
         "pak": pak,
+        "cpak": mode,
     }
     oracle_process, oracle_end, oracle_waiter = None, {}, None
     if original:
         env.update(tas_oracle.port_env(original, run))
         record["oracle"] = {"status": "running", "every": original["shot_every"], "host": str(original["host"])}
         oracle_began = time.monotonic()
-        oracle_process = tas_oracle.start(original, run, cfg["exit_after"], pak)
+        oracle_process = tas_oracle.start(original, run, cfg["exit_after"], pak, oracle_card)
         record["oracle"]["pid"] = oracle_process.pid
 
         def reap() -> None:  # reaped as soon as it ends, so the page sees it done while the port goes on
@@ -680,7 +799,7 @@ def play(
         oracle_waiter = threading.Thread(target=reap, daemon=True)
         oracle_waiter.start()
     _write_record(run, record)
-    argv = supervised(cfg, run, _argv(cfg, user_dir, pak))
+    argv = supervised(cfg, run, _argv(cfg, user_dir, pak, card))
     try:
         with (run / "output.txt").open("w") as output:
             process = subprocess.Popen(
@@ -719,15 +838,16 @@ def play(
     result.update(tas_symbolize.claim(profile, result, stacks, health))
     if health:
         result["build"] = tas_health.header(health)
-    before = previous_run(cfg, name, build, run.name, pak) if build and not stopped else None
+    before = previous_run(cfg, name, build, run.name, pak, mode) if build and not stopped else None
     result["same_twice"] = same_hashes(run, before) if before else None
     if before:
         result["compared_with"] = before.name
     result["fn"] = fn_of(result)
+    result["cpak"] = mode
     taken = (run / TAKEN).is_file()
     if taken:
         result.update(
-            taken=True, same_twice=None, compared_with=None, saved=save_taken(profile, cfg, run, name, human, pak)
+            taken=True, same_twice=None, compared_with=None, saved=save_taken(profile, cfg, run, name, human, pak, mode)
         )
     keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
     keep += ("taken", "saved", "coverage")
@@ -760,10 +880,12 @@ def play_twice(
     label: str | None = None,
     pak: str | None = None,
     oracle: bool = False,
+    cpak: str | None = None,
 ) -> dict[str, Any]:
     """Two replays back to back; the second's `same_twice` compares it with the first."""
-    play(profile, name, speed=speed, port=port, label=label, pak=pak, oracle=oracle)
-    return play(profile, name, speed=speed, port=port, label=label, pak=pak, oracle=oracle)
+    options = {"speed": speed, "port": port, "label": label, "pak": pak, "oracle": oracle, "cpak": cpak}
+    play(profile, name, **options)
+    return play(profile, name, **options)
 
 
 def compare(recorded: dict[str, Any] | None, now: dict[str, Any]) -> str:

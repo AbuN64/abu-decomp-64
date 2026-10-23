@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Controller Pak file system and Rumble Pak surface. Written from the public libultra API documentation. This port
- * models the oracle machine: no Pak in any slot, so every Pak operation reports what the hardware reports then. */
+/* Controller Pak file system and Rumble Pak surface. Written from the public libultra API documentation. The card
+ * is the image the port configures (n64c_cpak.h); with none in the slot every operation reports what the hardware
+ * reports then. */
 #ifndef N64C_PFS_H
 #define N64C_PFS_H
 #include "n64c_os.h"

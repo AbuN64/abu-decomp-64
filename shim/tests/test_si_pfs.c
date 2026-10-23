@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* SI access lock, controller re-scan, Controller Pak and Rumble Pak answers. Expected values are the documented
- * libultra results for an empty slot (PFS_ERR_NOPACK) and an uninitialised handle (PFS_ERR_INVALID). */
+ * libultra results for an empty slot (PFS_ERR_NOPACK) and an uninitialised handle (PFS_ERR_INVALID); with a card in
+ * the slot the file system answers (tests/test_cpak.c walks it). */
 #include "../n64c_os.h"
 #include "../n64c_cont.h"
 #include "../n64c_pfs.h"
@@ -48,7 +49,7 @@ static void run_pak(const char *path)
         CHECK(osMotorInit(&mq, &pfs, 0) == PFS_ERR_NOPACK);
     } else {
         CHECK(__osPfsGetStatus(&mq, 0) == 0);
-        CHECK(osPfsInitPak(&mq, &pfs, 0) == PFS_ERR_NOPACK && pfs.status == 0);
+        CHECK(osPfsInitPak(&mq, &pfs, 0) == 0 && pfs.status == PFS_INITIALIZED && pfs.dir_size == 16);
         CHECK(osMotorInit(&mq, &pfs, 0) == PFS_ERR_DEVICE);
     }
     CHECK(__osPfsGetStatus(&mq, 1) == PFS_ERR_NOPACK && __osPfsGetStatus(&mq, 7) == PFS_ERR_NOPACK);
@@ -63,7 +64,7 @@ static void run_pak(const char *path)
     CHECK(osPfsFindFile(&pfs, 1, 2, name, ext, &n) == PFS_ERR_INVALID && n == 77);
     CHECK(osMotorStart(&pfs) == PFS_ERR_INVALID && osMotorStop(&pfs) == PFS_ERR_INVALID);
     pfs.queue = &mq; pfs.channel = 0;
-    CHECK(n64c_pfs_check_id(&pfs) != 0);
+    CHECK((n64c_pfs_check_id(&pfs) != 0) == (path == NULL));
     /* controller re-scan: status table, no message left behind */
     memset(st, 0xEE, sizeof st);
     CHECK(n64c_cont_rescan(&mq, st) == 0);

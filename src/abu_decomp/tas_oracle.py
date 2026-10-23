@@ -6,7 +6,8 @@ Section `tas.oracle`: {"host": path, "env": {...}, "shot_every": N (default 25),
 ROM `N64R_ROM`, a config folder `N64R_CONFIG` runs may share). The host speaks the port's frame protocol under N64R_
 names, and the run folder gets the same files for both sides:
 - the movie: `N64R_TAS_PLAY` = the run's movie.raw (poll-keyed, as the port's `N64C_TAS_PLAY`), `N64R_TAS_EXIT_AFTER`,
-  and the run's Expansion Pak (`N64R_PAK` on|off, as the port's `--pak`);
+  and the run's Expansion Pak (`N64R_PAK` on|off, as the port's `--pak`) and Controller Pak (`N64R_CPAK` = the card
+  file, its own copy; unset = no card, as the port's `--cpak`);
 - the latest picture: `N64R_VIEW` = oracle.bmp (the port's `N64C_VIEW` = view.bmp), served as /oracle/<id>;
 - pictures at chosen polls: every `shot_every` polls both write shots/<side>/poll-NNNNNN.ppm (`N64C_TAS_SHOT_EVERY`
   / `N64C_TAS_SHOT_DIR` and the N64R_ twins);
@@ -94,9 +95,15 @@ def port_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
 
 
 def start(
-    oracle: dict[str, Any], run: Path, exit_after: int, pak: str = "on", extra: dict[str, str] | None = None
+    oracle: dict[str, Any],
+    run: Path,
+    exit_after: int,
+    pak: str = "on",
+    extra: dict[str, str] | None = None,
+    card: Path | None = None,
 ) -> subprocess.Popen:
-    """The oracle replaying the run's movie.raw with the run's Expansion Pak setting (`N64R_PAK`), in its own process
+    """The oracle replaying the run's movie.raw with the run's Expansion Pak setting (`N64R_PAK`) and Controller Pak
+    card (`N64R_CPAK`, its own copy of the card the port starts with; unset: an empty slot), in its own process
     group, output in oracle.txt. `extra` adds host variables (the coverage run sets N64R_GOLDEN_DIR)."""
     shots = run / SHOTS / "oracle"
     shots.mkdir(parents=True, exist_ok=True)
@@ -116,6 +123,9 @@ def start(
         "N64R_TAS_TRACE": str(run / ORACLE_TRACE),
         **(extra or {}),
     }
+    env.pop("N64R_CPAK", None)
+    if card:
+        env["N64R_CPAK"] = str(card)
     with (run / LOG).open("w") as output:
         return subprocess.Popen(
             [str(oracle["host"])],

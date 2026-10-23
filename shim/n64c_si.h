@@ -12,6 +12,10 @@ void __osSiGetAccess(void);
 void __osSiRelAccess(void);
 /* n64c_cont.c: nonzero when a Controller Pak image is configured and sits in this port's slot. */
 int n64c_cont_pak_present(int channel);
+/* The card image (N64C_CPAK_BYTES) in the slot, NULL when none; after changing bytes of it, commit that range to
+ * the file (0, or -1 when the file cannot be written). */
+u8 *n64c_cont_pak_image(int channel);
+int n64c_cont_pak_commit(u32 offset, u32 length);
 /* Re-scan the controller ports (reset command on every channel, then the status poll) and fill status[4]. No
  * completion message is left behind. Returns 0. */
 s32 n64c_cont_rescan(OSMesgQueue *mq, OSContStatus *status);

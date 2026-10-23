@@ -27,7 +27,7 @@
 enum { EXIT_RUNTIME = 1, EXIT_USAGE = 2, EXIT_PROGRAM_TREE = 4 };
 
 typedef struct {
-    const char *rom, *user_dir, *capture, *pak;
+    const char *rom, *user_dir, *capture, *pak, *cpak;
     int no_dialog, verify_assets, extract_only, offscreen, version, help;
     u32 retrace, fb_w, fb_h, out_w, out_h;
 } Options;
@@ -36,7 +36,7 @@ static void usage(FILE *out, const char *name)
 {
     fprintf(out,
             "usage: %s [--rom PATH] [--user-dir PATH] [--no-dialog] [--verify-assets] [--extract-only]\n"
-            "          [--window WxH] [--fb WxH] [--capture FRAME.ppm --retrace N] [--offscreen] [--pak on|off] [--version]\n"
+            "          [--window WxH] [--fb WxH] [--capture FRAME.ppm --retrace N] [--offscreen] [--pak on|off] [--cpak off|PATH] [--version]\n"
             "  --rom PATH        your ROM of the game; extracted into the user folder when it is new\n"
             "  --user-dir PATH   user folder (assets, saves, config, logs) instead of the default one\n"
             "  --no-dialog       never open a window to ask for the ROM; explain on stderr and exit 3\n"
@@ -46,6 +46,7 @@ static void usage(FILE *out, const char *name)
             "  --fb WxH          the game's framebuffer size (default 284x222)\n"
             "  --capture F --retrace N   run offscreen to retrace N and write the presented frame to F\n"
             "  --offscreen       run without a visible window\n"
+            "  --cpak off|PATH   Controller Pak card file (32 KiB .mpk, made formatted when missing); default is controller-pak.mpk in the user folder (no Pak in a --capture run), off is no Pak\n"
             "  --pak on|off      Expansion Pak: 8 MB RDRAM (on) or the 4 MB console (off); default is the version's own\n"
             "exit: 0 ok, 1 runtime failure, 2 usage, 3 game data missing or ROM refused, 4 broken install\n",
             name);
@@ -96,6 +97,7 @@ static int parse(int argc,char **argv,Options *o)
         else if (!strcmp(arg,"--rom") && value) { o->rom=value;i++; }
         else if (!strcmp(arg,"--user-dir") && value) { o->user_dir=value;i++; }
         else if (!strcmp(arg,"--pak") && value) { o->pak=value;i++; }
+        else if (!strcmp(arg,"--cpak") && value) { o->cpak=value;i++; }
         else if (!strcmp(arg,"--capture") && value) { o->capture=value;i++; }
         else if (!strcmp(arg,"--retrace") && value) {
             if (!count(value,&o->retrace)) {
@@ -195,7 +197,16 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
                 shaders);
         return EXIT_PROGRAM_TREE;
     }
-    N64cConfig config={.rom_path=cart_path};
+    char cpak[INST_PATH];
+    const char *cpak_path=NULL;
+    if (!o->cpak && !o->capture) { /* a capture run is a measurement: no card unless asked */
+        if (snprintf(cpak,sizeof cpak,"%s/controller-pak.mpk",user)>=(int)sizeof cpak) {
+            fprintf(stderr,"boot-input: path too long\n");
+            return EXIT_RUNTIME;
+        }
+        cpak_path=cpak;
+    } else if (o->cpak && strcmp(o->cpak,"off")) cpak_path=o->cpak;
+    N64cConfig config={.rom_path=cart_path,.pak_path=cpak_path};
     n64c_init(&config);
     const size_t descriptor_counts[]={n64c_boot_load_count,n64c_boot_resource_count,
                                       n64c_boot_packed_count,n64c_boot_rom_image_count};

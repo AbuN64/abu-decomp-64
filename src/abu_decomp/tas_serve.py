@@ -227,6 +227,7 @@ class Server:
                     "input": "human" if (run / tas.TAKEN).exists() else "movie",
                     "saved": row.get("saved") or None,
                     "pak": row.get("pak") or "on",
+                    "cpak": row.get("cpak") or "none",
                     "oracle": tas_oracle.summary(run, row),
                 }
             )
@@ -302,7 +303,14 @@ class Server:
         return out
 
     def _placeholder(
-        self, run_id: str, movie: str, speed: int, port: Path, label: str | None, pak: str | None = None
+        self,
+        run_id: str,
+        movie: str,
+        speed: int,
+        port: Path,
+        label: str | None,
+        pak: str | None = None,
+        cpak: str | None = None,
     ) -> None:
         polls = 0
         with contextlib.suppress(OSError):
@@ -310,7 +318,15 @@ class Server:
         if pak is None:  # a replay keeps what its movie ran with
             with contextlib.suppress(DecompError, OSError):
                 pak = tas.movie_pak(self.cfg, movie)
+        if cpak is None:
+            with contextlib.suppress(DecompError, OSError):
+                cpak = tas.movie_cpak(self.cfg, movie)
+        elif cpak == "off":
+            cpak = "none"
+        elif cpak == "on":
+            cpak = "fresh"
         row = {"id": run_id, "movie": movie, "status": "running", "speed": speed, "poll": 0, "polls": polls}
+        row["cpak"] = cpak or "none"
         row.update(outcome=None, subject=None, started=time.time(), frame=f"/frame/{run_id}")
         row.update(label=label or None, port=str(port), input="movie", saved=None, pak=pak or "on", oracle=None)
         with self.lock:
@@ -328,23 +344,35 @@ class Server:
         with self.lock:
             return next((k for k, r in self.queued.items() if r.get("input") == "human"), None)
 
-    def new_human(self, port: str | None, label: str | None, pak: str | None = None) -> dict[str, Any]:
+    def new_human(
+        self, port: str | None, label: str | None, pak: str | None = None, cpak: str | None = None
+    ) -> dict[str, Any]:
         busy = self.human_running()
         if busy:
             raise DecompError("tas.live", f"live input already drives {busy}; stop it first")
         tas.check_label(label)
         tas.check_pak(pak)
+        tas.check_cpak(cpak)
         exe = tas.with_port(self.cfg, port)["port"]
         movie = tas.human_movie_name()
         with self.lock:
             run_id = tas.new_run_id(self.cfg, movie)
-        self._placeholder(run_id, movie, 1, exe, label or tas.HUMAN_LABEL, pak or "on")
+        self._placeholder(run_id, movie, 1, exe, label or tas.HUMAN_LABEL, pak or "on", cpak or "on")
         with self.lock:
             self.queued[run_id]["input"] = "human"
 
         def go() -> None:
             try:
-                tas.play(self.profile, None, speed=1, run_id=run_id, port=port or None, label=label or None, pak=pak)
+                tas.play(
+                    self.profile,
+                    None,
+                    speed=1,
+                    run_id=run_id,
+                    port=port or None,
+                    label=label or None,
+                    pak=pak,
+                    cpak=cpak,
+                )
             except Exception:
                 pass
             finally:
@@ -388,9 +416,10 @@ class Server:
         label: str | None = None,
         pak: str | None = None,
         oracle: bool = False,
+        cpak: str | None = None,
     ) -> dict[str, Any]:
         if not movie:
-            return self.new_human(port, label, pak)
+            return self.new_human(port, label, pak, cpak)
         tas.movie_polls(self.cfg, movie)  # refuse a missing movie or another ROM here, not in the thread
         if oracle:
             tas_oracle.required(self.profile)
@@ -398,16 +427,17 @@ class Server:
             raise DecompError("tas.play", f"speed is 0 (turbo) .. 1000, not {speed}")
         tas.check_label(label)
         tas.check_pak(pak)
+        tas.check_cpak(cpak)
         exe = tas.with_port(self.cfg, port)["port"]
         with self.lock:
             run_id = tas.new_run_id(self.cfg, movie)
             while run_id in self.queued:
                 run_id += "-q"
-        self._placeholder(run_id, movie, speed, exe, label, pak)
+        self._placeholder(run_id, movie, speed, exe, label, pak, cpak)
 
         def go() -> None:
             try:
-                options = {"port": port or None, "label": label or None, "pak": pak, "oracle": oracle}
+                options = {"port": port or None, "label": label or None, "pak": pak, "cpak": cpak, "oracle": oracle}
                 tas.play(self.profile, movie, speed=speed, run_id=run_id, **options)
             except Exception:  # the record says done; the page shows it
                 pass
@@ -663,6 +693,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                             str(body.get("label") or "") or None,
                             str(body.get("pak") or "") or None,
                             bool(body.get("oracle", False)),
+                            str(body.get("cpak") or "") or None,
                         )
                     )
                 elif self.path == "/api/play-all":

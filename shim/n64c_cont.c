@@ -4,6 +4,7 @@
  * what the oracle reports (no Pak). */
 #include "n64c_internal.h"
 #include "n64c_cont.h"
+#include "n64c_cpak.h"
 #include "n64c_si.h"
 #include "n64c_tas.h"
 #ifdef N64C_INPUT_SDL3
@@ -19,8 +20,38 @@ static OSContPad latched[MAXCONTROLLERS];
 static u8 serial_packet[64];
 static char eeprom_path[512], pak_path[512];
 static int eeprom_present, eeprom_16k;
-static u8 pak_ram[0x8000];
-static int pak_loaded;
+static u8 pak_ram[N64C_CPAK_BYTES];
+static int pak_loaded, pak_ok;
+/* The card in the slot is the file: a missing file is a new card (formatted and saved at once), an existing one
+ * must be a whole 32 KiB image, else the slot stays empty and the reason goes to stderr. */
+static void pak_open(void)
+{
+    FILE *f = fopen(pak_path, "rb");
+    pak_loaded = 1;
+    if (f) {
+        size_t got = fread(pak_ram, 1, sizeof pak_ram, f);
+        int more = fgetc(f);
+        fclose(f);
+        if (got != sizeof pak_ram || more != EOF) {
+            fprintf(stderr, "n64c: Controller Pak %s is not a 32 KiB image; the slot stays empty\n", pak_path);
+            pak_path[0] = 0;
+            return;
+        }
+        pak_ok = 1;
+        return;
+    }
+    n64c_cpak_format(pak_ram);
+    f = fopen(pak_path, "wb");
+    if (!f || fwrite(pak_ram, 1, sizeof pak_ram, f) != sizeof pak_ram) {
+        fprintf(stderr, "n64c: cannot create the Controller Pak %s; the slot stays empty\n", pak_path);
+        if (f)
+            fclose(f);
+        pak_path[0] = 0;
+        return;
+    }
+    fclose(f);
+    pak_ok = 1;
+}
 
 void n64c_cont_set_input(N64cInputFn fn, void *user)
 {
@@ -38,10 +69,13 @@ void n64c_cont_reset(const N64cConfig *cfg)
     eeprom_16k = cfg ? cfg->eeprom_16k : 0;
     eeprom_path[0] = pak_path[0] = 0;
     pak_loaded = 0;
+    pak_ok = 0;
     if (eeprom_present)
         snprintf(eeprom_path, sizeof eeprom_path, "%s", cfg->eeprom_path);
-    if (cfg && cfg->pak_path)
+    if (cfg && cfg->pak_path) {
         snprintf(pak_path, sizeof pak_path, "%s", cfg->pak_path);
+        pak_open();
+    }
     input_fn = NULL;
     n64c_si_reset();
 }
@@ -53,13 +87,13 @@ void n64c_cont_close(void)
     input_fn = NULL;
     input_user = NULL;
 }
-static int pak_on(int channel) { return channel == 0 && pak_path[0]; }
+static int pak_on(int channel) { return channel == 0 && pak_path[0] && pak_ok; }
 int n64c_cont_pak_present(int channel) { return pak_on(channel) != 0; }
 static void query(OSContStatus *s)
 {
     for (int i = 0; i < MAXCONTROLLERS; i++) {
         s[i].type = i == 0 ? 0x0005 : 0; /* standard controller on port 1 only */
-        s[i].status = i == 0 && pak_path[0] ? CONT_CARD_ON : 0;
+        s[i].status = pak_on(i) ? CONT_CARD_ON : 0;
         s[i].errno_ = i == 0 ? 0 : CONT_ERR_NO_CONTROLLER;
     }
 }
@@ -146,25 +180,22 @@ s32 osEepromLongWrite(OSMesgQueue *mq, u8 block, u8 *buf, int n)
     return r;
 }
 /* ---- Controller Pak: 32 KiB, accessed in 32-byte blocks ---- */
-static int pak_load(void)
+u8 *n64c_cont_pak_image(int channel) { return pak_on(channel) ? pak_ram : NULL; }
+/* Persist a changed range of the card to its file. */
+int n64c_cont_pak_commit(u32 offset, u32 length)
 {
-    if (!pak_loaded) {
-        FILE *f = fopen(pak_path, "rb");
-        memset(pak_ram, 0, sizeof pak_ram);
-        if (f) {
-            if (fread(pak_ram, 1, sizeof pak_ram, f) == 0)
-                memset(pak_ram, 0, sizeof pak_ram);
-            fclose(f);
-        }
-        pak_loaded = 1;
-    }
-    return 1;
+    if (!pak_on(0) || offset > sizeof pak_ram || length > sizeof pak_ram - offset)
+        return -1;
+    FILE *f = fopen(pak_path, "r+b");
+    if (!f)
+        return -1;
+    int ok = fseek(f, (long)offset, SEEK_SET) == 0 && fwrite(pak_ram + offset, 1, length, f) == length;
+    return (fclose(f) == 0 && ok) ? 0 : -1;
 }
 s32 osContRamRead(OSMesgQueue *mq, int channel, u16 address, u8 *buffer)
 {
     if (!pak_on(channel) || (u32)address * 32 + 32 > sizeof pak_ram)
         return -1;
-    pak_load();
     memcpy(buffer, pak_ram + address * 32, 32);
     done(mq);
     return 0;
@@ -173,18 +204,35 @@ s32 osContRamWrite(OSMesgQueue *mq, int channel, u16 address, u8 *buffer)
 {
     if (!pak_on(channel) || (u32)address * 32 + 32 > sizeof pak_ram)
         return -1;
-    pak_load();
     memcpy(pak_ram + address * 32, buffer, 32);
-    FILE *f = fopen(pak_path, "wb");
-    if (!f)
+    if (n64c_cont_pak_commit((u32)address * 32, 32) != 0)
         return -1;
-    size_t ok = fwrite(pak_ram, 1, sizeof pak_ram, f);
-    fclose(f);
     done(mq);
-    return ok == sizeof pak_ram ? 0 : -1;
+    return 0;
 }
-
-
+/* Pak packets on the serial bus: read is [2, addr_hi, addr_lo] answered by 32 bytes and their CRC; write is
+ * [3, addr_hi, addr_lo, 32 bytes] answered by the CRC of the data. The low five bits of the address field are the
+ * address CRC. Blocks below 0x400 are the card; 0x400.. is the accessory area (bank select, rumble), which a
+ * memory card answers with zeros and ignores. A packet whose address CRC is wrong is answered with an inverted
+ * data CRC, which the caller sees as a failed transfer. */
+static void pak_packet(u8 *command, u8 *reply, int write)
+{
+    u16 field = (u16)((command[1] << 8) | command[2]);
+    u16 block = (u16)(field >> 5);
+    int good = n64c_cpak_address_crc(block) == (field & 0x1F);
+    u8 data[32];
+    if (write) {
+        if (good && block < N64C_CPAK_BYTES / 32)
+            good = (memcpy(pak_ram + block * 32u, command + 3, 32), n64c_cont_pak_commit(block * 32u, 32) == 0);
+        reply[0] = (u8)(n64c_cpak_data_crc(command + 3) ^ (good ? 0 : 0xFF));
+    } else {
+        memset(data, 0, sizeof data);
+        if (good && block < N64C_CPAK_BYTES / 32)
+            memcpy(data, pak_ram + block * 32u, 32);
+        memcpy(reply, data, 32);
+        reply[32] = (u8)(n64c_cpak_data_crc(data) ^ (good ? 0 : 0xFF));
+    }
+}
 /* PIF command framing and query/poll formats:
  * https://libdragon.dev/ref/group__joybus.html
  * https://libdragon.dev/ref/group__joybus__commands.html
@@ -221,6 +269,10 @@ static int serial_execute(void)
             reply[1]=(u8)pads[channel].button;
             reply[2]=(u8)pads[channel].stick_x;
             reply[3]=(u8)pads[channel].stick_y;
+        } else if (command[0]==2 && tx==3 && rx==33 && (status[channel].status&CONT_CARD_ON)) {
+            pak_packet(command,reply,0);
+        } else if (command[0]==3 && tx==35 && rx==1 && (status[channel].status&CONT_CARD_ON)) {
+            pak_packet(command,reply,1);
         } else return -1;
         cursor+=2+tx+rx;
         channel++;

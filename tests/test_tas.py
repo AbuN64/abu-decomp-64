@@ -4,7 +4,7 @@ import json
 import subprocess
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -312,6 +312,81 @@ class MovieTests(unittest.TestCase):
         self.assertEqual(argvs[-1][-2:], ["--pak", "off"])
         self.assertEqual(tas.read_record(Path(kept["run"]))["pak"], "off")
         self.assertEqual({m["name"]: m["pak"] for m in tas.listing(self.profile)["movies"]}["short"], "off")
+
+    def test_the_controller_pak_is_a_header_a_card_copy_and_a_record(self):
+        self.movie()  # a movie from before the card: no cpak line, so its slot was empty
+        runs, ends = [], []
+
+        class Port:
+            def __init__(self, argv, env, stdout, **kwargs):
+                runs.append(argv)
+                if "--cpak" in argv and argv[argv.index("--cpak") + 1] != "off":
+                    card = Path(argv[argv.index("--cpak") + 1])
+                    if not card.exists():
+                        card.write_bytes(tas.fresh_card())  # the port makes a missing card
+                    ends.append(card.read_bytes())
+                    image = bytearray(card.read_bytes())
+                    image[0x300] ^= 0xFF  # the game saved something
+                    card.write_bytes(bytes(image))
+                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n")
+                Path(env["N64C_TAS_HASH"]).write_text("1 aa\n")
+                self.pid = 1
+                self.stdin = io.StringIO()
+
+            def wait(self, timeout=None):
+                return 0
+
+        cfg = tas.settings(self.profile)
+        profile_card = cfg["runs"] / tas.PROFILE_CARD
+        with mock.patch.object(tas.subprocess, "Popen", Port):
+            old = tas.play(self.profile, "m", now=T0)
+            fresh = tas.play(self.profile, "m", now=T0, cpak="on")
+            fresh2 = tas.play(self.profile, "m", now=T0, cpak="on")
+            human = tas.play(self.profile, None, now=T0)  # the owner's run: the profile's own card, made on first use
+            with self.assertRaises(DecompError):
+                tas.play(self.profile, "m", cpak="maybe")
+        flag = lambda argv: argv[argv.index("--cpak") + 1]  # noqa: E731
+        self.assertEqual(flag(runs[0]), "off")  # an old movie ran with an empty slot, and the port's default is a card
+        self.assertEqual([tas.read_record(Path(r["run"]))["cpak"] for r in (old, fresh)], ["none", "fresh"])
+        self.assertEqual(ends[0], tas.fresh_card())
+        self.assertEqual(ends[1], tas.fresh_card())  # the second replay did not inherit the first one's save
+        self.assertEqual(Path(flag(runs[1])).parent, Path(fresh["run"]))
+        self.assertNotEqual(Path(flag(runs[1])).read_bytes(), tas.fresh_card())  # that run's own card holds its save
+        self.assertIsNone(old["same_twice"])
+        self.assertIs(fresh2["same_twice"], True)  # compared only with the run that had the same card
+        self.assertEqual(flag(runs[3]), str(profile_card))
+        self.assertEqual(tas.decode((self.root / "movies" / f"{human['saved']}.tas").read_text())[0]["cpak"], "fresh")
+        # the owner's second run starts from the card the first one saved: the movie keeps those bytes by hash
+        with mock.patch.object(tas.subprocess, "Popen", Port):
+            second = tas.play(self.profile, None, now=T0 + timedelta(seconds=5))
+        sha = tas.decode((self.root / "movies" / f"{second['saved']}.tas").read_text())[0]["cpak"]
+        self.assertRegex(sha, r"^[0-9a-f]{64}$")
+        kept = self.root / "movies" / f"{sha}.mpk"
+        self.assertEqual(hashlib.sha256(kept.read_bytes()).hexdigest(), sha)
+        self.assertEqual(tas.movie_cpak(cfg, second["saved"]), sha)
+        before = profile_card.read_bytes()
+        with mock.patch.object(tas.subprocess, "Popen", Port):
+            replay = tas.play(self.profile, second["saved"], now=T0)
+        self.assertEqual(ends[-1], kept.read_bytes())  # the replay starts from that card, in a copy
+        self.assertNotEqual(Path(flag(runs[-1])), profile_card)
+        self.assertEqual(profile_card.read_bytes(), before)  # the user's card is untouched by a replay
+        self.assertEqual(tas.read_record(Path(replay["run"]))["cpak"], sha)
+        profile_card.write_bytes(b"short")
+        with self.assertRaises(DecompError):
+            tas.play(self.profile, None, now=T0)
+        with mock.patch.object(tas.subprocess, "Popen", Port):
+            off = tas.play(self.profile, None, now=T0, cpak="off")
+        self.assertEqual((flag(runs[-1]), tas.read_record(Path(off["run"]))["cpak"]), ("off", "none"))
+        self.assertEqual({m["name"]: m["cpak"] for m in tas.listing(self.profile)["movies"]}["m"], "none")
+
+    def test_a_fresh_card_is_the_one_the_port_makes(self):
+        # tests/test_cpak.c in the shim holds the same constant for n64c_cpak_format
+        image = tas.fresh_card()
+        self.assertEqual(len(image), 0x8000)
+        fnv = 1469598103934665603
+        for byte in image:
+            fnv = ((fnv ^ byte) * 1099511628211) & (2**64 - 1)
+        self.assertEqual(fnv, 0x5731D45387193563)
 
     def test_a_human_run_and_a_taken_run_are_saved_as_movies(self):
         self.movie()

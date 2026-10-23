@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Shim tests live beside the shim: N64 names are allowed here and nowhere else outside the shim and the port's boundary directory.
-foreach(t sched scsched interrupts gu pi_cont si_pfs dl audio vi_dp rnc memory pi_relocate pi_resources pi_packed system fpu fpu_thread al albnk tas)
+foreach(t sched scsched interrupts gu pi_cont si_pfs cpak dl audio vi_dp rnc memory pi_relocate pi_resources pi_packed system fpu fpu_thread al albnk tas)
     add_executable(n64c_test_${t} test_${t}.c)
     target_link_libraries(n64c_test_${t} PRIVATE n64compat)
     target_compile_options(n64c_test_${t} PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)
@@ -32,7 +32,7 @@ set_tests_properties(n64c_interrupts PROPERTIES TIMEOUT 10)
 
 # Fake SDL at the device boundary: exercise production mapping and SI without a window.
 if(TARGET SDL3::SDL3-static)
-    add_executable(n64c_test_input_sdl test_input_sdl.c ../n64c_input.c ../n64c_input_config.c ../n64c_cont.c)
+    add_executable(n64c_test_input_sdl test_input_sdl.c ../n64c_input.c ../n64c_input_config.c ../n64c_cont.c ../n64c_cpak.c)
     target_include_directories(n64c_test_input_sdl PRIVATE ..
         $<TARGET_PROPERTY:SDL3::SDL3-static,INTERFACE_INCLUDE_DIRECTORIES>)
     target_compile_definitions(n64c_test_input_sdl PRIVATE N64C_INPUT_SDL3)

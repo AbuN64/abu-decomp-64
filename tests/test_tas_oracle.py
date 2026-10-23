@@ -174,7 +174,7 @@ class PlayTests(unittest.TestCase):
             return 0, 0.5
 
         with mock.patch.object(tas.subprocess, "Popen", Process), mock.patch.object(tas, "_wait", fake_wait):
-            result = tas.play(self.profile, "m", oracle=True, pak="off")
+            result = tas.play(self.profile, "m", oracle=True, pak="off", cpak="on")
         run = Path(result["run"])
         oracle_env, cwd = seen["oracle"]
         self.assertEqual(cwd, run)
@@ -183,6 +183,8 @@ class PlayTests(unittest.TestCase):
         self.assertEqual((oracle_env["N64R_CLOCK"], oracle_env["SDL_VIDEODRIVER"]), ("entries", "offscreen"))
         self.assertEqual(oracle_env["N64R_AUDIO_OUT"], str(run / "audio-oracle.pcm"))  # beside the port's audio.pcm
         self.assertEqual(oracle_env["N64R_PAK"], "off")  # the run's Expansion Pak, as the port's --pak
+        self.assertEqual(oracle_env["N64R_CPAK"], str(run / "oracle-cpak.mpk"))  # its own copy of the port's start card
+        self.assertEqual((run / "oracle-cpak.mpk").read_bytes(), (run / "cpak-start.mpk").read_bytes())
         self.assertEqual((oracle_env["N64R_VIEW"], oracle_env["N64R_ROM"]), (str(run / "oracle.bmp"), "orig.z64"))
         port_env = seen["port"]
         self.assertEqual(port_env["N64C_TAS_SHOT_EVERY"], "25")
