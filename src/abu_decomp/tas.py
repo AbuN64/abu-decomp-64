@@ -935,6 +935,7 @@ def play(
     trace_draws: int | None = None,
     pak: str | None = None,
     oracle: bool = False,
+    oracle_pictures: bool = False,
     cpak: str | None = None,
     source: str | None = None,
     take_at: int | None = None,
@@ -947,8 +948,9 @@ def play(
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
     lane's own build), `label` tags the run with the lane that started it; both show on the page. `oracle` replays
-    the same movie in the original game beside it (module tas_oracle): pictures at the same polls, scored poll by
-    poll; the result's `oracle` says how it ended and the worst score (`max_diff`, at `max_poll`).
+    the same movie in the original game beside it (module tas_oracle); with `oracle_pictures` it pictures both at the
+    same polls and scores them poll by poll (no frame is dumped otherwise); the result's `oracle` says how it ended
+    and the worst score (`max_diff`, at `max_poll`).
 
     `pak` ("on"/"off") sets the Expansion Pak: the movie's own by default, `on` for a new run. `cpak` ("on"/"off") sets
     the Controller Pak the same way: a replay starts from a copy of the card its movie started with (`on` over a movie
@@ -1005,9 +1007,13 @@ def play(
         raise DecompError("tas.retry", "a retry is driven by live input from its poll on: no oracle, no shots")
     if oracle and human:
         raise DecompError("tas.oracle", "the oracle replays a movie; a human run has none")
-    if oracle and shots_every:
-        raise DecompError("tas.oracle", "--oracle pictures the port every tas.oracle.shot_every polls (shots/port)")
+    if oracle and oracle_pictures and shots_every:
+        raise DecompError(
+            "tas.oracle", "--oracle-pictures pictures the port every tas.oracle.shot_every polls (shots/port)"
+        )
     original = tas_oracle.required(profile) if oracle else None
+    if original and oracle_pictures:
+        original["pictures"] = True
     if retry:
         name, polls = retry["movie"], retry["polls"]
         speed, label, pak = 0, label or HUMAN_LABEL, retry["pak"]
@@ -1236,6 +1242,7 @@ def play_twice(
     label: str | None = None,
     pak: str | None = None,
     oracle: bool = False,
+    oracle_pictures: bool = False,
     cpak: str | None = None,
     fps_unlock: bool = False,
     start: str | None = None,
@@ -1252,6 +1259,7 @@ def play_twice(
         "label": label,
         "pak": pak,
         "oracle": oracle,
+        "oracle_pictures": oracle_pictures,
         "cpak": cpak,
         "fps_unlock": fps_unlock,
         "start": start,

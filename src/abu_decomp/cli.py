@@ -433,7 +433,13 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         "geometry) of the first graphics task from poll P to RUN/draws-P.txt",
     )
     play.add_argument(
-        "--oracle", action="store_true", help="replay it in the original game beside the port and compare pictures"
+        "--oracle", action="store_true", help="replay it in the original game beside the port and compare outcomes"
+    )
+    play.add_argument(
+        "--oracle-pictures",
+        action="store_true",
+        help="with --oracle: also dump both sides' pictures every tas.oracle.shot_every polls and score them "
+        "(off by default: ~650 .ppm per run filled the rig disk)",
     )
     play.add_argument(
         "--from",
@@ -519,6 +525,7 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         "pak": args.pak,
         "cpak": args.cpak,
         "oracle": args.oracle,
+        "oracle_pictures": args.oracle_pictures,
         "fps_unlock": args.fps_unlock,
         "start": args.start,
         "take": args.take,

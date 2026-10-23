@@ -542,6 +542,7 @@ class Server:
                     "pak": pak,
                     "cpak": cpak,
                     "oracle": oracle,
+                    "oracle_pictures": oracle,  # a person asked from the page: the picture comparison is the point
                     "fps_unlock": fps_unlock,
                 }
                 tas.play(self.profile, movie, speed=speed, run_id=run_id, start=start, **options)

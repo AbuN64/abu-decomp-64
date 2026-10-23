@@ -197,7 +197,7 @@ class PlayTests(unittest.TestCase):
             return 0, 0.5
 
         with mock.patch.object(tas.subprocess, "Popen", Process), mock.patch.object(tas, "_wait", fake_wait):
-            result = tas.play(self.profile, "m", oracle=True, pak="off", cpak="on")
+            result = tas.play(self.profile, "m", oracle=True, oracle_pictures=True, pak="off", cpak="on")
         run = Path(result["run"])
         oracle_env, cwd = seen["oracle"]
         self.assertEqual(cwd, run)
@@ -222,6 +222,34 @@ class PlayTests(unittest.TestCase):
             tas.play(self.profile, None, oracle=True)  # a human run has no movie to replay
         with self.assertRaises(DecompError):
             tas.play(self.load(), "m", oracle=True)  # no oracle on this seat
+
+    def test_no_picture_is_dumped_unless_asked(self):
+        # a monkey batch dumped ~650 .ppm per run and filled the rig disk; the oracle keeps its checkpoints
+        seen = {}
+        host = str(self.host)
+
+        class Process:
+            def __init__(self, argv, env, stdout, **kwargs):
+                self.pid = 4242 if argv[0] == host else 4343
+                self.stdin = io.StringIO()
+                seen["oracle" if argv[0] == host else "port"] = env
+                if argv[0] != host:
+                    Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n" * 50)
+                    stdout.write("n64c-tas: done polls=57\n")
+
+        with (
+            mock.patch.object(tas.subprocess, "Popen", Process),
+            mock.patch.object(tas, "_wait", lambda *a, **k: (0, 0.5)),
+        ):
+            result = tas.play(self.profile, "m", oracle=True)
+        run = Path(result["run"])
+        for key in ("N64C_TAS_SHOT_DIR", "N64C_TAS_SHOT_EVERY"):
+            self.assertNotIn(key, seen["port"])
+        self.assertNotIn("N64R_TAS_SHOT_DIR", seen["oracle"])
+        self.assertEqual(seen["oracle"]["N64R_TAS_SHOT_EVERY"], "25")  # the host's entry-count checkpoints stay
+        self.assertEqual(seen["port"]["N64C_TAS_TRACE"], str(run / "port-trace.txt"))
+        self.assertFalse((run / "shots").exists())
+        self.assertIsNone(result["oracle"]["max_diff"])
 
 
 class ServeTests(unittest.TestCase):

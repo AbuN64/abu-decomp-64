@@ -9,8 +9,9 @@ names, and the run folder gets the same files for both sides:
   and the run's Expansion Pak (`N64R_PAK` on|off, as the port's `--pak`) and Controller Pak (`N64R_CPAK` = the card
   file, its own copy; unset = no card, as the port's `--cpak`);
 - the latest picture: `N64R_VIEW` = oracle.bmp (the port's `N64C_VIEW` = view.bmp), served as /oracle/<id>;
-- pictures at chosen polls: every `shot_every` polls both write shots/<side>/poll-NNNNNN.ppm (`N64C_TAS_SHOT_EVERY`
-  / `N64C_TAS_SHOT_DIR` and the N64R_ twins);
+- pictures at chosen polls, only when asked (`tas play --oracle-pictures`, the page, or `pictures = true` in this
+  section; default off so batch and monkey runs never fill the disk): every `shot_every` polls both write
+  shots/<side>/poll-NNNNNN.ppm (`N64C_TAS_SHOT_EVERY` / `N64C_TAS_SHOT_DIR` and the N64R_ twins);
 - poll timing: `N64C_TAS_TRACE` / `N64R_TAS_TRACE` = port-trace.txt / oracle-trace.txt, one "poll vi" line per poll.
 The oracle runs headless (SDL offscreen: RT64 on a Vulkan headless surface, no display server) with
 `N64R_CLOCK=entries`, so its guest time comes from the work done, not the host: the same movie gives the same
@@ -38,7 +39,7 @@ from typing import Any
 from abu_decomp import DecompError
 from abu_decomp.config import Profile, check_keys
 
-_KEYS = frozenset({"host", "env", "shot_every", "timeout_seconds", "rebuild", "pins", "pins_repo"})
+_KEYS = frozenset({"host", "env", "shot_every", "pictures", "timeout_seconds", "rebuild", "pins", "pins_repo"})
 VIEW, LOG, DIFF = "oracle.bmp", "oracle.txt", "diff.json"
 AUDIO = "audio-oracle.pcm"  # the original's sound, as the port's audio.pcm (+ ".rate")
 PORT_TRACE, ORACLE_TRACE = "port-trace.txt", "oracle-trace.txt"
@@ -73,6 +74,7 @@ def settings(profile: Profile) -> dict[str, Any] | None:
         "host": profile.path("tas.oracle.host", table["host"]),
         "env": {str(k): str(v) for k, v in table.get("env", {}).items()},
         "shot_every": every,
+        "pictures": bool(table.get("pictures", False)),
         "timeout_seconds": int(table.get("timeout_seconds", 300)),
     }
 
@@ -102,14 +104,15 @@ def required(profile: Profile, fresh: bool = True) -> dict[str, Any]:
 
 
 def port_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
-    """What the port adds to its environment so its pictures and poll timing line up with the oracle's."""
-    shots = run / SHOTS / "port"
-    shots.mkdir(parents=True, exist_ok=True)
-    return {
-        "N64C_TAS_SHOT_EVERY": str(oracle["shot_every"]),
-        "N64C_TAS_SHOT_DIR": str(shots),
-        "N64C_TAS_TRACE": str(run / PORT_TRACE),
-    }
+    """What the port adds to its environment so its poll timing lines up with the oracle's and, when `pictures` is on,
+    its pictures too. Without pictures no frame is dumped (a monkey batch wrote ~650 .ppm per run and filled the rig
+    disk twice, 10-23): only the trace, the run's latest picture (view.bmp) and a fault's own capture remain."""
+    env = {"N64C_TAS_TRACE": str(run / PORT_TRACE)}
+    if oracle.get("pictures"):
+        shots = run / SHOTS / "port"
+        shots.mkdir(parents=True, exist_ok=True)
+        env.update(N64C_TAS_SHOT_EVERY=str(oracle["shot_every"]), N64C_TAS_SHOT_DIR=str(shots))
+    return env
 
 
 def start(
@@ -124,8 +127,6 @@ def start(
     """The oracle replaying the run's movie.raw with the run's Expansion Pak setting (`N64R_PAK`) and Controller Pak
     card (`N64R_CPAK`, its own copy of the card the port starts with; unset: an empty slot), in its own process
     group, output in oracle.txt. `extra` adds host variables (the coverage run sets N64R_GOLDEN_DIR)."""
-    shots = run / SHOTS / "oracle"
-    shots.mkdir(parents=True, exist_ok=True)
     env = {
         **os.environ,
         "SDL_VIDEODRIVER": "offscreen",
@@ -138,11 +139,14 @@ def start(
         "N64R_TAS_EXIT_AFTER": str(exit_after),
         "N64R_VIEW": str(run / VIEW),
         "N64R_AUDIO_OUT": str(run / AUDIO),
-        "N64R_TAS_SHOT_EVERY": str(oracle["shot_every"]),
-        "N64R_TAS_SHOT_DIR": str(shots),
+        "N64R_TAS_SHOT_EVERY": str(oracle["shot_every"]),  # the host's entry-count checkpoints (behaviour) follow it
         "N64R_TAS_TRACE": str(run / ORACLE_TRACE),
         **(extra or {}),
     }
+    if oracle.get("pictures"):  # no SHOT_DIR, no .ppm: the host still writes its checkpoints
+        shots = run / SHOTS / "oracle"
+        shots.mkdir(parents=True, exist_ok=True)
+        env["N64R_TAS_SHOT_DIR"] = str(shots)
     env.pop("N64R_CPAK", None)
     if card:
         env["N64R_CPAK"] = str(card)
