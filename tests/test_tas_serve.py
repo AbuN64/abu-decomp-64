@@ -230,6 +230,7 @@ class HttpTests(Base):
         (early / "audio-oracle.pcm").write_bytes(b"\x05\x00\x06\x00" * 10)
         (early / "audio-oracle.pcm.rate").write_text("22050\n")
         self.assertEqual(self.get("/audio/r4?side=oracle")[2][44:], b"")  # not yet due in the run's own time
+
     def test_play_play_all_and_stop(self):
         started = []
 

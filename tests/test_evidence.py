@@ -316,7 +316,7 @@ def NONE(options):
 
 
 MATCHED = "int func_1(int a) { return a + 2; }\n"
-CALLER_NM = "#ifdef NON_MATCHING\nint caller(int a) { return func_1(a); }\n#else\nINCLUDE_ASM(\"o\", caller);\n#endif\n"
+CALLER_NM = '#ifdef NON_MATCHING\nint caller(int a) { return func_1(a); }\n#else\nINCLUDE_ASM("o", caller);\n#endif\n'
 
 
 def test_a_renamed_matched_body_needs_no_try(tmp_path, monkeypatch):
@@ -350,7 +350,7 @@ def test_a_call_swapped_to_another_live_function_is_still_a_body_change(tmp_path
 
 def test_a_real_change_still_needs_a_try_even_when_a_name_also_changes(tmp_path, monkeypatch):
     new = MATCHED.replace("func_1", "Nice_Name")
-    nm_old = "#ifdef NON_MATCHING\nint g(int a) { return a; }\n#else\nINCLUDE_ASM(\"o\", g);\n#endif\n"
+    nm_old = '#ifdef NON_MATCHING\nint g(int a) { return a; }\n#else\nINCLUDE_ASM("o", g);\n#endif\n'
     nm_new = nm_old.replace("return a;", "return a + 1;")
     gate = rename_gate(tmp_path, MATCHED + nm_old, new + nm_new, held=set(), behave=NONE, monkeypatch=monkeypatch)
     refused = gate.run()[0]

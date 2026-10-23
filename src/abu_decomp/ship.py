@@ -200,10 +200,14 @@ class Ship:
             name = self.git("config", "--global", "user.name", ok=False)
             email = self.git("config", "--global", "user.email", ok=False)
             if name[0] or email[0] or not name[1].strip() or not email[1].strip():
-                raise ShipError("config.identity", "no land.author and no global git user.name/user.email: refusing to commit")
+                raise ShipError(
+                    "config.identity", "no land.author and no global git user.name/user.email: refusing to commit"
+                )
             return {
-                "GIT_AUTHOR_NAME": name[1].strip(), "GIT_AUTHOR_EMAIL": email[1].strip(),
-                "GIT_COMMITTER_NAME": name[1].strip(), "GIT_COMMITTER_EMAIL": email[1].strip(),
+                "GIT_AUTHOR_NAME": name[1].strip(),
+                "GIT_AUTHOR_EMAIL": email[1].strip(),
+                "GIT_COMMITTER_NAME": name[1].strip(),
+                "GIT_COMMITTER_EMAIL": email[1].strip(),
             }
         found = IDENTITY.match(self.author)
         if not found:

@@ -160,7 +160,8 @@ def checkout_fetched(run: Run, pin: dict[str, Any], sha: str) -> str | None:
 
 def rebuild_page(profile: Profile, run: Run, tree: Path) -> dict[str, Any] | None:
     """The page port's incremental rebuild (`tas.build.rebuild`) when no replay is live; {"skipped": why} otherwise.
-    None when the profile has no tas build command. A running replay holds the binary, so it is never rebuilt under one."""
+    None when the profile has no tas build command. A running replay holds the binary, so it is never rebuilt under
+    one."""
     from abu_decomp import tas
     from abu_decomp.config import ConfigError
 
@@ -212,5 +213,7 @@ def repin(
     if built is not None:
         result["page_build"] = built
     if built and built.get("exit"):
-        blocking.append({"key": "repin.build", "blocking": True, "message": f"page port rebuild failed: {built['tail']}"})
+        blocking.append(
+            {"key": "repin.build", "blocking": True, "message": f"page port rebuild failed: {built['tail']}"}
+        )
     return result, int(bool(blocking)), blocking

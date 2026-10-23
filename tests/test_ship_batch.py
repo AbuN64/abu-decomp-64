@@ -225,9 +225,11 @@ class SeedWithoutLockTests(unittest.TestCase):
                 if source.name == "build":
                     (shared / "build/torn.o").write_text("newer content")  # a ship rewrites it after the copy
 
-            with mock.patch.object(treelock, "hold", side_effect=AssertionError("tree lock taken")):
-                with mock.patch.object(worktree, "_copy", rewriting):
-                    dropped = worktree.seed(shared, target)
+            with (
+                mock.patch.object(treelock, "hold", side_effect=AssertionError("tree lock taken")),
+                mock.patch.object(worktree, "_copy", rewriting),
+            ):
+                dropped = worktree.seed(shared, target)
             self.assertEqual(dropped, 1)
             self.assertTrue((target / "build/ok.o").exists())
             self.assertFalse((target / "build/torn.o").exists())

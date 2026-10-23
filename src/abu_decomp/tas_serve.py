@@ -657,6 +657,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             self.close_connection = True
             self.wfile.write(wav_header(rate))
             oracle = name == tas_oracle.AUDIO
+
             # The original replays faster than real time, so its file is played at wall pace from the run's own start
             # (what the port's listener hears at the same moment of the movie), not from the end of the file.
             def due() -> int:
