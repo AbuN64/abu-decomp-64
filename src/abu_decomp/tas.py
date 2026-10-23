@@ -789,7 +789,7 @@ def play(
         env.update(tas_oracle.port_env(original, run))
         record["oracle"] = {"status": "running", "every": original["shot_every"], "host": str(original["host"])}
         oracle_began = time.monotonic()
-        oracle_process = tas_oracle.start(original, run, cfg["exit_after"], pak, oracle_card)
+        oracle_process = tas_oracle.start(original, run, cfg["exit_after"], pak, card=oracle_card)
         record["oracle"]["pid"] = oracle_process.pid
 
         def reap() -> None:  # reaped as soon as it ends, so the page sees it done while the port goes on

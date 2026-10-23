@@ -129,8 +129,17 @@ def run_oracle(profile: Profile, cfg: dict[str, Any], run: Path, record: dict[st
     if oracle is None or not oracle["host"].is_file() or not (run / "movie.raw").is_file():
         return False
     (run / ORACLE_DIR).mkdir(exist_ok=True)
+    card = None
+    if (run / "cpak-start.mpk").is_file():  # the run had a Controller Pak: the oracle starts from its own copy of it
+        card = run / "oracle-cpak.mpk"
+        card.write_bytes((run / "cpak-start.mpk").read_bytes())
     process = tas_oracle.start(
-        oracle, run, cfg["exit_after"], str(record.get("pak") or "on"), extra={"N64R_GOLDEN_DIR": str(run / ORACLE_DIR)}
+        oracle,
+        run,
+        cfg["exit_after"],
+        str(record.get("pak") or "on"),
+        extra={"N64R_GOLDEN_DIR": str(run / ORACLE_DIR)},
+        card=card,
     )
     try:
         process.wait(oracle["timeout_seconds"])
