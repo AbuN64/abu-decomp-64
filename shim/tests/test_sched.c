@@ -2,6 +2,7 @@
 /* Unit goldens for mesg queues, thread priority order and VI/timer delivery. Every expected string is derived by
  * hand from the documented libultra semantics (highest priority runs; FIFO within a priority; a wake of a
  * higher-priority thread preempts at once), not recorded from this implementation. */
+#include <stdint.h>
 #include "../n64c_os.h"
 #include <stdio.h>
 #include <string.h>
@@ -33,10 +34,12 @@ static void make_queues(void)
 }
 /* receiver: logs "<tag><value>" for every message it receives on queue arg */
 typedef struct { const char *tag; int qi; } RecvArg;
+static uintptr_t receiver_local; /* where the first receiver to run (th[2], the highest priority) keeps its locals */
 static void receiver(void *p)
 {
     RecvArg *a = p;
     OSMesg m;
+    if (!receiver_local) receiver_local = (uintptr_t)&m;
     for (;;) {
         osRecvMesg(&q[a->qi], &m, OS_MESG_BLOCK);
         char f[16];
@@ -138,6 +141,13 @@ int main(void)
     osCreateThread(&th[2], 3, receiver, &ra[2], 0, 30);
     osStartThread(&th[0]); osStartThread(&th[1]); osStartThread(&th[2]);
     n64c_run_idle();
+    /* Guest RAM never holds host pointers: the context word is slot + 1, and slot n's stack is at 0x60000000 + n*0x110000 + 0x10000. */
+    u32 word;
+    memcpy(&word, th[0].context, sizeof word);
+    if (word != 1) { printf("FAIL context word %u\n", word); return 1; }
+    /* A PIE test binary may own the fixed address; then only the slot spacing is checked. */
+    if (receiver_local >= 0x60000000u && receiver_local < 0x64400000u &&
+        (receiver_local < 0x60230000u || receiver_local >= 0x60330000u)) { printf("FAIL stack %lx\n", (unsigned long)receiver_local); return 1; }
     osSendMesg(&q[0], m32(1), OS_MESG_NOBLOCK);
     osSendMesg(&q[1], m32(2), OS_MESG_NOBLOCK);
     osSendMesg(&q[2], m32(3), OS_MESG_NOBLOCK);

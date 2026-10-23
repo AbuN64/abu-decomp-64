@@ -66,7 +66,7 @@ typedef struct OSThread {
     OSId id;
     s32 fp;
     void *thprof;
-    u8 context[0x190];         /* opaque; the first pointer holds the host record */
+    u8 context[0x190];         /* opaque; the first word holds the host thread's slot + 1 */
 } OSThread;
 typedef struct OSMesgQueue {
     OSThread *mtqueue;   /* threads blocked on receive */
