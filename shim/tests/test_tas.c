@@ -137,6 +137,55 @@ static void take_over(const char *movie)
     close(go[0]); close(go[1]); close(ready[0]); close(ready[1]);
 }
 
+/* N64C_TAS_TAKE_AT=2: two movie polls, then the socket's pad from poll 3 with no "take" sent; the pad sent before
+ * that poll counts, exit_after no longer ends the run. */
+static void take_at(const char *movie)
+{
+    char sock[64];
+    snprintf(sock, sizeof sock, "@n64c-test-tas-at-%ld", (long)getpid());
+    const char *log = "n64c_test_tas.at";
+    remove(log);
+    int go[2], ready[2];
+    CHECK(pipe(go) == 0 && pipe(ready) == 0);
+    pid_t child = fork();
+    if (child == 0) {
+        setenv("N64C_TAS_PLAY", movie, 1);
+        setenv("N64C_TAS_EXIT_AFTER", "0", 1);
+        setenv("N64C_TAS_TAKE_AT", "2", 1);
+        unsetenv("N64C_TAS_HASH");
+        setenv("N64C_INPUT", sock, 1);
+        setenv("N64C_TAS_RECORD", log, 1);
+        n64c_cont_set_input(NULL, NULL);
+        OSContPad pads[MAXCONTROLLERS];
+        char c;
+        int code = 0;
+        for (int i = 0; i < 5 && !code; i++) {
+            osContStartReadData(NULL);
+            osContGetReadData(pads);
+            if (i < 2 && n64c_tas_live_taken()) code = 4;
+            if (i == 2 && !(n64c_tas_live_taken() && pads[0].button == 0x0010)) code = 5;
+            if (write(ready[1], "r", 1) != 1 || read(go[0], &c, 1) != 1) code = 7;
+        }
+        _Exit(code);
+    }
+    char c;
+    CHECK(read(ready[0], &c, 1) == 1);
+    CHECK(write(go[1], "g", 1) == 1 && read(ready[0], &c, 1) == 1);
+    send_pad(sock, "1 0010 0 0"); /* waiting when poll 3 comes: the take at that poll applies it */
+    for (int i = 0; i < 3; i++) CHECK(write(go[1], "g", 1) == 1 && read(ready[0], &c, 1) == 1);
+    CHECK(write(go[1], "g", 1) == 1);
+    int status = 0;
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    char got[256] = {0};
+    FILE *f = fopen(log, "r");
+    CHECK(f != NULL);
+    if (f) { CHECK(fread(got, 1, sizeof got - 1, f) > 0); fclose(f); }
+    CHECK(strcmp(got, "8000 0 0\n1000 -80 80\n0010 0 0\n0010 0 0\n0010 0 0\n") == 0);
+    remove(log);
+    close(go[0]); close(go[1]); close(ready[0]); close(ready[1]);
+}
+
 int main(void)
 {
     const unsigned char a[11] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, b[11] = {2, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11};
@@ -180,6 +229,7 @@ int main(void)
     if (f) fclose(f);
     CHECK(lines == 5); /* one RAM hash per poll the game made (no RAM here: hash 0) */
     take_over(movie);
+    take_at(movie);
     remove(movie);
     remove(log);
     remove(hashes);

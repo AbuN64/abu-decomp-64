@@ -15,7 +15,8 @@
  * socket there ("@name": Linux abstract namespace). One input path, two sources: channel 0 comes from the movie until live input takes over, then from
  * the socket for the rest of the run. Without a movie live input holds from the first poll; with one, the datagram
  * "take" switches at the poll that reads it (the movie stops, N64C_TAS_EXIT_AFTER no longer applies, and the frame
- * loop drops to real time, n64c_tas_live_taken). Each datagram "SEQ BUTTONS STICK_X STICK_Y" (decimal SEQ, hex
+ * loop drops to real time, n64c_tas_live_taken); N64C_TAS_TAKE_AT=P makes the same switch by itself at poll P (the first
+ * P polls come from the movie, poll P+1 on from the socket), so a retry from a chosen poll is exact. Each datagram "SEQ BUTTONS STICK_X STICK_Y" (decimal SEQ, hex
  * buttons) is the pad from the next poll on; pads sent before a take are dropped. Every poll reads all waiting
  * datagrams: the pad is the newest, plus any button held in an older one, so a press shorter than one poll still
  * reaches the game. Polls are recorded like any other (N64C_TAS_RECORD), so a run taken over mid-movie replays as
@@ -36,7 +37,7 @@
 
 static int started;
 static FILE *play, *record;
-static long exit_after = -1, polls, played;
+static long exit_after = -1, polls, played, take_at = -1;
 static int play_done;
 static long shot_every;
 static const char *shot_dir;
@@ -159,6 +160,8 @@ static void start(void)
         live_open(path);
         if (live >= 0 && !play) atomic_store(&taken, 1);
     }
+    const char *take = getenv("N64C_TAS_TAKE_AT");
+    if (take && *take && live >= 0) take_at = strtol(take, NULL, 10);
     const char *after = getenv("N64C_TAS_EXIT_AFTER");
     if (after && *after) exit_after = strtol(after, NULL, 10);
 }
@@ -230,6 +233,8 @@ static void ram_state(void)
 void n64c_tas_poll(OSContPad *pad)
 {
     if (!started) start();
+    if (take_at >= 0 && polls >= take_at && !atomic_exchange(&taken, 1))
+        fprintf(stderr, "n64c-tas: live input took over at poll %ld (N64C_TAS_TAKE_AT)\n", polls + 1);
     if (live >= 0) live_drain();
     if (play && !atomic_load(&taken)) {
         if (!play_done && !next(pad)) {
