@@ -1,15 +1,44 @@
 #!/bin/sh
 # Lint, format and the test suite; every test runs in seconds with mocked tools.
+#   ci/check            everything (lint, format, all tests, pytest modules, the shim build and its tests)
+#   ci/check --changed  lint and format of the changed files and only the tests that cover them (ci/changed_tests.py):
+#                       seconds; run the full ci/check before a push that touches shim/ or ci/
+# The tests need the pinned tools (Cake Taste, unbake, Recipe Maker, gcovr): the interpreter is ABU_PYTHON, else the first of
+# python3 and $ABU_VENV/bin/python (default ~/venv-decomp, the seat venv made by `pip install -e '.[dev]'`) that imports them.
 set -eu
 cd "$(dirname "$0")/.."
-ruff check src tests ci
-ruff format --check src tests ci
+mode=full
+[ "${1:-}" = "--changed" ] && mode=changed
+if [ -z "${ABU_PYTHON:-}" ]; then
+  for candidate in python3 "${ABU_VENV:-$HOME/venv-decomp}/bin/python"; do
+    if "$candidate" -c 'import cake_taste, unbake, recipemaker, gcovr, ruff' >/dev/null 2>&1; then
+      ABU_PYTHON="$candidate"
+      break
+    fi
+  done
+fi
+[ -n "${ABU_PYTHON:-}" ] || {
+  echo "ci/check: no python has the pinned tools (cake_taste, unbake, recipemaker, gcovr, ruff): pip install -e '.[dev]' in a venv, then set ABU_VENV or ABU_PYTHON" >&2
+  exit 1
+}
+export PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}"
+if [ "$mode" = changed ]; then
+  files="$("$ABU_PYTHON" ci/changed_tests.py --files)"
+  # shellcheck disable=SC2086
+  [ -z "$files" ] || { "$ABU_PYTHON" -m ruff check $files; "$ABU_PYTHON" -m ruff format --check $files; }
+  modules="$("$ABU_PYTHON" ci/changed_tests.py)"
+  # shellcheck disable=SC2086
+  [ -z "$modules" ] || "$ABU_PYTHON" ci/run_tests.py tests $modules
+  exit 0
+fi
+"$ABU_PYTHON" -m ruff check src tests ci
+"$ABU_PYTHON" -m ruff format --check src tests ci
 # Every test has a timeout (ci/run_tests.py, ABU_TEST_TIMEOUT seconds), so a hang fails with a stack dump.
-PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" python3 ci/run_tests.py tests
+"$ABU_PYTHON" ci/run_tests.py tests
 # Test modules written as pytest functions (unittest discovery imports but never runs them) run under pytest.
 pytest_files="$(grep -l '^import pytest' tests/*.py || true)"
 # shellcheck disable=SC2086
-[ -z "$pytest_files" ] || PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" python3 -m pytest -q -p no:cacheprovider $pytest_files
+[ -z "$pytest_files" ] || "$ABU_PYTHON" -m pytest -q -p no:cacheprovider $pytest_files
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 # The n64 shim (shim/): its standalone 32-bit build with unit tests, and the boot tools' tests that need no port facts
@@ -24,7 +53,7 @@ if echo 'int main(void){return 0;}' | cc -m32 -x c - -o "$scratch/m32probe" 2>/d
       fl0|prepare_failclosed) set -- --work "$scratch/boot-$t" ;;
       *) set -- ;;
     esac
-    python3 -I "shim/boot/test_$t.py" "$@"
+    "$ABU_PYTHON" -I "shim/boot/test_$t.py" "$@"
   done
 else
   echo "ci/check: no 32-bit toolchain, skipping the shim build and tests"

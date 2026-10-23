@@ -190,6 +190,19 @@ class RunReportTests(unittest.TestCase):
         self.assertEqual(args[args.index("--root") + 1], str(self.build))
         self.assertEqual(args[-1], str(self.run / "gcov" / str(self.build).lstrip("/")))
 
+    def test_gcovr_runs_in_a_scratch_folder_that_does_not_outlive_it(self):
+        seen = {}
+
+        def fake(command, cwd, **_):
+            seen["cwd"] = Path(cwd)
+            (Path(cwd) / "A.CPP##0.gcov.json.gz").write_bytes(b"x")
+            return mock.Mock(returncode=0, stderr="")
+
+        with mock.patch.object(cov.subprocess, "run", side_effect=fake):
+            cov.gcovr(["--root", "/x"], self.run)
+        self.assertNotEqual(seen["cwd"], self.run)
+        self.assertEqual(list(self.run.glob("*gcov*")) + list(self.run.glob(".gcovr-*")), [])
+
     def test_a_tree_that_is_not_a_coverage_build_is_refused(self):
         self.counters()
         (self.build / "ragewars-decomp").rmdir()

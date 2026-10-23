@@ -28,9 +28,11 @@ import bisect
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from pathlib import Path
@@ -84,11 +86,16 @@ def read_gcovr(path: Path) -> dict[str, int] | None:
 
 
 def gcovr(args: list[str], cwd: Path, timeout: float = 600) -> None:
-    """Run gcovr (the decomp venv's own pinned copy); a failure is a DecompError carrying its last lines."""
+    """Run gcovr (the decomp venv's own pinned copy); a failure is a DecompError carrying its last lines.
+
+    gcovr's gcov calls drop one `<source>##<hash>.gcov.json.gz` per unit into the process cwd (thousands per run; they
+    filled the build and TAS folders), so it runs in a scratch folder under `cwd` that is removed afterwards. Every path
+    in `args` is absolute."""
+    scratch = Path(tempfile.mkdtemp(prefix=".gcovr-", dir=cwd))
     try:
         done = subprocess.run(
             [sys.executable, "-m", "gcovr", *args],
-            cwd=cwd,
+            cwd=scratch,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -96,6 +103,8 @@ def gcovr(args: list[str], cwd: Path, timeout: float = 600) -> None:
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise DecompError("tas.coverage", f"gcovr did not run: {error}") from error
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
     if done.returncode:
         raise DecompError("tas.coverage", "gcovr failed: " + " | ".join(done.stderr.strip().splitlines()[-3:]))
 
@@ -457,7 +466,6 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
     """Union the newest run of every movie: runs/coverage/ (gcovr `--html-details` over the baseline and every
     run's JSON), runs/coverage-table.json (the function table with the oracle). None without a `tas.coverage`
     section. With `oracle`, a run with no oracle trace yet is replayed in the oracle first."""
-    import shutil
     from concurrent.futures import ThreadPoolExecutor
 
     from abu_decomp import tas

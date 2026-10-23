@@ -41,10 +41,15 @@ def hermetic_git():
     os.environ["GIT_CONFIG_COUNT"] = str(count + 1)
 
 
-def main(start="tests"):
+def main(start="tests", *names):
+    """Every test under `start`, or only the named test modules (`test_tas_coverage`) when given."""
     hermetic_git()
     signal.signal(signal.SIGALRM, expired)
-    suite = unittest.defaultTestLoader.discover(start)
+    if names:
+        sys.path.insert(0, start)
+        suite = unittest.defaultTestLoader.loadTestsFromNames(names)
+    else:
+        suite = unittest.defaultTestLoader.discover(start)
     result = unittest.TextTestRunner(
         resultclass=TimedResult, verbosity=int(os.environ.get("ABU_TEST_VERBOSITY", "1"))
     ).run(suite)

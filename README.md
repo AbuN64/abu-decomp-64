@@ -41,6 +41,12 @@ Every command prints one JSON result. `decomp mcp` serves the same commands as M
 pip install -e '.[dev]' && ci/check
 ```
 
+`pip install -e '.[dev]'` installs the pinned tools the tests import (Cake Taste, unbake, Recipe Maker, gcovr) and the lint
+tools (ruff, pytest); `ci/check` runs with the first python that has them (`ABU_PYTHON`, else `python3`, else
+`$ABU_VENV/bin/python`, default `~/venv-decomp`) and stops with that instruction when none does. While working,
+`ci/check --changed` lints the changed files and runs only the tests that import the changed modules (under a second to
+seconds); run the full `ci/check` before a push that touches `shim/` or `ci/`.
+
 ## License
 
 Released under [GNU GPL version 3 or later](LICENSE).
