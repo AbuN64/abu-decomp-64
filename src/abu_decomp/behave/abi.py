@@ -55,3 +55,43 @@ def opaque(project: Path, version: str, names: set[str]) -> set[str]:
         if path is not None and _hand_written(path.read_text(errors="replace")):
             found.add(name)
     return found
+
+
+_SP_ADJUST = re.compile(r"^\$sp,\s*\$sp,\s*(-?(?:0x[0-9A-Fa-f]+|\d+))$")
+
+
+def enters_mid_frame(text: str) -> int | None:
+    """The bytes of stack a routine releases that it never took, or none. A routine whose only `$sp` writes are
+    `addiu $sp, $sp, N` releases (N > 0) without ever allocating (N < 0) was given an entry address after its prologue:
+    entered there it reads every stack slot (the fifth argument at sp+16 among them) at the wrong offset, and the real
+    callers never reach that address."""
+    taken = released = 0
+    for line in text.splitlines():
+        match = _INSN.match(line)
+        if not match or not match[2].startswith("$sp,"):
+            continue
+        adjust = _SP_ADJUST.match(match[2]) if match[1] == "addiu" else None
+        if adjust is None:
+            if match[1] not in _STORES:
+                return None  # sp is set some other way: no judgement
+            continue
+        amount = int(adjust[1], 0)
+        if amount < 0:
+            taken -= amount
+        else:
+            released += amount
+    return released if released > taken else None
+
+
+def entry_defect(project: Path, version: str, name: str) -> str | None:
+    """Why `name` cannot be entered at its symbol address (see enters_mid_frame), from the project's assembly."""
+    home = project / "asm" / version
+    path = next(iter(sorted(home.rglob(f"{name}.s"))), None) if home.is_dir() else None
+    released = enters_mid_frame(path.read_text(errors="replace")) if path is not None else None
+    if released is None:
+        return None
+    return (
+        f"{name} releases {released} bytes of stack it never allocates: its symbol address in {version} lies after "
+        f"the prologue (the allocation is in the word(s) just before it), so no run can enter it there; "
+        f"correct the symbol address, then behave it"
+    )

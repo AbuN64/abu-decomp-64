@@ -330,6 +330,9 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         raise BehaveError("behave.function", f"{options.function} is not a symbol of version {version}")
     address = fact[0]
     target = f"0x{address:08X}"
+    defect = abi.entry_defect(chosen.project, version, options.function)
+    if defect:
+        raise BehaveError("behave.entry_mid_frame", defect)
     mark = lap("symbols", mark)
     candidate_file = options.candidate.resolve() if options.candidate else None
     proto = prototype.find(chosen.project, options.function, tuple(config["headers"]), candidate_file)
@@ -388,6 +391,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
             tuple(dict.fromkeys((*learned.state, *bss)))[:8],
             tuple(dict.fromkeys((*learned.stubs, *sorted(cut))))[:16],
             (*learned.returns, *answers),
+            learned.finite or any("NaN operand" in str(c.get("detail", "")) for c in result["cases"]),
         )
         if learned == before:
             break

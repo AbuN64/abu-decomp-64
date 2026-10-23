@@ -124,7 +124,8 @@ def describe(
     for region in regions:
         fields: dict[int, dict[str, Any]] = {}
 
-        pointers = {r.base: r.index for r in regions}
+        by_index = {r.index: r for r in regions}
+        by_base = {r.base: r.index for r in regions}
         for case in ok:
             written = {e["addr"] for e in case["events"] if e["k"] == "st"}
             for address, width in [*case["reads"], *case["unseeded"]]:
@@ -141,12 +142,13 @@ def describe(
                         row["stored"].add(event["value"])
             for offset in list(fields):
                 held = _seeded_word(case, region, offset & ~3)
-                target = pointers.get(held & ~0xFFF) if held is not None and held & 0xFFF == 0 else None
+                target = by_base.get(held & ~0xFFF) if held is not None and held & 0xFFF == 0 else None
                 if target is not None and target != region.index:
-                    base = regions[target].base
+                    other = by_index[target]
+                    base = other.base
                     touched = any(
-                        base <= a < base + regions[target].size for a, _ in [*case["reads"], *case["unseeded"]]
-                    ) or any(base <= a < base + regions[target].size for a in written)
+                        base <= a < base + other.size for a, _ in [*case["reads"], *case["unseeded"]]
+                    ) or any(base <= a < base + other.size for a in written)
                     if touched:
                         fields[offset]["points_to"].add(target)
         slot = owner.get(region.index)

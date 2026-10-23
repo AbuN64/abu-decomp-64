@@ -33,3 +33,39 @@ class AbiTests(unittest.TestCase):
             (home / "nonmatchings" / "marked.s").write_text("/* Handwritten function */\nglabel marked\n")
             got = abi.opaque(Path(directory), "v", {"rnc", "plain", "marked", "missing"})
             self.assertEqual(got, {"rnc", "marked"})
+
+
+class MidFrameTests(unittest.TestCase):
+    ENTERED_LATE = """glabel late
+    /* 1 80000004 AFB10004 */  sw         $s1, 0x4($sp)
+    /* 2 80000008 8FB90018 */  lw         $t9, 0x18($sp)
+    /* 3 8000000C 03E00008 */  jr         $ra
+    /* 4 80000010 27BD0008 */   addiu     $sp, $sp, 0x8
+"""
+    WHOLE = """glabel whole
+    /* 1 80000000 27BDFFF8 */  addiu      $sp, $sp, -0x8
+    /* 2 80000004 AFB10004 */  sw         $s1, 0x4($sp)
+    /* 3 8000000C 03E00008 */  jr         $ra
+    /* 4 80000010 27BD0008 */   addiu     $sp, $sp, 0x8
+"""
+
+    def test_a_release_with_no_allocation_means_the_entry_is_after_the_prologue(self):
+        self.assertEqual(abi.enters_mid_frame(self.ENTERED_LATE), 8)
+
+    def test_a_balanced_frame_and_a_frameless_leaf_are_fine(self):
+        self.assertIsNone(abi.enters_mid_frame(self.WHOLE))
+        self.assertIsNone(abi.enters_mid_frame(COMPILED))
+
+    def test_a_stack_pointer_set_another_way_is_not_judged(self):
+        text = self.ENTERED_LATE.replace("lw         $t9, 0x18($sp)", "addu       $sp, $a0, $zero")
+        self.assertIsNone(abi.enters_mid_frame(text))
+
+    def test_the_defect_names_the_function_and_reads_the_projects_assembly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "asm" / "v1" / "nonmatchings" / "span"
+            home.mkdir(parents=True)
+            (home / "late.s").write_text(self.ENTERED_LATE)
+            (home / "whole.s").write_text(self.WHOLE)
+            self.assertIn("late releases 8 bytes", abi.entry_defect(Path(tmp), "v1", "late"))
+            self.assertIsNone(abi.entry_defect(Path(tmp), "v1", "whole"))
+            self.assertIsNone(abi.entry_defect(Path(tmp), "v1", "absent"))

@@ -41,6 +41,11 @@ SMALL = {
     "double": [1.0, 0.0, -1.0, 100.0],
 }
 _WORDS = [0, 1, 2, 3, 4, 8, 16, 100]
+def is_nan_word(word: int) -> bool:
+    """Whether the 32-bit word is a float NaN or infinity (the generated code asserts on a NaN operand)."""
+    return (word >> 23) & 0xFF == 0xFF
+
+
 _STATE = [1, 2, 3, 0, 4, 0xFFFFFFFF, 8, 0x10, 0x100, 0x3F800000, 100, 0x7FFFFFFF, 5, 6, 7]
 _FLOAT_BITS = [0x3F800000, 0x3F000000, 0x40000000, 0xBF800000, 0x42C80000, 0x00000000]
 _HOT = [
@@ -81,6 +86,7 @@ class Learned:
     state: tuple[int, ...] = ()  # of those, the ones in memory the image does not fill: swept
     stubs: tuple[str, ...] = ()  # callees cut off at the boundary: their return values are tagged to find pointers
     returns: tuple[str, ...] = ()  # of those, the stubs whose return value the original dereferenced
+    finite: bool = False  # the original hit a NaN check on the way: no filler or sweep word is a NaN as a float
 
     def offsets(self, region: int) -> list[tuple[int, int]]:
         return list(dict(self.hot).get(region, ()))
@@ -278,6 +284,7 @@ def fill(
     pointers: dict[int, int] | None = None,
     tags: dict[int, int] | None = None,
     tag_all: bool = False,
+    finite: bool = False,
 ) -> bytes:
     """A region's bytes: benign filler everywhere, sweep values at the offsets the original is known to read, and
     at its pointer fields the base of the region they point to (null in every fifth case)."""
@@ -287,7 +294,9 @@ def fill(
         words.append(
             rng.choice(_WORDS) if roll < 0.7 else rng.choice(_FLOAT_BITS) if roll < 0.85 else rng.getrandbits(32)
         )
-    pool = [*_HOT, *bases]
+    if finite:
+        words = [w if not is_nan_word(w) else 0 for w in words]
+    pool = [w for w in (*_HOT, *bases) if not (finite and is_nan_word(w))]
     targets = pointers or {}
     for position, offset in enumerate(sorted({o & ~3 for o, _ in hot})):
         if offset + 4 <= size and offset not in targets:
@@ -335,7 +344,9 @@ def seeded_cases(
                 if learn
                 else None
             )
-            data = fill(rng, region.size, learned.offsets(region.index), number, bases, aimed, marks, number == 0)
+            data = fill(
+                rng, region.size, learned.offsets(region.index), number, bases, aimed, marks, number == 0, learned.finite
+            )
             memory.append({"addr": region.base, "hex": data.hex()})
         if learn:
             rng = random.Random(f"{seed}:{proto.name}:{number}:globals")
@@ -355,6 +366,8 @@ def seeded_cases(
             for i, address in enumerate(a for a in learned.state if a not in known):
                 if (number + i) % 3:
                     word = _STATE[(number * 7 + i * 3) % len(_STATE)]
+                    if learned.finite and is_nan_word(word):
+                        word = 0x3F800000
                     memory.append({"addr": address, "hex": struct.pack(">I", word).hex()})
         for i, (parent, address) in enumerate(learned.pointers):
             if parent == -1:  # a global that held a null the original dereferenced

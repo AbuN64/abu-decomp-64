@@ -137,5 +137,25 @@ class MemoryTests(unittest.TestCase):
         self.assertNotIn("other", plain[0]["stub_v0"])
 
 
+
+class FiniteTests(unittest.TestCase):
+    def test_a_function_that_hit_a_nan_check_is_given_no_nan_words_to_read(self):
+        import struct
+
+        words = []
+        for step in range(16):
+            data = i.fill(random.Random(step), 256, [(o, 4) for o in range(0, 256, 4)], step, [0x80A00000], finite=True)
+            words += struct.unpack(">64I", data)
+        self.assertFalse([w for w in words if i.is_nan_word(w)])
+        loose = []
+        for step in range(16):
+            data = i.fill(random.Random(step), 256, [(o, 4) for o in range(0, 256, 4)], step, [0x80A00000])
+            loose += struct.unpack(">64I", data)
+        self.assertTrue([w for w in loose if i.is_nan_word(w)])
+
+    def test_nan_words_are_those_with_an_all_ones_exponent(self):
+        self.assertTrue(i.is_nan_word(0x7FFFFFFF) and i.is_nan_word(0xFFFFFFFF) and i.is_nan_word(0x7F800000))
+        self.assertFalse(i.is_nan_word(0x3F800000) or i.is_nan_word(0x80000000) or i.is_nan_word(0x7F7FFFFF))
+
 if __name__ == "__main__":
     unittest.main()

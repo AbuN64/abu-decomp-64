@@ -7,6 +7,7 @@ from unittest import mock
 
 from abu_decomp.behave import candidate as cand
 from abu_decomp.behave import describe, inputs
+from abu_decomp.behave.prototype import Param, Prototype
 from abu_decomp.config import load_profile
 from abu_decomp.tools import DependencyError, api_call
 
@@ -220,6 +221,18 @@ class DescribeTests(unittest.TestCase):
         case["unseeded"] = [[0x80200000, 4]]
         seen, state = describe.read_globals([case], [], (0x803F0000, 0x80400000))
         self.assertEqual((seen, state), ((0x80100000, 0x80200000), (0x80200000,)))
+
+
+    def test_regions_whose_indexes_skip_a_number_still_resolve_pointers_between_them(self):
+        # region indexes need not be consecutive (the list position is not the index): a pointer field from region 0
+        # to region 2 once indexed the list past its end
+        regions = [inputs.Region(0, 0x80A00000, 0x1000), inputs.Region(2, 0x80A02000, 0x1000)]
+        case = self.case("ok", memory=[{"addr": 0x80A00000, "hex": "80A02000"}])
+        case["reads"] = [[0x80A00000, 4], [0x80A02004, 4]]
+        params = (Param("a", "int *", "pointer"), Param("b", "int *", "pointer"))
+        proto = Prototype("f", "void", "void", params, False, "t")
+        got = describe.describe([case], regions, proto, [], (0x803F0000, 0x80400000))
+        self.assertEqual(got["arguments"][0]["fields"][0]["pointer_to_argument"], ["region2"])
 
 
 class ApiTests(unittest.TestCase):
