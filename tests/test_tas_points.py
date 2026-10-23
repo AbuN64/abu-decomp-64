@@ -18,7 +18,7 @@ def _fake_wait(process, timeout, run=None):
     return process.wait(timeout), 1.0
 
 
-class PointTests(unittest.TestCase):
+class PointBase(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -72,6 +72,8 @@ class PointTests(unittest.TestCase):
 
         return mock.patch.object(tas.subprocess, "Popen", Port)
 
+
+class PointTests(PointBase):
     def test_a_movie_with_a_start_is_the_points_polls_then_its_own(self):
         self.movie("menu", "- *3\n", "# area Main menu\n", "points")
         self.movie("go", "- *2\n", "# start menu\n", "points")
@@ -195,3 +197,69 @@ class PointTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PadTests(PointBase):
+    """Movies that drive more than one controller (Multiplayer needs a second pad to leave the weapon screen)."""
+
+    def test_two_pad_movies_round_trip_and_the_raw_form_holds_every_pad(self):
+        polls = [(0, 0, 0, 0x8000, 0, 0)] * 2 + [(0x1000, 5, -5, 0, 0, 0)]
+        text = tas.encode(polls, {"rom-sha1": SHA})
+        self.assertIn("# pads 2", text)
+        self.assertIn("- | A *2", text)
+        self.assertIn("START 5,-5 | -", text)
+        header, back = tas.decode(text)
+        self.assertEqual((header["pads"], back), ("2", polls))
+        self.assertEqual(tas.parse_raw(tas.format_raw(polls)), polls)
+        self.assertEqual(tas.format_raw(polls).splitlines()[0], "0000 0 0 8000 0 0")
+        with self.assertRaises(DecompError):
+            tas.decode("# tas 1\n# pads 2\nA\n")  # one pad on a two-pad line
+        with self.assertRaises(DecompError):
+            tas.parse_raw("0000 0 0\n0000 0 0 0000 0 0\n")  # the pad count changes mid-run
+        with self.assertRaises(DecompError):
+            tas.decode("# tas 1\n# pads 5\nA\n")
+
+    def test_a_movie_after_a_two_pad_point_must_drive_the_same_pads(self):
+        self.movie("lobby", "- | -\n", "# pads 2\n# area Multiplayer\n", "points")
+        self.movie("one", "A\n")
+        self.movie("two", "A | START\n", "# pads 2\n")
+        with self.assertRaises(DecompError):
+            tas.movie_polls(self.cfg, "one", "lobby")
+        self.assertEqual(tas.movie_polls(self.cfg, "two", "lobby"), [(0, 0, 0, 0, 0, 0), (0x8000, 0, 0, 0x1000, 0, 0)])
+
+    def test_play_gives_port_and_oracle_the_pad_count_and_a_take_saves_both_pads(self):
+        self.movie("lobby", "- | - *3\n", "# pads 2\n# area Multiplayer\n", "points")
+        seen = []
+        with self.port(seen, "0000 0 0 0000 0 0\n" * 3 + "0000 0 0 8000 0 0\n"):
+            alone = tas.play(self.profile, None, start="lobby", now=T0)
+            taken = tas.play(self.profile, None, start="lobby", take=True, now=T0)
+        self.assertEqual(seen[0]["N64C_PADS"], "2")
+        self.assertEqual(Path(seen[0]["N64C_TAS_PLAY"]).read_text(), "0000 0 0 0000 0 0\n" * 3)
+        self.assertEqual(tas.read_record(Path(alone["run"]))["pads"], 2)
+        self.assertEqual(seen[1]["N64C_PADS"], "2")
+        header, own = tas.decode((self.movies / f"{taken['saved']}.tas").read_text())
+        self.assertEqual((header["pads"], header["start"], own), ("2", "lobby", [(0, 0, 0, 0x8000, 0, 0)]))
+
+    def test_a_one_pad_run_sets_no_pad_variable(self):
+        self.movie("menu", "- *2\n", "", "points")
+        seen = []
+        with self.port(seen):
+            result = tas.play(self.profile, None, start="menu", now=T0)
+        self.assertNotIn("N64C_PADS", seen[0])
+        self.assertNotIn("pads", tas.read_record(Path(result["run"])))
+
+    def test_the_oracle_is_told_the_pad_count(self):
+        from abu_decomp import tas_oracle
+
+        calls = []
+
+        def fake_popen(argv, env=None, **kw):
+            calls.append(env)
+            raise OSError("stop here")
+
+        run = self.root / "run"
+        run.mkdir()
+        oracle = {"host": Path("host"), "env": {}, "shot_every": 25, "timeout_seconds": 5}
+        with mock.patch.object(tas_oracle.subprocess, "Popen", fake_popen), self.assertRaises(OSError):
+            tas_oracle.start(oracle, run, 5, "on", pads=2)
+        self.assertEqual(calls[0]["N64R_PADS"], "2")

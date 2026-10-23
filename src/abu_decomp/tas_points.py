@@ -26,7 +26,7 @@ from abu_decomp import DecompError
 DIR, AREAS = "points", "areas.txt"
 MAX_CHAIN = 4
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
-Poll = tuple[int, int, int]
+Poll = tuple[int, ...]
 
 
 def folder(cfg: dict[str, Any]) -> Path:
@@ -62,6 +62,12 @@ def load(cfg: dict[str, Any], name: str, _seen: tuple[str, ...] = ()) -> dict[st
     if header.get("start"):
         parent = load(cfg, header["start"], (*_seen, name))
         before, chain = parent["polls"], [*parent["chain"], name]
+        if before and own and len(before[0]) != len(own[0]):
+            raise DecompError(
+                "tas.point",
+                f"{name!r} drives {len(own[0]) // 3} pad(s) after {header['start']!r} drove {len(before[0]) // 3}: "
+                "name the same `pads` in both",
+            )
     return {"name": name, "header": header, "polls": before + own, "own": len(own), "chain": chain}
 
 
@@ -82,7 +88,14 @@ def inherit(cfg: dict[str, Any], header: dict[str, str], key: str, default: str)
 def joined(cfg: dict[str, Any], header: dict[str, str], own: list[Poll], start: str | None = None) -> list[Poll]:
     """The polls a replay feeds the game: the start point's, then the movie's own. `start` overrides the header's."""
     name = start if start is not None else header.get("start")
-    return (load(cfg, name)["polls"] if name else []) + own
+    before = load(cfg, name)["polls"] if name else []
+    if before and own and len(before[0]) != len(own[0]):
+        raise DecompError(
+            "tas.point",
+            f"the movie drives {len(own[0]) // 3} pad(s) after start point {name!r} drove {len(before[0]) // 3}: "
+            "name the same `pads` in its header",
+        )
+    return before + own
 
 
 def save_point(
@@ -212,6 +225,7 @@ def listing(profile: Any) -> dict[str, Any]:
                 "own": data["own"],
                 "chain": data["chain"],
                 "cpak": data["header"].get("cpak", "none"),
+                "pads": tas.pad_count(data["polls"]),
                 "note": data["header"].get("note", ""),
                 "port": run.get("outcome"),
                 "port_polls": run.get("polls_reached"),

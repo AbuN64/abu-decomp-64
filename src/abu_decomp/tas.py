@@ -78,6 +78,7 @@ from abu_decomp import (
 from abu_decomp.config import Profile, check_keys
 
 SCHEMA = 1
+MAX_PADS = 4  # controllers a movie may drive (the console has four ports)
 BUTTONS = (
     ("A", 0x8000),
     ("B", 0x4000),
@@ -96,7 +97,8 @@ BUTTONS = (
 )
 _BIT = dict(BUTTONS)
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
-_RAW = re.compile(r"([0-9a-fA-F]{1,4}) (-?\d{1,3}) (-?\d{1,3})")
+_PAD = r"[0-9a-fA-F]{1,4} -?\d{1,3} -?\d{1,3}"
+_RAW = re.compile(rf"{_PAD}(?: {_PAD}){{0,{MAX_PADS - 1}}}")
 _KEYS = frozenset(
     {
         "movies",
@@ -119,7 +121,7 @@ _REQUIRED = frozenset({"movies", "runs", "port", "args", "rom"})
 STOP_FUNCTION = "n64c_boot_stopped"
 STOP_SUBJECT = "*(char**)&n64c_boot_stop_symbol"
 
-Poll = tuple[int, int, int]
+Poll = tuple[int, ...]  # BUTTONS, STICK_X, STICK_Y of pad 1, then of each further pad (3 * pads ints)
 PAKS = ("on", "off")
 CPAKS = ("on", "off")
 CARD, CARD_START, PROFILE_CARD = "cpak.mpk", "cpak-start.mpk", "controller-pak.mpk"
@@ -181,14 +183,19 @@ def settings(profile: Profile) -> dict[str, Any]:
 
 
 def parse_raw(text: str) -> list[Poll]:
-    polls = []
+    polls: list[Poll] = []
     for number, line in enumerate(text.splitlines(), 1):
         if not line.strip() or line.startswith("#"):
             continue
-        match = _RAW.fullmatch(line.strip())
-        if not match:
-            raise DecompError("tas.raw", f"line {number}: expected 'BUTTONS X Y', got {line!r}")
-        polls.append((int(match[1], 16), int(match[2]), int(match[3])))
+        if not _RAW.fullmatch(line.strip()):
+            raise DecompError(
+                "tas.raw", f"line {number}: expected 'BUTTONS X Y' per pad (up to {MAX_PADS}), got {line!r}"
+            )
+        fields = line.split()
+        poll = tuple(int(f, 16) if i % 3 == 0 else int(f) for i, f in enumerate(fields))
+        if polls and len(poll) != len(polls[0]):
+            raise DecompError("tas.raw", f"line {number}: {len(poll) // 3} pads after {len(polls[0]) // 3}")
+        polls.append(poll)
     return polls
 
 
@@ -199,7 +206,22 @@ def read_raw(path: Path) -> list[Poll]:
 
 
 def format_raw(polls: list[Poll]) -> str:
-    return "".join(f"{b:04x} {x} {y}\n" for b, x, y in polls)
+    return "".join(" ".join(f"{p[i]:04x} {p[i + 1]} {p[i + 2]}" for i in range(0, len(p), 3)) + "\n" for p in polls)
+
+
+def pad_count(polls: list[Poll]) -> int:
+    """Controllers the polls drive (1 for no polls)."""
+    return len(polls[0]) // 3 if polls else 1
+
+
+def header_pads(header: dict[str, str]) -> int:
+    try:
+        count = int(header.get("pads", "1"))
+    except ValueError:
+        count = 0
+    if not 1 <= count <= MAX_PADS:
+        raise DecompError("tas.movie", f"header pads is 1..{MAX_PADS}, not {header.get('pads')!r}")
+    return count
 
 
 def _buttons_text(bits: int) -> str:
@@ -210,23 +232,30 @@ def _buttons_text(bits: int) -> str:
 
 
 def encode(polls: list[Poll], header: dict[str, str]) -> str:
+    """The movie text. A movie of more than one pad names the count in its header (`pads N`) and writes each poll as
+    the pads' `BUTTONS [X,Y]` joined by ` | `."""
+    count = pad_count(polls)
+    if count > 1:
+        header = {**header, "pads": str(count)}
     lines = [f"# tas {SCHEMA}"] + [f"# {key} {value}" for key, value in header.items()]
     index = 0
     while index < len(polls):
         end = index
         while end + 1 < len(polls) and polls[end + 1] == polls[index]:
             end += 1
-        bits, x, y = polls[index]
-        line = _buttons_text(bits) + (f" {x},{y}" if (x, y) != (0, 0) else "")
-        count = end - index + 1
-        lines.append(line + (f" *{count}" if count > 1 else ""))
+        parts = []
+        for at in range(0, len(polls[index]), 3):
+            bits, x, y = polls[index][at : at + 3]
+            parts.append(_buttons_text(bits) + (f" {x},{y}" if (x, y) != (0, 0) else ""))
+        count_ = end - index + 1
+        lines.append(" | ".join(parts) + (f" *{count_}" if count_ > 1 else ""))
         index = end + 1
     return "\n".join(lines) + "\n"
 
 
 def decode(text: str) -> tuple[dict[str, str], list[Poll]]:
     header: dict[str, str] = {}
-    polls: list[Poll] = []
+    lines: list[tuple[int, str]] = []
     for number, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line:
@@ -235,23 +264,37 @@ def decode(text: str) -> tuple[dict[str, str], list[Poll]]:
             key, _, value = line[1:].strip().partition(" ")
             header[key] = value.strip()
             continue
-        fields = line.split()
-        count, x, y = 1, 0, 0
-        if fields[-1].startswith("*"):
-            count = int(fields.pop()[1:])
-        if len(fields) == 2:
-            x_text, _, y_text = fields.pop().partition(",")
-            x, y = int(x_text), int(y_text)
-        if len(fields) != 1 or count < 1 or not -128 <= x <= 127 or not -128 <= y <= 127:
-            raise DecompError("tas.movie", f"line {number}: expected 'BUTTONS [X,Y] [*COUNT]', got {line!r}")
-        bits = 0
-        for name in fields[0].split("+") if fields[0] != "-" else []:
-            if name not in _BIT:
-                raise DecompError("tas.movie", f"line {number}: unknown button {name!r}")
-            bits |= _BIT[name]
-        polls.extend([(bits, x, y)] * count)
+        lines.append((number, line))
     if header.get("tas") != str(SCHEMA):
         raise DecompError("tas.movie", f"movie must start with '# tas {SCHEMA}'")
+    pads = header_pads(header)
+    polls: list[Poll] = []
+    for number, line in lines:
+        count = 1
+        fields = line.split()
+        if fields[-1].startswith("*"):
+            count = int(fields.pop()[1:])
+        segments = " ".join(fields).split("|")
+        if len(segments) != pads or count < 1:
+            raise DecompError(
+                "tas.movie", f"line {number}: expected {pads} pad(s) of 'BUTTONS [X,Y]' and [*COUNT], got {line!r}"
+            )
+        poll: list[int] = []
+        for segment in segments:
+            parts = segment.split()
+            x, y = 0, 0
+            if len(parts) == 2:
+                x_text, _, y_text = parts.pop().partition(",")
+                x, y = int(x_text), int(y_text)
+            if len(parts) != 1 or not -128 <= x <= 127 or not -128 <= y <= 127:
+                raise DecompError("tas.movie", f"line {number}: expected 'BUTTONS [X,Y] [*COUNT]', got {line!r}")
+            bits = 0
+            for name in parts[0].split("+") if parts[0] != "-" else []:
+                if name not in _BIT:
+                    raise DecompError("tas.movie", f"line {number}: unknown button {name!r}")
+                bits |= _BIT[name]
+            poll += [bits, x, y]
+        polls.extend([tuple(poll)] * count)
     return header, polls
 
 
@@ -532,6 +575,7 @@ def retry_source(cfg: dict[str, Any], source: str, take_at: int | None) -> dict[
         "card": kept.read_bytes() if kept.is_file() else None,
         "start": row.get("start") or None,
         "prefix": int(row.get("prefix") or 0),
+        "pads": int(row.get("pads") or pad_count(polls)),
     }
 
 
@@ -926,6 +970,7 @@ def play(
             "card": start_card(cfg, mode_),
             "start": start,
             "prefix": len(point["polls"]),
+            "pads": pad_count(point["polls"]),
             "fresh": True,
         }
         take_at = len(point["polls"])
@@ -952,6 +997,7 @@ def play(
     else:
         started = (retry["start"], retry["prefix"]) if retry else (None, 0)
     pak = pak or ("on" if human else movie_pak(cfg, name, start))
+    pads = retry["pads"] if retry else pad_count(polls)
     run = cfg["runs"] / "plays" / (run_id or new_run_id(cfg, name, now))
     user_dir = run / "user"
     user_dir.mkdir(parents=True)
@@ -997,6 +1043,8 @@ def play(
         "N64C_AUDIO_OUT": str(run / AUDIO),
         "GCOV_PREFIX": str(run / "gcov"),  # a coverage build leaves its counters here (tas_coverage)
     }
+    if pads > 1:
+        env["N64C_PADS"] = str(pads)  # the guest sees that many controllers; every movie line holds that many pads
     if human:
         (run / TAKEN).write_text("new run\n")
         env["N64C_VIEW_FPS"] = "60"
@@ -1028,6 +1076,8 @@ def play(
         "cpak": mode,
         "fps_unlock": bool(fps_unlock),
     }
+    if pads > 1:
+        record["pads"] = pads
     if started[0]:
         record.update({"start": started[0], "prefix": started[1]})
     if retry and source is not None:
@@ -1045,7 +1095,7 @@ def play(
         env.update(tas_oracle.port_env(original, run))
         record["oracle"] = {"status": "running", "every": original["shot_every"], "host": str(original["host"])}
         oracle_began = time.monotonic()
-        oracle_process = tas_oracle.start(original, run, cfg["exit_after"], pak, card=oracle_card)
+        oracle_process = tas_oracle.start(original, run, cfg["exit_after"], pak, card=oracle_card, pads=pads)
         record["oracle"]["pid"] = oracle_process.pid
 
         def reap() -> None:  # reaped as soon as it ends, so the page sees it done while the port goes on

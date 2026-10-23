@@ -33,6 +33,7 @@ SDL_JoystickID *SDL_GetGamepads(int *count)
     return ids;
 }
 void SDL_free(void *p) { free(p); }
+int n64c_tas_pads(void) { return 1; }
 void n64c_tas_poll(OSContPad *pad) { (void)pad; } /* no movie: the live device is the only source */
 SDL_Gamepad *SDL_OpenGamepad(SDL_JoystickID id)
 {

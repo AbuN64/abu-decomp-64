@@ -270,6 +270,7 @@ class Server:
             "pak": record.get("pak") or "on",
             "cpak": record.get("cpak") or "none",
             "fps_unlock": bool(record.get("fps_unlock")),
+            "pads": int(record.get("pads") or 1),
             "shown": record.get("shown") or None,
             "oracle": self.oracle(run, record, running),
         }
@@ -476,13 +477,16 @@ class Server:
         self.send(run, b"take")
         return {"id": run_id, "taken": True}
 
-    def input(self, run_id: str, seq: int, buttons: int, x: int, y: int) -> dict[str, Any]:
+    def input(self, run_id: str, seq: int, buttons: int, x: int, y: int, pad: int = 0) -> dict[str, Any]:
         run = self.run_dir(run_id)
         if not run or not (run / tas.TAKEN).exists():
             raise DecompError("tas.input", f"run {run_id} is not driven by live input")
         if not (0 <= buttons <= 0xFFFF and -128 <= x <= 127 and -128 <= y <= 127 and seq >= 0):
             raise DecompError("tas.input", "buttons 0..0xffff, x and y -128..127, seq >= 0")
-        self.send(run, f"{seq} {buttons:x} {x} {y}".encode())
+        pads = int((tas.read_record(run) or {}).get("pads") or 1)
+        if not 0 <= pad < pads:
+            raise DecompError("tas.input", f"pad {pad} of {pads}: this run has {pads} controller(s), numbered from 0")
+        self.send(run, f"{seq} {buttons:x} {x} {y}{f' {pad}' if pad else ''}".encode())
         return {"ok": True}
 
     def send(self, run: Path, data: bytes) -> None:
@@ -563,7 +567,12 @@ class Server:
         cpak, pak = point["header"].get("cpak", "none"), point["header"].get("pak", "on")
         self._placeholder(run_id, movie, 0, exe, label or tas.HUMAN_LABEL, pak, cpak, fps_unlock)
         with self.lock:
-            self.queued[run_id].update(input="human", took_at=len(point["polls"]), polls=len(point["polls"]))
+            self.queued[run_id].update(
+                input="human",
+                took_at=len(point["polls"]),
+                polls=len(point["polls"]),
+                pads=tas.pad_count(point["polls"]),
+            )
 
         def go() -> None:
             try:
@@ -604,7 +613,7 @@ class Server:
             run_id, found["movie"], 0, exe, label or tas.HUMAN_LABEL, found["pak"], found["cpak"], fps_unlock
         )
         with self.lock:
-            self.queued[run_id].update(input="human", took_at=take_at, polls=len(found["polls"]))
+            self.queued[run_id].update(input="human", took_at=take_at, polls=len(found["polls"]), pads=found["pads"])
             self.queued[run_id].update({"from": source, "at": take_at})
 
         def go() -> None:
@@ -911,6 +920,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                             int(body.get("buttons", 0)),
                             int(body.get("x", 0)),
                             int(body.get("y", 0)),
+                            int(body.get("pad", 0)),
                         )
                     )
                 else:

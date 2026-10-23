@@ -411,6 +411,27 @@ class HttpTests(Base):
         self.assertEqual(self.post("/api/play", {})[0], 400)  # r5 is driven by live input now
         self.assertEqual(self.post("/api/take", {"id": "nope"})[0], 400)
 
+    def test_input_names_the_pad_of_a_multi_controller_run(self):
+        import socket
+
+        run = self.make_run("r6", movie="lobby", status="running", speed=0, started=1.0, pid=os.getpid(), pads=2)
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(sock.close)
+        sock.bind("\0" + tas.input_address(run)[1:])
+        self.assertEqual(self.post("/api/take", {"id": "r6"}), (200, {"id": "r6", "taken": True}))
+        self.assertEqual(sock.recv(64), b"take")
+        self.assertEqual(
+            self.post("/api/input", {"id": "r6", "seq": 1, "buttons": 16, "x": 0, "y": 0, "pad": 1})[0], 200
+        )
+        self.assertEqual(sock.recv(64), b"1 10 0 0 1")
+        self.assertEqual(self.post("/api/input", {"id": "r6", "seq": 2, "buttons": 16, "x": 0, "y": 0})[0], 200)
+        self.assertEqual(sock.recv(64), b"2 10 0 0")  # pad 0 keeps the old datagram
+        self.assertEqual(
+            self.post("/api/input", {"id": "r6", "seq": 3, "buttons": 16, "x": 0, "y": 0, "pad": 2})[0], 400
+        )
+        state = {r["id"]: r for r in json.loads(self.get("/api/state")[2])["runs"]}
+        self.assertEqual(state["r6"]["pads"], 2)
+
     def test_retry_from_a_poll_and_pin(self):
         source = self.make_run("src", movie="boot-idle", status="done", started=1.0, outcome="crash", polls_reached=3)
         (source / "polls.raw").write_text("8000 0 0\n0000 0 0\n1000 0 0\n")

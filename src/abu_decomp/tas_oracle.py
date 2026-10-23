@@ -119,6 +119,7 @@ def start(
     pak: str = "on",
     extra: dict[str, str] | None = None,
     card: Path | None = None,
+    pads: int = 1,
 ) -> subprocess.Popen:
     """The oracle replaying the run's movie.raw with the run's Expansion Pak setting (`N64R_PAK`) and Controller Pak
     card (`N64R_CPAK`, its own copy of the card the port starts with; unset: an empty slot), in its own process
@@ -132,6 +133,7 @@ def start(
         "N64R_CLOCK": "entries",
         **oracle["env"],
         "N64R_PAK": pak,
+        "N64R_PADS": str(pads),  # controllers the guest sees; each movie.raw line holds that many pads
         "N64R_TAS_PLAY": str(run / "movie.raw"),
         "N64R_TAS_EXIT_AFTER": str(exit_after),
         "N64R_VIEW": str(run / VIEW),

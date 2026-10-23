@@ -92,9 +92,10 @@ int n64c_cont_pak_present(int channel) { return pak_on(channel) != 0; }
 static void query(OSContStatus *s)
 {
     for (int i = 0; i < MAXCONTROLLERS; i++) {
-        s[i].type = i == 0 ? 0x0005 : 0; /* standard controller on port 1 only */
+        int present = i < n64c_tas_pads(); /* standard controllers on the first N64C_PADS ports (default 1) */
+        s[i].type = present ? 0x0005 : 0;
         s[i].status = pak_on(i) ? CONT_CARD_ON : 0;
-        s[i].errno_ = i == 0 ? 0 : CONT_ERR_NO_CONTROLLER;
+        s[i].errno_ = present ? 0 : CONT_ERR_NO_CONTROLLER;
     }
 }
 static OSContStatus last_status[MAXCONTROLLERS];
@@ -111,7 +112,7 @@ s32 osContInit(OSMesgQueue *mq, u8 *bitpattern, OSContStatus *status)
     if (status)
         memcpy(status, last_status, sizeof last_status);
     if (bitpattern)
-        *bitpattern = 1;
+        *bitpattern = (u8)((1u << n64c_tas_pads()) - 1);
     (void)mq;
     return 0;
 }
@@ -136,7 +137,7 @@ s32 osContStartReadData(OSMesgQueue *mq)
         memset(&latched[i], 0, sizeof latched[i]);
         if (i == 0 && input_fn)
             input_fn(i, &latched[i], input_user);
-        else if (i != 0)
+        else if (i >= n64c_tas_pads())
             latched[i].errno_ = CONT_ERR_NO_CONTROLLER;
     }
     n64c_tas_poll(&latched[0]);

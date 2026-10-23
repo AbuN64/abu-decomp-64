@@ -491,7 +491,7 @@ function renderStage() {
   $("stats").hidden = !live;
   $("stats").textContent = `${fps ? fps.toFixed(0) : "–"} fps` + (r.input === "human" ? ` · input→frame ${lat == null ? "–" : Math.round(lat) + " ms"}` : "");
   $("sover").hidden = !ctl;
-  $("sover").textContent = "you drive this run";
+  $("sover").textContent = runPads() > 1 ? `you drive pad ${P.pad + 1} of ${runPads()} (keys 1-${runPads()} switch)` : "you drive this run";
   renderActions(r);
   drawTimeline(r);
   renderPad(ctl);
@@ -1001,7 +1001,7 @@ const KEYS = [
 const PAD_BUTTONS = [[0, "A (bottom)", "A"], [1, "B (right)", "B"], [2, "X (left)", "B"], [3, "Y (top)", "CUP"], [4, "LB", "L"], [5, "RB", "R"],
   [6, "LT", "Z"], [7, "RT", "Z"], [9, "Start", "START"], [12, "d-pad up", "UP"], [13, "d-pad down", "DOWN"], [14, "d-pad left", "LEFT"], [15, "d-pad right", "RIGHT"]];
 const STICK = 80, DEADZONE = 0.15;
-const P = { seq: 0, sent: new Map(), keys: new Set(), last: "", lastAt: 0, touch: { buttons: 0, x: 0, y: 0 } };
+const P = { seq: 0, sent: new Map(), keys: new Set(), last: "", lastAt: 0, touch: { buttons: 0, x: 0, y: 0 }, pad: 0 };
 function controlling() {
   const r = F.id ? findRun(F.id) : null;
   return !!(r && r.status === "running" && r.input === "human" && !document.querySelector("dialog[open]"));
@@ -1027,6 +1027,17 @@ function keyPad() {
   const c = v => Math.max(-STICK, Math.min(STICK, Math.round(v)));
   return { buttons, x: c(x), y: c(y) };
 }
+function runPads() { const r = F.id ? findRun(F.id) : null; return r && r.pads ? r.pads : 1; }
+/* A run with several controllers (Multiplayer): one keyboard drives one pad; keys 1-4 pick which, the pad left behind is released. */
+function pickPad(n) {
+  if (n === P.pad || n >= runPads()) return;
+  const old = P.pad;
+  P.keys.clear(); P.touch = { buttons: 0, x: 0, y: 0 };
+  P.seq++;
+  post("/api/input", { id: F.id, seq: P.seq, buttons: 0, x: 0, y: 0, pad: old });
+  P.pad = n; P.last = "";
+  sendPad(true);
+}
 function sendPad(force) {
   if (!controlling()) return;
   const pad = keyPad(), key = `${pad.buttons} ${pad.x} ${pad.y}`, t = performance.now();
@@ -1034,7 +1045,7 @@ function sendPad(force) {
   P.last = key; P.lastAt = t; P.seq++;
   P.sent.set(P.seq, t);
   if (P.sent.size > 600) P.sent.delete(P.sent.keys().next().value);
-  post("/api/input", { id: F.id, seq: P.seq, buttons: pad.buttons, x: pad.x, y: pad.y });
+  post("/api/input", { id: F.id, seq: P.seq, buttons: pad.buttons, x: pad.x, y: pad.y, pad: P.pad });
 }
 function inputLoop() { sendPad(false); requestAnimationFrame(inputLoop); }
 requestAnimationFrame(inputLoop);
@@ -1228,6 +1239,7 @@ document.querySelectorAll("dialog").forEach(d => d.addEventListener("click", e =
 
 document.addEventListener("keydown", e => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (controlling() && runPads() > 1 && /^Digit[1-4]$/.test(e.code)) { e.preventDefault(); pickPad(+e.code[5] - 1); render(); return; }
   if (controlling() && KEYS.some(k => k[0] === e.code)) { e.preventDefault(); P.keys.add(e.code); sendPad(true); return; }
   if (document.querySelector("dialog[open]") || /INPUT|TEXTAREA/.test(e.target.tagName)) return;
   const r = findRun(F.id);

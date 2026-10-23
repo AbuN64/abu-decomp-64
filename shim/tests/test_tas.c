@@ -186,6 +186,64 @@ static void take_at(const char *movie)
     close(go[0]); close(go[1]); close(ready[0]); close(ready[1]);
 }
 
+/* N64C_PADS=2: the guest sees two controllers, a movie line holds two triples, a recording writes both, and a live
+ * datagram ending in a pad index drives that pad alone. */
+static void two_pads(void)
+{
+    const char *movie = "n64c_test_tas.movie2", *log = "n64c_test_tas.log2", *sock = "n64c_test_tas.sock2";
+    FILE *f = fopen(movie, "w");
+    CHECK(f != NULL);
+    fputs("# two pads\n8000 0 0 0001 5 6\n1000 1 1 0002 -3 4\n", f);
+    fclose(f);
+    remove(log);
+    int go[2], ready[2];
+    CHECK(pipe(go) == 0 && pipe(ready) == 0);
+    pid_t child = fork();
+    if (child == 0) {
+        setenv("N64C_PADS", "2", 1);
+        setenv("N64C_TAS_PLAY", movie, 1);
+        setenv("N64C_TAS_RECORD", log, 1);
+        setenv("N64C_INPUT", sock, 1);
+        setenv("N64C_TAS_TAKE_AT", "2", 1);
+        unsetenv("N64C_TAS_EXIT_AFTER");
+        unsetenv("N64C_TAS_HASH");
+        n64c_cont_set_input(NULL, NULL);
+        OSContStatus status[MAXCONTROLLERS];
+        u8 pattern = 0;
+        OSContPad pads[MAXCONTROLLERS];
+        char c;
+        int code = 0;
+        if (osContInit(NULL, &pattern, status) || pattern != 3 || status[1].errno_ || !status[2].errno_) code = 4;
+        for (int i = 0; i < 3 && !code; i++) {
+            osContStartReadData(NULL);
+            osContGetReadData(pads);
+            if (i == 0 && !(pads[0].button == 0x8000 && pads[1].button == 0x0001 && pads[1].stick_x == 5 && pads[1].stick_y == 6)) code = 5;
+            if (i == 1 && !(pads[0].button == 0x1000 && pads[1].button == 0x0002 && pads[1].stick_x == -3)) code = 6;
+            if (i == 2 && !(pads[0].button == 0 && pads[1].button == 0x0010 && pads[2].errno_)) code = 7;
+            if (write(ready[1], "r", 1) != 1 || read(go[0], &c, 1) != 1) code = 8;
+        }
+        _Exit(code);
+    }
+    char c;
+    CHECK(read(ready[0], &c, 1) == 1);
+    CHECK(write(go[1], "g", 1) == 1 && read(ready[0], &c, 1) == 1);
+    send_pad(sock, "1 0010 0 0 1"); /* pad index 1: pad 0 stays neutral */
+    CHECK(write(go[1], "g", 1) == 1 && read(ready[0], &c, 1) == 1);
+    CHECK(write(go[1], "g", 1) == 1);
+    int status = 0;
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    char got[256] = {0};
+    f = fopen(log, "r");
+    CHECK(f != NULL);
+    if (f) { CHECK(fread(got, 1, sizeof got - 1, f) > 0); fclose(f); }
+    CHECK(strcmp(got, "8000 0 0 0001 5 6\n1000 1 1 0002 -3 4\n0000 0 0 0010 0 0\n") == 0);
+    remove(movie);
+    remove(log);
+    remove(sock);
+    close(go[0]); close(go[1]); close(ready[0]); close(ready[1]);
+}
+
 int main(void)
 {
     const unsigned char a[11] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, b[11] = {2, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11};
@@ -234,6 +292,7 @@ int main(void)
     remove(log);
     remove(hashes);
     live_input();
+    two_pads();
     if (!fails) puts("n64c_tas ok");
     return fails != 0;
 }

@@ -56,9 +56,10 @@ static const char *state_dir;
 static long draws_at = -1;
 static const char *draws_path;
 static int live = -1;
-static OSContPad live_pad;
-static unsigned live_held;
-static int live_fresh;
+static int pads = 1; /* N64C_PADS: controllers the guest sees (1..MAXCONTROLLERS); a movie line holds that many pads */
+static OSContPad live_pad[MAXCONTROLLERS];
+static unsigned live_held[MAXCONTROLLERS];
+static int live_fresh[MAXCONTROLLERS];
 static atomic_int taken;
 static atomic_ulong live_seq;
 
@@ -104,17 +105,17 @@ static void live_drain(void)
         }
         unsigned long seq;
         unsigned buttons;
-        int x, y;
-        if (sscanf(msg, "%lu %x %d %d", &seq, &buttons, &x, &y) != 4 || buttons > 0xffff || x < -128 || x > 127 ||
-            y < -128 || y > 127) {
+        int x, y, who = 0;
+        int got = sscanf(msg, "%lu %x %d %d %d", &seq, &buttons, &x, &y, &who);
+        if (got < 4 || buttons > 0xffff || x < -128 || x > 127 || y < -128 || y > 127 || who < 0 || who >= pads) {
             fprintf(stderr, "n64c-tas: bad live input %s\n", msg);
             continue;
         }
         if (!atomic_load(&taken)) continue;
-        if (live_fresh) live_held |= live_pad.button;
-        live_pad = (OSContPad){.button = (u16)buttons, .stick_x = (s8)x, .stick_y = (s8)y};
+        if (live_fresh[who]) live_held[who] |= live_pad[who].button;
+        live_pad[who] = (OSContPad){.button = (u16)buttons, .stick_x = (s8)x, .stick_y = (s8)y};
         atomic_store(&live_seq, seq);
-        live_fresh = 1;
+        live_fresh[who] = 1;
     }
 }
 
@@ -182,35 +183,51 @@ static void start(void)
         live_open(path);
         if (live >= 0 && !play) atomic_store(&taken, 1);
     }
+    const char *count = getenv("N64C_PADS");
+    if (count && *count) {
+        long n = strtol(count, NULL, 10);
+        if (n < 1 || n > MAXCONTROLLERS) {
+            fprintf(stderr, "n64c-tas: N64C_PADS is 1..%d, got %s\n", MAXCONTROLLERS, count);
+            _Exit(2);
+        }
+        pads = (int)n;
+    }
     const char *take = getenv("N64C_TAS_TAKE_AT");
     if (take && *take && live >= 0) take_at = strtol(take, NULL, 10);
     const char *after = getenv("N64C_TAS_EXIT_AFTER");
     if (after && *after) exit_after = strtol(after, NULL, 10);
 }
 
-/* Reads the next movie line into pad; returns 0 at the end of the movie. */
+/* Reads the next movie line into the pads (one "BUTTONS X Y" triple per pad); returns 0 at the end of the movie. */
 static int next(OSContPad *pad)
 {
-    char line[64];
+    char line[256];
     while (fgets(line, sizeof line, play)) {
-        unsigned buttons;
-        int x, y;
         if (line[0] == '#' || line[0] == '\n') continue;
-        if (sscanf(line, "%x %d %d", &buttons, &x, &y) != 3 || buttons > 0xffff ||
-            x < -128 || x > 127 || y < -128 || y > 127) {
-            fprintf(stderr, "n64c-tas: bad movie line after poll %ld: %s", played, line);
+        const char *at = line;
+        for (int i = 0; i < pads; i++) {
+            unsigned buttons;
+            int x, y, used = 0;
+            if (sscanf(at, "%x %d %d%n", &buttons, &x, &y, &used) != 3 || buttons > 0xffff || x < -128 || x > 127 ||
+                y < -128 || y > 127) {
+                fprintf(stderr, "n64c-tas: bad movie line after poll %ld (%d pads): %s", played, pads, line);
+                _Exit(2);
+            }
+            at += used;
+            pad[i] = (OSContPad){0};
+            pad[i].button = (u16)buttons;
+            pad[i].stick_x = (s8)x;
+            pad[i].stick_y = (s8)y;
+        }
+        if (strspn(at, " \t\r\n") != strlen(at)) {
+            fprintf(stderr, "n64c-tas: movie line has more than %d pads after poll %ld: %s", pads, played, line);
             _Exit(2);
         }
-        *pad = (OSContPad){0};
-        pad->button = (u16)buttons;
-        pad->stick_x = (s8)x;
-        pad->stick_y = (s8)y;
         played++;
         return 1;
     }
     return 0;
 }
-
 /* Eight independent 32-bit lanes (multiply-xorshift), folded into 64 bits at the end: order sensitive, and the lanes
  * run in parallel (SIMD where the CPU has a 32-bit vector multiply), so hashing 8 MB every poll stays cheap. */
 #if (defined(__i386__) || defined(__x86_64__)) && defined(__GNUC__)
@@ -281,6 +298,11 @@ static void state_poll(void)
 
 /* Defined by the boot's frame loop (boot/frame.c): its closing frame-rate line, written before the process ends here. */
 void n64c_boot_run_ended(void) __attribute__((weak));
+int n64c_tas_pads(void)
+{
+    if (!started) start();
+    return pads;
+}
 void n64c_tas_poll(OSContPad *pad)
 {
     if (!started) start();
@@ -302,19 +324,22 @@ void n64c_tas_poll(OSContPad *pad)
             }
         }
     }
-    if (atomic_load(&taken)) {
-        *pad = live_pad;
-        pad->button |= (u16)live_held;
-        live_held = 0;
-        live_fresh = 0;
-    }
+    if (atomic_load(&taken))
+        for (int i = 0; i < pads; i++) {
+            pad[i] = live_pad[i];
+            pad[i].button |= (u16)live_held[i];
+            live_held[i] = 0;
+            live_fresh[i] = 0;
+        }
     polls++;
     if (hash || dump_at >= 0) ram_state();
     if (state.nruns) state_poll();
     if (trace) { fprintf(trace, "%ld %u\n", polls, (unsigned)osViGetRetraceCount()); fflush(trace); }
     if (shot_every > 0 && polls % shot_every == 0) atomic_store(&shot_due, polls);
     if (record) {
-        fprintf(record, "%04x %d %d\n", pad->button, pad->stick_x, pad->stick_y);
+        for (int i = 0; i < pads; i++)
+            fprintf(record, "%s%04x %d %d", i ? " " : "", pad[i].button, pad[i].stick_x, pad[i].stick_y);
+        fputc('\n', record);
         fflush(record);
     }
 }
