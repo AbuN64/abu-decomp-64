@@ -16,8 +16,8 @@ dependencies = [
   "textual==8.2.8",
   "pycparser==3.0",
   "gcovr==8.3",
-  "unbake @ git+https://github.com/AbuN64/cake-unbake-64@eb68a3162e47f5ee9430726461eaae76530b1409",
-  "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@3546aa2c1ff60e211c014829037fa7014c43818e",
+  "unbake @ git+https://github.com/AbuN64/cake-unbake-64@7773ae94729e3c0037960d423ad4bffcdc71b420",
+  "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@d91eaefd218ebcf0c59f8a06c15869ecc06e420a",
   "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@a2e9aee327ac3cab0ca7859dc04c72eca32718be",
 ]
 
