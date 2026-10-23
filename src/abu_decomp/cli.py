@@ -692,7 +692,11 @@ def _run_standalone(args: argparse.Namespace) -> tuple[dict[str, Any], int, list
 def _behave_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", type=Path, help="the project tree to act on (default: the profile's project)")
     parser.add_argument("--host", type=Path, help="the unbake host file for that tree (default: the profile's host)")
-    parser.add_argument("--function", required=True, help="the function symbol, as the project names it")
+    parser.add_argument(
+        "--function",
+        action="append",
+        help="the function symbol, as the project names it (--replay: repeat it to limit the batch to some functions)",
+    )
     parser.add_argument("--candidate", type=Path, help="candidate C file; without it the original is described")
     parser.add_argument("--version", help="ROM version (default: the project's names_from)")
     parser.add_argument("--cases", type=int, help="input combinations to run, capped (default: profile behave.cases)")
@@ -700,13 +704,47 @@ def _behave_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--depth", type=int, help="calls deep the original callees run; deeper ones are stubs")
     parser.add_argument("--no-capture", action="store_true", help="compare without the oracle's captured entry state")
     parser.add_argument("--capture-hit", type=int, default=1, help="which entry of the function the capture stops at")
+    parser.add_argument(
+        "--replay",
+        action="store_true",
+        help="batch mode: real calls recorded in the oracle from corpus movies, run again through the port's build of "
+        "each function; every difference is a fn-differs line of <tas.runs>/findings.jsonl",
+    )
+    parser.add_argument("--movie", action="append", help="--replay: a movie to record (repeat; default the corpus)")
+    parser.add_argument("--calls", type=int, help="--replay: samples per function (default 3)")
+    parser.add_argument("--oracle", type=Path, help="--replay: an oracle host with the recorder (default tas.oracle)")
+    parser.add_argument("--port", type=Path, help="--replay: a port executable with replay.c (default tas.port)")
+    parser.add_argument("--source", type=Path, help="--replay: the game sources the port was built from")
+    parser.add_argument("--refresh", action="store_true", help="--replay: record the movies again")
+    parser.add_argument("--cpu-budget", type=float, help="--replay: CPU seconds the batch may spend (default 300)")
+    parser.add_argument("--no-findings", action="store_true", help="--replay: do not write findings.jsonl")
 
 
 def _run_behave(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp.behave.run import Options, run
 
+    if args.replay:
+        from abu_decomp.behave import replay
+
+        return replay.run(
+            _profile(args.profile),
+            replay.Options(
+                movies=args.movie or [],
+                functions=args.function or [],
+                calls=args.calls or replay.CALLS,
+                oracle=args.oracle,
+                port=args.port,
+                source=args.source,
+                version=args.version,
+                refresh=args.refresh,
+                cpu_budget=args.cpu_budget or replay.CPU_BUDGET,
+                findings=not args.no_findings,
+            ),
+        )
+    if not args.function or len(args.function) != 1:
+        raise DecompError("behave.arguments", "behave takes exactly one --function (--replay takes any number)")
     options = Options(
-        args.function,
+        args.function[0],
         args.candidate,
         args.version,
         args.cases,
