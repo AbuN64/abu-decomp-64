@@ -107,9 +107,36 @@ class ServeTests(Base):
         self.assertEqual(preview["train"], {"line": "L1 /x/final-func_80256C90_de.diff exact", "mark": "LANDED"})
         self.assertEqual(preview["last_run"], 6.0)
         cycle = state["cycle"]
-        self.assertEqual(cycle["target"], {"movie": "model-preview", "fn": "func_80256C90_de", "kind": "host fault"})
+        self.assertEqual(cycle["lanes"], [])  # no lanes folder configured
         self.assertEqual([row["mark"] for row in cycle["inbox"]], ["LANDED", "DROPPED", None])
         self.assertEqual(cycle["inbox"][1]["line"], "DEPLOY: decomp 1e51919")
+
+    def test_cycle_lanes_and_labelled_runs(self):
+        lanes = self.root / "lanes"
+        for name, brief in (("TAS-CYCLE-1", "KIND: cycle\nOWNER\n# TAS-CYCLE-1 (Sonnet): splash off center.\n"),
+                            ("TAS-CYCLE-2", "KIND: cycle\n# TAS-CYCLE-2: texturing\n"),
+                            ("FUZZY-A", "KIND: impl\n# not a cycle\n"), ("OTHER", "")):  # fmt: skip
+            (lanes / name).mkdir(parents=True)
+            (lanes / name / "brief.md").write_text(brief)
+        (lanes / "OTHER" / "cycle.json").write_text('{"title": "from cycle.json"}')
+        (lanes / "TAS-CYCLE-1" / "STATUS.md").write_text("17:47 start\n17:55 found it\n\n")
+        (lanes / "TAS-CYCLE-2" / "STATUS.md").write_text("17:47 start\n")
+        (lanes / "TAS-CYCLE-2" / "RESULT.md").write_text("\nDONE: fixed\nmore\n")
+        server = tas_serve.Server(self.profile(lanes="lanes"))
+        self.make_run("r1", movie="boot-idle", status="running", speed=1, started=1.0, pid=os.getpid(),
+                      label="TAS-CYCLE-1", port="/x/ragewars")  # fmt: skip
+        state = server.state()
+        rows = {r["name"]: r for r in state["cycle"]["lanes"]}
+        self.assertEqual(set(rows), {"TAS-CYCLE-1", "TAS-CYCLE-2", "OTHER"})
+        self.assertEqual([r["name"] for r in state["cycle"]["lanes"]][-1], "TAS-CYCLE-2")  # done goes last
+        one = rows["TAS-CYCLE-1"]
+        self.assertEqual((one["title"], one["status"], one["result"], one["runs"]),
+                         ("TAS-CYCLE-1 (Sonnet): splash off center.", "17:55 found it", None, 1))  # fmt: skip
+        self.assertGreater(one["status_at"], 0)
+        self.assertEqual(rows["TAS-CYCLE-2"]["result"], "DONE: fixed")
+        self.assertEqual(rows["OTHER"]["title"], "from cycle.json")
+        run = state["runs"][0]
+        self.assertEqual((run["label"], run["port"]), ("TAS-CYCLE-1", "/x/ragewars"))
 
     def test_fn_state_reads_the_source_and_the_progress_states(self):
         server = tas_serve.Server(self.profile())
@@ -192,9 +219,13 @@ class HttpTests(Base):
     def test_play_play_all_and_stop(self):
         started = []
 
-        def fake_play(profile, movie, *, speed=0, run_id=None, **kwargs):
-            started.append((movie, speed, run_id))
+        def fake_play(profile, movie, *, speed=0, run_id=None, port=None, label=None, **kwargs):
+            started.append((movie, speed, run_id, port, label))
+            if label:
+                hold.wait(10)  # the placeholder stays in `runs` until the run would write its record
             return {}
+
+        hold = threading.Event()
 
         with mock.patch.object(tas, "play", fake_play):
             status, reply = self.post("/api/play", {"movie": "boot-idle", "speed": 1})
@@ -204,7 +235,22 @@ class HttpTests(Base):
                 if started:
                     break
                 time.sleep(0.01)
-            self.assertEqual(started, [("boot-idle", 1, reply["id"])])
+            self.assertEqual(started, [("boot-idle", 1, reply["id"], None, None)])
+            exe = self.root / "lane-port"
+            exe.write_text("bin")
+            exe.chmod(0o755)
+            status, reply = self.post("/api/play", {"movie": "boot-idle", "speed": 1, "port": str(exe), "label": "L-1"})
+            self.assertEqual(status, 200)
+            queued = {r["id"]: r for r in json.loads(self.get("/api/state")[2])["runs"]}[reply["id"]]
+            self.assertEqual((queued["label"], queued["port"]), ("L-1", str(exe)))
+            for _ in range(100):
+                if len(started) == 2:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(started[1][3:], (str(exe), "L-1"))
+            hold.set()
+            self.assertEqual(self.post("/api/play", {"movie": "boot-idle", "port": str(self.root / "nope")})[0], 400)
+            self.assertEqual(self.post("/api/play", {"movie": "boot-idle", "label": "bad label!"})[0], 400)
         self.assertEqual(self.post("/api/play", {"movie": "nope", "speed": 0})[0], 400)
         release = threading.Event()
         with mock.patch.object(tas, "play_all", side_effect=lambda *a, **k: release.wait(10)) as play_all:

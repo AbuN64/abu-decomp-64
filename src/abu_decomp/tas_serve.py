@@ -5,7 +5,8 @@ Section `tas.serve`: {"listen": "HOST:PORT", "jobs": N, "inbox": path, "states":
 port's run writes (module tas); the page sees all of them: the port's own latest picture (`view.bmp`), its log and,
 at speed 1, its sound (`audio.pcm`, served as a growing WAV). `inbox` is the integration train's inbox (lines marked
 `| LANDED` / `| DROPPED`), `states` the decomp progress states (its `none_fns`), `pin` the git folder of the decomp
-source the port was built from. Function state (exact / fuzzy / none) is read from the decomp source, as the
+source the port was built from, `lanes` the folder of cycle lane dirs mirrored from the orchestrator (brief.md,
+STATUS.md, RESULT.md, cycle.json each), shown as the cycle panel. Function state (exact / fuzzy / none) is read from the decomp source, as the
 progress states define it: a NON_MATCHING body is fuzzy, INCLUDE_ASM alone is none.
 """
 
@@ -29,7 +30,7 @@ from typing import Any
 from abu_decomp import DecompError, evidence, tas, tas_triage
 from abu_decomp.config import Profile
 
-_SERVE_KEYS = frozenset({"listen", "jobs", "inbox", "states", "pin"})
+_SERVE_KEYS = frozenset({"listen", "jobs", "inbox", "states", "pin", "lanes"})
 RUNS_SHOWN = 24  # newest runs in `runs` (every running one is always there)
 INBOX_SHOWN = 12
 CACHE_SECONDS = 30.0
@@ -52,6 +53,45 @@ def wav_header(rate: int) -> bytes:
         + b"data"
         + struct.pack("<I", size - 36)
     )
+
+
+def _first_line(path: Path) -> str | None:
+    try:
+        with path.open(errors="replace") as handle:
+            for line in handle:
+                if line.strip():
+                    return line.strip()
+    except OSError:
+        return None
+    return None
+
+
+def lane_row(lane: Path) -> dict[str, Any] | None:
+    """One cycle lane dir (cycle.json or a brief whose first line is `KIND: cycle`) as a cycle-panel row, else None."""
+    try:
+        cycle = json.loads((lane / "cycle.json").read_text())
+    except (OSError, ValueError):
+        cycle = None
+    try:
+        brief = (lane / "brief.md").read_text(errors="replace")
+    except OSError:
+        brief = ""
+    if not isinstance(cycle, dict) and not brief.lstrip().startswith("KIND: cycle"):
+        return None
+    cycle = cycle if isinstance(cycle, dict) else {}
+    title = cycle.get("title") or next((ln[2:].strip() for ln in brief.splitlines() if ln.startswith("# ")), lane.name)
+    status, status_at = None, None
+    try:
+        with (lane / "STATUS.md").open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - 4096))
+            lines = [ln.strip() for ln in handle.read().decode(errors="replace").splitlines() if ln.strip()]
+        status = lines[-1] if lines else None
+        status_at = (lane / "STATUS.md").stat().st_mtime
+    except OSError:
+        pass
+    result = _first_line(lane / "RESULT.md")
+    return {"name": lane.name, "title": str(title), "status": status, "status_at": status_at, "result": result}
 
 
 def inbox_lines(path: Path | None) -> list[dict[str, Any]]:
@@ -83,6 +123,7 @@ class Server:
         self.inbox = profile.path("tas.serve.inbox", serve["inbox"]) if "inbox" in serve else None
         self.states = profile.path("tas.serve.states", serve["states"]) if "states" in serve else None
         self.pin_dir = profile.path("tas.serve.pin", serve["pin"]) if "pin" in serve else None
+        self.lanes_dir = profile.path("tas.serve.lanes", serve["lanes"]) if "lanes" in serve else None
         self.pool = ThreadPoolExecutor(max_workers=max(1, self.jobs))
         self.lock = threading.Lock()
         self.queued: dict[str, dict[str, Any]] = {}  # id -> placeholder row until the run writes its record
@@ -162,6 +203,8 @@ class Server:
                     "subject": None if running else row.get("subject") or None,
                     "started": row.get("started", 0),
                     "frame": f"/frame/{run.name}",
+                    "label": row.get("label") or None,
+                    "port": row.get("port") or str(self.cfg["port"]),
                 }
             )
         shown = [r for r in runs if r["status"] == "running"] + queued
@@ -179,7 +222,7 @@ class Server:
             "build": {"port": str(port), "pin": self.pin(), "built": built},
             "runs": shown,
             "movies": movies,
-            "cycle": {"target": self.target(movies), "inbox": inbox[-INBOX_SHOWN:]},
+            "cycle": {"lanes": self.lanes(shown), "inbox": inbox[-INBOX_SHOWN:]},
         }
 
     def movies(self, rows: list[tuple[Path, dict[str, Any]]], inbox: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -213,29 +256,31 @@ class Server:
                     "fn": {"name": fn, "state": self.fn_state(fn)} if fn else None,
                     "train": train,
                     "last_run": last.get("ended") if last else None,
+                    "label": last.get("label") if last else None,
                     "kind": known.get("kind") or None,
                 }
             )
         return out
 
-    @staticmethod
-    def target(movies: list[dict[str, Any]]) -> dict[str, Any] | None:
-        """The cycle's next target: the function that stops the most movies (not yet exact first), its first movie."""
-        stuck = [m for m in movies if m["fn"] and m["outcome"] not in ("ok", "")]
-        if not stuck:
-            return None
-        count: dict[str, int] = {}
-        for m in stuck:
-            count[m["fn"]["name"]] = count.get(m["fn"]["name"], 0) + 1
-        best = min(stuck, key=lambda m: (m["fn"]["state"] == "exact", -count[m["fn"]["name"]], m["name"]))
-        return {"movie": best["name"], "fn": best["fn"]["name"], "kind": best.get("kind") or best["outcome"]}
+    def lanes(self, runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The cycle lanes in the mirrored lanes folder: active ones (no RESULT.md yet) first, newest status first."""
+        folder = self.lanes_dir
+        out = []
+        for lane in sorted(folder.iterdir()) if folder and folder.is_dir() else []:
+            row = lane_row(lane)
+            if row:
+                row["runs"] = sum(1 for r in runs if r["status"] == "running" and r.get("label") == lane.name)
+                out.append(row)
+        out.sort(key=lambda r: (r["result"] is not None, -(r["status_at"] or 0), r["name"]))
+        return out
 
-    def _placeholder(self, run_id: str, movie: str, speed: int) -> None:
+    def _placeholder(self, run_id: str, movie: str, speed: int, port: Path, label: str | None) -> None:
         polls = 0
         with contextlib.suppress(OSError):
             polls = self.movie_polls(self.cfg["movies"] / f"{movie}.tas")
         row = {"id": run_id, "movie": movie, "status": "running", "speed": speed, "poll": 0, "polls": polls}
         row.update(outcome=None, subject=None, started=time.time(), frame=f"/frame/{run_id}")
+        row.update(label=label or None, port=str(port))
         with self.lock:
             self.queued[run_id] = row
 
@@ -243,19 +288,21 @@ class Server:
         with self.lock:
             self.queued.pop(run_id, None)
 
-    def play(self, movie: str, speed: int) -> dict[str, Any]:
+    def play(self, movie: str, speed: int, port: str | None = None, label: str | None = None) -> dict[str, Any]:
         tas.movie_polls(self.cfg, movie)  # refuse a missing movie or another ROM here, not in the thread
         if not 0 <= speed <= 1000:
             raise DecompError("tas.play", f"speed is 0 (turbo) .. 1000, not {speed}")
+        tas.check_label(label)
+        exe = tas.with_port(self.cfg, port)["port"]
         with self.lock:
             run_id = tas.new_run_id(self.cfg, movie)
             while run_id in self.queued:
                 run_id += "-q"
-        self._placeholder(run_id, movie, speed)
+        self._placeholder(run_id, movie, speed, exe, label)
 
         def go() -> None:
             try:
-                tas.play(self.profile, movie, speed=speed, run_id=run_id)
+                tas.play(self.profile, movie, speed=speed, run_id=run_id, port=port or None, label=label or None)
             except Exception:  # the record says done; the page shows it
                 pass
             finally:
@@ -272,7 +319,7 @@ class Server:
             for name in names:
                 ids[name] = tas.new_run_id(self.cfg, name)
         for name, run_id in ids.items():
-            self._placeholder(run_id, name, 0)
+            self._placeholder(run_id, name, 0, self.cfg["port"], None)
 
         def go() -> None:
             try:
@@ -419,7 +466,14 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 if self.path == "/api/play":
-                    self.json(server.play(str(body.get("movie", "")), int(body.get("speed", 0))))
+                    self.json(
+                        server.play(
+                            str(body.get("movie", "")),
+                            int(body.get("speed", 0)),
+                            str(body.get("port") or "") or None,
+                            str(body.get("label") or "") or None,
+                        )
+                    )
                 elif self.path == "/api/play-all":
                     self.json(server.play_all())
                 elif self.path == "/api/stop":

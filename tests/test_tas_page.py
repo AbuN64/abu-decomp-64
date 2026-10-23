@@ -28,6 +28,7 @@ def mock_state() -> dict:
         "fn": None,
         "train": None,
         "last_run": NOW - 75,
+        "label": None,
         **kw,
     }
     run = lambda rid, name, **kw: {  # noqa: E731
@@ -35,6 +36,8 @@ def mock_state() -> dict:
         "movie": name,
         "status": "running",
         "speed": 0,
+        "label": None,
+        "port": "/rig/tas/build/ragewars",
         "poll": 300,
         "polls": 900,
         "outcome": None,
@@ -48,7 +51,16 @@ def mock_state() -> dict:
         "build": {"port": "/rig/tas/build/ragewars", "pin": "2574d74ed0c1", "built": NOW - 600},
         "runs": [
             run("r1", "boot-idle"),
-            run("r2", "model-preview", speed=1, poll=120, polls=1400, started=NOW - 4),
+            run(
+                "r2",
+                "model-preview",
+                speed=1,
+                poll=120,
+                polls=1400,
+                started=NOW - 4,
+                label="TAS-CYCLE-1",
+                port="/rig/lanes/TAS-CYCLE-1/build/ragewars",
+            ),
             run(
                 "r3",
                 "title-to-player-select",
@@ -84,7 +96,24 @@ def mock_state() -> dict:
             movie("boot-missing", outcome="hang", reached=328, same_twice=None, last_run=None),
         ],
         "cycle": {
-            "target": {"movie": "model-preview", "fn": "func_80256C90_de", "kind": "null deref"},
+            "lanes": [
+                {
+                    "name": "TAS-CYCLE-1",
+                    "title": "copyright splash off center",
+                    "status": "17:47 start",
+                    "status_at": NOW - 40,
+                    "result": None,
+                    "runs": 1,
+                },
+                {
+                    "name": "TAS-CYCLE-0",
+                    "title": "old cycle",
+                    "status": "17:00 done",
+                    "status_at": NOW - 4000,
+                    "result": "DONE: splash centred",
+                    "runs": 0,
+                },
+            ],
             "inbox": [
                 {"line": "final-80256C90.diff  func_80256C90_de", "mark": "LANDED"},
                 {"line": "final-80209CD8.diff  func_80209CD8_de", "mark": None},
@@ -168,8 +197,9 @@ class PageTests(unittest.TestCase):
         js = script()
         state = mock_state()
         fields = set(state["runs"][0]) | set(state["movies"][0]) | set(state["cycle"]) | set(state["build"])
+        fields |= set(state["cycle"]["lanes"][0])
         fields -= {"frame"}  # the page builds /frame/<id> from the id
-        for name in sorted(fields | {"state", "mark", "line", "kind"}):
+        for name in sorted(fields | {"state", "mark", "line"}):
             self.assertRegex(js, rf"\.{name}\b", name)
 
     def test_script_parses(self):
@@ -221,7 +251,9 @@ class PageTests(unittest.TestCase):
             "fuzzy",
             "turbo",
             "1x",
-            "null deref",
+            "TAS-CYCLE-1",
+            "copyright splash off center",
+            "DONE: splash centred",
             "step 3 start",
             "crash",
             "611/1200",

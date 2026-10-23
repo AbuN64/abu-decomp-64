@@ -70,7 +70,16 @@
   tbody tr.sel { background: var(--sel); }
   td.num, th.num { text-align: right; }
 
-  #cycle { flex: 0 1 auto; max-height: 38%; display: flex; flex-direction: column; min-height: 0; }
+  #cycle { flex: 0 1 auto; max-height: 45%; display: flex; flex-direction: column; min-height: 0; }
+  #lanes { overflow: auto; min-height: 0; flex: none; max-height: 60%; border-bottom: 1px solid var(--line); }
+  #lanes .lane { padding: 5px 12px; border-bottom: 1px solid #181a1e; cursor: pointer; }
+  #lanes .lane:hover { background: var(--hover); }
+  #lanes .lane.sel { background: var(--sel); }
+  #lanes .top { display: flex; gap: 8px; align-items: baseline; }
+  #lanes .top .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #lanes .st { display: flex; gap: 8px; font: 12px var(--mono); color: var(--dim); }
+  #lanes .st span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag { font: 11px var(--mono); color: var(--warn); }
   #inbox { overflow: auto; min-height: 0; padding: 4px 0; }
   #inbox div { display: flex; gap: 8px; padding: 2px 12px; font: 12px var(--mono); }
   #inbox div span:last-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -112,7 +121,9 @@
   </section>
   <section id="right">
     <div id="cycle">
-      <div class="head"><b>cycle</b><span id="ctarget" class="grow mono"></span></div>
+      <div class="head"><b>cycle lanes</b><span id="lcount" class="grow mono"></span></div>
+      <div id="lanes"></div>
+      <div class="head"><b>train inbox</b><span class="grow"></span></div>
       <div id="inbox"></div>
     </div>
     <div id="console">
@@ -126,10 +137,10 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-const FRAME_MS = 66, KEEP_DONE_S = 120, MAX_TILES = 16, MAX_LOG = 3000;
+const FRAME_MS = 66, KEEP_DONE_S = 60, MAX_TILES = 16, MAX_LOG = 3000;
 
 let S = null, skew = 0;          // last /api/state; server clock minus ours (seconds)
-const sel = { movie: null, run: null };
+const sel = { movie: null, run: null, lane: null };
 const now = () => Date.now() / 1000 + skew;
 function ago(t) {
   if (t == null) return "—";
@@ -171,19 +182,17 @@ function render() {
   const b = S.build || {};
   $("build").textContent = b.pin ? `${String(b.pin).slice(0, 9)} · built ${ago(b.built)}` : "no build";
   $("build").title = b.port || "";
-  const t = S.cycle && S.cycle.target;
-  const tt = t ? `${t.kind} · ${t.fn} · ${t.movie}` : "no target";
-  $("ctarget").textContent = tt;
-  renderTiles(); renderMovies(); renderInbox(); followLog(); followAudio();
+  renderTiles(); renderMovies(); renderLanes(); renderInbox(); followLog(); followAudio();
 }
 
 /* ---------- live tiles ---------- */
 const closed = new Set();         // finished run ids the viewer closed with ✕
 const tiles = new Map();          // run id -> {node, canvas, ctx, run, busy, last, got, timer}
 function tileRuns() {
-  const live = S.runs.filter(r => r.status === "running" && !closed.has(r.id)).sort((a, b) => a.started - b.started);
-  let done = S.runs.filter(r => r.status === "done" && !closed.has(r.id) && now() - r.started < KEEP_DONE_S).sort((a, b) => b.started - a.started);
-  if (!live.length && !done.length) done = S.runs.filter(r => !closed.has(r.id)).slice().sort((a, b) => b.started - a.started).slice(0, 1);
+  const mine = r => !sel.lane || r.label === sel.lane;
+  const live = S.runs.filter(r => r.status === "running" && !closed.has(r.id) && mine(r)).sort((a, b) => a.started - b.started);
+  let done = S.runs.filter(r => r.status === "done" && !closed.has(r.id) && mine(r) && (now() - r.started < KEEP_DONE_S || sel.lane)).sort((a, b) => b.started - a.started);
+  if (!live.length && !done.length) done = S.runs.filter(r => !closed.has(r.id) && mine(r)).slice().sort((a, b) => b.started - a.started).slice(0, 1);
   return live.concat(done).slice(0, MAX_TILES);
 }
 function makeTile(r) {
@@ -216,8 +225,8 @@ function renderTiles() {
     const wasDone = t.run.status === "done";
     t.run = r;
     if (box.children[i] !== t.node) box.insertBefore(t.node, box.children[i] || null);
-    t.mv.textContent = r.movie;
-    t.mv.title = r.id;
+    t.mv.textContent = (r.label ? `[${r.label}] ` : "") + r.movie;
+    t.mv.title = `${r.id}\n${r.port || ""}`;
     const out = r.status === "done" ? (r.outcome || "done") : null;
     t.badge.textContent = out || speedText(r.speed);
     t.badge.className = "badge" + (out ? " " + (OUT[out] || "dim") : r.speed === 1 ? " one" : "");
@@ -276,7 +285,9 @@ function renderMovies() {
   const rows = S.movies.map(m => {
     const tr = el("tr");
     const live = runsOf(m.name).find(r => r.status === "running");
-    tr.append(cell(m.name, "name"));
+    const nm = cell(m.name, "name");
+    if (m.label) nm.append(" ", el("span", "tag", m.label));
+    tr.append(nm);
     tr.append(cell(m.outcome || "—", OUT[m.outcome] || "dim"));
     tr.append(cell(m.subject || "", "", m.subject || ""));
     tr.append(cell(live ? `${live.poll}/${m.polls}` : `${m.reached}/${m.polls}`, "num" + (live ? " ok" : m.reached < m.polls ? " warn" : "")));
@@ -311,7 +322,25 @@ function moveSel(d) {
   const tr = $("mbody").children[j]; if (tr) tr.scrollIntoView({ block: "nearest" });
 }
 
-/* ---------- cycle ---------- */
+/* ---------- cycle lanes: active first; click filters the tiles to that lane's replays ---------- */
+function renderLanes() {
+  const lanes = (S.cycle && S.cycle.lanes) || [];
+  const active = lanes.filter(l => !l.result).length;
+  $("lcount").textContent = lanes.length ? `${active} active` + (lanes.length > active ? ` · ${lanes.length - active} done` : "") : "";
+  if (!lanes.length) { $("lanes").replaceChildren(el("div", "lane dim", "no cycle lanes")); return; }
+  $("lanes").replaceChildren(...lanes.map(l => {
+    const d = el("div", "lane" + (sel.lane === l.name ? " sel" : "")), top = el("div", "top"), st = el("div", "st");
+    top.append(el("b", "", l.name), el("span", "ttl dim", l.title));
+    if (l.runs) top.append(el("span", "badge one", `${l.runs} running`));
+    const line = l.result || l.status || "no status yet";
+    st.append(el("span", l.result ? (/^DONE/.test(l.result) ? "ok" : "bad") : "", line), el("span", "faint", l.result ? "result" : ago(l.status_at)));
+    d.append(top, st); d.title = `${l.title}\n${line}`;
+    d.onclick = () => { sel.lane = sel.lane === l.name ? null : l.name; render(); };
+    return d;
+  }));
+}
+
+/* ---------- train inbox ---------- */
 function renderInbox() {
   const lines = (S.cycle && S.cycle.inbox) || [];
   const box = $("inbox");

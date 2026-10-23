@@ -228,6 +228,23 @@ class MovieTests(unittest.TestCase):
         self.assertIsNone(result["same_twice"])  # nothing to compare with yet
         self.assertEqual(tas.last_poll(run / "hash.txt"), 2)
 
+    def test_a_lane_runs_its_own_build_under_its_label(self):
+        self.movie()
+        exe = self.root / "lane-port"
+        exe.write_text("lane build")
+        exe.chmod(0o755)
+        seen = []
+        with self.port("1 aa\n2 bb\n", seen):
+            result = tas.play(self.profile, "m", now=T0, port=exe, label="TAS-CYCLE-1")
+        during = seen[1]
+        self.assertEqual((during["port"], during["label"]), (str(exe.resolve()), "TAS-CYCLE-1"))
+        self.assertEqual(during["build"], tas.build_id(exe))
+        self.assertEqual(tas.read_record(Path(result["run"]))["label"], "TAS-CYCLE-1")
+        with self.assertRaises(DecompError):
+            tas.play(self.profile, "m", port=self.root / "missing")
+        with self.assertRaises(DecompError):
+            tas.play(self.profile, "m", label="no spaces")
+
     def test_speed_one_plays_sound_and_waits_for_the_movie_in_real_time(self):
         self.movie("A *600\n")
         seen, waited = [], []

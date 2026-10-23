@@ -361,6 +361,24 @@ def build_id(port: Path) -> str:
     return _builds[key]
 
 
+_LABEL = re.compile(r"[A-Za-z0-9_.-]{1,40}")
+
+
+def check_label(label: str | None) -> None:
+    if label and not _LABEL.fullmatch(label):
+        raise DecompError("tas.label", f"a label is a lane name ([A-Za-z0-9_.-], at most 40), not {label!r}")
+
+
+def with_port(cfg: dict[str, Any], port: Path | str | None) -> dict[str, Any]:
+    """cfg running `port` (another build's executable) instead of the configured one."""
+    if not port:
+        return cfg
+    path = Path(port).expanduser()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise DecompError("tas.port", f"no executable port at {path}")
+    return {**cfg, "port": path.resolve()}
+
+
 def new_run_id(cfg: dict[str, Any], name: str, now: datetime | None = None) -> str:
     """`STAMP-NAME`, with `-2`, `-3`... when that folder is taken (two plays of one movie in one second)."""
     plays, base = cfg["runs"] / "plays", f"{_stamp(now)}-{name}"
@@ -465,10 +483,14 @@ def play(
     now: datetime | None = None,
     health: dict[str, Any] | None = None,
     run_id: str | None = None,
+    port: Path | str | None = None,
+    label: str | None = None,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
-    every poll as the movie's previous run on this build (`same_twice`)."""
-    cfg = settings(profile)
+    every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
+    lane's own build), `label` tags the run with the lane that started it; both show on the page."""
+    cfg = with_port(settings(profile), port)
+    check_label(label)
     if not 0 <= speed <= 1000:
         raise DecompError("tas.play", f"speed is 0 (turbo) .. 1000, not {speed}")
     began = time.monotonic()
@@ -502,6 +524,8 @@ def play(
         "status": "running",
         "started": time.time(),
         "pid": os.getpid(),
+        "port": str(cfg["port"]),
+        "label": label or None,
     }
     _write_record(run, record)
     argv = supervised(cfg, run, _argv(cfg, user_dir))
@@ -545,10 +569,12 @@ def play(
     return result
 
 
-def play_twice(profile: Profile, name: str, *, speed: int = 0) -> dict[str, Any]:
+def play_twice(
+    profile: Profile, name: str, *, speed: int = 0, port: Path | str | None = None, label: str | None = None
+) -> dict[str, Any]:
     """Two replays back to back; the second's `same_twice` compares it with the first."""
-    play(profile, name, speed=speed)
-    return play(profile, name, speed=speed)
+    play(profile, name, speed=speed, port=port, label=label)
+    return play(profile, name, speed=speed, port=port, label=label)
 
 
 def compare(recorded: dict[str, Any] | None, now: dict[str, Any]) -> str:
