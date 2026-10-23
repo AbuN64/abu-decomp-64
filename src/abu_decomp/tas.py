@@ -491,12 +491,38 @@ def supervised(cfg: dict[str, Any], run_dir: Path, argv: list[str]) -> list[str]
     ]
 
 
+_GUEST_FAULT = re.compile(r"^n64c-fault: TLB-miss-([0-9a-f]{8}) (load|store) at host pc (0x[0-9a-f]+)$")
+
+
+def guest_fault(output: str) -> dict[str, str] | None:
+    """The wild guest access behind a `boot-missing: rw_boot_entry`: the game answers a TLB miss its fault service
+    cannot map with its own fatal path, which reboots through rw_boot_entry. That is a crash, not a stop at an unlinked
+    function. It is the last `n64c-fault` line when only `boot-shim:` lines separate it from the `boot-missing` line
+    (a miss the guest mapped is followed by game progress, `boot-step:` lines)."""
+    at = re.search(r"^boot-missing: rw_boot_entry$", output, re.M)
+    if not at:
+        return None
+    for line in reversed(output[: at.start()].splitlines()):
+        if line.startswith("boot-shim:"):
+            continue
+        hit = _GUEST_FAULT.match(line)
+        return {"address": hit[1], "access": hit[2], "host_pc": hit[3]} if hit else None
+    return None
+
+
 def classify(code: int | None, output: str) -> dict[str, Any]:
     # The bridge names the subject when it held the stop; stops that end the process directly only print it.
     reason = re.search(r"^debug-reason: (.+)$", output, re.M) or re.search(r"^boot-missing: (\S+)$", output, re.M)
     signal_name = re.search(r"^debug-signal: (\S+)$", output, re.M)
     if code is None:
         return {"outcome": "hang"}
+    fault = guest_fault(output) if reason else None
+    if fault:
+        return {
+            "outcome": "crash",
+            "subject": f"host-fault-{fault['address']}",
+            "fault": f"guest {fault['access']} of {fault['address']} at host pc {fault['host_pc']}, then rw_boot_entry",
+        }
     if reason:
         subject = reason[1].strip()
         return {"outcome": "crash" if subject.startswith("host-fault-") else "stop", "subject": subject}

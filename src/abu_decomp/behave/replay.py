@@ -45,6 +45,7 @@ ULPS = 4  # float results this close are rounding (x87 against MIPS single preci
 MAX_PER_CASE = 8  # mismatches one sample reports
 PHYSICAL_FLOOR = 0x100000  # the physical form of a function address is taken for one only from here up
 KIND = "fn-differs"
+ORACLE_KIND = "oracle-aborts"
 FINDINGS = "findings.jsonl"
 GUEST_ENTRY = re.compile(r"^\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)\s*;")
 INT_MASK = {"int8": 0xFF, "uint8": 0xFF, "int16": 0xFFFF, "uint16": 0xFFFF}
@@ -53,6 +54,15 @@ POINTERS = ("pointer", "funcptr", "word")
 
 class ReplayError(DecompError):
     pass
+
+
+class OracleAborted(ReplayError):
+    """The original itself died replaying a movie (a bug-demo movie, a code pointer it cannot find): an oracle finding
+    about that movie, not a failure of the batch."""
+
+    def __init__(self, movie: str, code: int | None, tail: str):
+        super().__init__("behave.replay.oracle-abort", f"the oracle aborted replaying {movie} (exit {code}): {tail}")
+        self.movie, self.code, self.tail = movie, code, tail
 
 
 @dataclass
@@ -183,6 +193,8 @@ def record_movie(
     made = home / "rec" / "replay.jsonl"
     if code != 0 or not made.is_file():
         tail = (home / tas_oracle.LOG).read_text(errors="replace").strip().splitlines()[-3:]
+        if code != 0:
+            raise OracleAborted(name, code, " | ".join(tail))
         raise ReplayError(
             "behave.replay.record",
             f"the oracle did not record {name} (exit {code}; the host may lack the recorder, cake-taste "
@@ -514,8 +526,11 @@ def judge(
 # --- findings ---------------------------------------------------------------------------------------------------
 
 
-def write_findings(path: Path, rows: list[dict[str, Any]], functions: set[str]) -> None:
-    """Replace this tool's earlier lines for `functions` with `rows`; every other line stays as it is."""
+def write_findings(
+    path: Path, rows: list[dict[str, Any]], functions: set[str], kind: str = KIND, key: str = "function"
+) -> None:
+    """Replace this tool's earlier lines of `kind` for `functions` (the `key` field) with `rows`; every other line
+    stays as it is."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
@@ -528,7 +543,7 @@ def write_findings(path: Path, rows: list[dict[str, Any]], functions: set[str]) 
             except ValueError:
                 kept.append(line)
                 continue
-            if row.get("kind") == KIND and row.get("function") in functions:
+            if row.get("kind") == kind and row.get(key) in functions:
                 changed = True
                 continue
             kept.append(line)
@@ -541,6 +556,22 @@ def write_findings(path: Path, rows: list[dict[str, Any]], functions: set[str]) 
             handle.seek(0, os.SEEK_END)
             handle.write(text)
         handle.flush()
+
+
+def oracle_rows(aborts: list[OracleAborted], batch: str, now: float) -> list[dict[str, Any]]:
+    """One finding per movie whose original aborted: the movie cannot be compared, and says why."""
+    return [
+        {
+            "kind": ORACLE_KIND,
+            "time": round(now, 3),
+            "movie": a.movie,
+            "signature": f"{ORACLE_KIND}:{a.movie}",
+            "oracle_exit": a.code,
+            "evidence": a.tail,
+            "batch": batch,
+        }
+        for a in aborts
+    ]
 
 
 def finding_rows(case: Case, found: list[Mismatch], evidence: str, batch: str, now: float) -> list[dict[str, Any]]:
@@ -625,13 +656,21 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         raise ReplayError("behave.replay.movies", "no movie to replay (name some with --movie, or fill the corpus)")
     stages: dict[str, float] = {}
     recorded, samples, skipped, seen = [], [], Counter(), set()
+    aborts: list[OracleAborted] = []
     for name in movies:
         if spent + time.process_time() - own_began > options.cpu_budget:
             recorded.append(
                 {"movie": name, "skipped": f"the batch spent {spent:.0f} CPU s of {options.cpu_budget:.0f}"}
             )
             continue
-        info = record_movie(profile, cfg, oracle, name, options)
+        try:
+            info = record_movie(profile, cfg, oracle, name, options)
+        except OracleAborted as aborted:
+            recorded.append(
+                {"movie": name, "skipped": f"oracle aborted (exit {aborted.code})", "oracle_abort": aborted.tail}
+            )
+            aborts.append(aborted)
+            continue
         spent += 0.0 if info["cached"] else info.get("cpu_seconds", 0.0)
         found, off, reached = read_samples(info["path"], name, info["pak"])
         samples += found
@@ -689,6 +728,9 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
     functions = set(verdicts)
     if options.findings:
         write_findings(cfg["runs"] / FINDINGS, rows, functions)
+        write_findings(
+            cfg["runs"] / FINDINGS, oracle_rows(aborts, stamp, now), {a.movie for a in aborts}, ORACLE_KIND, "movie"
+        )
     per_function = {
         "same": sorted(f for f, c in verdicts.items() if c["differs"] == 0 and c["same"] > 0),
         "differs": sorted(differing),
@@ -712,6 +754,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         },
         "samples": {"recorded": len(samples), "replayed": sum(len(g) for g in cases.values())},
         "written_off": dict(skipped),
+        "oracle_aborts": {a.movie: a.tail for a in aborts},
         "untestable_reasons": dict(why.most_common()),
         "differing": {f: sorted(set(v)) for f, v in sorted(differing.items())},
         "not_in_port": missing[:50],

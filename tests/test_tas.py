@@ -54,6 +54,15 @@ class CodecTests(unittest.TestCase):
             tas.classify(78, "x\nboot-missing: code-pointer-8011fe88\n"),
             {"outcome": "stop", "subject": "code-pointer-8011fe88"},
         )
+        miss = "n64c-fault: TLB-miss-00118e38 load at host pc 0x81a8af6\n"
+        wild = miss + "boot-shim: osSetIntMask f\nboot-missing: rw_boot_entry\n"
+        crash = tas.classify(78, wild)
+        self.assertEqual((crash["outcome"], crash["subject"]), ("crash", "host-fault-00118e38"))
+        self.assertIn("0x81a8af6", crash["fault"])
+        mapped = (
+            "n64c-fault: TLB-miss-00118e38 load at host pc 0x81a8af6\nboot-step: 3/9 f\nboot-missing: rw_boot_entry\n"
+        )
+        self.assertEqual(tas.classify(78, mapped), {"outcome": "stop", "subject": "rw_boot_entry"})
         self.assertEqual(tas.classify(None, ""), {"outcome": "hang"})
         self.assertEqual(tas.classify(1, "boom"), {"outcome": "exit", "subject": "exit 1"})
 

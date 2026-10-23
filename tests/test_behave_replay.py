@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from abu_decomp import DecompError, tas, tas_coverage
+from abu_decomp import DecompError, tas, tas_coverage, tas_oracle
 from abu_decomp.behave import prototype, replay
 from abu_decomp.config import load_profile
 
@@ -426,6 +426,41 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(result["functions"]["replayed"], 1)
         self.assertEqual(result["findings"], None)
         self.assertFalse((self.root / "runs" / "findings.jsonl").exists())
+
+    def test_a_movie_whose_oracle_aborts_is_skipped_and_reported(self):
+        (self.root / "movies" / "bad.tas").write_text((self.root / "movies" / "m.tas").read_text())
+        real = replay.record_movie
+
+        def record(profile, cfg, oracle, name, options):
+            if name == "bad":
+                raise replay.OracleAborted(name, 250, "Failed to find function at 0x8042F130")
+            return real(profile, cfg, oracle, name, options)
+
+        patchers = [
+            mock.patch.object(tas_coverage, "elf_functions", lambda path: dict(self.symbols)),
+            mock.patch.object(tas, "_wait", lambda process, timeout, run=None: (process.wait(), 0.5)),
+            mock.patch.object(replay, "record_movie", record),
+        ]
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result, code, _ = replay.run(self.profile, replay.Options(movies=["bad", "m"]))
+        self.assertEqual(code, 0)
+        self.assertEqual(result["oracle_aborts"], {"bad": "Failed to find function at 0x8042F130"})
+        self.assertEqual(result["functions"]["replayed"], 5)  # m still ran
+        rows = [json.loads(line) for line in (self.root / "runs" / "findings.jsonl").read_text().splitlines()]
+        oracle = [r for r in rows if r["kind"] == "oracle-aborts"]
+        self.assertEqual([(r["movie"], r["oracle_exit"]) for r in oracle], [("bad", 250)])
+
+    def test_an_oracle_that_exits_nonzero_is_an_abort_not_a_missing_recorder(self):
+        (self.root / "oracle" / "run").write_text("#!/bin/sh\necho dead >&2\nexit 250\n")
+        waits = mock.patch.object(tas, "_wait", lambda process, timeout, run=None: (process.wait(), 0.5))
+        waits.start()
+        self.addCleanup(waits.stop)
+        cfg = tas.settings(self.profile)
+        with self.assertRaises(replay.OracleAborted) as caught:
+            replay.record_movie(self.profile, cfg, tas_oracle.settings(self.profile), "m", replay.Options())
+        self.assertEqual(caught.exception.code, 250)
 
     def test_an_oracle_without_the_recorder_is_named(self):
         (self.root / "oracle" / "run").write_text("#!/bin/sh\nexit 0\n")
