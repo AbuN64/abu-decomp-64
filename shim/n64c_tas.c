@@ -7,6 +7,7 @@
  * same format, flushed per line, so a crash leaves the polls it reached.
  * N64C_TAS_SHOT_EVERY and N64C_TAS_SHOT_DIR ask the frame loop for a
  * picture every N polls, to compare with the oracle's at the same poll.
+ * N64C_TAS_TRACE_DRAWS=POLL:PATH writes the draw trace of the first graphics task from poll POLL (n64c_dltrace.h).
  * N64C_TAS_HASH writes "<poll> <hash>" of all guest RDRAM at every poll and N64C_TAS_DUMP_AT=P with
  * N64C_TAS_DUMP_PATH writes RDRAM at poll P: two runs of one movie must give the same lines, and two dumps
  * at the first differing poll name the addresses that carry run-to-run state (seeds, clocks, host pointers).
@@ -43,6 +44,8 @@ static atomic_long shot_due = -1;
 static FILE *trace, *hash;
 static long dump_at = -1;
 static const char *dump_path;
+static long draws_at = -1;
+static const char *draws_path;
 static int live = -1;
 static OSContPad live_pad;
 static unsigned live_held;
@@ -140,6 +143,16 @@ static void start(void)
             _Exit(2);
         }
         dump_at = strtol(at, NULL, 10);
+    }
+    path = getenv("N64C_TAS_TRACE_DRAWS");
+    if (path && *path) {
+        char *end;
+        draws_at = strtol(path, &end, 10);
+        if (end == path || *end != ':' || !end[1] || draws_at < 0) {
+            fprintf(stderr, "n64c-tas: N64C_TAS_TRACE_DRAWS must be POLL:PATH, got %s\n", path);
+            _Exit(2);
+        }
+        draws_path = end + 1;
     }
     path = getenv("N64C_INPUT");
     if (path && *path) {
@@ -247,6 +260,16 @@ void n64c_tas_poll(OSContPad *pad)
     }
 }
 
+FILE *n64c_tas_draw_trace(void)
+{
+    if (draws_at < 0 || polls < draws_at)
+        return NULL;
+    draws_at = -1;
+    FILE *file = fopen(draws_path, "w");
+    if (!file)
+        fprintf(stderr, "n64c-tas: cannot write %s\n", draws_path);
+    return file;
+}
 long n64c_tas_take_shot(void) { return atomic_exchange(&shot_due, -1); }
 const char *n64c_tas_shot_dir(void) { return shot_dir; }
 unsigned long n64c_tas_live_seq(void) { return atomic_load(&live_seq); }

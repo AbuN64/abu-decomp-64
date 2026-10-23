@@ -9,6 +9,7 @@
 #include "n64c_memory.h"
 #include "n64c_diag.h"
 #include "n64c_tas.h"
+#include "n64c_dltrace.h"
 #include "n64c_audio.h"
 #include "audio_abi/n64a_abi.h"
 #include <stdio.h>
@@ -78,7 +79,13 @@ static void graphics(OSTask *task,void *user)
         return;
     }
     N64cDlStats stats;
+    FILE *draw_trace=n64c_tas_draw_trace();
+    if (draw_trace) n64c_dltrace_begin(draw_trace);
     int commands=n64c_f3d_run(frame.f3d,&frame.memory,(u32)(uintptr_t)task->data_ptr,&stats);
+    if (draw_trace) {
+        n64c_dltrace_begin(NULL);
+        fclose(draw_trace);
+    }
     if (commands<=0) {
         task_stop("gfx-task-refused","graphics renderer refused task");
         return;

@@ -4,6 +4,7 @@
  * cut lists, G_LINE3D as two triangles, the colour-image hook, point-sampled 1:1 rectangles and unknown opcodes. Lists are written by hand into a RAM image, word-swapped for replay as the oracle
  * capture stores it. */
 #include "../n64c_dl.h"
+#include "../n64c_dltrace.h"
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -377,8 +378,44 @@ static void test_texrect_point(void)
     CHECK(root && op(root + 2) == 0xE4 && op(root + 10) == 0xDE && st.texrects_point == 1);
     n64c_dl_arena_free(&arena);
 }
+static void test_draw_trace(void)
+{
+    N64cGfxMem mem = begin(0);
+    at = 0x1000;
+    cmd(0xFDu << 24 | 2u << 21 | (32 - 1), 0x00002000u);          /* image: CI 4b, 32 wide, at 0x2000 */
+    cmd(0xF5u << 24 | 2u << 21, 3u << 20);                         /* tile 0: CI 4b, palette 3, tmem 0 */
+    cmd(0xF3u << 24, 7u << 24);                                    /* load block into tile 7 (tmem 0) */
+    cmd(0xF2u << 24, (31u * 4) << 12 | 31u * 4);                   /* tile 0 is 32x32 texels */
+    cmd(0xFAu << 24, 0x11223344u);                                 /* prim color */
+    cmd(0xFCu << 24 | 0x127E24u, 0xFFFFFE38u);                     /* combiner */
+    cmd(0xD7u << 24 | 1u, 0xFFFFFFFFu);                            /* G_TEXTURE on, tile 0 */
+    cmd(0x05u << 24 | 2u << 16 | 4u << 8 | 6u, 0);                 /* one triangle, vertices never loaded */
+    cmd(0xE4470324u, 0x00000318u);
+    cmd(0xE1000000u, 0);
+    cmd(0xF1000000u, 0x04000400u);
+    cmd(0xDFu << 24, 0);
+    N64cDlArena arena = {0};
+    N64cDlStats st;
+    FILE *f = tmpfile();
+    CHECK(f != NULL);
+    if (!f)
+        return;
+    n64c_dltrace_begin(f);
+    CHECK(n64c_dl_translate(&mem, 0x1000, &arena, &st, NULL) != NULL);
+    n64c_dltrace_begin(NULL);
+    n64c_dl_arena_free(&arena);
+    char text[2048] = "";
+    rewind(f);
+    text[fread(text, 1, sizeof text - 1, f)] = 0;
+    fclose(f);
+    CHECK(strstr(text, "draw 0 tri1") && strstr(text, "v=unloaded"));
+    CHECK(strstr(text, "draw 1 texrect rect=(0.00,198.00)-(284.00,201.00)"));
+    CHECK(strstr(text, "img=0x00002000 imgfmt=CI/4b imgwidth=32") && strstr(text, "pal=3") && strstr(text, "texels=32x32"));
+    CHECK(strstr(text, "prim=11223344") && strstr(text, "cc=127e24:fffffe38"));
+}
 int main(void)
 {
+    test_draw_trace();
     test_texrect_point();
     test_line();
     test_modify_vertex();

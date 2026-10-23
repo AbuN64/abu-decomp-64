@@ -7,6 +7,7 @@
  * bits 0-11; load commands carry 10.2 tile coordinates; G_MTX parameters are stored with G_MTX_PUSH
  * inverted; G_LINE3D vertex indices (times two) in bits 16-23 and 8-15 and the width in bits 0-7. */
 #include "n64c_dl.h"
+#include "n64c_dltrace.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -606,6 +607,36 @@ static const uintptr_t *texrect_list(Ctx *c, uint32_t phys, uint32_t i, uint32_t
     return out;
 }
 
+/* Feed one command to the draw trace (n64c_dltrace.h) before the walker changes it. */
+static void trace_command(Ctx *c, uint32_t phys, uint32_t i, uint32_t n, uint32_t w0, uint32_t w1)
+{
+    const uint32_t op = w0 >> 24;
+    if (op == OP_TRI1 || op == 0x06 || op == 0x07) {
+        N64cTraceVtx view[6];
+        const uint32_t pick[6] = {w0 >> 16 & 0xFF, w0 >> 8 & 0xFF, w0 & 0xFF, w1 >> 16 & 0xFF, w1 >> 8 & 0xFF, w1 & 0xFF};
+        const int count = op == OP_TRI1 ? 3 : 6;
+        for (int k = 0; k < count; k++) {
+            const Slot *s = &c->geo.vtx[(pick[k] / 2) % VERTICES];
+            int16_t f[8];
+            memcpy(f, s->rec, sizeof f);
+            view[k] = (N64cTraceVtx){{f[0], f[1], f[2]}, {f[4], f[5]}, {s->clip[0], s->clip[1], s->clip[2], s->clip[3]},
+                                     s->loaded, s->clip_known};
+        }
+        const Geo *g = &c->geo;
+        n64c_dltrace_tris(w0, count, view,
+                          g->mv_size > 0 && g->mv_known[g->mv_size - 1] ? &g->mv[g->mv_size - 1][0][0] : NULL);
+        return;
+    }
+    uint32_t timg = 0, h1 = 0, h2 = 0;
+    if (op == OP_SETTIMG)
+        timg = physical(c, w1);
+    if ((op == OP_TEXRECT || op == OP_TEXRECTFLIP) && i + 2 < n) {
+        h1 = word_at(c, phys + (i + 1) * 8 + 4);
+        h2 = word_at(c, phys + (i + 2) * 8 + 4);
+    }
+    n64c_dltrace_cmd(w0, w1, timg, h1, h2);
+}
+
 static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth)
 {
     uint32_t phys = physical(c, dl);
@@ -628,6 +659,8 @@ static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth)
         cmd[0] = w0;
         cmd[1] = w1;
         c->stats->commands++;
+        if (n64c_dltrace_active())
+            trace_command(c, phys, i, n, w0, w1);
         switch (w0 >> 24) {
         case OP_VTX:
             cmd[1] = operand(c, w1, (w0 >> 12 & 0xFF) * 16, vertex_words, 4);
@@ -725,7 +758,9 @@ static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth)
                 *geo = c->geo;
                 const uint32_t omh = c->arena->other_mode_h, omh_known = c->arena->other_mode_h_known,
                                scissor = c->arena->scissor_lry;
+                n64c_dltrace_pause(1); /* the other path of a conditional branch is not what this frame draws */
                 const uintptr_t *target = translate(c, w1, depth + 1);
+                n64c_dltrace_pause(-1);
                 memcpy(c->seg, saved, sizeof saved);
                 c->geo = *geo;
                 c->arena->other_mode_h = omh;
