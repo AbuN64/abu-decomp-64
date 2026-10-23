@@ -3,7 +3,7 @@ Links a port's original C against the shim and walks the boot from stop to stop.
 facts (`N64C_PORT_DIR`, see ../README.md) and by `--source` (the fetched original source tree); no game name lives here.
 
 - `prepare.py` preprocesses one original source unit for the host: fatal stops for `INCLUDE_ASM` functions
-  (`boot-missing: SYMBOL`, exit 78), unit inventory, known NON_MATCHING fallbacks. `unitstep.py` wraps a unit's steps in a cache.
+  (`boot-missing: SYMBOL`, exit 78), unit inventory, known NON_MATCHING fallbacks. `unitstep.py` wraps a unit's steps in a cache (`unitrun.py` is its entry point: run it as `python -I -S unitrun.py`, so the step runner loads from bytecode and a restore answers from stat signatures without parsing the digest memo).
 - `policy.py`, `image.py`, `link.py`, `linkall.py`, `closure.py`, `addrscan.py`, `needs.py`: select the closure from the
   manifest, bind original names to shim functions (`shim-bindings.txt`), lay out the data image, generate bindings and linker scripts.
 - `advance.py`, `sweep.py`: boot the run-on diagnostic build, classify each stop, route what cannot link.

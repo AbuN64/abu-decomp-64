@@ -13,17 +13,57 @@ shared by thousands of units is read once per machine, not once per unit or tree
   --root BUILD  --map OLD=NEW (repeatable)  --compiler PATH  --out FILE (repeatable: the files restored)
   --drop FILE (repeatable: removed on a restore, e.g. a stale .i)  --depfile FILE  --dep-target FILE
 Only --out files, the depfile and --drop are touched: an entry holds each --out file's bytes or its absence."""
-import binascii
-import hashlib
-import json
+import marshal
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from digests import Digests  # noqa: E402
 
 VERSION = 1
+MAGIC = b"RWOC1\n"  # a manifest of this format starts with it; anything else is the JSON of before
+SMALL = 1 << 20  # a dependency up to this size is hashed in place when its signature differs
 LIMIT = 2 << 30  # bytes of cached entries; past it the least recently used go
+
+
+def sha256_hex(data):
+    """sha256 without hashlib (its import costs as much as the rest of a restore): the C module behind it."""
+    try:
+        from _sha2 import sha256
+    except ImportError:
+        from hashlib import sha256
+    return sha256(data).hexdigest()
+
+
+def script_digest(path):
+    with open(path, "rb") as stream:
+        return sha256_hex(stream.read())
+
+
+def dumps(value):
+    """json.dumps of the strings, ints, None and lists of the cache key, byte for byte (so the keys of every entry
+    already in the cache stay), without importing json."""
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        from _json import encode_basestring_ascii
+        return encode_basestring_ascii(value)
+    if isinstance(value, int):
+        return repr(value)
+    return "[" + ", ".join(dumps(item) for item in value) + "]"
+
+
+def load_manifest(path):
+    """(entries, current): a manifest file is marshal data behind MAGIC, or the JSON older builds wrote (not current)."""
+    with open(path, "rb") as stream:
+        data = stream.read()
+    try:
+        if data.startswith(MAGIC):
+            return marshal.loads(data[len(MAGIC):]), True
+        import json
+        return json.loads(data), False
+    except (ValueError, EOFError, TypeError):
+        raise ValueError(path)
 
 
 def mapped(text, maps):
@@ -55,23 +95,45 @@ class ObjectCache:
         self.digests = Digests(os.path.join(opts["objcache"], "digests.memo"))
         tool = opts.get("compiler")
         stat = os.stat(os.path.realpath(tool)) if tool else None
-        key = json.dumps([VERSION, words, [self.digests.of(path) for path in sorted(set(scripts))],
-                          [os.path.realpath(tool), stat.st_size, stat.st_mtime_ns] if tool else None])
-        self.key = hashlib.sha256(key.encode()).hexdigest()
+        key = dumps([VERSION, words, [script_digest(path) for path in sorted(set(scripts))],
+                     [os.path.realpath(tool), stat.st_size, stat.st_mtime_ns] if tool else None])
+        self.key = sha256_hex(key.encode())
         self.manifest = os.path.join(opts["objcache"], self.key[:2], self.key + ".json")
+
+    def unchanged(self, entry):
+        """Every dependency still has the content the entry recorded. An entry stores each file's (size, mtime) beside
+        its hash: a file that still has that signature is the same file (one stat, the digest memo is not even read).
+        A file with another signature (a fresh build tree's copy of the shim, a worktree checked out later) is hashed
+        where it stands when it is small, which is cheaper than parsing the megabytes of the memo; only a big file goes
+        through the memo. An entry from before signatures is rewritten with them (restore())."""
+        sigs = entry.get("sigs") or []
+        for index, (path, value) in enumerate(entry["deps"]):
+            path = unmapped(path, self.maps)
+            try:
+                stat = os.stat(path)
+                if index < len(sigs) and sigs[index] == [stat.st_size, stat.st_mtime_ns]:
+                    continue
+                now = script_digest(path) if stat.st_size <= SMALL else self.digests.of(path)
+                if now != value:
+                    return False
+            except OSError:
+                return False
+        return True
 
     def restore(self):
         try:
-            with open(self.manifest) as stream:
-                entries = json.load(stream)
+            entries, current = load_manifest(self.manifest)
         except (OSError, ValueError):
             return False
         for entry in entries:
-            try:
-                if any(self.digests.of(unmapped(path, self.maps)) != value for path, value in entry["deps"]):
-                    continue
-            except OSError:
+            if not self.unchanged(entry):
                 continue
+            if not current or not entry.get("sigs"):
+                try:
+                    self.sign(entry)
+                    self.write(entries)
+                except OSError:
+                    pass
             outs = self.opts["outs"]
             for path, text in zip(outs, entry["files"]):
                 if text is None:
@@ -79,8 +141,11 @@ class ObjectCache:
                         os.unlink(path)
                 else:
                     os.makedirs(os.path.dirname(path), exist_ok=True)
+                    if not isinstance(text, bytes):  # JSON manifests of before hold base64
+                        import binascii
+                        text = binascii.a2b_base64(text)
                     with open(path, "wb") as stream:
-                        stream.write(binascii.a2b_base64(text))
+                        stream.write(text)
             for path in self.opts["drops"]:
                 if os.path.exists(path):
                     os.unlink(path)
@@ -96,31 +161,42 @@ class ObjectCache:
             return True
         return False
 
+    def sign(self, entry):
+        entry["sigs"] = [[stat.st_size, stat.st_mtime_ns]
+                         for stat in (os.stat(unmapped(path, self.maps)) for path, _ in entry["deps"])]
+
+    def write(self, entries):
+        try:
+            os.makedirs(os.path.dirname(self.manifest), exist_ok=True)
+            temporary = f"{self.manifest}.{os.getpid()}.tmp"
+            with open(temporary, "wb") as stream:
+                stream.write(MAGIC + marshal.dumps(entries))
+            os.replace(temporary, self.manifest)
+        except OSError:
+            pass  # a full or read-only cache only costs the speed
+
     def store(self):
         depfile = self.opts.get("depfile")
         if not depfile or not os.path.exists(depfile):
             return
         try:
-            deps = [[mapped(path, self.maps), self.digests.of(path)] for path in dependencies(depfile)]
+            paths = dependencies(depfile)
+            # signatures first: a file edited while it is hashed then fails the stat check instead of passing it
+            sigs = [[stat.st_size, stat.st_mtime_ns] for stat in map(os.stat, paths)]
+            deps = [[mapped(path, self.maps), self.digests.of(path)] for path in paths]
             files = []
             for path in self.opts["outs"]:
                 if os.path.exists(path):
                     with open(path, "rb") as stream:
-                        files.append(binascii.b2a_base64(stream.read(), newline=False).decode())
+                        files.append(stream.read())
                 else:
                     files.append(None)
             try:
-                with open(self.manifest) as stream:
-                    entries = json.load(stream)
+                entries = load_manifest(self.manifest)[0]
             except (OSError, ValueError):
                 entries = []
-            entry = {"deps": deps, "files": files}
-            entries = [entry] + [e for e in entries if e["deps"] != deps][:3]
-            os.makedirs(os.path.dirname(self.manifest), exist_ok=True)
-            temporary = f"{self.manifest}.{os.getpid()}.tmp"
-            with open(temporary, "w") as stream:
-                json.dump(entries, stream)
-            os.replace(temporary, self.manifest)
+            entry = {"deps": deps, "sigs": sigs, "files": files}
+            self.write([entry] + [e for e in entries if e["deps"] != deps][:3])
             if int(self.key[:4], 16) % 128 == 0:
                 self.trim()
         except OSError as error:  # a full or read-only cache never fails the build

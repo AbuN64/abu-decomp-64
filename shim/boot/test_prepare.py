@@ -5,6 +5,7 @@ import contextlib
 import io
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -205,7 +206,8 @@ class ObjectCacheTests(unittest.TestCase):
         build = self.path / tree
         build.mkdir(exist_ok=True)
         header_file = self.path / "src" / "h.h"
-        header_file.write_text(header)
+        if not header_file.exists() or header_file.read_text() != header:  # an untouched header keeps its signature
+            header_file.write_text(header)
         step = build / "step.py"
         step.write_text(self.STEP)
         obj = build / "u.o"
@@ -230,6 +232,42 @@ class ObjectCacheTests(unittest.TestCase):
         self.assertEqual((text, ran), ("22", True))
         build, text, ran = self.unit("b", header="22")
         self.assertEqual((text, ran), ("22", False))  # another tree: the same key through --root and --map
+
+    def test_restore_answers_from_signatures(self):
+        """A restore of an unchanged dependency stats it and never reads the digest memo; touching the file's
+        content (same size, new mtime) still goes through the memo and the hash."""
+        memo = self.path / "cache" / "digests.memo"
+        self.unit("a")
+        memo.write_text("not json")  # a restore that read the memo would start from an empty one and rewrite it
+        build, text, ran = self.unit("a")
+        self.assertEqual((text, ran), ("1", False))
+        self.assertEqual(memo.read_text(), "not json")
+        header = self.path / "src" / "h.h"
+        os.utime(header, ns=(1, 1))  # same bytes, other signature: hashed, still the same content
+        self.assertEqual(self.unit("a", header="1")[2], False)
+        self.assertEqual(self.unit("a", header="2")[2], True)  # same size, other content: rebuilt
+
+    def test_key_text_matches_json_and_old_manifest_is_read(self):
+        """The cache key is hashed from a hand-written json.dumps (no json import); entries written as JSON by
+        earlier builds still restore, and are rewritten in the marshal format."""
+        spec = importlib.util.spec_from_file_location("boot_unitstep_keys", ROOT / "unitstep.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        value = [1, ["a b", "caf\u00e9 \"q\" \\ \n", "/x/y.h"], ["0f" * 32], ["/usr/bin/cc", 123, 456789], None, []]
+        self.assertEqual(module.dumps(value), json.dumps(value))
+        build, text, ran = self.unit("a")
+        manifest = next((self.path / "cache").glob("??/*.json"))
+        entries = module.load_manifest(manifest)[0]
+        self.assertTrue(manifest.read_bytes().startswith(module.MAGIC))
+        old = [dict(e, files=[None if f is None else __import__("base64").b64encode(f).decode() for f in e["files"]])
+               for e in entries]
+        for entry in old:
+            del entry["sigs"]
+        manifest.write_text(json.dumps(old))
+        build, text, ran = self.unit("a")
+        self.assertEqual((text, ran), ("1", False))
+        self.assertTrue(manifest.read_bytes().startswith(module.MAGIC))
+        self.assertIn("sigs", module.load_manifest(manifest)[0][0])
 
 
 unittest.main(argv=["test_prepare"], verbosity=2)
