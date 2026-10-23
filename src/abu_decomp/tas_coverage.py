@@ -25,6 +25,7 @@ import bisect
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -32,11 +33,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas_symbolize
+from abu_decomp import DecompError, tas_oracle, tas_symbolize
 from abu_decomp.config import Profile, check_keys
 
-COVERAGE, GCOV, ORACLE_DIR, TABLE, HTML = "coverage.json", "gcov", "oracle", "coverage-table.json", "coverage"
-_KEYS = frozenset({"elf", "version", "versions", "source", "oracle"})
+COVERAGE, GCOV, ORACLE_DIR, TABLE, HTML = "coverage.json", "gcov", "oracle-golden", "coverage-table.json", "coverage"
+_KEYS = frozenset({"elf", "version", "versions", "source"})
 _SYMBOL = re.compile(r"^\s*\d+:\s+([0-9a-fA-F]+)\s+(\d+)\s+FUNC\s+\w+\s+\w+\s+\S+\s+(\S+)$")
 _DEFINITION = re.compile(r"^(?:[A-Za-z_][\w]*[\s\*]+)+\**([A-Za-z_]\w*)\s*\([^;]*$")
 _INCLUDE_ASM = re.compile(r"INCLUDE_ASM\s*\([^,]*,\s*([A-Za-z_]\w*)")
@@ -52,18 +53,11 @@ def settings(profile: Profile, cfg: dict[str, Any]) -> dict[str, Any] | None:
     check_keys(profile.source_file, "tas.coverage", table, frozenset({"elf"}), _KEYS)
     version = str(table.get("version", "us-rev1"))
     pin = table.get("source") or profile.section("tas").get("serve", {}).get("pin")
-    oracle = table.get("oracle") or {}
     return {
         "elf": str(table["elf"]),
         "version": version,
         "versions": [str(v) for v in table.get("versions", [version])],
         "source": profile.path("tas.coverage.source", pin) if pin else None,
-        "oracle": {
-            "argv": [str(a) for a in oracle.get("argv", [])],
-            "env": {str(k): str(v) for k, v in oracle.get("env", {}).items()},
-        }
-        if oracle
-        else None,
     }
 
 
@@ -103,15 +97,16 @@ def gcovr(args: list[str], cwd: Path, timeout: float = 600) -> None:
         raise DecompError("tas.coverage", "gcovr failed: " + " | ".join(done.stderr.strip().splitlines()[-3:]))
 
 
-def read_oracle(folder: Path) -> tuple[dict[str, tuple[int, int]], int] | None:
-    """(name -> (first poll, count), polls the oracle ran) from the oracle's trace-final.tsv; None when it left none."""
+def read_oracle(run: Path) -> tuple[dict[str, tuple[int, int]], int] | None:
+    """(name -> (first poll, count), polls the oracle ran) from the oracle's RUN/oracle-golden/trace-final.tsv and
+    its poll trace (tas_oracle.ORACLE_TRACE); None when it left no function trace."""
     try:
-        rows = (folder / "trace-final.tsv").read_text(errors="replace").splitlines()[1:]
+        rows = (run / ORACLE_DIR / "trace-final.tsv").read_text(errors="replace").splitlines()[1:]
     except OSError:
         return None
     vis: list[int] = []
     try:
-        for line in (folder / "polls.txt").read_text().splitlines():
+        for line in (run / tas_oracle.ORACLE_TRACE).read_text().splitlines():
             parts = line.split()
             if len(parts) == 2:
                 vis.append(int(parts[1]))
@@ -126,34 +121,23 @@ def read_oracle(folder: Path) -> tuple[dict[str, tuple[int, int]], int] | None:
     return hits, len(vis)
 
 
-def run_oracle(cov: dict[str, Any], movie: Path, run: Path, timeout: float) -> bool:
-    """Replay `movie` (a raw movie file) in the oracle into RUN/oracle; True when it left its trace."""
-    oracle = cov["oracle"]
-    if not oracle or not oracle["argv"]:
+def run_oracle(profile: Profile, cfg: dict[str, Any], run: Path, record: dict[str, Any]) -> bool:
+    """Replay the run's movie in the original game (the `tas.oracle` host, as `tas play --oracle` does) with the host's
+    golden dir on, so it writes RUN/oracle-golden/trace-final.tsv: every function it entered, first VI and count.
+    True when it left that trace; False without a `tas.oracle` section or host."""
+    oracle = tas_oracle.settings(profile)
+    if oracle is None or not oracle["host"].is_file() or not (run / "movie.raw").is_file():
         return False
-    folder = run / ORACLE_DIR
-    folder.mkdir(exist_ok=True)
-    sub = {"movie": str(movie), "dir": str(folder), "trace": str(folder / "polls.txt")}
-
-    def fill(text: str) -> str:
-        return text.format(**sub)
-
-    env = {**os.environ, **{k: fill(v) for k, v in oracle["env"].items()}}
+    (run / ORACLE_DIR).mkdir(exist_ok=True)
+    process = tas_oracle.start(
+        oracle, run, cfg["exit_after"], str(record.get("pak") or "on"), extra={"N64R_GOLDEN_DIR": str(run / ORACLE_DIR)}
+    )
     try:
-        with (folder / "output.txt").open("w") as output:
-            subprocess.run(
-                [fill(a) for a in oracle["argv"]],
-                env=env,
-                stdout=output,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                timeout=timeout,
-                check=False,
-                start_new_session=True,
-            )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    return (folder / "trace-final.tsv").is_file()
+        process.wait(oracle["timeout_seconds"])
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+    return (run / ORACLE_DIR / "trace-final.tsv").is_file()
 
 
 # --- the universe ---
@@ -415,11 +399,10 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
         name, run = item
         if not (run / COVERAGE).is_file():
             run_report(profile, cfg, run)
-        got = read_oracle(run / ORACLE_DIR)
-        movie = run / "movie.raw"
-        if got is None and oracle and movie.is_file() and run_oracle(cov, movie, run, cfg["timeout_seconds"]):
-            got = read_oracle(run / ORACLE_DIR)
         record = tas.read_record(run) or {}
+        got = read_oracle(run)
+        if got is None and oracle and run_oracle(profile, cfg, run, record):
+            got = read_oracle(run)
         return {
             "movie": name,
             "run": run.name,

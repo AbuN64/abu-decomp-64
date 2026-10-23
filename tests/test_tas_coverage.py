@@ -43,14 +43,38 @@ class ReadTests(unittest.TestCase):
         self.assertIsNone(cov.read_gcovr(self.root / "missing.json"))
 
     def test_oracle_trace_maps_vi_to_the_poll_count(self):
-        (self.root / "trace-final.tsv").write_text(
+        golden = self.root / cov.ORACLE_DIR
+        golden.mkdir()
+        (golden / "trace-final.tsv").write_text(
             "order\tsymbol\tfirst_vi\tfirst_thread\tcount\n1\tfunc_a\t10\t3\t7\n2\tfunc_b\t31\t3\t1\nbad\n"
         )
-        (self.root / "polls.txt").write_text("1 5\n2 12\n3 30\n4 40\n")
+        (self.root / cov.tas_oracle.ORACLE_TRACE).write_text("1 5\n2 12\n3 30\n4 40\n")
         hits, polls = cov.read_oracle(self.root)
         self.assertEqual(hits, {"func_a": (1, 7), "func_b": (3, 1)})
         self.assertEqual(polls, 4)
         self.assertIsNone(cov.read_oracle(self.root / "none"))
+
+    def test_oracle_run_is_the_tas_oracle_host_with_the_golden_dir(self):
+        host = self.root / "n64host"
+        host.write_text("")
+        (self.root / "movie.raw").write_text("0000 0 0\n")
+        profile = mock.Mock()
+        profile.section.return_value = {"oracle": {"host": "n64host"}}
+        profile.path.side_effect = lambda _name, value: self.root / value
+        profile.source_file = "p"
+        process = mock.Mock()
+
+        def leave_trace(*_args, **_kw):
+            (self.root / cov.ORACLE_DIR / "trace-final.tsv").write_text("order\n")
+            return process
+
+        with mock.patch.object(cov.tas_oracle, "start", side_effect=leave_trace) as start:
+            self.assertTrue(cov.run_oracle(profile, {"exit_after": 7}, self.root, {"pak": "off"}))
+        args, kwargs = start.call_args
+        self.assertEqual((args[1], args[2], args[3]), (self.root, 7, "off"))
+        self.assertEqual(kwargs["extra"], {"N64R_GOLDEN_DIR": str(self.root / cov.ORACLE_DIR)})
+        profile.section.return_value = {}
+        self.assertFalse(cov.run_oracle(profile, {"exit_after": 7}, self.root, {}))
 
     def test_elf_functions_keep_sized_functions_only(self):
         with mock.patch.object(cov.subprocess, "run", return_value=mock.Mock(stdout=READELF)):

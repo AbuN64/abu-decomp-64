@@ -92,9 +92,11 @@ def port_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
     }
 
 
-def start(oracle: dict[str, Any], run: Path, exit_after: int, pak: str = "on") -> subprocess.Popen:
+def start(
+    oracle: dict[str, Any], run: Path, exit_after: int, pak: str = "on", extra: dict[str, str] | None = None
+) -> subprocess.Popen:
     """The oracle replaying the run's movie.raw with the run's Expansion Pak setting (`N64R_PAK`), in its own process
-    group, output in oracle.txt."""
+    group, output in oracle.txt. `extra` adds host variables (the coverage run sets N64R_GOLDEN_DIR)."""
     shots = run / SHOTS / "oracle"
     shots.mkdir(parents=True, exist_ok=True)
     env = {
@@ -110,6 +112,7 @@ def start(oracle: dict[str, Any], run: Path, exit_after: int, pak: str = "on") -
         "N64R_TAS_SHOT_EVERY": str(oracle["shot_every"]),
         "N64R_TAS_SHOT_DIR": str(shots),
         "N64R_TAS_TRACE": str(run / ORACLE_TRACE),
+        **(extra or {}),
     }
     with (run / LOG).open("w") as output:
         return subprocess.Popen(
