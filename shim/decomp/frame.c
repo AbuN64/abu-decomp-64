@@ -230,10 +230,14 @@ static void put_le(unsigned char *p,uint32_t v,int bytes)
 }
 int n64c_write_bmp(const char *path,const uint32_t *pixels,u32 width,u32 height)
 {
+    return n64c_write_bmp_tagged(path,pixels,width,height,0);
+}
+int n64c_write_bmp_tagged(const char *path,const uint32_t *pixels,u32 width,u32 height,u32 tag)
+{
     if (!path || !pixels || !width || !height || width>4096 || height>4096) return 0;
     const u32 row=(width*3+3)&~3u,size=54+row*height;
     unsigned char head[54]={'B','M'};
-    put_le(head+2,size,4);put_le(head+10,54,4);put_le(head+14,40,4);
+    put_le(head+2,size,4);put_le(head+6,tag,4);put_le(head+10,54,4);put_le(head+14,40,4);
     put_le(head+18,width,4);put_le(head+22,height,4);put_le(head+26,1,2);put_le(head+28,24,2);
     put_le(head+34,row*height,4);
     unsigned char *line=calloc(1,row);
@@ -252,20 +256,38 @@ int n64c_write_bmp(const char *path,const uint32_t *pixels,u32 width,u32 height)
     return ok;
 }
 /* N64C_VIEW: the latest presented picture for a live viewer, replaced whole (written beside it, then renamed) at
- * most every VIEW_INTERVAL_NS of wall time, so a turbo replay pays for ~15 pictures a second, not one per retrace.
+ * most N64C_VIEW_FPS times a second of wall time (default 15, so a turbo replay pays for ~15 pictures a second, not
+ * one per retrace; a played session asks for 60). The BMP's reserved header word carries n64c_tas_live_seq.
  * Host-only: guest RAM and the virtual clock are untouched, so the per-poll RAM hashes are the same with it on. */
-#define VIEW_INTERVAL_NS 66000000ll
+#define VIEW_FPS_DEFAULT 15
 static struct {
     const char *path;
     char tmp[1024];
     struct timespec last;
+    long long interval_ns;
     int written,failed;
 } view;
+int n64c_parse_view_fps(const char *text,u32 *fps)
+{
+    if (!text || !*text) { *fps=VIEW_FPS_DEFAULT; return 1; }
+    char *end;
+    unsigned long v=strtoul(text,&end,10);
+    if (*end || v<1 || v>120) return 0;
+    *fps=(u32)v;
+    return 1;
+}
 static void view_open(void)
 {
     const char *path=getenv("N64C_VIEW");
     view=(typeof(view)){0};
     if (!path || !*path) return;
+    u32 fps;
+    if (!n64c_parse_view_fps(getenv("N64C_VIEW_FPS"),&fps)) {
+        fprintf(stderr,"boot-frame: N64C_VIEW_FPS must be 1..120, got %s; using %d\n",getenv("N64C_VIEW_FPS"),VIEW_FPS_DEFAULT);
+        fps=VIEW_FPS_DEFAULT;
+    }
+    /* A little under the period, so a picture due on a retrace is not pushed to the next one by timer jitter. */
+    view.interval_ns=1000000000ll/fps-2000000ll;
     if (snprintf(view.tmp,sizeof view.tmp,"%s.tmp",path)>=(int)sizeof view.tmp) {
         fprintf(stderr,"boot-frame: N64C_VIEW path too long\n");
         return;
@@ -278,12 +300,13 @@ static void view_write(int force)
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC,&now);
     if (!force && view.written &&
-        (long long)(now.tv_sec-view.last.tv_sec)*1000000000ll+(now.tv_nsec-view.last.tv_nsec)<VIEW_INTERVAL_NS) return;
+        (long long)(now.tv_sec-view.last.tv_sec)*1000000000ll+(now.tv_nsec-view.last.tv_nsec)<view.interval_ns) return;
     /* Early on the VI can show a surface not drawn yet: no picture this time, try again next interval. */
     uint32_t *pixels=read_presented(TAS_SHOT_WIDTH,TAS_SHOT_HEIGHT,1);
     if (!pixels) return;
     view.last=now;view.written=1;
-    int ok=n64c_write_bmp(view.tmp,pixels,TAS_SHOT_WIDTH,TAS_SHOT_HEIGHT) && !rename(view.tmp,view.path);
+    int ok=n64c_write_bmp_tagged(view.tmp,pixels,TAS_SHOT_WIDTH,TAS_SHOT_HEIGHT,(u32)n64c_tas_live_seq()) &&
+           !rename(view.tmp,view.path);
     free(pixels);
     if (!ok) {
         view.failed=1; /* one warning, never a stop: the viewer is not the run */
@@ -341,13 +364,17 @@ int n64c_boot_frame_live(void)
     }
     view_open();
     const char *audio_out=getenv("N64C_AUDIO_OUT");
-    if (audio_out && *audio_out) {
-        if (speed!=1) fprintf(stderr,"boot-frame: N64C_AUDIO_OUT ignored at N64C_SPEED=%u (sound only at 1x)\n",speed);
-        else if (!n64c_audio_tap(audio_out)) fprintf(stderr,"boot-frame: cannot write N64C_AUDIO_OUT %s\n",audio_out);
-    }
+    if (audio_out && *audio_out && !n64c_audio_tap(audio_out))
+        fprintf(stderr,"boot-frame: cannot write N64C_AUDIO_OUT %s\n",audio_out);
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC,&start);
+    u32 base=0; /* retraces before the pacing restarted (a run taken over by live input plays at 1x from there) */
     for (u32 n=1;!frame.closed;n++) {
+        if (speed!=1 && n64c_tas_live_taken()) {
+            fprintf(stderr,"boot-frame: live input: real time from retrace %u\n",osViGetRetraceCount());
+            speed=1;base=n-1;clock_gettime(CLOCK_MONOTONIC,&start);
+        }
+        if (n64c_tas_live_taken() && view.path) view.interval_ns=1000000000ll/60-2000000ll;
         const int alive=n64c_frame();
         if (n64c_sched_halted()) {
             show_stop(n64c_boot_stop_symbol);
@@ -367,7 +394,7 @@ int n64c_boot_frame_live(void)
         if (n%600==0)
             fprintf(stderr,"boot-step: retrace=%u tasks=%u audio=%u commands=%llu\n",osViGetRetraceCount(),
                     frame.tasks,frame.audio_tasks,(unsigned long long)frame.commands);
-        wait_retrace(&start,n,speed);
+        wait_retrace(&start,n-base,speed);
     }
     fprintf(stderr,"boot-frame: window closed at retrace %u\n",osViGetRetraceCount());
     return 1;

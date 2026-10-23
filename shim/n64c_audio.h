@@ -10,6 +10,7 @@
 void n64c_set_audio_sink(N64aPcmSink sink, void *user);
 void n64c_audio_reset(void); /* also closes the tap */
 /* Appends every PCM frame the sink gets to path (s16 stereo, host order) and keeps path.rate = "<rate>\n";
- * NULL closes it. Returns 0 when path cannot be opened. A write error closes the tap, never the audio. */
+ * NULL closes it. Returns 0 when path cannot be opened. A write error closes the tap, never the audio. The tap keeps
+ * to wall time (at most 250 ms ahead of it): a guest faster than real time is tapped in snippets, the rest skipped. */
 int n64c_audio_tap(const char *path);
 #endif

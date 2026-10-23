@@ -9,7 +9,17 @@
  * picture every N polls, to compare with the oracle's at the same poll.
  * N64C_TAS_HASH writes "<poll> <hash>" of all guest RDRAM at every poll and N64C_TAS_DUMP_AT=P with
  * N64C_TAS_DUMP_PATH writes RDRAM at poll P: two runs of one movie must give the same lines, and two dumps
- * at the first differing poll name the addresses that carry run-to-run state (seeds, clocks, host pointers). */
+ * at the first differing poll name the addresses that carry run-to-run state (seeds, clocks, host pointers).
+ * N64C_INPUT=<path> is a live controller driven by another process (the TAS page): the port binds a Unix datagram
+ * socket there ("@name": Linux abstract namespace). One input path, two sources: channel 0 comes from the movie until live input takes over, then from
+ * the socket for the rest of the run. Without a movie live input holds from the first poll; with one, the datagram
+ * "take" switches at the poll that reads it (the movie stops, N64C_TAS_EXIT_AFTER no longer applies, and the frame
+ * loop drops to real time, n64c_tas_live_taken). Each datagram "SEQ BUTTONS STICK_X STICK_Y" (decimal SEQ, hex
+ * buttons) is the pad from the next poll on; pads sent before a take are dropped. Every poll reads all waiting
+ * datagrams: the pad is the newest, plus any button held in an older one, so a press shorter than one poll still
+ * reaches the game. Polls are recorded like any other (N64C_TAS_RECORD), so a run taken over mid-movie replays as
+ * the movie's prefix plus the human's polls; n64c_tas_live_seq names the newest SEQ applied, which the live picture
+ * carries so a viewer can time key -> frame. */
 #include "n64c_tas.h"
 #include "n64c_os.h"
 #include "n64c_memory.h"
@@ -18,6 +28,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 static int started;
 static FILE *play, *record;
@@ -29,6 +43,68 @@ static atomic_long shot_due = -1;
 static FILE *trace, *hash;
 static long dump_at = -1;
 static const char *dump_path;
+static int live = -1;
+static OSContPad live_pad;
+static unsigned live_held;
+static int live_fresh;
+static atomic_int taken;
+static atomic_ulong live_seq;
+
+/* "@name" is a Linux abstract socket (no file, no path length limit from the run folder); anything else a path.
+ * A socket that cannot be bound leaves the run without live input (one warning), never stops it. */
+static void live_open(const char *path)
+{
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+    size_t len = strlen(path);
+    if (len >= sizeof addr.sun_path) {
+        fprintf(stderr, "n64c-tas: N64C_INPUT name too long, no live input: %s\n", path);
+        return;
+    }
+    socklen_t size = sizeof addr;
+    if (path[0] == '@') {
+        memcpy(addr.sun_path + 1, path + 1, len - 1); /* sun_path[0] stays 0: the abstract namespace */
+        size = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + len);
+    } else {
+        memcpy(addr.sun_path, path, len);
+        unlink(path); /* a socket left by an earlier run of the same folder */
+    }
+    int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0 || bind(fd, (struct sockaddr *)&addr, size)) {
+        fprintf(stderr, "n64c-tas: cannot bind N64C_INPUT %s, no live input\n", path);
+        if (fd >= 0) close(fd);
+        return;
+    }
+    live = fd;
+    fprintf(stderr, "n64c-tas: live input on %s\n", path);
+}
+
+/* Drains the socket: a take switches the source; the newest pad wins, older held buttons count for this poll only. */
+static void live_drain(void)
+{
+    char msg[64];
+    for (;;) {
+        ssize_t n = recv(live, msg, sizeof msg - 1, 0);
+        if (n < 0) break;
+        msg[n] = 0;
+        if (!strncmp(msg, "take", 4)) {
+            if (!atomic_exchange(&taken, 1)) fprintf(stderr, "n64c-tas: live input took over at poll %ld\n", polls + 1);
+            continue;
+        }
+        unsigned long seq;
+        unsigned buttons;
+        int x, y;
+        if (sscanf(msg, "%lu %x %d %d", &seq, &buttons, &x, &y) != 4 || buttons > 0xffff || x < -128 || x > 127 ||
+            y < -128 || y > 127) {
+            fprintf(stderr, "n64c-tas: bad live input %s\n", msg);
+            continue;
+        }
+        if (!atomic_load(&taken)) continue;
+        if (live_fresh) live_held |= live_pad.button;
+        live_pad = (OSContPad){.button = (u16)buttons, .stick_x = (s8)x, .stick_y = (s8)y};
+        atomic_store(&live_seq, seq);
+        live_fresh = 1;
+    }
+}
 
 static void start(void)
 {
@@ -64,6 +140,11 @@ static void start(void)
             _Exit(2);
         }
         dump_at = strtol(at, NULL, 10);
+    }
+    path = getenv("N64C_INPUT");
+    if (path && *path) {
+        live_open(path);
+        if (live >= 0 && !play) atomic_store(&taken, 1);
     }
     const char *after = getenv("N64C_TAS_EXIT_AFTER");
     if (after && *after) exit_after = strtol(after, NULL, 10);
@@ -136,7 +217,8 @@ static void ram_state(void)
 void n64c_tas_poll(OSContPad *pad)
 {
     if (!started) start();
-    if (play) {
+    if (live >= 0) live_drain();
+    if (play && !atomic_load(&taken)) {
         if (!play_done && !next(pad)) {
             play_done = 1;
             fprintf(stderr, "n64c-tas: movie ended at poll %ld\n", played);
@@ -148,6 +230,12 @@ void n64c_tas_poll(OSContPad *pad)
                 _Exit(0);
             }
         }
+    }
+    if (atomic_load(&taken)) {
+        *pad = live_pad;
+        pad->button |= (u16)live_held;
+        live_held = 0;
+        live_fresh = 0;
     }
     polls++;
     if (hash || dump_at >= 0) ram_state();
@@ -161,3 +249,5 @@ void n64c_tas_poll(OSContPad *pad)
 
 long n64c_tas_take_shot(void) { return atomic_exchange(&shot_due, -1); }
 const char *n64c_tas_shot_dir(void) { return shot_dir; }
+unsigned long n64c_tas_live_seq(void) { return atomic_load(&live_seq); }
+int n64c_tas_live_taken(void) { return atomic_load(&taken); }

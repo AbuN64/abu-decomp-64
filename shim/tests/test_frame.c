@@ -160,8 +160,8 @@ int main(int argc,char **argv)
     CHECK(unsetenv("N64C_VIEW")==0);
     CHECK(!tapped);
     CHECK(setenv("N64C_AUDIO_OUT","pcm-path",1)==0 && setenv("N64C_SPEED","0",1)==0);
-    start(0);CHECK(n64c_boot_frame_live()==1 && !tapped); /* turbo: no sound */
-    CHECK(unsetenv("N64C_SPEED")==0);
+    start(0);CHECK(n64c_boot_frame_live()==1 && tapped && !strcmp(tapped,"pcm-path")); /* turbo taps too (paced) */
+    tapped=NULL;CHECK(unsetenv("N64C_SPEED")==0);
     start(0);CHECK(n64c_boot_frame_live()==1 && tapped && !strcmp(tapped,"pcm-path"));
     CHECK(unsetenv("N64C_AUDIO_OUT")==0);
     FILE *bmp=fopen(viewpath,"rb");CHECK(bmp!=NULL);
@@ -175,6 +175,13 @@ int main(int argc,char **argv)
     bmp=fopen(viewpath,"rb");CHECK(bmp!=NULL);got=fread(image,1,sizeof image,bmp);fclose(bmp);
     CHECK(got==54+12 && image[2]==66 && !memcmp(image+54,"\x07\x08\x09\0\x04\x05\x06\0\x01\x02\x03\0",12));
     CHECK(unlink(viewpath)==0);
+    CHECK(n64c_write_bmp_tagged(viewpath,odd,1,3,0x01020304u)); /* the tag rides in the reserved header word */
+    bmp=fopen(viewpath,"rb");CHECK(bmp!=NULL);got=fread(image,1,sizeof image,bmp);fclose(bmp);
+    CHECK(got==54+12 && !memcmp(image+6,"\x04\x03\x02\x01",4) && image[10]==54);
+    CHECK(unlink(viewpath)==0);
+    u32 fps=0;
+    CHECK(n64c_parse_view_fps(NULL,&fps) && fps==15 && n64c_parse_view_fps("60",&fps) && fps==60);
+    CHECK(!n64c_parse_view_fps("0",&fps) && !n64c_parse_view_fps("121",&fps) && !n64c_parse_view_fps("6x",&fps));
     start(1);CHECK(n64c_boot_frame_live()==0 && retraces==1);
     n64c_boot_frame_close();
     CHECK(!n64c_boot_stop_hook);

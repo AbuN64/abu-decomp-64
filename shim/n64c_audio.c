@@ -5,6 +5,7 @@
 #include "n64c_audio.h"
 #include "n64c_internal.h"
 #include <stdio.h>
+#include <time.h>
 #ifdef N64C_AUDIO_SDL3
 #include <SDL3/SDL.h>
 #endif
@@ -73,9 +74,16 @@ static void default_sink(void *user, const int16_t *frames, size_t count, uint32
 }
 
 /* The tap (N64C_AUDIO_OUT): what the sink gets, appended as raw s16 stereo; <path>.rate holds "<rate>\n", replaced
- * whole whenever the rate changes, so a reader can wrap the growing file as WAV while it plays. */
+ * whole whenever the rate changes, so a reader can wrap the growing file as WAV while it plays. It keeps to wall
+ * time: a block is written only while the file holds less than the wall time since its first block plus TAP_LEAD_MS,
+ * so a guest faster than real time (N64C_SPEED) is heard in real-time snippets, skipping the rest. Host-only: the
+ * guest's AI FIFO and clock never see it. */
+#define TAP_LEAD_MS 250
 static FILE *tap;
 static u32 tap_rate;
+static double tap_seconds; /* audio written, in seconds */
+static struct timespec tap_start;
+static int tap_started;
 static char tap_rate_path[1024];
 static void tap_close(void)
 {
@@ -89,6 +97,8 @@ int n64c_audio_tap(const char *path)
     if (!path) return 1;
     if (snprintf(tap_rate_path, sizeof tap_rate_path, "%s.rate", path) >= (int)sizeof tap_rate_path) return 0;
     tap = fopen(path, "ab");
+    tap_seconds = 0;
+    tap_started = 0;
     return tap != NULL;
 }
 static int tap_note_rate(u32 rate)
@@ -107,7 +117,17 @@ static void tap_sink(void *user, const int16_t *frames, size_t count, uint32_t r
         if (tap_note_rate(rate)) tap_rate = rate;
         else tap_close();
     }
-    if (tap && (fwrite(frames, 2 * sizeof *frames, count, tap) != count || fflush(tap))) tap_close();
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (tap && !tap_started) {
+        tap_start = now;
+        tap_started = 1;
+    }
+    double wall = (double)(now.tv_sec - tap_start.tv_sec) + (now.tv_nsec - tap_start.tv_nsec) / 1e9;
+    if (tap && rate && tap_seconds < wall + TAP_LEAD_MS / 1000.0) {
+        if (fwrite(frames, 2 * sizeof *frames, count, tap) != count || fflush(tap)) tap_close();
+        else tap_seconds += (double)count / rate;
+    }
     (pcm_sink ? pcm_sink : default_sink)(pcm_user, frames, count, rate);
 }
 

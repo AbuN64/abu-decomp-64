@@ -120,6 +120,24 @@ int main(int argc, char **argv)
     if (rate) fclose(rate);
     CHECK(!n64c_audio_tap("/nonexistent-dir/x.pcm"));
     CHECK(remove(tap_path) == 0 && remove(rate_path) == 0);
+    /* A guest far faster than real time: 1.36 s of audio in no wall time is tapped only up to the 250 ms lead
+     * (plus the block that crosses it); every buffer still reaches the sink and the FIFO, so the guest sees no change. */
+    n64c_init(NULL);
+    n64c_set_audio_sink(drop, NULL);
+    CHECK(n64c_audio_tap(tap_path));
+    CHECK(osAiSetFrequency(22050) == 22050);
+    OSTime at = 0;
+    for (int i = 0; i < 100; i++) {
+        CHECK(osAiSetNextBuffer(ram, sizeof ram) == 0);
+        at += 10000000;
+        n64c_clock_advance_to(at);
+    }
+    n64c_shutdown();
+    pcm = fopen(tap_path, "rb");
+    long bytes = 0;
+    if (pcm) { fseek(pcm, 0, SEEK_END); bytes = ftell(pcm); fclose(pcm); }
+    CHECK(bytes >= 1200 * 18 && bytes <= 1200 * 22); /* 300-frame blocks of 13.6 ms: 19 or 20 of them */
+    CHECK(remove(tap_path) == 0 && remove(rate_path) == 0);
     printf("n64c_audio: %s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;
 }
