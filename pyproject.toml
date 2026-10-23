@@ -15,13 +15,13 @@ requires-python = ">=3.13"
 dependencies = [
   "textual==8.2.8",
   "gcovr==8.3",
-  "unbake @ git+https://github.com/AbuN64/cake-unbake-64@0fa6a37f9d266bf213f70c5233961dfa211f514f",
-  "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@2340e885a8c5dee0718d307da6d1b8d3570c0479",
+  "unbake @ git+https://github.com/AbuN64/cake-unbake-64@539b5bc94795ed3c80082419c3cfd08300d5aa0a",
+  "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@43c6e432b5f56bb3116dd63e7f20ed76b0bdc937",
   "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@112844e2ce02dd3f2478a634174287300d27c580",
 ]
 
 [project.optional-dependencies]
-dev = ["ruff==0.16.9", "pytest==8.4.2", "numpy==2.2.4"]  # numpy: the shim boot tests (shim/boot/fl0.py)
+dev = ["ruff==0.16.9", "pytest==9.1.1", "numpy==2.2.4"]  # numpy: the shim boot tests (shim/boot/fl0.py)
 
 [project.scripts]
 decomp = "abu_decomp.cli:main"
