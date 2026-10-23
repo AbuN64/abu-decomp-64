@@ -192,6 +192,47 @@ class BucketTests(unittest.TestCase):
         self.assertEqual([b["key"] for b in tas_buckets.build(rows, batch="b2")], ["g"])
         self.assertEqual(len(tas_buckets.build(rows, top=1)), 1)
 
+    def _ambient_rows(self):
+        rows = []
+        for n in range(10):  # a boot-wide report in every sanitized movie, one more in two movies only
+            rows.append({"kind": "ubsan", "movie": f"m{n}", "fn": "Boot", "fp": "a", "id": f"u{n}"})
+            rows.append({"kind": "ubsan", "movie": f"m{n}", "signature": "ubsan:s.c:5", "fp": "b", "id": f"v{n}"})
+        for n in range(2):
+            rows.append({"kind": "ubsan", "movie": f"m{n}", "signature": "ubsan:rare.c:9", "fp": "c", "id": f"w{n}"})
+        rows += [
+            {"kind": "crash", "movie": "x", "fn": "Real", "base": "null", "offset": 16, "id": "c1"},
+            {"kind": "hang", "movie": "y", "id": "h1"},
+            {"kind": "state-diverge", "movie": "z", "fn": "Div", "id": "s1"},
+            sweep_row(evidence="/t/src/b.c:11", fp="2", id="5", text="x"),
+        ]
+        return rows
+
+    def test_crash_outranks_sanitizer_and_boot_wide_reports_collapse_into_one_ambient_line(self):
+        buckets = tas_buckets.build(self._ambient_rows(), "/p.json")
+        keys = [b["key"] for b in buckets]
+        self.assertEqual(set(keys[:3]), {"null+0x10 in Real", "hang", "Div"})
+        self.assertEqual(keys[3], "ubsan:rare.c:9")
+        self.assertEqual(buckets[-1]["level"], "ambient")
+        self.assertEqual(buckets[-1]["sites"], 2)
+        self.assertNotIn("Boot", keys)
+        self.assertEqual(keys[-2], "sweep word-array-byte-use")
+        self.assertEqual([b["rank"] for b in buckets], list(range(1, len(buckets) + 1)))
+        top = tas_buckets.build(self._ambient_rows(), "/p.json", top=1)
+        self.assertEqual(len(top), 2)
+        self.assertEqual(top[-1]["level"], "ambient")
+        self.assertIn("[ambient]", tas_buckets.render(buckets))
+
+    def test_kind_filter_and_sanitizer_kind_shows_the_ambient_reports(self):
+        rows = self._ambient_rows()
+        self.assertEqual([b["key"] for b in tas_buckets.build(rows, kinds=["crash"])], ["null+0x10 in Real"])
+        got = tas_buckets.build(rows, kinds=["ubsan"])
+        self.assertNotIn("ambient", [b["level"] for b in got])
+        self.assertIn("Boot", [b["key"] for b in got])
+
+    def test_few_sanitized_movies_are_never_ambient(self):
+        rows = [{"kind": "ubsan", "movie": f"m{n}", "fn": "Boot", "id": str(n)} for n in range(3)]
+        self.assertEqual([b["level"] for b in tas_buckets.build(rows)], ["function"])
+
     def test_enrich_names_the_declaration_and_render_lists_buckets(self):
         rows = [{"kind": "crash", "movie": "a", "poll": 5, "datum": "D_800E42D0", "offset": 2, "fn": "f", "id": "1"}]
         with tempfile.TemporaryDirectory() as tmp:

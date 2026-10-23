@@ -358,6 +358,13 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     triage.add_argument("--batch", help="only this batch's findings (a play --all stamp)")
     triage.add_argument("--top", type=int, default=0, help="only the first N buckets")
     triage.add_argument(
+        "--kind",
+        action="append",
+        default=[],
+        help="only findings of this kind (crash, hang, stop, exit, fn-differs, state-diverge, sweep, ubsan; repeat or "
+        "comma-separate); a sanitizer kind lists its buckets uncollapsed",
+    )
+    triage.add_argument(
         "--backfill", action="store_true", help="first add findings for each movie's newest recorded run"
     )
     corpus = actions.add_parser("corpus", help="the regression corpus of movies, problem spots and the speedrun gate")
@@ -549,7 +556,9 @@ def _run_triage(profile: Any, args: argparse.Namespace) -> tuple[dict[str, Any],
     project = tas_triage._project(profile)
     added = tas_findings.backfill(cfg["runs"], project) if args.backfill else 0
     rows = tas_findings.read(cfg["runs"])
-    buckets = tas_buckets.build(rows, str(profile.source_file), args.batch, args.top)
+    buckets = tas_buckets.build(
+        rows, str(profile.source_file), args.batch, args.top, [k for v in args.kind for k in v.split(",")]
+    )
     tas_buckets.enrich(project, buckets)
     print(tas_buckets.render(buckets), file=sys.stderr)
     return (

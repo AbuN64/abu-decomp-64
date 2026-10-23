@@ -3,13 +3,17 @@ Input is the findings feed (module tas_findings); the root key of a finding is i
 datum touched, then the sweep rule, a null base in a function, the fault function and its caller, the writer's
 signature,
 the outcome). A bucket lists its members (kind, movie, poll, run, evidence), the movies it blocks and the sweep sites
-that share its root; buckets are ranked by reach (movies blocked), then hits, then sites. Strongest first: a bucket a
-real run reaches outranks a rule that only reads source. `next` is one command that runs as printed.
+that share its root. Buckets are ranked by class first (crash/stop/hang/exit, fn-differs and state-diverge, then
+sanitizer reports, then sweep rules that only read source), then by reach (movies blocked), hits and sites. A
+sanitizer-only bucket seen in nearly every sanitized run (AMBIENT_SHARE) is boot-wide noise: all of them collapse into
+one trailing "ambient" bucket unless `--kind` names a sanitizer kind. `kinds` filters the findings before bucketing.
+`next` is one command that runs as printed.
 Read it with `decomp tas triage`; the TAS page Work tab shows the same rows (GET /api/board `triage`).
 """
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from pathlib import Path
@@ -17,6 +21,9 @@ from typing import Any
 
 from abu_decomp import tas_findings
 
+SANITIZER = ("ubsan", "asan", "msan", "tsan", "lsan", "sanitizer")  # finding kinds a sanitizer build reports
+AMBIENT_SHARE = 0.9  # a sanitizer bucket in at least this share of the sanitized movies fires in every run
+AMBIENT_MIN = 5  # ...and only counts as ambient with at least this many movies behind it
 MEMBERS = 12  # members listed per bucket (the count says how many there are)
 
 
@@ -52,12 +59,59 @@ def _title(level: str, key: str, bucket: dict[str, Any]) -> str:
     return key
 
 
+def _tier(kinds: Any) -> int:
+    """0 a run broke (crash/stop/hang/exit, fn-differs, state-diverge, anything unknown), 1 sanitizer, 2 sweep."""
+    kinds = set(kinds)
+    if kinds - set(SANITIZER) - {"sweep"}:
+        return 0
+    return 1 if kinds & set(SANITIZER) else 2
+
+
+def _ambient(
+    out: list[dict[str, Any]], standing: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Split the sanitizer-only buckets seen in (nearly) every sanitized movie off `out`; one summary bucket."""
+    sanitized = {r["movie"] for r in standing if r["kind"] in SANITIZER and r.get("movie")}
+    need = max(AMBIENT_MIN, math.ceil(len(sanitized) * AMBIENT_SHARE))
+    quiet = [b for b in out if set(b["kinds"]) <= set(SANITIZER) and len(b["movies"]) >= need]
+    if not quiet:
+        return out, None
+    names = {id(b) for b in quiet}
+    reports = sum(b["count"] for b in quiet)
+    ambient = {
+        "key": "ambient",
+        "level": "ambient",
+        "count": reports,
+        "movies": [],
+        "reach": min(len(b["movies"]) for b in quiet),
+        "sites": len(quiet),
+        "kinds": dict(Counter(k for b in quiet for k in b["kinds"] for _ in range(b["kinds"][k]))),
+        "offsets": [],
+        "members": [],
+        "title": f"ambient: {len(quiet)} sanitizer reports seen in {len(sanitized)} sanitized movies "
+        f"(each in at least {need}), boot-wide",
+        "ambient": [b["title"] for b in quiet],
+        "next": "decomp tas triage --kind " + sorted({k for b in quiet for k in b["kinds"]})[0],
+    }
+    return [b for b in out if id(b) not in names], ambient
+
+
 def build(
-    rows: list[dict[str, Any]], profile_path: str = "", batch: str | None = None, top: int = 0
+    rows: list[dict[str, Any]],
+    profile_path: str = "",
+    batch: str | None = None,
+    top: int = 0,
+    kinds: Any = (),
 ) -> list[dict[str, Any]]:
-    """Ranked buckets of the standing findings (`rows` is the whole feed)."""
+    """Ranked buckets of the standing findings (`rows` is the whole feed). `kinds` keeps only findings of those kinds
+    (and shows sanitizer buckets as they are, not collapsed); `top` counts the ranked buckets, the ambient line is
+    extra."""
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for row in tas_findings.active(rows, batch):
+    kinds = {k for k in (kinds or ()) if k}
+    standing = tas_findings.active(rows, batch)
+    for row in standing:
+        if kinds and row["kind"] not in kinds:
+            continue
         groups.setdefault(tas_findings.root(row), []).append(row)
     out = []
     for (level, key), members in groups.items():
@@ -89,10 +143,16 @@ def build(
         bucket["next"] = _next(kind, members, profile_path)
         bucket["title"] = _title(level, key, {**bucket, "declared": None})
         out.append(bucket)
-    out.sort(key=lambda b: (-len(b["movies"]), -b["count"], -b["sites"], b["key"]))
+    ambient = None
+    if not kinds & set(SANITIZER):
+        out, ambient = _ambient(out, standing)
+    out.sort(key=lambda b: (_tier(b["kinds"]), -len(b["movies"]), -b["count"], -b["sites"], b["key"]))
+    out = out[:top] if top else out
+    if ambient:
+        out.append(ambient)
     for number, bucket in enumerate(out, 1):
         bucket["rank"] = number
-    return out[:top] if top else out
+    return out
 
 
 def enrich(project: Path | None, buckets: list[dict[str, Any]], limit: int = 12) -> None:
@@ -127,6 +187,9 @@ def render(buckets: list[dict[str, Any]]) -> str:
         return "buckets: none\nnext: nothing open"
     lines = ["buckets (strongest first; a cycle lane takes a whole bucket):"]
     for b in buckets:
+        if b["level"] == "ambient":
+            lines.append(f"  {b['rank']}. [ambient] {b['title']}: {b['count']} findings (hidden; `{b['next']}`)")
+            continue
         reach = f"blocks {len(b['movies'])} movies: {', '.join(b['movies'])}" if b["movies"] else "source only"
         lines.append(f"  {b['rank']}. [{b['level']}] {b['title']}: {b['count']} findings, {reach}")
         if b.get("fn") or b.get("site"):
