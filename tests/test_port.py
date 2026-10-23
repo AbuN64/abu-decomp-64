@@ -55,7 +55,8 @@ class PortTests(unittest.TestCase):
         for path in out.rglob("*"):
             if path.is_file():
                 self.assertIsNone(re.search(r"\{\{", path.read_text()), path)
-        self.assertIn(f"abu_shim https://example.invalid/abu-decomp-64.git {PIN_SHIM}", (out / "cmake/shim.cmake").read_text())
+        shim_line = f"abu_shim https://example.invalid/abu-decomp-64.git {PIN_SHIM}"
+        self.assertIn(shim_line, (out / "cmake/shim.cmake").read_text())
         manifest = json.loads((out / "platform/port/manifest.json").read_text())
         self.assertEqual(
             manifest,
