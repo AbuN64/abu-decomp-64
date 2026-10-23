@@ -217,7 +217,6 @@ static Acmd *fx_apply(N64cFx *fx, Acmd *c, u32 n)
 
 /* ---- synthesizer ---- */
 N64cSynth *n64c_syn_global(void) { return g_synth; }
-s32 n64c_syn_output_rate(const N64cSynth *syn) { return syn ? syn->outputRate : 0; }
 
 s32 n64c_syn_chunk_micros(const N64cSynth *syn)
 {

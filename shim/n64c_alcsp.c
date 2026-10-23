@@ -115,11 +115,12 @@ static void note_on(N64cCsp *cp, int chan, int key, int vel, u32 durTicks)
     N64cSynth *syn = cp->player.synth;
     N64cVoice *v = n64c_voice_alloc(syn, slot, in->priority);
     if (!v) return;
-    f32 rate = cp->bank->sampleRate > 0 ? (f32)cp->bank->sampleRate / (f32)n64c_syn_output_rate(syn) : 1.0f;
+    /* A note's pitch is its key distance from the sound's key base alone (cents to ratio): the synthesizer plays the
+     * wavetable at its own sample rate whatever the output rate; the bank's sampleRate field does not scale it. */
     const ALKeyMap *k = snd->keyMap;
     f32 semis = (f32)(key - (k ? k->keyBase : 60)) + (k ? (f32)k->detune / 100.0f : 0.0f);
     n64c_voice_start(v, snd->wavetable);
-    n64c_voice_set_pitch(v, rate * powf(2.0f, semis / 12.0f));
+    n64c_voice_set_pitch(v, powf(2.0f, semis / 12.0f));
     f32 g = (f32)vel / 127.0f * (f32)cp->chanVol[chan] / 127.0f * (f32)snd->sampleVolume / 127.0f *
             (f32)in->volume / 127.0f * (f32)cp->vol / 32767.0f;
     s32 tgt = (s32)(32767.0f * g);

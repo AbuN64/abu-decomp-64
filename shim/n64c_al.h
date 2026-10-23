@@ -163,7 +163,6 @@ typedef struct N64cPlayer {
 void n64c_syn_add_player(N64cSynth *syn, N64cPlayer *p);
 void n64c_syn_remove_player(N64cSynth *syn, N64cPlayer *p);
 N64cSynth *n64c_syn_global(void);
-s32 n64c_syn_output_rate(const N64cSynth *syn);
 s32 n64c_syn_chunk_micros(const N64cSynth *syn);     /* length of one mixing chunk */
 /* Voices: allocate one (priority decides stealing; tag identifies the user), then drive it.
  * Returns NULL when none can be had. A stolen or finished voice no longer matches its tag. */

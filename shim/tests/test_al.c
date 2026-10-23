@@ -423,7 +423,9 @@ static void test_fx_config_padding(void)
 enum { SEQ_OFF = 0x340000, BANK_OFF = 0x341000 };
 static u32 put_seq(u32 at, const u8 *b, u32 n) { for (u32 i = 0; i < n; i++) put8(at + i, b[i]); return at + n; }
 
-static void test_csp(void)
+/* The bank's sampleRate is a label: a note plays the wavetable at its own rate, so the same song sounds the same
+ * (an octave up if the field scaled the pitch) for a bank marked 22050 or 44100 over a 22050 Hz output. */
+static void test_csp(u32 bank_rate)
 {
     start_synth(4);
     for (u32 i = 0; i < 0x80; i++) put8(SEQ_OFF + i, 0);
@@ -448,7 +450,7 @@ static void test_csp(void)
     inst->volume = 127; inst->soundCount = 1; inst->soundArray[0] = &snd;
     ALBank *bank = (ALBank *)(ram + BANK_OFF + 0x100);
     memset(bank, 0, sizeof *bank);
-    bank->instCount = 1; bank->sampleRate = 22050; bank->instArray[0] = inst;
+    bank->instCount = 1; bank->sampleRate = (s32)bank_rate; bank->instArray[0] = inst;
 
     ALCSPlayer csp;
     ALSeqpConfig sc = {.maxVoices = 4, .maxEvents = 16, .maxChannels = 16, .heap = &heap};
@@ -462,17 +464,19 @@ static void test_csp(void)
     alCSPPlay(&csp);
     CHECK(alCSPGetState(&csp) == AL_PLAYING);
     N64aAbi *abi = n64a_abi_create(N64A_FLAVOUR_AUDIO);
-    int peak_first = 0, peak_gap = 0, peak_second = 0;
+    int peak_first = 0, peak_gap = 0, peak_second = 0, peak_late = 0;
     /* 22050 Hz: one beat is 11025 samples; run 3.2 beats in 256-sample frames */
     for (int f = 0; f < 140; f++) {
         run_frame(abi, 256);
         int p = stereo_peak(256, 0);
         int at = f * 256;
         if (at > 2000 && at < 9000 && p > peak_first) peak_first = p;
+        if (at > 5000 && at < 7000 && p > peak_late) peak_late = p; /* 8000 samples last to 8000 at unity pitch */
         if (at > 12500 && at < 13000 && p > peak_gap) peak_gap = p;
         if (at > 14000 && at < 20000 && p > peak_second) peak_second = p;
     }
     CHECK(peak_first > 1000);                  /* first note sounding */
+    CHECK(peak_late > 1000);                   /* the 8000-sample wave still sounding at 0.25 s: unity pitch */
     CHECK(peak_second > 1000);                 /* second note one beat later */
     CHECK(alCSPGetState(&csp) == AL_STOPPED);  /* track ended, notes released */
     /* stop mid-song */
@@ -494,7 +498,8 @@ int main(void)
     test_voice_priority();
     test_reverb();
     test_fx_config_padding();
-    test_csp();
+    test_csp(22050);
+    test_csp(44100);
     printf("n64c_al: %s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;
 }
