@@ -8,6 +8,7 @@ facts (`N64C_PORT_DIR`, see ../README.md) and by `--source` (the fetched origina
   manifest, bind original names to shim functions (`shim-bindings.txt`), lay out the data image, generate bindings and linker scripts.
 - `advance.py`, `sweep.py`: boot the run-on diagnostic build, classify each stop, route what cannot link.
 - `trace.py`/`trace.c`, `lockstep.py`: boot-hit census and first-divergence compare against an oracle capture.
+- `replay.c`: `N64C_REPLAY=PLAN` runs recorded function calls on the loaded image, each in a forked child (`decomp behave --replay`; format at the top of the file).
 - `gates.py`: host-ABI gates over the original source (baseline `gates-baseline.tsv`). `fl0.py`, `tile_parity.py`, `hangcore.py`: frame and hang checks.
 - C side: `game_main.c` (reset entry and shutdown), `frame.c` (frame capture), `runon.c`, `missing.c`, `trace.c`, `stop.h`, `boot.h`, `native.h`.
 - Tests: `test_*.py` (`python3 -I test_X.py --compiler gcc --m32 --work DIR`). Those that read a port's real facts

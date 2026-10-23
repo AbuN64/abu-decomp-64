@@ -26,6 +26,9 @@
 
 enum { EXIT_RUNTIME = 1, EXIT_USAGE = 2, EXIT_PROGRAM_TREE = 4 };
 
+/* N64C_REPLAY=PLAN (replay.c, `decomp behave --replay`): run recorded function calls on the loaded image instead of booting. */
+int n64c_replay_run(const char *plan) __attribute__((weak));
+
 typedef struct {
     const char *rom, *user_dir, *capture, *pak, *cpak;
     int no_dialog, verify_assets, extract_only, offscreen, version, help;
@@ -292,6 +295,17 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
         fprintf(stderr,"boot-input: invalid system globals\n");
         n64c_shutdown();
         return EXIT_RUNTIME;
+    }
+    const char *replay=getenv("N64C_REPLAY");
+    if (replay && *replay) {
+        if (!n64c_replay_run) {
+            fprintf(stderr,"boot-input: this build has no function replay (N64C_REPLAY)\n");
+            n64c_shutdown();
+            return EXIT_RUNTIME;
+        }
+        int rc=n64c_replay_run(replay);
+        n64c_shutdown();
+        return rc;
     }
     const int live=!o->capture;
     n64c_boot_frame_host(shaders,settings,o->offscreen);
