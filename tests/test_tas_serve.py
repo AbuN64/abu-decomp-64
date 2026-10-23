@@ -95,6 +95,7 @@ class ServeTests(Base):
         now = runs["20261022T170000Z-boot-idle"]
         self.assertEqual((now["status"], now["poll"], now["polls"], now["outcome"]), ("running", 2, 900, None))
         self.assertEqual((now["pinned"], now["took_at"], now["from"], now["ended"]), (False, None, None, None))
+        self.assertFalse(now["stopped"])
         self.assertEqual(runs["20261022T150000Z-boot-idle"]["status"], "done")  # its process is gone
         done = runs["20261022T160000Z-model-preview"]
         self.assertEqual((done["outcome"], done["poll"], done["subject"]), ("crash", 611, "host-fault-10"))
@@ -428,6 +429,7 @@ class HttpTests(Base):
             self.assertEqual(
                 (row["input"], row["from"], row["at"], row["took_at"], row["polls"]), ("human", "src", 2, 2, 2)
             )
+            self.assertFalse(row["stopped"])
             for _ in range(100):
                 if started:
                     break

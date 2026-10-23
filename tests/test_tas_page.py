@@ -102,6 +102,7 @@ def mock_state() -> dict:
         "ended": None,
         "input": "movie",
         "took_at": None,
+        "stopped": False,
         "from": None,
         "at": None,
         "saved": None,
@@ -411,7 +412,7 @@ class PageTests(unittest.TestCase):
             "recipe work func_80297310_de",
             "1 take",
             "func_80256C90_de",
-            "2574d74ed",
+            "RW 2574d74ed",
         ):
             self.assertIn(text, dom, text)
         self.assertRegex(dom, r'id="conn" class="dot ok"')  # state fetched

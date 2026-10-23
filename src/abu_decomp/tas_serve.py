@@ -194,7 +194,10 @@ class Server:
             "label": record.get("label") or None,
             "port": record.get("port") or str(self.cfg["port"]),
             "input": "human" if taken else "movie",
-            "took_at": self.took_at(run, record) if taken and record.get("input") != "human" else None,
+            "took_at": self.took_at(run, record)
+            if taken and (record.get("from") or record.get("input") != "human")
+            else None,
+            "stopped": bool(record.get("stopped")),
             "from": record.get("from") or None,
             "at": record.get("at"),
             "saved": record.get("saved") or None,
@@ -332,7 +335,9 @@ class Server:
             cpak = "fresh"
         row = {"id": run_id, "movie": movie, "status": "queued", "speed": speed, "poll": 0, "polls": polls}
         row.update(cpak=cpak or "none", outcome=None, subject=None, started=time.time(), ended=None)
-        row.update(label=label or None, port=str(port), input="movie", took_at=None, saved=None, pinned=False)
+        row.update(
+            label=label or None, port=str(port), input="movie", took_at=None, stopped=False, saved=None, pinned=False
+        )
         row.update(pak=pak or "on", oracle=None, **{"from": None, "at": None})
         with self.lock:
             self.queued[run_id] = row

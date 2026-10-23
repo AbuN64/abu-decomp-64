@@ -287,6 +287,10 @@ const store = { get(k, d) { try { const v = localStorage.getItem(k); return v ==
                 set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
 const OUT = { ok: "ok", stop: "warn", crash: "bad", hang: "bad", exit: "warn", refused: "bad" };
 const BAD = new Set(["stop", "crash", "hang", "exit", "refused"]);
+const failed = r => r.status === "done" && !r.stopped && BAD.has(r.outcome);  // a run stopped from the page is no fault
+const endText = r => r.stopped ? "stopped" : r.outcome || "ended";
+const endClass = r => r.stopped ? "" : OUT[r.outcome] || "";
+const reach = r => r.polls && r.poll <= r.polls ? `${r.poll}/${r.polls}` : `${r.poll} polls`;
 const TABS = [["work", "Work"], ["decomp", "Decomp"], ["lanes", "Lanes"], ["runs", "Runs"]];
 const STRIP_MS = 220, MAX_LOG = 3000;
 
@@ -366,7 +370,7 @@ const humanRun = () => liveRuns().find(r => r.input === "human") || null;
 
 function render() {
   const b = S.build || {};
-  $("build").textContent = b.pin ? `port ${String(b.pin).slice(0, 9)} · built ${ago(b.built)}` : "no build";
+  $("build").textContent = b.pin ? `port of RW ${String(b.pin).slice(0, 9)} · built ${ago(b.built)}` : "no build";
   $("build").title = b.port || "";
   pickFollow();
   renderStage(); renderStrip(); renderPanes(); renderNav(); followAudio(); followLog();
@@ -425,7 +429,7 @@ function runBadges(r) {
   const out = [];
   if (r.status === "queued") out.push(badge("queued"));
   else if (r.status === "running") out.push(badge(r.input === "human" ? "you" : speedText(r.speed), r.input === "human" ? "you" : "ok"));
-  else out.push(badge(r.outcome || "ended", OUT[r.outcome] || ""));
+  else out.push(badge(endText(r), endClass(r)));
   if (r.label && r.label !== "owner") out.push(badge(r.label, "", "started by this lane"));
   if (r.from) out.push(badge(`retry @${r.at}`, "you", `retry of run ${r.from} from poll ${r.at}`));
   else if (r.took_at != null) out.push(badge(`taken @${r.took_at}`, "you", "live input took this replay over at that poll"));
@@ -438,11 +442,11 @@ function runBadges(r) {
 function statusLine(r) {
   if (r.status === "queued") return "queued: starts when a replay slot is free";
   if (r.status === "running") {
-    if (r.input === "human") return `poll ${r.poll}` + (r.polls && r.poll < r.polls ? ` · replaying to poll ${r.polls}, then it is yours` : " · you are in control") + (controlling() ? "" : " · live input");
+    if (r.input === "human") return `poll ${r.poll}` + (r.from && r.poll < r.at ? ` · replaying to poll ${r.at} at turbo, then it is yours` : controlling() ? " · you are in control" : " · live input");
     return `poll ${r.poll} of ${r.polls} · ${speedText(r.speed)}` + (r.label ? ` · ${r.label}` : "");
   }
-  const parts = [`${r.outcome || "ended"} at poll ${r.poll}` + (r.polls ? ` of ${r.polls}` : "")];
-  if (r.subject) parts.push(r.subject);
+  const parts = [`${endText(r)} at poll ${r.poll}` + (r.polls && r.poll <= r.polls ? ` of ${r.polls}` : "")];
+  if (r.subject && !r.stopped) parts.push(r.subject);
   if (r.saved) parts.push(`saved as ${r.saved}`);
   parts.push(ago(r.ended || r.started));
   return parts.join(" · ");
@@ -451,7 +455,7 @@ function defaultCursor(r) {
   if (r.status !== "done") return null;
   if (r.from) return r.at;
   if (r.took_at != null) return r.took_at;
-  if (BAD.has(r.outcome)) return Math.max(0, r.poll - 120);
+  if (failed(r)) return Math.max(0, r.poll - 120);
   return r.poll;
 }
 function renderStage() {
@@ -469,7 +473,7 @@ function renderStage() {
   $("stitle").title = `${r.id}\n${r.port || ""}`;
   $("sbadges").replaceChildren(...runBadges(r));
   $("sline").textContent = statusLine(r);
-  $("sline").className = "s " + (r.status === "done" ? OUT[r.outcome] || "dim" : "");
+  $("sline").className = "s " + (r.status === "done" ? endClass(r) || "dim" : "");
   $("follow").replaceChildren(F.follow
     ? el("span", "row dim", el("span", "dot live"), "following live")
     : btn("Follow live", followLive, "ghost", "f", "the stage jumps to the newest live run"));
@@ -526,7 +530,7 @@ function drawTimeline(r) {
   g.fillStyle = r.status === "done" ? v("--faint") : v("--ok"); g.fillRect(4, 18, x(r.poll) - 4, 6);
   const took = r.from ? r.at : r.took_at;
   if (took != null) { g.fillStyle = v("--you"); g.fillRect(x(took) - 1, 15, 2, 12); g.fillRect(x(took), 15, 6, 4); }
-  if (r.status === "done" && BAD.has(r.outcome)) { g.fillStyle = v("--bad"); g.beginPath(); g.arc(x(r.poll), 21, 4.5, 0, 7); g.fill(); }
+  if (failed(r)) { g.fillStyle = v("--bad"); g.beginPath(); g.arc(x(r.poll), 21, 4.5, 0, 7); g.fill(); }
   if (F.cursor != null) {
     g.fillStyle = v("--fg"); g.fillRect(x(F.cursor) - 1, 2, 2, 34);
     g.beginPath(); g.moveTo(x(F.cursor) - 5, 36); g.lineTo(x(F.cursor) + 5, 36); g.lineTo(x(F.cursor), 30); g.fill();
@@ -637,7 +641,7 @@ function renderStrip() {
     t.run = r;
     if (box.children[i] !== t.node) box.insertBefore(t.node, box.children[i] || null);
     t.name.textContent = runTitle(r);
-    t.meta.replaceChildren(...runBadges(r).slice(0, 2), el("span", "grow"), el("span", "", recent ? ago(r.ended || r.started) : `${r.poll}/${r.polls || "∞"}`));
+    t.meta.replaceChildren(...runBadges(r).slice(0, 2), el("span", "grow"), el("span", "", recent ? ago(r.ended || r.started) : reach(r)));
     t.fill.style.width = r.polls ? `${Math.min(100, 100 * r.poll / r.polls)}%` : "100%";
     t.node.title = `${r.movie}${r.subject ? ": " + r.subject : ""}\n${r.id}`;
   });
@@ -668,9 +672,9 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) tile
 
 /* ---------- rail: Work / Decomp / Lanes / Runs (phone: one view at a time from the bottom bar) ---------- */
 function renderNav() {
-  const failed = S.movies.filter(m => BAD.has(m.outcome)).length;
+  const nfail = S.movies.filter(m => BAD.has(m.outcome)).length;
   const activeLanes = (S.lanes || []).filter(l => !l.result).length;
-  const counts = { work: failed, lanes: activeLanes };
+  const counts = { work: nfail, lanes: activeLanes };
   const tab = (k, label) => {
     const b = el("button", ui.tab === k ? "on" : "", label);
     if (counts[k]) b.append(el("span", "n" + (k === "lanes" ? " ok" : ""), counts[k]));
@@ -680,7 +684,7 @@ function renderNav() {
   $("tabs").replaceChildren(...TABS.map(([k, l]) => tab(k, l)));
   const bottom = (k, label) => {
     const b = el("button", ui.view === k ? "on" : "", label);
-    if (counts[k]) b.append(el("span", "n", counts[k]));
+    if (counts[k]) b.append(el("span", "n" + (k === "lanes" ? " ok" : ""), counts[k]));
     if (k === "watch" && liveRuns().length) b.append(el("span", "n ok", liveRuns().length));
     b.onclick = () => showView(k);
     return b;
@@ -845,7 +849,7 @@ const FILTERS = [["all", "All"], ["mine", "Mine"], ["lanes", "Lanes"], ["failed"
 function keepRun(r) {
   const f = H.filter;
   return f === "all" || (f === "mine" && (r.input === "human" || r.label === "owner")) || (f === "lanes" && r.label && r.label !== "owner")
-    || (f === "failed" && BAD.has(r.outcome)) || (f === "pinned" && r.pinned);
+    || (f === "failed" && failed(r)) || (f === "pinned" && r.pinned);
 }
 function renderRuns() {
   if (!H.at || Date.now() - H.at > 10000) loadHistory(false);
@@ -868,11 +872,11 @@ function renderRuns() {
 }
 function runItem(r) {
   const star = btn(r.pinned ? "★" : "☆", () => pinRun(r), "ghost star" + (r.pinned ? " on" : ""), null, r.pinned ? "unpin" : "pin: keep this run");
-  const l1 = el("div", "l1", el("span", "dot " + (r.status === "running" ? "live" : OUT[r.outcome] || "")), el("span", "grow ell", runTitle(r)), star);
-  const bits = [r.status === "done" ? `${r.outcome || "ended"} ${r.poll}/${r.polls || r.poll}` : `${r.status} ${r.poll}/${r.polls || "∞"}`];
+  const l1 = el("div", "l1", el("span", "dot " + (r.status === "running" ? "live" : endClass(r))), el("span", "grow ell", runTitle(r)), star);
+  const bits = [`${r.status === "done" ? endText(r) : r.status} ${reach(r)}`];
   if (r.label) bits.push(r.label);
   if (r.from) bits.push(`retry @${r.at}`); else if (r.took_at != null) bits.push(`taken @${r.took_at}`);
-  if (r.subject) bits.push(r.subject);
+  if (r.subject && !r.stopped) bits.push(r.subject);
   if (r.saved) bits.push(`→ ${r.saved}`);
   if (r.oracle && r.oracle.max_diff != null) bits.push(`Δ${pct(r.oracle.max_diff)}`);
   if (r.ended) bits.push(`${Math.max(0, Math.round(r.ended - r.started))} s`);
@@ -1158,7 +1162,7 @@ document.addEventListener("keydown", e => {
 });
 document.addEventListener("click", e => { if (e.target.tagName === "BUTTON") e.target.blur(); });
 window.addEventListener("resize", () => { if (S) renderStage(); });
-setInterval(() => { if (S) { renderStage(); const b = S.build || {}; if (b.pin) $("build").textContent = `port ${String(b.pin).slice(0, 9)} · built ${ago(b.built)}`; } }, 1000);
+setInterval(() => { if (S) { renderStage(); const b = S.build || {}; if (b.pin) $("build").textContent = `port of RW ${String(b.pin).slice(0, 9)} · built ${ago(b.built)}`; } }, 1000);
 (function fromHash() {  // #work, #decomp, #lanes, #runs or #watch: open that view (links from elsewhere, bookmarks)
   const h = location.hash.slice(1);
   if (TABS.some(([k]) => k === h)) { ui.tab = h; if (isPhone()) { ui.view = h; document.body.dataset.view = h; } }
