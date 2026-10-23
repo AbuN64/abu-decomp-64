@@ -54,6 +54,6 @@ def capture(run: Path, port: Path | str) -> dict[str, Any] | None:
     for address in (record["eip"], *record.get("frames", [])):
         found = tas_symbolize.resolve(port, int(address, 16))
         named.append(f"{found[0]}+{found[1]:#x}" if found else address)
-    record["at"], record["callers"] = named[0], named[1:]
+    record["at"], record["callers"], record["port"] = named[0], named[1:], str(port)
     (run / STACK).write_text("".join(f"#{i}  {name}\n" for i, name in enumerate(named)))
     return record

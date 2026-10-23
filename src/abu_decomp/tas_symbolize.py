@@ -74,14 +74,14 @@ def overlay(profile: Any, outcome: dict[str, Any], out: dict[str, Any]) -> dict[
     fault = outcome.get("fault")
     if not isinstance(fault, dict) or "eip" not in fault or out.get("kind") != "host fault":
         return out  # the subject's suffix is the accessed address, never a pc: only a fault record names the frame
-    from abu_decomp import tas
-
-    try:
-        port = tas.settings(profile)["port"]
-        chain = [(a, resolve(port, a)) for a in (int(x, 16) for x in (fault["eip"], *fault.get("frames", [])))]
-    except Exception:
-        return out
-    named = [(a, found) for a, found in chain if found]
+    # the record names its addresses against the executable the run used (tas_fault.capture), never the profile's
+    port = fault.get("port", "")
+    addresses = [int(x, 16) for x in (fault["eip"], *fault.get("frames", []))]
+    names = [fault.get("at", ""), *fault.get("callers", [])]
+    named = []
+    for address, text in zip(addresses, names, strict=False):
+        if m := re.fullmatch(r"(\S+)\+0x([0-9a-f]+)", text):
+            named.append((address, (m[1], int(m[2], 16))))
     if not named:
         return out
     first = named[0][1]
@@ -99,7 +99,7 @@ def overlay(profile: Any, outcome: dict[str, Any], out: dict[str, Any]) -> dict[
     site = tas_triage.definition_site(project, name) or tas_triage.include_asm_site(project, name)
     out["owner"] = f"{frame} at {site}" if site else frame
     out["evidence"] = level_of(project, name)
-    src = line_of(port, pc)
+    src = line_of(port, pc) if port else None
     if src:
         out["source"] = src
     notes = [n for n in arity.notes(profile, [name]) if n.get("function") == name]
