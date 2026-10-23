@@ -513,7 +513,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 elif head == "log" and run_id:
                     self.log(server.run_dir(run_id), query)
                 elif head == "audio" and run_id:
-                    self.audio(server.run_dir(run_id))
+                    self.audio(server.run_dir(run_id), query)
                 else:
                     self.missing()
             except (BrokenPipeError, ConnectionResetError):
@@ -606,11 +606,13 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 body = b""
             self.reply(body, "text/plain; charset=utf-8")
 
-        def audio(self, run: Path | None) -> None:
+        def audio(self, run: Path | None, query: str = "") -> None:
             row = tas.read_record(run) if run else None
             if not run or not row:
                 return self.missing()
-            pcm, rate_file = run / tas.AUDIO, run / (tas.AUDIO + ".rate")
+            # ?side=oracle: the original game's sound (audio-oracle.pcm), same layout and rate file as the port's
+            name = tas_oracle.AUDIO if "side=oracle" in query.split("&") else tas.AUDIO
+            pcm, rate_file = run / name, run / (name + ".rate")
             deadline = time.monotonic() + 10
             while not rate_file.is_file():  # the first sound has not been played yet
                 if not tas.running(run) or time.monotonic() > deadline:
@@ -624,11 +626,20 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.close_connection = True
             self.wfile.write(wav_header(rate))
-            offset = max(0, pcm.stat().st_size - int(rate * AUDIO_LEAD_SECONDS) * 4) // 4 * 4
+            oracle = name == tas_oracle.AUDIO
+            # The original replays faster than real time, so its file is played at wall pace from the run's own start
+            # (what the port's listener hears at the same moment of the movie), not from the end of the file.
+            def due() -> int:
+                return int(max(0.0, time.time() - float(row.get("started") or 0)) * rate) * 4
+
+            end = min(due(), pcm.stat().st_size) if oracle else pcm.stat().st_size
+            offset = max(0, end - int(rate * AUDIO_LEAD_SECONDS) * 4) // 4 * 4
             with pcm.open("rb") as handle:
                 while True:
                     handle.seek(offset)
                     chunk = handle.read()
+                    if oracle:
+                        chunk = chunk[: max(0, due() - offset)]
                     chunk = chunk[: len(chunk) // 4 * 4]
                     if chunk:
                         self.wfile.write(chunk)

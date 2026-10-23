@@ -39,6 +39,7 @@ from abu_decomp.config import Profile, check_keys
 
 _KEYS = frozenset({"host", "env", "shot_every", "timeout_seconds"})
 VIEW, LOG, DIFF = "oracle.bmp", "oracle.txt", "diff.json"
+AUDIO = "audio-oracle.pcm"  # the original's sound, as the port's audio.pcm (+ ".rate")
 PORT_TRACE, ORACLE_TRACE = "port-trace.txt", "oracle-trace.txt"
 SHOTS = "shots"
 SIDES = ("port", "oracle")
@@ -109,6 +110,7 @@ def start(
         "N64R_TAS_PLAY": str(run / "movie.raw"),
         "N64R_TAS_EXIT_AFTER": str(exit_after),
         "N64R_VIEW": str(run / VIEW),
+        "N64R_AUDIO_OUT": str(run / AUDIO),
         "N64R_TAS_SHOT_EVERY": str(oracle["shot_every"]),
         "N64R_TAS_SHOT_DIR": str(shots),
         "N64R_TAS_TRACE": str(run / ORACLE_TRACE),

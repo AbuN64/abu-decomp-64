@@ -181,6 +181,7 @@ class PlayTests(unittest.TestCase):
         self.assertEqual(oracle_env["N64R_TAS_PLAY"], str(run / "movie.raw"))
         self.assertEqual((oracle_env["N64R_TAS_EXIT_AFTER"], oracle_env["N64R_TAS_SHOT_EVERY"]), ("7", "25"))
         self.assertEqual((oracle_env["N64R_CLOCK"], oracle_env["SDL_VIDEODRIVER"]), ("entries", "offscreen"))
+        self.assertEqual(oracle_env["N64R_AUDIO_OUT"], str(run / "audio-oracle.pcm"))  # beside the port's audio.pcm
         self.assertEqual(oracle_env["N64R_PAK"], "off")  # the run's Expansion Pak, as the port's --pak
         self.assertEqual((oracle_env["N64R_VIEW"], oracle_env["N64R_ROM"]), (str(run / "oracle.bmp"), "orig.z64"))
         port_env = seen["port"]

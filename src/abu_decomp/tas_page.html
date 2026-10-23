@@ -211,6 +211,9 @@
     <div class="row"><span>which runs</span>
       <label><input type="radio" name="scope" value="all"> all running</label>
       <label><input type="radio" name="scope" value="focus"> focused run only</label></div>
+    <div class="row"><span>sound from</span>
+      <label><input type="radio" name="side" value="port"> the port</label>
+      <label><input type="radio" name="side" value="oracle"> the original (runs started with original: on)</label></div>
     <div class="row"><span></span><span id="sndstate" class="dim"></span></div>
     <div class="row"><span>original</span>
       <label><input type="radio" name="orig" value="on"> on (each replay you start also runs the original game)</label>
@@ -546,11 +549,12 @@ for (const k of ["oracle_only", "neither"]) $("cvt-" + k).onclick = () => { CV.t
 pollCoverage();
 
 /* ---------- audio: per viewer settings (sound on/off, all running runs or the focused one), on by default ---------- */
-const A = { on: true, scope: "all", ctx: null, streams: new Map() };   // id -> {abort, head}
+const A = { on: true, scope: "all", side: "port", ctx: null, streams: new Map() };   // id -> {abort, head}
 const MAX_STREAMS = 8;
 try {
   A.on = localStorage.getItem("tas.sound") !== "off";
   A.scope = localStorage.getItem("tas.scope") === "focus" ? "focus" : "all";
+  A.side = localStorage.getItem("tas.side") === "oracle" ? "oracle" : "port";
 } catch (e) {}
 function soundLabel() {
   const waiting = A.on && A.streams.size && (!A.ctx || A.ctx.state !== "running");
@@ -569,10 +573,15 @@ function wake() {
 document.addEventListener("pointerdown", wake, true);
 document.addEventListener("keydown", wake, true);
 function saveSound() {
-  try { localStorage.setItem("tas.sound", A.on ? "on" : "off"); localStorage.setItem("tas.scope", A.scope); } catch (e) {}
+  try { localStorage.setItem("tas.sound", A.on ? "on" : "off"); localStorage.setItem("tas.scope", A.scope); localStorage.setItem("tas.side", A.side); } catch (e) {}
 }
 document.querySelectorAll('#settings input[name="snd"]').forEach(i => i.onchange = () => { A.on = i.value === "on"; saveSound(); if (A.on) wake(); followAudio(); });
 document.querySelectorAll('#settings input[name="scope"]').forEach(i => i.onchange = () => { A.scope = i.value; saveSound(); followAudio(); });
+document.querySelectorAll('#settings input[name="side"]').forEach(i => i.onchange = () => {
+  A.side = i.value; saveSound();
+  for (const st of A.streams.values()) st.abort.abort();   // the streams restart on the chosen side
+  A.streams.clear(); followAudio();
+});
 function focusedRun() {
   const st = stageRun();
   if (st && st.status === "running") return st;
@@ -592,7 +601,7 @@ function followAudio() {
 async function streamAudio(id) {
   const st = { abort: new AbortController(), head: 0 }; A.streams.set(id, st);
   try {
-    const r = await fetch(`/audio/${encodeURIComponent(id)}`, { signal: st.abort.signal });
+    const r = await fetch(`/audio/${encodeURIComponent(id)}` + (A.side === "oracle" ? "?side=oracle" : ""), { signal: st.abort.signal });
     if (!r.ok || !r.body) { setTimeout(() => { if (A.streams.get(id) === st) A.streams.delete(id); }, 3000); return; }
     const reader = r.body.getReader();
     let buf = new Uint8Array(0), fmt = null;
@@ -893,6 +902,7 @@ function openModal(id) {
   if (id === "settings") {
     document.querySelector(`#settings input[name="snd"][value="${A.on ? "on" : "off"}"]`).checked = true;
     document.querySelector(`#settings input[name="scope"][value="${A.scope}"]`).checked = true;
+    document.querySelector(`#settings input[name="side"][value="${A.side}"]`).checked = true;
     document.querySelector(`#settings input[name="orig"][value="${O.on ? "on" : "off"}"]`).checked = true;
     soundLabel();
   }
