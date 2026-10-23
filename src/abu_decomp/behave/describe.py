@@ -146,9 +146,9 @@ def describe(
                 if target is not None and target != region.index:
                     other = by_index[target]
                     base = other.base
-                    touched = any(
-                        base <= a < base + other.size for a, _ in [*case["reads"], *case["unseeded"]]
-                    ) or any(base <= a < base + other.size for a in written)
+                    touched = any(base <= a < base + other.size for a, _ in [*case["reads"], *case["unseeded"]]) or any(
+                        base <= a < base + other.size for a in written
+                    )
                     if touched:
                         fields[offset]["points_to"].add(target)
         slot = owner.get(region.index)

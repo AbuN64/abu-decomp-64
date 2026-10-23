@@ -41,6 +41,8 @@ SMALL = {
     "double": [1.0, 0.0, -1.0, 100.0],
 }
 _WORDS = [0, 1, 2, 3, 4, 8, 16, 100]
+
+
 def is_nan_word(word: int) -> bool:
     """Whether the 32-bit word is a float NaN or infinity (the generated code asserts on a NaN operand)."""
     return (word >> 23) & 0xFF == 0xFF
@@ -345,7 +347,15 @@ def seeded_cases(
                 else None
             )
             data = fill(
-                rng, region.size, learned.offsets(region.index), number, bases, aimed, marks, number == 0, learned.finite
+                rng,
+                region.size,
+                learned.offsets(region.index),
+                number,
+                bases,
+                aimed,
+                marks,
+                number == 0,
+                learned.finite,
             )
             memory.append({"addr": region.base, "hex": data.hex()})
         if learn:

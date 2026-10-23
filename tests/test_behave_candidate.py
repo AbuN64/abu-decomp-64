@@ -222,7 +222,6 @@ class DescribeTests(unittest.TestCase):
         seen, state = describe.read_globals([case], [], (0x803F0000, 0x80400000))
         self.assertEqual((seen, state), ((0x80100000, 0x80200000), (0x80200000,)))
 
-
     def test_regions_whose_indexes_skip_a_number_still_resolve_pointers_between_them(self):
         # region indexes need not be consecutive (the list position is not the index): a pointer field from region 0
         # to region 2 once indexed the list past its end
