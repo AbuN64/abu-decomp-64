@@ -243,6 +243,41 @@ static void sized_tests(void)
     remove(path);
 }
 
+/* Empty directories retain an optional terminal offset, including after unpacking a nested directory. */
+static void empty_directory_test(void)
+{
+    const char *path="n64c_empty_directory_test.rom";
+    u8 data[24]={0}, out[24], packed[256];
+    u32 word;
+    be32(data+4,8);
+    CHECK(sized_register(path,data,8,"D:-")==0);
+    dma(0,out,8);
+    memcpy(&word,out+4,4); CHECK(word==8);
+    dma(5,out,3); CHECK(out[0]==0 && out[1]==0 && out[2]==0); /* a DMA cut inside the terminal word */
+    memset(data+8,0xA5,8);
+    CHECK(sized_register(path,data,16,"E:1;F:4")==0);
+    dma(0,out,16);
+    memcpy(&word,out+4,4); CHECK(word==8);
+    CHECK(memcmp(out+8,data+8,8)==0); /* trailing bytes remain raw */
+    CHECK(sized_register(path,data,4,"D:-")==0); /* a count-only directory has no terminal word */
+    dma(0,out,4);
+    memcpy(&word,out,4); CHECK(word==0);
+    memset(data,0,sizeof data);
+    be32(data,1); be32(data+4,16); be32(data+8,sizeof data); be32(data+20,8);
+    int size=stream2(data,sizeof data);
+    n64c_pi_close();
+    FILE *file=fopen(path,"wb");
+    CHECK(file && fwrite(rnc2,1,(size_t)size,file)==(size_t)size && fclose(file)==0);
+    CHECK(n64c_pi_open(path));
+    CHECK(n64c_pi_register_packed(0,(u32)size,N64C_RES_GRAPH,"D:1;D:-")==0);
+    dma(0,packed,(u32)size);
+    n64c_pi_rnc2_unpack(packed,out,size-18,sizeof out);
+    memcpy(&word,out+16,4); CHECK(word==0);
+    memcpy(&word,out+20,4); CHECK(word==8);
+    n64c_pi_close();
+    CHECK(remove(path)==0);
+}
+
 static void registry_count_test(void)
 {
     const char *path="n64c_registry_test.rom";
@@ -450,6 +485,7 @@ int main(void)
     n64c_shutdown();
     CHECK(remove(path)==0);
     sized_tests();
+    empty_directory_test();
     registry_count_test();
     byte_stream_test();
     printf("PI packed streams: %d checks; host-order headers (cut DMA), raw packed bytes, origins, method 1 STRUCT, "

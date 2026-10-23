@@ -783,6 +783,11 @@ static u32 *sections(const Walk *walk,u32 at,u32 limit,u32 *count,u32 *table)
     u32 n=be_value(walk->data+at,4);
     if (n>(limit-at-4)/4) return NULL;
     u32 first=n ? be_value(walk->data+at+4,4) : 4u+4u*n; /* the table runs to the first section */
+    /* An empty directory can still own its terminal offset after the count. */
+    if (!n && limit-at>=8) {
+        u32 end=be_value(walk->data+at+4,4);
+        if (end>=8 && end<=limit-at) first=8;
+    }
     if (first<4u+4u*n || first>limit-at || first%4) return NULL;
     u32 *starts=malloc(((size_t)n+1)*sizeof *starts);
     if (!starts) return NULL;
