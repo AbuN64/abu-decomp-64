@@ -11,6 +11,9 @@
  * N64C_TAS_HASH writes "<poll> <hash>" of all guest RDRAM at every poll and N64C_TAS_DUMP_AT=P with
  * N64C_TAS_DUMP_PATH writes RDRAM at poll P: two runs of one movie must give the same lines, and two dumps
  * at the first differing poll name the addresses that carry run-to-run state (seeds, clocks, host pointers).
+ * N64C_TAS_STATE=<spec> (tas_state.h) reads the game state as typed elements, per symbol: N64C_TAS_STATE_HASH=<file>
+ * writes "<poll> <symbol>:<hash> ..." (the symbols that changed) at every poll, and N64C_TAS_STATE_AT=P1,P2 with N64C_TAS_STATE_DIR=<dir> writes
+ * the canonical bytes of every symbol at those polls (state-<poll>.bin), so two sides with different byte order compare.
  * N64C_INPUT=<path> is a live controller driven by another process (the TAS page): the port binds a Unix datagram
  * socket there ("@name": Linux abstract namespace). One input path, two sources: channel 0 comes from the movie until live input takes over, then from
  * the socket for the rest of the run. Without a movie live input holds from the first poll; with one, the datagram
@@ -25,6 +28,7 @@
 #include "n64c_tas.h"
 #include "n64c_os.h"
 #include "n64c_memory.h"
+#include "tas_state.h"
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -45,6 +49,10 @@ static atomic_long shot_due = -1;
 static FILE *trace, *hash;
 static long dump_at = -1;
 static const char *dump_path;
+static struct ts_spec state;
+static struct ts_polls state_at;
+static FILE *state_hash;
+static const char *state_dir;
 static long draws_at = -1;
 static const char *draws_path;
 static int live = -1;
@@ -145,6 +153,20 @@ static void start(void)
         }
         dump_at = strtol(at, NULL, 10);
     }
+    path = getenv("N64C_TAS_STATE");
+    if (path && *path) {
+        if (ts_load(path, &state)) {
+            fprintf(stderr, "n64c-tas: cannot read state spec %s\n", path);
+            _Exit(2);
+        }
+        const char *out = getenv("N64C_TAS_STATE_HASH");
+        if (out && *out && !(state_hash = fopen(out, "w"))) {
+            fprintf(stderr, "n64c-tas: cannot write %s\n", out);
+            _Exit(2);
+        }
+        state_dir = getenv("N64C_TAS_STATE_DIR");
+        ts_polls_parse(getenv("N64C_TAS_STATE_AT"), &state_at);
+    }
     path = getenv("N64C_TAS_TRACE_DRAWS");
     if (path && *path) {
         char *end;
@@ -230,6 +252,33 @@ static void ram_state(void)
     }
 }
 
+static void state_poll(void)
+{
+    static uint64_t *now;
+    static uint32_t *prev;
+    static int started;
+    u32 size = n64c_memory_ram_size();
+    const uint8_t *ram = size ? n64c_memory_ram(0, size) : NULL;
+    if (!ram) return;
+    if (state_hash) {
+        if (!now) {
+            now = calloc(state.nsymbols, sizeof *now);
+            prev = calloc(state.nsymbols, sizeof *prev);
+        }
+        ts_hash(&state, ram, now);
+        ts_trace_line(state_hash, polls, &state, now, prev, &started);
+    }
+    if (state_dir && ts_wanted(&state_at, polls)) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s/state-%ld.bin", state_dir, polls);
+        FILE *f = fopen(path, "wb");
+        if (!f || ts_dump(&state, ram, f) || fclose(f)) {
+            fprintf(stderr, "n64c-tas: state dump at poll %ld to %s failed\n", polls, path);
+            _Exit(2);
+        }
+    }
+}
+
 /* Defined by the boot's frame loop (boot/frame.c): its closing frame-rate line, written before the process ends here. */
 void n64c_boot_run_ended(void) __attribute__((weak));
 void n64c_tas_poll(OSContPad *pad)
@@ -261,6 +310,7 @@ void n64c_tas_poll(OSContPad *pad)
     }
     polls++;
     if (hash || dump_at >= 0) ram_state();
+    if (state.nruns) state_poll();
     if (trace) { fprintf(trace, "%ld %u\n", polls, (unsigned)osViGetRetraceCount()); fflush(trace); }
     if (shot_every > 0 && polls % shot_every == 0) atomic_store(&shot_due, polls);
     if (record) {

@@ -446,6 +446,11 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="with --from and no movie: replay the point at turbo, then drive live; saved as a new movie",
     )
+    play.add_argument(
+        "--no-state-diff",
+        action="store_true",
+        help="skip the region-by-region game state comparison with the original (findings.jsonl)",
+    )
 
 
 def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -517,6 +522,7 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         "fps_unlock": args.fps_unlock,
         "start": args.start,
         "take": args.take,
+        "state_diff": not args.no_state_diff,
     }
     if args.all:  # every play option applies to every movie
         result, code = tas.play_all(profile, jobs=args.jobs, twice=args.twice, **options, **inspect)

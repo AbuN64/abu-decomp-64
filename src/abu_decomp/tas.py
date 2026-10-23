@@ -72,6 +72,7 @@ from abu_decomp import (
     tas_oracle,
     tas_points,
     tas_rank,
+    tas_statediff,
     tas_symbolize,
 )
 from abu_decomp.config import Profile, check_keys
@@ -871,6 +872,7 @@ def play(
     batch: str | None = None,
     start: str | None = None,
     take: bool = False,
+    state_diff: bool = True,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
@@ -891,7 +893,10 @@ def play(
     `start (a start point, module tas_points) plays the point's polls first: alone when `name` is None (the point
     itself), else before the movie's own polls (instead of the start the movie names). With `take`, `name` None and
     `start` the run replays the point at turbo and hands live input over at its end: a new take from that point,
-    saved as `play-STAMP` with the header `start`, without the point's polls."""
+    saved as `play-STAMP` with the header `start`, without the point's polls.
+    A movie run also compares the game state with the original's, region by region (module tas_statediff): the result's
+    `state_diff` counts the divergent regions, RUN/state-diff.json names each one's first differing field, and the
+    findings go to `<tas.runs>/findings.jsonl`; `state_diff=False` skips it."""
     cfg = with_port(settings(profile), port)
     check_label(label)
     if not 0 <= speed <= 1000:
@@ -1027,6 +1032,14 @@ def play(
         record.update({"start": started[0], "prefix": started[1]})
     if retry and source is not None:
         record.update({"from": source, "at": take_at})
+    state = None
+    if state_diff and not human and not retry:
+        try:
+            state = tas_statediff.begin(profile, cfg, run, pak, card, polls)
+        except (DecompError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            record["state_diff"] = {"error": str(error)}
+        if state:
+            env.update(state.port_env())
     oracle_process, oracle_end, oracle_waiter = None, {}, None
     if original:
         env.update(tas_oracle.port_env(original, run))
@@ -1053,9 +1066,10 @@ def play(
             process.stdin.close()
             code, cpu = _wait(process, timeout, run)
     except BaseException:
-        if oracle_process and oracle_process.poll() is None:
-            with contextlib.suppress(OSError):
-                os.killpg(oracle_process.pid, signal.SIGKILL)
+        for other in (oracle_process, state.process if state else None):
+            if other and other.poll() is None:
+                with contextlib.suppress(OSError):
+                    os.killpg(other.pid, signal.SIGKILL)
         _write_record(run, {**record, "status": "done", "outcome": None, "ended": time.time()})
         raise
     text = (run / "output.txt").read_text(errors="replace")
@@ -1100,7 +1114,14 @@ def play(
             saved=save_taken(profile, cfg, run, name, human or bool(retry and retry.get("fresh")), pak, mode, *started),
         )
     keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
-    keep += ("taken", "saved", "coverage", "frame", "fault", "shown")
+    keep += ("taken", "saved", "coverage", "frame", "fault", "shown", "state_diff")
+    if state:
+        try:
+            result["state_diff"] = tas_statediff.finish(state, profile, name, {**record, "batch": batch})
+        except (DecompError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            result["state_diff"] = {"error": str(error)}
+    elif "state_diff" in record:
+        result["state_diff"] = record["state_diff"]
     if oracle_waiter:
         oracle_waiter.join()
         wall, polls = oracle_end["wall"], tas_oracle.reached(run)
