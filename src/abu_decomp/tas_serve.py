@@ -10,7 +10,8 @@ inbox (lines marked `| LANDED` / `| DROPPED`), `states` the decomp progress stat
 folder of the decomp source the port was built from, `lanes` the folder of cycle lane dirs mirrored from the
 orchestrator (brief.md, STATUS.md, RESULT.md, cycle.json each), shown as the cycle panel. Function state (exact /
 fuzzy / none) is read from the decomp source, as the progress states define it: a NON_MATCHING body is fuzzy,
-INCLUDE_ASM alone is none.
+INCLUDE_ASM alone is none. A run played with the oracle (module tas_oracle) also shows the original game: its latest
+picture (/oracle/<id>), both sides' pictures at each compared poll (/shot/<id>) and the per-poll scores (/diff/<id>).
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, evidence, tas, tas_triage
+from abu_decomp import DecompError, evidence, tas, tas_oracle, tas_triage
 from abu_decomp.config import Profile
 
 _SERVE_KEYS = frozenset({"listen", "jobs", "inbox", "states", "pin", "lanes"})
@@ -212,6 +213,7 @@ class Server:
                     "input": "human" if (run / tas.TAKEN).exists() else "movie",
                     "saved": row.get("saved") or None,
                     "pak": row.get("pak") or "on",
+                    "oracle": tas_oracle.summary(run, row),
                 }
             )
         shown = [r for r in runs if r["status"] == "running"] + queued
@@ -238,9 +240,12 @@ class Server:
         except (OSError, ValueError):
             standing = {}
         latest: dict[str, dict[str, Any]] = {}
+        oracle_max: dict[str, float | None] = {}
         for _, row in rows:
             if row.get("status") == "done" and row.get("outcome") and not row.get("stopped") and not row.get("taken"):
                 latest[row.get("movie", "")] = row
+                if isinstance(row.get("oracle"), dict):
+                    oracle_max[row.get("movie", "")] = row["oracle"].get("max_diff")
         folder = self.cfg["movies"]
         out = []
         for path in sorted(folder.glob("*.tas")) if folder.is_dir() else []:
@@ -265,6 +270,7 @@ class Server:
                     "last_run": last.get("ended") if last else None,
                     "label": last.get("label") if last else None,
                     "kind": known.get("kind") or None,
+                    "oracle_max": oracle_max.get(name),
                 }
             )
         return out
@@ -292,7 +298,7 @@ class Server:
                 pak = tas.movie_pak(self.cfg, movie)
         row = {"id": run_id, "movie": movie, "status": "running", "speed": speed, "poll": 0, "polls": polls}
         row.update(outcome=None, subject=None, started=time.time(), frame=f"/frame/{run_id}")
-        row.update(label=label or None, port=str(port), input="movie", saved=None, pak=pak or "on")
+        row.update(label=label or None, port=str(port), input="movie", saved=None, pak=pak or "on", oracle=None)
         with self.lock:
             self.queued[run_id] = row
 
@@ -361,11 +367,19 @@ class Server:
             raise DecompError("tas.input", f"the run's input socket is not there yet: {error}") from error
 
     def play(
-        self, movie: str, speed: int, port: str | None = None, label: str | None = None, pak: str | None = None
+        self,
+        movie: str,
+        speed: int,
+        port: str | None = None,
+        label: str | None = None,
+        pak: str | None = None,
+        oracle: bool = False,
     ) -> dict[str, Any]:
         if not movie:
             return self.new_human(port, label, pak)
         tas.movie_polls(self.cfg, movie)  # refuse a missing movie or another ROM here, not in the thread
+        if oracle:
+            tas_oracle.required(self.profile)
         if not 0 <= speed <= 1000:
             raise DecompError("tas.play", f"speed is 0 (turbo) .. 1000, not {speed}")
         tas.check_label(label)
@@ -379,9 +393,8 @@ class Server:
 
         def go() -> None:
             try:
-                tas.play(
-                    self.profile, movie, speed=speed, run_id=run_id, port=port or None, label=label or None, pak=pak
-                )
+                options = {"port": port or None, "label": label or None, "pak": pak, "oracle": oracle}
+                tas.play(self.profile, movie, speed=speed, run_id=run_id, **options)
             except Exception:  # the record says done; the page shows it
                 pass
             finally:
@@ -473,6 +486,12 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.json(server.state())
                 elif head == "frame" and run_id:
                     self.frame(server.run_dir(run_id), query)
+                elif head == "oracle" and run_id:
+                    self.frame(server.run_dir(run_id), query, tas_oracle.VIEW)
+                elif head == "shot" and run_id:
+                    self.shot(server.run_dir(run_id), query)
+                elif head == "diff" and run_id:
+                    self.diff(server.run_dir(run_id))
                 elif head == "log" and run_id:
                     self.log(server.run_dir(run_id), query)
                 elif head == "audio" and run_id:
@@ -482,13 +501,13 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             except (BrokenPipeError, ConnectionResetError):
                 return
 
-        def frame(self, run: Path | None, query: str) -> None:
+        def frame(self, run: Path | None, query: str, name: str = tas.VIEW) -> None:
             after = None
             for part in query.split("&"):
                 key, _, value = part.partition("=")
                 if key == "after" and value.isdigit():
                     after = int(value)
-            path = run / tas.VIEW if run else None
+            path = run / name if run else None
             stamp = 0
             if path and after is not None:  # long poll: the next picture, or 204 after a second
                 deadline = time.monotonic() + 1.0
@@ -522,6 +541,28 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
             return None
+
+        def shot(self, run: Path | None, query: str) -> None:
+            """One side's picture at one compared poll, as a BMP: ?side=port|oracle&poll=N."""
+            args = dict(part.partition("=")[::2] for part in query.split("&"))
+            side, poll = args.get("side", ""), args.get("poll", "")
+            if not run or side not in tas_oracle.SIDES or not poll.isdigit():
+                return self.missing()
+            pixels = tas_oracle.pixels(run / tas_oracle.SHOTS / side / f"poll-{int(poll):06d}.ppm")
+            if pixels is None:
+                return self.missing()
+            return self.reply(tas_oracle.bmp(pixels), "image/bmp")
+
+        def diff(self, run: Path | None) -> None:
+            """Every compared poll's score: {"every", "rows": [{"poll", "diff", "drift", "vi_drift"}]}."""
+            row = tas.read_record(run) if run else None
+            meta = row.get("oracle") if row else None
+            if not run or not isinstance(meta, dict):
+                return self.missing()
+            summary = tas_oracle.summary(run, row) or {}
+            every = int(meta.get("every") or 1)
+            rows = tas_oracle.compare(run, every, summary.get("status") == "done")
+            return self.json({"every": every, "rows": rows})
 
         def log(self, run: Path | None, query: str) -> None:
             if not run:
@@ -584,6 +625,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                             str(body.get("port") or "") or None,
                             str(body.get("label") or "") or None,
                             str(body.get("pak") or "") or None,
+                            bool(body.get("oracle", False)),
                         )
                     )
                 elif self.path == "/api/play-all":

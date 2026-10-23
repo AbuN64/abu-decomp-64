@@ -361,10 +361,20 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     play.add_argument("--port", type=Path, help="run this build's executable instead of the profile's (a lane's build)")
     play.add_argument("--label", help="tag the run with this lane name on the TAS page")
     play.add_argument("--pak", choices=("on", "off"), help="Expansion Pak on (8 MB) or off (4 MB), else the movie's")
-    play.add_argument("--shots-every", type=int, default=0, metavar="N", help="write a picture every N polls to RUN/shots")
+    play.add_argument(
+        "--shots-every", type=int, default=0, metavar="N", help="write a picture every N polls to RUN/shots"
+    )
     play.add_argument("--dump-ram-at", type=int, metavar="P", help="write guest RAM at poll P to RUN/ram-P.bin")
-    play.add_argument("--trace-draws", type=int, metavar="P", help="write the draws (texture, palette, combiner, colours, "
-                      "geometry) of the first graphics task from poll P to RUN/draws-P.txt")
+    play.add_argument(
+        "--trace-draws",
+        type=int,
+        metavar="P",
+        help="write the draws (texture, palette, combiner, colours, "
+        "geometry) of the first graphics task from poll P to RUN/draws-P.txt",
+    )
+    play.add_argument(
+        "--oracle", action="store_true", help="replay it in the original game beside the port and compare pictures"
+    )
 
 
 def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -385,20 +395,23 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
     if args.action == "delete":
         return tas.delete(profile, args.name), 0, []
     inspect = {"shots_every": args.shots_every, "dump_ram_at": args.dump_ram_at, "trace_draws": args.trace_draws}
-    if args.all and (args.port or args.label or args.pak or any(inspect.values())):
-        raise DecompError("tas.play", "--port, --label, --pak and the inspection options replay one movie, not --all")
+    if args.all and (args.port or args.label or args.pak or args.oracle or any(inspect.values())):
+        raise DecompError(
+            "tas.play", "--port, --label, --pak, --oracle and the inspection options replay one movie, not --all"
+        )
     if args.all:
         result, code = tas.play_all(profile, jobs=args.jobs, twice=args.twice)
         print(tas.table(result), file=sys.stderr)
         return result, code, []
     if not args.name:
         raise DecompError("tas.play", "give a movie name or --all")
+    options = {"speed": args.speed, "port": args.port, "label": args.label, "pak": args.pak, "oracle": args.oracle}
     if args.twice:
         if any(inspect.values()):
             raise DecompError("tas.play", "--twice compares two plain runs; inspect with a single replay")
-        twice = tas.play_twice(profile, args.name, speed=args.speed, port=args.port, label=args.label, pak=args.pak)
+        twice = tas.play_twice(profile, args.name, **options)
         return twice, 0, []
-    played = tas.play(profile, args.name, speed=args.speed, port=args.port, label=args.label, pak=args.pak, **inspect)
+    played = tas.play(profile, args.name, **options, **inspect)
     return played, 0, []
 
 

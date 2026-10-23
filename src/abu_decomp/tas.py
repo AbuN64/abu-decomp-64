@@ -29,6 +29,7 @@ host fault leaves the failing stack and every thread's stack in the run folder. 
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -37,12 +38,13 @@ import resource
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas_health, tas_rank, tas_symbolize
+from abu_decomp import DecompError, tas_health, tas_oracle, tas_rank, tas_symbolize
 from abu_decomp.config import Profile, check_keys
 
 SCHEMA = 1
@@ -79,6 +81,7 @@ _KEYS = frozenset(
         "serve",
         "build",
         "rank",
+        "oracle",
     }
 )
 _REQUIRED = frozenset({"movies", "runs", "port", "args", "rom"})
@@ -589,10 +592,13 @@ def play(
     dump_ram_at: int | None = None,
     trace_draws: int | None = None,
     pak: str | None = None,
+    oracle: bool = False,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
-    lane's own build), `label` tags the run with the lane that started it; both show on the page.
+    lane's own build), `label` tags the run with the lane that started it; both show on the page. `oracle` replays
+    the same movie in the original game beside it (module tas_oracle): pictures at the same polls, scored poll by
+    poll; the result's `oracle` says how it ended and the worst score (`max_diff`, at `max_poll`).
 
     `pak` ("on"/"off") sets the Expansion Pak: the movie's own by default, `on` for a new run.
     Every run listens for live input (`input_address`, module tas_serve's /api/take and /api/input): once it is taken
@@ -607,6 +613,11 @@ def play(
     check_inspect(shots_every, dump_ram_at, trace_draws)
     check_pak(pak)
     human = name is None
+    if oracle and human:
+        raise DecompError("tas.oracle", "the oracle replays a movie; a human run has none")
+    if oracle and shots_every:
+        raise DecompError("tas.oracle", "--oracle pictures the port every tas.oracle.shot_every polls (shots/port)")
+    original = tas_oracle.required(profile) if oracle else None
     if human:
         speed, label = 1, label or HUMAN_LABEL
         name = human_movie_name(now)
@@ -652,6 +663,20 @@ def play(
         "input": "human" if human else "movie",
         "pak": pak,
     }
+    oracle_process, oracle_end, oracle_waiter = None, {}, None
+    if original:
+        env.update(tas_oracle.port_env(original, run))
+        record["oracle"] = {"status": "running", "every": original["shot_every"], "host": str(original["host"])}
+        oracle_began = time.monotonic()
+        oracle_process = tas_oracle.start(original, run, cfg["exit_after"], pak)
+        record["oracle"]["pid"] = oracle_process.pid
+
+        def reap() -> None:  # reaped as soon as it ends, so the page sees it done while the port goes on
+            code, cpu = _wait(oracle_process, original["timeout_seconds"])
+            oracle_end.update(code=code, cpu=cpu, wall=round(time.monotonic() - oracle_began, 1))
+
+        oracle_waiter = threading.Thread(target=reap, daemon=True)
+        oracle_waiter.start()
     _write_record(run, record)
     argv = supervised(cfg, run, _argv(cfg, user_dir, pak))
     try:
@@ -664,6 +689,9 @@ def play(
             process.stdin.close()
             code, cpu = _wait(process, timeout, run)
     except BaseException:
+        if oracle_process and oracle_process.poll() is None:
+            with contextlib.suppress(OSError):
+                os.killpg(oracle_process.pid, signal.SIGKILL)
         _write_record(run, {**record, "status": "done", "outcome": None, "ended": time.time()})
         raise
     text = (run / "output.txt").read_text(errors="replace")
@@ -696,6 +724,19 @@ def play(
         )
     keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
     keep += ("taken", "saved")
+    if oracle_waiter:
+        oracle_waiter.join()
+        wall, polls = oracle_end["wall"], tas_oracle.reached(run)
+        record["oracle"] = {
+            **record["oracle"],
+            **tas_oracle.outcome(oracle_end["code"]),
+            "status": "done",
+            "polls_reached": polls,
+            "wall_seconds": wall,
+            "cpu_seconds": oracle_end["cpu"],
+            "fps": round(polls / wall, 1) if wall else None,
+        }
+        result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
     _write_record(
         run,
         {**record, **{k: result.get(k) for k in keep}, "status": "done", "stopped": stopped, "ended": time.time()},
@@ -711,10 +752,11 @@ def play_twice(
     port: Path | str | None = None,
     label: str | None = None,
     pak: str | None = None,
+    oracle: bool = False,
 ) -> dict[str, Any]:
     """Two replays back to back; the second's `same_twice` compares it with the first."""
-    play(profile, name, speed=speed, port=port, label=label, pak=pak)
-    return play(profile, name, speed=speed, port=port, label=label, pak=pak)
+    play(profile, name, speed=speed, port=port, label=label, pak=pak, oracle=oracle)
+    return play(profile, name, speed=speed, port=port, label=label, pak=pak, oracle=oracle)
 
 
 def compare(recorded: dict[str, Any] | None, now: dict[str, Any]) -> str:

@@ -1,0 +1,254 @@
+"""`tas play --oracle` and the port | original comparison (module tas_oracle). Mocked: no port or oracle runs."""
+
+import hashlib
+import io
+import json
+import os
+import tempfile
+import threading
+import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+from unittest import mock
+
+from abu_decomp import DecompError, tas, tas_oracle, tas_serve
+from abu_decomp.config import load_profile
+
+W, H = tas_oracle.WIDTH, tas_oracle.HEIGHT
+
+
+def picture(rgb=(0, 0, 0), box=None, box_rgb=(255, 255, 255)) -> bytes:
+    """W x H RGB bytes, optionally with a filled box (x0, y0, x1, y1)."""
+    pixels = bytearray(bytes(rgb) * (W * H))
+    if box:
+        x0, y0, x1, y1 = box
+        for y in range(y0, y1):
+            pixels[(y * W + x0) * 3 : (y * W + x1) * 3] = bytes(box_rgb) * (x1 - x0)
+    return bytes(pixels)
+
+
+def write_shot(folder: Path, poll: int, pixels: bytes) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"poll-{poll:06d}.ppm").write_bytes(tas_oracle.PPM_HEAD + pixels)
+
+
+class ScoreTests(unittest.TestCase):
+    def test_diff_share_counts_visibly_different_pixels(self):
+        black = picture()
+        self.assertEqual(tas_oracle.diff_share(black, black), 0.0)
+        self.assertEqual(tas_oracle.diff_share(black, picture((31, 31, 31))), 0.0)  # under 32: never counts
+        self.assertEqual(tas_oracle.diff_share(picture((100, 0, 0)), picture((70, 0, 0))), 0.0)
+        self.assertEqual(tas_oracle.diff_share(black, picture((0, 64, 0))), 1.0)  # 64 or more: always counts
+        self.assertEqual(tas_oracle.diff_share(black, picture(box=(0, 0, W // 2, H))), 0.5)
+        with self.assertRaises(ValueError):
+            tas_oracle.diff_share(black, black[:-3])
+
+    def test_bmp_is_bottom_up_bgr(self):
+        rgb = picture((1, 2, 3), box=(0, 0, W, 1), box_rgb=(10, 20, 30))  # top row differs
+        data = tas_oracle.bmp(rgb)
+        self.assertEqual(data[:2], b"BM")
+        self.assertEqual(int.from_bytes(data[18:22], "little"), W)
+        self.assertEqual(len(data), 54 + W * H * 3)
+        self.assertEqual(data[54:57], bytes((3, 2, 1)))  # first stored row is the bottom one, BGR
+        self.assertEqual(data[-3:], bytes((30, 20, 10)))  # last stored row is the top one
+
+    def test_outcome(self):
+        self.assertEqual(tas_oracle.outcome(0), {"outcome": "ok"})
+        self.assertEqual(tas_oracle.outcome(None), {"outcome": "hang"})
+        self.assertEqual(tas_oracle.outcome(-11), {"outcome": "crash", "subject": "SIGSEGV"})
+        self.assertEqual(tas_oracle.outcome(5), {"outcome": "exit", "subject": "exit 5"})
+
+
+class CompareTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.run_dir = Path(directory.name)
+
+    def shots(self, side, frames):
+        for poll, pixels in frames.items():
+            write_shot(self.run_dir / "shots" / side, poll, pixels)
+
+    def test_same_poll_scores_drift_and_vi_drift(self):
+        a, b, c, d = (picture(box=(0, 0, W * k // 8, H)) for k in (1, 3, 5, 7))
+        # The port shows each screen one shot (10 polls) after the original does.
+        self.shots("port", {10: a, 20: a, 30: b, 40: c, 50: d})
+        self.shots("oracle", {10: a, 20: b, 30: c, 40: d, 50: d, 60: d, 70: d, 80: d})
+        (self.run_dir / "port-trace.txt").write_text("10 20\n20 40\n30 60\n")
+        (self.run_dir / "oracle-trace.txt").write_text("10 21\n20 42\n30 63\n40 8")  # the last line is half written
+        (self.run_dir / "shots" / "port" / "poll-000060.ppm").write_bytes(tas_oracle.PPM_HEAD + b"\0")  # incomplete
+        rows = {r["poll"]: r for r in tas_oracle.compare(self.run_dir, 10, oracle_done=False)}
+        self.assertEqual(sorted(rows), [10, 20, 30, 40, 50])
+        self.assertEqual((rows[10]["diff"], rows[10]["drift"], rows[10]["vi_drift"]), (0.0, 0, 1))
+        self.assertEqual((rows[30]["diff"], rows[30]["drift"], rows[30]["vi_drift"]), (0.25, -10, 3))
+        self.assertEqual(rows[40]["drift"], -10)
+        self.assertIsNone(rows[40]["vi_drift"])  # no complete trace line for poll 40 on the oracle side
+        self.assertEqual((rows[50]["diff"], rows[50]["drift"]), (0.0, 0))
+        cached = json.loads((self.run_dir / "diff.json").read_text())
+        self.assertEqual([r["poll"] for r in cached["rows"]], [10, 20, 30, 40, 50])  # oracle shots to 80: all settled
+        with mock.patch.object(tas_oracle, "diff_share", side_effect=AssertionError("recomputed")):
+            self.assertEqual(len(tas_oracle.compare(self.run_dir, 10, oracle_done=False)), 5)  # read from the cache
+
+    def test_rows_wait_for_their_neighbours_until_the_oracle_ends(self):
+        a = picture()
+        self.shots("port", {10: a, 20: a})
+        self.shots("oracle", {10: a, 20: a})
+        self.assertEqual(len(tas_oracle.compare(self.run_dir, 10, oracle_done=False)), 2)
+        self.assertFalse((self.run_dir / "diff.json").exists())  # poll 10 could still match poll 40
+        self.assertEqual(len(tas_oracle.compare(self.run_dir, 10, oracle_done=True)), 2)
+        self.assertEqual(len(json.loads((self.run_dir / "diff.json").read_text())["rows"]), 2)
+
+    def test_summary(self):
+        self.assertIsNone(tas_oracle.summary(self.run_dir, {"id": "x"}))
+        self.shots("port", {25: picture(), 50: picture((0, 255, 0))})
+        self.shots("oracle", {25: picture(), 50: picture()})
+        (self.run_dir / "oracle-trace.txt").write_text("49 70\n50 71\n")
+        record = {"oracle": {"status": "done", "every": 25, "polls_reached": 50, "outcome": "ok", "fps": 900.0}}
+        got = tas_oracle.summary(self.run_dir, record)
+        self.assertEqual(got["frame"], f"/oracle/{self.run_dir.name}")
+        self.assertEqual((got["status"], got["poll"], got["outcome"], got["every"]), ("done", 50, "ok", 25))
+        self.assertEqual((got["max_diff"], got["max_poll"], got["diff"], got["diff_poll"]), (1.0, 50, 1.0, 50))
+        running = tas_oracle.summary(self.run_dir, {"oracle": {"status": "running", "every": 25, "pid": os.getpid()}})
+        self.assertEqual((running["status"], running["poll"], running["outcome"]), ("running", 50, None))
+        ended = tas_oracle.summary(self.run_dir, {"oracle": {"status": "running", "every": 25, "pid": 2**22 + 7}})
+        self.assertEqual((ended["status"], ended["poll"]), ("done", 50))  # reaped before the record says so
+
+
+class PlayTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        (self.root / "game.z64").write_bytes(b"rom")
+        (self.root / "port").write_text("")
+        self.host = self.root / "n64host"
+        self.host.write_text("")
+        self.host.chmod(0o755)
+        (self.root / "movies").mkdir()
+        sha = hashlib.sha1(b"rom").hexdigest()
+        (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA *50\n")
+        self.seat = self.root / "seat.json"
+        self.tas = {"movies": "movies", "runs": "runs", "port": "port", "rom": "game.z64", "args": [], "exit_after": 7}
+        self.profile = self.load(oracle={"host": "n64host", "env": {"N64R_ROM": "orig.z64"}, "shot_every": 25})
+
+    def load(self, **extra):
+        self.seat.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": {**self.tas, **extra}}))
+        return load_profile(self.seat)
+
+    def test_settings(self):
+        self.assertIsNone(tas_oracle.settings(self.load()))
+        with self.assertRaises(DecompError):
+            tas_oracle.required(self.load())
+        with self.assertRaises(DecompError):
+            tas_oracle.required(self.load(oracle={"host": "missing"}))
+        with self.assertRaises(DecompError):
+            tas_oracle.settings(self.load(oracle={"host": "n64host", "shot_every": 0}))
+        got = tas_oracle.required(self.profile)
+        self.assertEqual((got["host"], got["shot_every"], got["timeout_seconds"]), (self.host, 25, 300))
+
+    def test_play_runs_the_original_beside_the_port(self):
+        seen = {}
+        host = str(self.host)
+
+        class Process:
+            def __init__(self, argv, env, stdout, **kwargs):
+                self.pid = 4242 if argv[0] == host else 4343
+                self.stdin = io.StringIO()
+                if argv[0] == host:  # the oracle: pictures at polls 25 and 50, its trace
+                    seen["oracle"] = (env, kwargs.get("cwd"))
+                    for poll in (25, 50):
+                        write_shot(Path(env["N64R_TAS_SHOT_DIR"]), poll, picture())
+                    Path(env["N64R_TAS_TRACE"]).write_text("25 40\n50 80\n57 90\n")
+                    Path(env["N64R_VIEW"]).write_bytes(b"BM")
+                    return
+                seen["port"] = env
+                write_shot(Path(env["N64C_TAS_SHOT_DIR"]), 25, picture())
+                write_shot(Path(env["N64C_TAS_SHOT_DIR"]), 50, picture(box=(0, 0, W // 4, H)))
+                Path(env["N64C_TAS_TRACE"]).write_text("25 40\n50 82\n")
+                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n" * 50)
+                stdout.write("n64c-tas: done polls=57\n")
+
+        def fake_wait(process, timeout, run=None):
+            return 0, 0.5
+
+        with mock.patch.object(tas.subprocess, "Popen", Process), mock.patch.object(tas, "_wait", fake_wait):
+            result = tas.play(self.profile, "m", oracle=True, pak="off")
+        run = Path(result["run"])
+        oracle_env, cwd = seen["oracle"]
+        self.assertEqual(cwd, run)
+        self.assertEqual(oracle_env["N64R_TAS_PLAY"], str(run / "movie.raw"))
+        self.assertEqual((oracle_env["N64R_TAS_EXIT_AFTER"], oracle_env["N64R_TAS_SHOT_EVERY"]), ("7", "25"))
+        self.assertEqual((oracle_env["N64R_CLOCK"], oracle_env["SDL_VIDEODRIVER"]), ("entries", "offscreen"))
+        self.assertEqual(oracle_env["N64R_PAK"], "off")  # the run's Expansion Pak, as the port's --pak
+        self.assertEqual((oracle_env["N64R_VIEW"], oracle_env["N64R_ROM"]), (str(run / "oracle.bmp"), "orig.z64"))
+        port_env = seen["port"]
+        self.assertEqual(port_env["N64C_TAS_SHOT_EVERY"], "25")
+        self.assertEqual(port_env["N64C_TAS_SHOT_DIR"], str(run / "shots" / "port"))
+        self.assertEqual(port_env["N64C_TAS_TRACE"], str(run / "port-trace.txt"))
+        oracle = result["oracle"]
+        self.assertEqual((oracle["outcome"], oracle["polls_reached"], oracle["status"]), ("ok", 57, "done"))
+        self.assertEqual((oracle["max_diff"], oracle["max_poll"], oracle["vi_drift"]), (0.25, 50, -2))
+        record = tas.read_record(run)
+        self.assertEqual((record["oracle"]["outcome"], record["oracle"]["every"]), ("ok", 25))
+        with self.assertRaises(DecompError):
+            tas.play(self.profile, None, oracle=True)  # a human run has no movie to replay
+        with self.assertRaises(DecompError):
+            tas.play(self.load(), "m", oracle=True)  # no oracle on this seat
+
+
+class ServeTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / "game.z64").write_bytes(b"rom")
+        (root / "port").write_text("bin")
+        (root / "movies").mkdir()
+        seat = root / "seat.json"
+        table = {"movies": "movies", "runs": "runs", "port": "port", "rom": "game.z64", "args": []}
+        seat.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": table}))
+        self.server = tas_serve.Server(load_profile(seat))
+        self.run = root / "runs" / "plays" / "r1"
+        self.run.mkdir(parents=True)
+        oracle = {"status": "done", "every": 25, "polls_reached": 50, "outcome": "ok"}
+        (self.run / "run.json").write_text(
+            json.dumps({"id": "r1", "movie": "m", "status": "done", "outcome": "ok", "started": 1.0, "oracle": oracle})
+        )
+        write_shot(self.run / "shots" / "port", 25, picture((200, 0, 0)))
+        write_shot(self.run / "shots" / "oracle", 25, picture())
+        (self.run / "oracle.bmp").write_bytes(b"BMoriginal")
+        self.http = ThreadingHTTPServer(("127.0.0.1", 0), tas_serve.handler(self.server))
+        self.http.daemon_threads = True
+        threading.Thread(target=self.http.serve_forever, daemon=True).start()
+        self.addCleanup(self.http.server_close)
+        self.addCleanup(self.http.shutdown)
+        self.base = f"http://127.0.0.1:{self.http.server_address[1]}"
+
+    def get(self, path):
+        try:
+            with urllib.request.urlopen(self.base + path, timeout=10) as reply:
+                return reply.status, reply.headers.get("Content-Type"), reply.read()
+        except urllib.error.HTTPError as error:
+            return error.code, None, b""
+
+    def test_state_oracle_picture_shots_and_scores(self):
+        row = self.server.state()["runs"][0]["oracle"]
+        self.assertEqual(
+            (row["frame"], row["status"], row["max_diff"], row["max_poll"]), ("/oracle/r1", "done", 1.0, 25)
+        )
+        self.assertEqual(self.get("/oracle/r1")[1:], ("image/bmp", b"BMoriginal"))
+        status, kind, body = self.get("/shot/r1?side=port&poll=25")
+        self.assertEqual((status, kind, len(body)), (200, "image/bmp", 54 + W * H * 3))
+        self.assertEqual(body[54:57], bytes((0, 0, 200)))  # BGR
+        self.assertEqual(self.get("/shot/r1?side=oracle&poll=50")[0], 404)
+        self.assertEqual(self.get("/shot/r1?side=other&poll=25")[0], 404)
+        diff = json.loads(self.get("/diff/r1")[2])
+        self.assertEqual(diff, {"every": 25, "rows": [{"poll": 25, "diff": 1.0, "drift": 0, "vi_drift": None}]})
+        (self.run / "run.json").write_text(json.dumps({"id": "r1", "movie": "m", "status": "done", "started": 1.0}))
+        self.assertEqual(self.get("/diff/r1")[0], 404)  # a run without the oracle
+
+
+if __name__ == "__main__":
+    unittest.main()

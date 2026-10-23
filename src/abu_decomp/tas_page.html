@@ -104,6 +104,17 @@
   .tile .take { font: 11px var(--mono); padding: 0 5px; border: 1px solid var(--ok); color: var(--ok); border-radius: 2px;
                 background: none; cursor: pointer; display: none; }
   .tile.sel .take.can { display: inline; }
+  #compare { display: none; flex: none; padding: 8px 12px 6px; border-bottom: 1px solid var(--line); }
+  #compare.on { display: block; }
+  #compare .bar { display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; white-space: nowrap; }
+  #compare .bar .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #compare .pics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  #compare figure { margin: 0; min-width: 0; }
+  #compare figure canvas { display: block; width: 100%; aspect-ratio: 4 / 3; background: #000; image-rendering: pixelated;
+                           border: 1px solid var(--line); border-radius: 2px; }
+  #compare figcaption { font: 11px var(--mono); color: var(--dim); margin-top: 2px; white-space: nowrap; overflow: hidden;
+                        text-overflow: ellipsis; }
+  #cstrip { display: block; width: 100%; height: 34px; margin-top: 6px; cursor: crosshair; }
   dialog { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 0;
            min-width: 340px; max-width: min(720px, 92vw); }
   dialog::backdrop { background: rgba(0, 0, 0, .55); }
@@ -143,11 +154,21 @@
       <canvas id="scanvas" width="320" height="240" tabindex="0"></canvas>
       <div id="shint" class="hint"></div>
     </div>
+    <div id="compare">
+      <div class="bar"><b>port | original</b><span id="cinfo" class="grow mono dim"></span>
+        <button id="clive" title="Follow the newest compared poll">latest</button></div>
+      <div class="pics">
+        <figure><canvas id="cport" width="320" height="240"></canvas><figcaption id="cportcap">port</figcaption></figure>
+        <figure><canvas id="corig" width="320" height="240"></canvas><figcaption id="corigcap">original (recompiled ROM)</figcaption></figure>
+        <figure><canvas id="cdiff" width="320" height="240"></canvas><figcaption>diff: red = visibly different pixels</figcaption></figure>
+      </div>
+      <canvas id="cstrip" width="960" height="34" title="share of the picture that differs, per compared poll (click a poll)"></canvas>
+    </div>
     <div id="tiles"></div>
     <div id="movies">
       <div class="head"><b>movies</b><span id="mcount" class="grow"></span></div>
       <div class="scroll"><table>
-        <thead><tr><th>movie</th><th>outcome</th><th>subject</th><th class="num">reached</th><th>twice</th><th>fn</th><th>train</th><th class="num">last run</th></tr></thead>
+        <thead><tr><th>movie</th><th>outcome</th><th>subject</th><th class="num">reached</th><th>twice</th><th>fn</th><th>train</th><th class="num" title="worst share of the picture that differed from the original (last run with the original)">vs orig</th><th class="num">last run</th></tr></thead>
         <tbody id="mbody"></tbody>
       </table></div>
     </div>
@@ -176,6 +197,9 @@
       <label><input type="radio" name="scope" value="all"> all running</label>
       <label><input type="radio" name="scope" value="focus"> focused run only</label></div>
     <div class="row"><span></span><span id="sndstate" class="dim"></span></div>
+    <div class="row"><span>original</span>
+      <label><input type="radio" name="orig" value="on"> on (each replay you start also runs the original game)</label>
+      <label><input type="radio" name="orig" value="off"> off</label></div>
   </div>
 </dialog>
 <dialog id="controls">
@@ -233,7 +257,7 @@ function render() {
   $("build").title = b.port || "";
   const h = humanRun();
   if (h && !P.id && P.closedId !== h.id) stageOn(h.id, false);  // a live-input run always gets the big view
-  renderStage(); renderTiles(); renderMovies(); renderLanes(); renderInbox(); followLog(); followAudio();
+  renderStage(); renderCompare(); renderTiles(); renderMovies(); renderLanes(); renderInbox(); followLog(); followAudio();
 }
 
 /* ---------- live tiles ---------- */
@@ -285,6 +309,12 @@ function renderTiles() {
     t.badge.textContent = out || speedText(r.speed);
     t.badge.className = "badge" + (out ? " " + (OUT[out] || "dim") : r.speed === 1 ? " one" : "");
     t.count.textContent = `${r.poll}/${r.polls}`;
+    t.count.className = "cnt mono dim";
+    if (r.oracle && r.oracle.max_diff != null) {
+      t.count.textContent += ` · Δ${pct(r.oracle.max_diff)}`;
+      t.count.className = "cnt mono " + diffClass(r.oracle.max_diff);
+      t.count.title = `worst poll differs ${pct(r.oracle.max_diff)} from the original (poll ${r.oracle.max_poll})`;
+    }
     t.fill.style.width = r.polls ? `${Math.min(100, 100 * r.poll / r.polls)}%` : "0";
     t.node.classList.toggle("done", r.status === "done");
     t.take.classList.toggle("can", r.status === "running" && !humanRun());
@@ -356,6 +386,7 @@ function renderMovies() {
       const mark = m.train.mark;
       tr.append(cell(mark || "queued", mark === "LANDED" ? "ok" : mark === "DROPPED" ? "bad" : "dim", m.train.line));
     } else tr.append(cell("—", "faint"));
+    tr.append(m.oracle_max == null ? cell("—", "faint") : cell(pct(m.oracle_max), "num " + diffClass(m.oracle_max), `worst poll differs ${pct(m.oracle_max)} from the original`));
     tr.append(cell(live ? "running" : ago(m.last_run), "num" + (live ? " ok" : " dim")));
     if (m.name === sel.movie) tr.className = "sel";
     tr.dataset.movie = m.name;
@@ -693,11 +724,125 @@ setInterval(() => { if (P.id) renderStage(); }, 500);
 window.addEventListener("blur", () => { P.keys.clear(); sendPad(); });
 document.addEventListener("keyup", e => { if (P.keys.delete(e.code)) { e.preventDefault(); sendPad(); } }, true);
 
+/* ---------- the original game beside the port: shots at the same polls, scored poll by poll ---------- */
+const O = { on: false, id: null, rows: [], every: 1, poll: null, follow: true, shown: "", busy: false, at: 0 };
+try { O.on = localStorage.getItem("tas.oracle") === "on"; } catch (e) {}
+document.querySelectorAll('#settings input[name="orig"]').forEach(i => i.onchange = () => {
+  O.on = i.value === "on";
+  try { localStorage.setItem("tas.oracle", O.on ? "on" : "off"); } catch (e) {}
+});
+const pct = v => v == null ? "—" : `${(100 * v).toFixed(v < 0.1 ? 1 : 0)}%`;
+const diffClass = v => v == null ? "dim" : v < 0.05 ? "ok" : v < 0.25 ? "warn" : "bad";
+function compareRun() { const r = selectedRun(); return r && r.oracle ? r : null; }
+function renderCompare() {
+  const r = compareRun(), box = $("compare");
+  box.classList.toggle("on", !!r);
+  if (!r) { O.id = null; return; }
+  if (O.id !== r.id) Object.assign(O, { id: r.id, rows: [], poll: null, follow: true, shown: "", at: 0 });
+  const o = r.oracle;
+  if (!O.busy && (performance.now() - O.at > 1000 || !O.rows.length)) loadDiff(r.id);
+  if (!O.rows.length) O.every = o.every || 1;
+  const row = O.rows.find(x => x.poll === O.poll);
+  const parts = [];
+  parts.push(`original ${o.status === "running" ? "running" : o.outcome || "done"}${o.subject ? " (" + o.subject + ")" : ""} · poll ${o.poll}` +
+    (o.fps ? ` · ${o.fps} polls/s` : ""));
+  if (!O.follow && o.diff_poll != null) parts.push(`newest poll ${o.diff_poll}: ${pct(o.diff)}`);
+  if (row) {
+    parts.push(`poll ${row.poll}: ${pct(row.diff)} differs`);
+    if (row.drift) parts.push(`DRIFT: the original matches ${Math.abs(row.drift)} polls ${row.drift > 0 ? "later" : "earlier"}`);
+    if (row.vi_drift) parts.push(`VI ${row.vi_drift > 0 ? "+" : ""}${row.vi_drift}`);
+  } else parts.push("no poll compared yet");
+  if (o.max_diff != null) parts.push(`worst ${pct(o.max_diff)} at poll ${o.max_poll}`);
+  $("cinfo").textContent = parts.join(" · ");
+  $("cinfo").className = "grow mono " + (row && row.drift ? "warn" : row ? diffClass(row.diff) : "dim");
+  $("cinfo").title = "diff = share of pixels whose colour differs visibly (32..64 of 255 or more) at the same poll; drift = the original's " +
+    "picture a few polls away matches the port's clearly better (shown, never corrected); VI = retrace difference at that poll";
+  $("clive").style.display = O.follow ? "none" : "";
+  $("cportcap").textContent = row ? `port · poll ${row.poll}` : "port";
+  $("corigcap").textContent = row ? `original · poll ${row.poll}` + (row.drift ? ` (best match: poll ${row.poll + row.drift})` : "") : "original (recompiled ROM)";
+  drawStrip();
+  if (row) showPoll(); else liveOriginal(r.id);
+}
+// Before any poll is compared, the original's latest picture (its own N64R_VIEW) stands in.
+async function liveOriginal(id) {
+  if (O.liveBusy) return;
+  O.liveBusy = true; O.shown = "";
+  try {
+    const r = await fetch(`/oracle/${encodeURIComponent(id)}?n=${Date.now()}`, { cache: "no-store" });
+    if (r.ok && O.id === id && !O.rows.length) {
+      $("corig").getContext("2d").drawImage(await createImageBitmap(await r.blob()), 0, 0, 320, 240);
+      $("corigcap").textContent = "original · latest picture";
+    }
+  } catch (e) {}
+  setTimeout(() => { O.liveBusy = false; }, 250);
+}
+async function loadDiff(id) {
+  O.busy = true; O.at = performance.now();
+  try {
+    const r = await fetch(`/diff/${encodeURIComponent(id)}`, { cache: "no-store" });
+    if (r.ok && O.id === id) {
+      const d = await r.json();
+      O.rows = d.rows || []; O.every = d.every || 1;
+      if (O.follow && O.rows.length) O.poll = O.rows[O.rows.length - 1].poll;
+      renderCompare();
+    }
+  } catch (e) {}
+  O.busy = false;
+}
+function drawStrip() {
+  const c = $("cstrip"), w = c.clientWidth || 960, h = 34;
+  if (c.width !== w) c.width = w;
+  const g = c.getContext("2d"), css = getComputedStyle(document.documentElement);
+  g.clearRect(0, 0, w, h);
+  const r = compareRun();
+  const last = Math.max(1, r ? r.polls : 1, ...O.rows.map(x => x.poll));
+  const col = v => css.getPropertyValue(v < 0.05 ? "--ok" : v < 0.25 ? "--warn" : "--bad").trim();
+  g.fillStyle = css.getPropertyValue("--line").trim(); g.fillRect(0, h - 1, w, 1);
+  const bw = Math.max(1, Math.floor(w * O.every / last) - 1);
+  for (const x of O.rows) {
+    const px = Math.round((x.poll / last) * (w - bw)), bh = Math.max(1, Math.round(Math.min(1, x.diff * 2) * (h - 4)));
+    g.fillStyle = col(x.diff); g.fillRect(px, h - 1 - bh, bw, bh);
+    if (x.drift) { g.fillStyle = css.getPropertyValue("--warn").trim(); g.fillRect(px, 0, bw, 2); }
+  }
+  if (O.poll != null) { g.fillStyle = css.getPropertyValue("--fg").trim(); g.fillRect(Math.round((O.poll / last) * (w - bw)) + (bw >> 1), 0, 1, h); }
+}
+$("cstrip").onclick = e => {
+  if (!O.rows.length) return;
+  const r = compareRun(), c = $("cstrip"), last = Math.max(1, r ? r.polls : 1, ...O.rows.map(x => x.poll));
+  const at = (e.offsetX / c.clientWidth) * last;
+  O.poll = O.rows.reduce((a, b) => Math.abs(b.poll - at) < Math.abs(a.poll - at) ? b : a).poll;
+  O.follow = O.poll === O.rows[O.rows.length - 1].poll;
+  renderCompare();
+};
+$("clive").onclick = () => { O.follow = true; if (O.rows.length) O.poll = O.rows[O.rows.length - 1].poll; renderCompare(); };
+async function showPoll() {
+  const key = `${O.id} ${O.poll}`;
+  if (O.poll == null || key === O.shown) return;
+  O.shown = key;
+  const load = side => fetch(`/shot/${encodeURIComponent(O.id)}?side=${side}&poll=${O.poll}`, { cache: "no-store" })
+    .then(r => r.ok ? r.blob() : null).then(b => b ? createImageBitmap(b) : null).catch(() => null);
+  const [a, b] = await Promise.all([load("port"), load("oracle")]);
+  if (key !== O.shown) return;
+  const pa = $("cport").getContext("2d"), pb = $("corig").getContext("2d"), pd = $("cdiff").getContext("2d");
+  for (const [g, img] of [[pa, a], [pb, b]]) { g.fillStyle = "#000"; g.fillRect(0, 0, 320, 240); if (img) g.drawImage(img, 0, 0); }
+  if (!a || !b) { pd.fillStyle = "#000"; pd.fillRect(0, 0, 320, 240); return; }
+  // The same test the server scores with: a channel in another 64-wide bucket on both grids (offset by 32).
+  const da = pa.getImageData(0, 0, 320, 240).data, db = pb.getImageData(0, 0, 320, 240).data, out = pd.createImageData(320, 240);
+  for (let i = 0; i < da.length; i += 4) {
+    let differs = false;
+    for (let c = 0; c < 3 && !differs; c++) differs = (da[i + c] >> 6) !== (db[i + c] >> 6) && ((da[i + c] + 32) >> 6) !== ((db[i + c] + 32) >> 6);
+    const grey = (da[i] + da[i + 1] + da[i + 2]) / 9;
+    out.data[i] = differs ? 230 : grey; out.data[i + 1] = differs ? 60 : grey; out.data[i + 2] = differs ? 50 : grey; out.data[i + 3] = 255;
+  }
+  pd.putImageData(out, 0, 0);
+}
+
 /* ---------- modals: settings (sound) and controls (key map) ---------- */
 function openModal(id) {
   if (id === "settings") {
     document.querySelector(`#settings input[name="snd"][value="${A.on ? "on" : "off"}"]`).checked = true;
     document.querySelector(`#settings input[name="scope"][value="${A.scope}"]`).checked = true;
+    document.querySelector(`#settings input[name="orig"][value="${O.on ? "on" : "off"}"]`).checked = true;
     soundLabel();
   }
   $(id).showModal();
@@ -727,7 +872,8 @@ document.querySelectorAll("dialog").forEach(d => d.addEventListener("click", e =
 async function play(movie, speed) {
   if (!movie) return;
   wake();
-  const r = await post("/api/play", { movie, speed });
+  const r = await post("/api/play", { movie, speed, oracle: O.on });
+  if (r.error) alert(r.error);
   select(movie, r.id || null);
 }
 $("all").onclick = () => post("/api/play-all", {});

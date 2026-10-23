@@ -23,6 +23,9 @@ CONTRACT = {
     "/api/stop",
     "/api/take",
     "/api/input",
+    "/oracle/",
+    "/shot/",
+    "/diff/",
 }
 NOW = 1_800_000_000
 
@@ -39,6 +42,7 @@ def mock_state() -> dict:
         "train": None,
         "last_run": NOW - 75,
         "label": None,
+        "oracle_max": 0.012,
         **kw,
     }
     run = lambda rid, name, **kw: {  # noqa: E731
@@ -54,6 +58,21 @@ def mock_state() -> dict:
         "subject": None,
         "started": NOW - 5,
         "frame": f"/frame/{rid}",
+        "oracle": {
+            "frame": f"/oracle/{rid}",
+            "status": "done",
+            "poll": 1200,
+            "outcome": "ok",
+            "subject": None,
+            "every": 25,
+            "diff": 0.021,
+            "diff_poll": 275,
+            "max_diff": 0.4375,
+            "max_poll": 150,
+            "drift": 0,
+            "vi_drift": 3,
+            "fps": 912.0,
+        },
         **kw,
     }
     return {
@@ -164,8 +183,16 @@ class Stub:
                     self.reply(PAGE.read_bytes(), "text/html; charset=utf-8")
                 elif path == "/api/state":
                     self.reply(json.dumps(stub.state).encode(), "application/json")
-                elif path.startswith("/frame/"):
+                elif path.startswith(("/frame/", "/oracle/")):
                     self.reply(bmp(), "image/bmp")
+                elif path.startswith("/shot/"):
+                    side = "oracle" if "side=oracle" in query else "port"
+                    self.reply(bmp(rgb=(40, 90, 140) if side == "port" else (240, 240, 240)), "image/bmp")
+                elif path.startswith("/diff/"):
+                    rows = [
+                        {"poll": p, "diff": 0.02, "drift": 25 if p == 150 else 0, "vi_drift": 3} for p in (25, 150, 275)
+                    ]
+                    self.reply(json.dumps({"every": 25, "rows": rows}).encode(), "application/json")
                 elif path.startswith("/log/"):
                     text = stub.logs.get(path[5:], b"")
                     start = int(dict(p.split("=", 1) for p in query.split("&") if "=" in p).get("from", 0))
@@ -208,7 +235,8 @@ class PageTests(unittest.TestCase):
         state = mock_state()
         fields = set(state["runs"][0]) | set(state["movies"][0]) | set(state["cycle"]) | set(state["build"])
         fields |= set(state["cycle"]["lanes"][0])
-        fields -= {"frame"}  # the page builds /frame/<id> from the id
+        fields |= set(state["runs"][0]["oracle"])
+        fields -= {"frame"}  # the page builds /frame/<id> and /oracle/<id> from the id
         for name in sorted(fields | {"state", "mark", "line"}):
             self.assertRegex(js, rf"\.{name}\b", name)
 
@@ -268,6 +296,10 @@ class PageTests(unittest.TestCase):
             "crash",
             "611/1200",
             "2574d74ed",
+            "port | original",
+            "Δ44%",
+            "worst 44% at poll 150",
+            "1.2%",
         ):
             self.assertIn(text, dom, text)
         self.assertRegex(dom, r"id=\"conn\" class=\"dim\"></span>")  # state fetched
