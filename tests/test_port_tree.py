@@ -45,6 +45,7 @@ class PortTreeTests(unittest.TestCase):
         self.remote, self.tree = self.root / "remote.git", self.root / "port"
         git(self.root, "init", "-q", "--bare", "-b", "main", str(self.remote))
         git(self.root, "clone", "-q", str(self.remote), str(self.tree))
+        (self.tree / ".git/info").mkdir(exist_ok=True)  # a host's init.templatedir may lack info/
         (self.tree / ".git/info/exclude").write_text(".unbake/\n")  # real trees ignore it (ship locks there)
         (self.tree / "decomp.cmake").write_text(f"GIT_TAG {self.pin1}\nset(x)\n")
         (self.tree / "README.md").write_text(f"fetches at commit {self.pin1}.\n")
@@ -265,6 +266,7 @@ class PlayAllStreamTests(unittest.TestCase):
             with (
                 mock.patch.object(tas, "settings", return_value=cfg),
                 mock.patch.object(tas, "play", side_effect=lambda p, n, **k: rows[n]),
+                mock.patch("abu_decomp.tas_coverage.build", return_value=None),  # coverage has its own tests
                 redirect_stderr(err),
             ):
                 out, code = tas.play_all(None)

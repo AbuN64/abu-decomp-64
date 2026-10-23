@@ -36,6 +36,7 @@ class ShipTests(unittest.TestCase):
         git(self.other, "push", "-q", "origin", "HEAD:main")
         git(self.root, "clone", "-q", str(self.remote), str(self.tree))
         (self.tree / "build.o").write_text("warm")  # ignored build state the ship must keep
+        (self.tree / ".git/info").mkdir(exist_ok=True)  # a host's init.templatedir may lack info/
         (self.tree / ".git/info/exclude").write_text("build.o\n.unbake/\n")
         (self.root / "host.toml").write_text("")
         (self.root / "events.jsonl").write_text("")

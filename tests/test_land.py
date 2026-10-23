@@ -409,6 +409,7 @@ class LandTests(unittest.TestCase):
 
     def hook(self, text):
         path = self.tree / ".git" / "hooks" / "commit-msg"
+        path.parent.mkdir(exist_ok=True)  # the tests start from an empty git template
         path.write_text(text)
         path.chmod(0o755)
 

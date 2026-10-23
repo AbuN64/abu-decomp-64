@@ -6,6 +6,10 @@ ruff check src tests ci
 ruff format --check src tests ci
 # Every test has a timeout (ci/run_tests.py, ABU_TEST_TIMEOUT seconds), so a hang fails with a stack dump.
 PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" python3 ci/run_tests.py tests
+# Test modules written as pytest functions (unittest discovery imports but never runs them) run under pytest.
+pytest_files="$(grep -l '^import pytest' tests/*.py || true)"
+# shellcheck disable=SC2086
+[ -z "$pytest_files" ] || PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" python3 -m pytest -q -p no:cacheprovider $pytest_files
 # The Wayland input bridge is C: build it warning-clean from its protocol XML (generated into a scratch dir).
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
