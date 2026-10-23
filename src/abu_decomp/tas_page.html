@@ -91,7 +91,7 @@
   <span id="build" class="mono dim"></span>
   <span class="grow"></span>
   <span id="conn" class="dim"></span>
-  <span class="keys dim"><kbd>space</kbd> play 1x · <kbd>a</kbd> all · <kbd>x</kbd> stop · <kbd>↑↓</kbd> pick</span>
+  <span class="keys dim"><kbd>space</kbd> play 1x · <kbd>a</kbd> all · <kbd>x</kbd> stop · <kbd>↑↓</kbd>/click pick</span>
   <button id="sound" title="Sound for the 1x run">sound on</button>
   <button id="all" title="Replay every movie at turbo (a)">play all</button>
 </header>
@@ -190,11 +190,7 @@ function makeTile(r) {
   node.append(canvas, cap, bar);
   const t = { node, canvas, ctx: canvas.getContext("2d"), mv, badge, count, fill, run: r, busy: false, got: false, misses: 0 };
   t.ctx.imageSmoothingEnabled = false;
-  node.onclick = () => {
-    const cur = t.run;
-    if (cur.status === "running" && cur.speed === 1) return select(cur.movie, cur.id);
-    play(cur.movie, 1);
-  };
+  node.onclick = () => select(t.run.movie, t.run.id);  // select only: replays start from space, a or a row double-click
   return t;
 }
 function renderTiles() {
