@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#include "../decomp/frame.h"
-#include "../decomp/stop.h"
+#include "../boot/frame.h"
+#include "../boot/stop.h"
 #include "../fast3d/n64c_f3d.h"
 #include "../n64c_memory.h"
 #include "../n64c_diag.h"

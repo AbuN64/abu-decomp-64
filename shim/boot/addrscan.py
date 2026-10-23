@@ -39,6 +39,8 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import link
 import policy
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import portdir  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
 KSEG0, KUSEG_END, KUSEG_LOW, RDRAM_END = 0x80000000, 0x00800000, 0x10000, 0x80800000
@@ -259,7 +261,7 @@ def main():
     for (kind, state), count in sorted(counts.items()):
         print("COUNT", kind, state, count, sep="\t")
     import closure  # a D_00XXXXXX name the closure cannot bind to its function routes as zeroed data
-    facts = closure.Facts(args.source, HERE.parent, HERE / "shim-bindings.txt", policy.game_code(project))
+    facts = closure.Facts(args.source, HERE.parent, portdir.fact("shim-bindings.txt"), policy.game_code(project))
     for sym, address, names in facts.unbound_aliases():
         print("ADDRESS", "-", f"0x{address:08x}", "-", "alias", names[0], "unbound", sym, sep="\t")
         counts["alias", "unbound"] = counts.get(("alias", "unbound"), 0) + 1

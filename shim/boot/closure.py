@@ -31,6 +31,8 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(HERE))
 import needs as needsfeed  # noqa: E402
 import policy  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import portdir  # noqa: E402
 NAMED = re.compile(r"D_auto_(8[0-9A-F]{7})")
 ALIAS = re.compile(r"D_(?:auto_)?00([0-9A-F]{6})")
 # The same name with a version suffix (D_0024B52C_us_rev1: ACTOR_TABLE_A, the entry the setup stores as a behaviour):
@@ -320,8 +322,8 @@ def main():
     parser.add_argument("--build", type=pathlib.Path, required=True, help="configured RAGE_DECOMP_SRC build directory")
     parser.add_argument("--source", type=pathlib.Path, required=True, help="the decomp tree that build compiles")
     parser.add_argument("--work", type=pathlib.Path, required=True, help="logs, deny.json, data-needs.txt")
-    parser.add_argument("--manifest", type=pathlib.Path, default=HERE / "us_rev1.json")
-    parser.add_argument("--shim-bindings", type=pathlib.Path, default=HERE / "shim-bindings.txt")
+    parser.add_argument("--manifest", type=pathlib.Path, default=portdir.fact("manifest.json"))
+    parser.add_argument("--shim-bindings", type=pathlib.Path, default=portdir.fact("shim-bindings.txt"))
     parser.add_argument("--worklist", type=pathlib.Path, help="worklist-rw.tsv, for trace_order in needs.jsonl")
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--rounds", type=int, default=8)

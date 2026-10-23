@@ -28,6 +28,8 @@ import shutil
 import subprocess
 import sys
 import threading
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import portdir  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
@@ -449,8 +451,8 @@ def main():
     ap.add_argument("--list", required=True, type=pathlib.Path, help="TSV: order, symbol, port, decomp, owning file, block, percent")
     ap.add_argument("--rw", required=True, type=pathlib.Path, help="the RW (ragewars-decomp) tree to read")
     ap.add_argument("--out", required=True, type=pathlib.Path)
-    ap.add_argument("--manifest", type=pathlib.Path, default=HERE / "us_rev1.json")
-    ap.add_argument("--shim-bindings", type=pathlib.Path, default=HERE / "shim-bindings.txt")
+    ap.add_argument("--manifest", type=pathlib.Path, default=portdir.fact("manifest.json"))
+    ap.add_argument("--shim-bindings", type=pathlib.Path, default=portdir.fact("shim-bindings.txt"))
     ap.add_argument("--jobs", type=int, default=0, help="default: what ~/.config/m2/admit allows")
     ap.add_argument("--keep", action="store_true", help="keep the per-unit graph records")
     ap.add_argument("--actor", default="", help="announce start and end on the event feed under this name")

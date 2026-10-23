@@ -10,6 +10,8 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import policy  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import portdir  # noqa: E402
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 MAX_NAMES = 4
@@ -80,7 +82,7 @@ def generate(trace, manifest, source, output):
 def native_functions():
     """Definitions at the native adapter boundary, excluding original game aliases."""
     here = pathlib.Path(__file__).resolve().parent
-    files = sorted(here.parent.glob("n64c_*.[ch]")) + [here / "sched_glue.c"]
+    files = sorted(here.parent.glob("n64c_*.[ch]")) + [portdir.fact("sched_glue.c")]
     return {name for path in files for name in policy.functions(path.read_text())}
 
 

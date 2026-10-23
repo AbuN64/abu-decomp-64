@@ -44,6 +44,8 @@ import subprocess
 import sys
 import tempfile
 import time
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import portdir  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
@@ -1024,7 +1026,7 @@ def sweep(args):
             (out / "align-double.json").write_text(json.dumps(deci, indent=1, sort_keys=True) + "\n")
     if args.ubsan_units:
         names = set()
-        for line in (HERE / "boot-trace.tsv").read_text().splitlines()[1:]:
+        for line in (portdir.fact("boot-trace.tsv")).read_text().splitlines()[1:]:
             names.update(c for c in line.split("\t")[2:4] if c)
         listed = sorted(u for u, r in scans.items() if names & set(r["defs"]))
         pathlib.Path(args.ubsan_units).write_text("".join(u + "\n" for u in listed))
@@ -1055,7 +1057,7 @@ def sweep(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", type=pathlib.Path, help="ragewars-decomp tree to sweep")
-    ap.add_argument("--manifest", type=pathlib.Path, default=HERE / "us_rev1.json")
+    ap.add_argument("--manifest", type=pathlib.Path, default=portdir.fact("manifest.json"))
     ap.add_argument("--out", type=pathlib.Path, help="result directory (needs.jsonl, layout evidence, work files)")
     ap.add_argument("--build", help="an fl build directory whose prepared units (decomp/<unit>.i) are read when present")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2))
@@ -1067,7 +1069,7 @@ def main(argv=None):
     ap.add_argument("--fresh", action="store_true", help="ignore and drop the cache (OUT/cache, OUT/work/i): a cold sweep")
     ap.add_argument("--keep-work", action="store_true", help="keep the prepared units under OUT/work")
     ap.add_argument("--classes-md", help="write the class table (count, boot units, folder split) here")
-    ap.add_argument("--baseline", type=pathlib.Path, default=HERE / "gates-baseline.tsv")
+    ap.add_argument("--baseline", type=pathlib.Path, default=portdir.fact("gates-baseline.tsv"))
     ap.add_argument("--check", action="store_true", help="exit 1 on a site the baseline lacks")
     ap.add_argument("--update-baseline", action="store_true")
     ap.add_argument("--from-rows", type=pathlib.Path, help="skip the sweep: check/update from an existing needs.jsonl")

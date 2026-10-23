@@ -15,6 +15,8 @@ import pathlib
 import re
 import subprocess
 import sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import portdir  # noqa: E402
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(HERE))
@@ -36,7 +38,7 @@ def plan(argv):
     import closure
     import policy
     d = json.loads(args.manifest.read_text())
-    facts = closure.Facts(args.source, HERE.parent, HERE / "shim-bindings.txt", policy.game_code(d))
+    facts = closure.Facts(args.source, HERE.parent, portdir.fact("shim-bindings.txt"), policy.game_code(d))
     skip = set(d["sources"]) | set(lines(args.image_units))
     eligible = sorted(u for u in facts.text if u not in skip and not facts.sdk_unit(u))
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -139,7 +141,7 @@ def autogen(argv):
     import closure
     import policy
     d = json.loads(args.manifest.read_text())
-    facts = closure.Facts(args.source, HERE.parent, HERE / "shim-bindings.txt", policy.game_code(d))
+    facts = closure.Facts(args.source, HERE.parent, portdir.fact("shim-bindings.txt"), policy.game_code(d))
     boot_objects = lines(args.boot / "linked-objects.txt")
     members = lines(args.members)
     image_objects = lines(args.boot / "image-objects.txt")

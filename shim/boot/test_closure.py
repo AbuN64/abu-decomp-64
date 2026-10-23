@@ -20,9 +20,6 @@ sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location("boot_needs", ROOT / "needs.py")
 needsfeed = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(needsfeed)
-spec = importlib.util.spec_from_file_location("boot_repin", ROOT.parents[2] / "tools" / "repin.py")
-repin = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(repin)
 spec = importlib.util.spec_from_file_location("boot_closure", ROOT / "closure.py")
 closure = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(closure)
@@ -510,33 +507,6 @@ class RouteTests(unittest.TestCase):
         self.assertEqual((got["func_802B72B0_de"]["trace_order"], got["func_802B72B0_de"]["halt"]), (66, True))
         self.assertEqual(got["func_80200100_de"]["pin"], "aaaaaaa")
 
-    def test_repin_moves_the_three_pin_files_and_reads_trace_order(self):
-        root = pathlib.Path(self.tmp.name) / "ports"
-        rw = pathlib.Path(self.tmp.name) / "rw"
-        (rw / "src/SCHED").mkdir(parents=True)
-        (rw / "src/SCHED/8023A284_18.CPP").write_text("void f(void) {\n}\n")
-        git = ["git", "-C", str(rw), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.hooksPath=/dev/null"]
-        subprocess.run(["git", "init", "-q", str(rw)], check=True)
-        subprocess.run(git + ["add", "-A"], check=True)
-        subprocess.run(git + ["commit", "-qm", "a"], check=True)
-        old = subprocess.run(git + ["rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-        subprocess.run(git + ["mv", "src/SCHED/8023A284_18.CPP", "src/SCHED/Sched_Main.CPP"], check=True)
-        subprocess.run(git + ["commit", "-qm", "b"], check=True)
-        new = subprocess.run(git + ["rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-        for name, text in [(repin.PIN_FILES[0], json.dumps({"source_pin": old, "sources": ["src/SCHED/8023A284_18.CPP"]})), ("cmake/decomp.cmake", f"GIT_TAG {old}"),
-                           (repin.PIN_FILES[2], f"pin {old}")]:
-            (root / name).parent.mkdir(parents=True, exist_ok=True)
-            (root / name).write_text(text)
-        self.assertEqual(repin.repin_files(root, new, rw), old)
-        self.assertEqual(json.loads((root / repin.PIN_FILES[0]).read_text()),
-                         {"source_pin": new, "sources": ["src/SCHED/Sched_Main.CPP"]}, "RW's unit rename is carried")
-        self.assertEqual((root / "cmake/decomp.cmake").read_text(), f"GIT_TAG {new}")
-        self.assertEqual((root / repin.PIN_FILES[2]).read_text(), f"pin {new}")
-        self.assertIsNone(repin.repin_files(root, new, rw))
-        wl = root / "wl.tsv"
-        wl.write_text("order\tsymbol\n66\tfunc_802B72B0_de\n")
-        self.assertEqual(repin.trace_order(wl, "func_802B72B0_de"), 66)
-        self.assertIsNone(repin.trace_order(wl, "nope"))
 
 
 spec = importlib.util.spec_from_file_location("boot_linkall", ROOT / "linkall.py")

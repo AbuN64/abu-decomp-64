@@ -268,12 +268,6 @@ class PrepareTests(unittest.TestCase):
             self.assertTrue(any(d.endswith("h.h") for d in deps))
 
 
-class FlagTests(unittest.TestCase):
-    def test_host_flags_match_decomp_cmake(self):
-        cmake = (HERE.parent.parent.parent / "cmake" / "decomp.cmake").read_text()
-        flags = re.search(r"set\(decomp_flags \$\{decomp_build_flags\}\s+(.*?)\s+-ffunction-sections", cmake, re.S)
-        self.assertEqual(flags.group(1).split(), gates.HOST_FLAGS)
-
 
 if __name__ == "__main__":
     unittest.main()

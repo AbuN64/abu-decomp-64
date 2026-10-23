@@ -382,7 +382,7 @@ void osCreateThread(OSThread *t, OSId id, void (*entry)(void *), void *arg, void
     u32 slot = (u32)h->slot + 1;
     memcpy(t->context, &slot, sizeof slot);
 }
-/* The boot census (decomp/trace.c) notes the first thread start; absent when it is not linked. */
+/* The boot census (boot/trace.c) notes the first thread start; absent when it is not linked. */
 extern void n64c_trace_event(const char *kind) __attribute__((weak));
 void osStartThread(OSThread *t)
 {

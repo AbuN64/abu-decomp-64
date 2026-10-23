@@ -24,6 +24,8 @@ sys.path.insert(0, str(HERE))
 sys.dont_write_bytecode = True
 import closure  # noqa: E402
 import needs as needsfeed  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import portdir  # noqa: E402
 
 
 def next_unit(d, symbol, facts):
@@ -100,8 +102,8 @@ def main():
     parser.add_argument("--source", type=pathlib.Path, required=True)
     parser.add_argument("--work", type=pathlib.Path, required=True)
     parser.add_argument("--rom", type=pathlib.Path, required=True)
-    parser.add_argument("--manifest", type=pathlib.Path, default=HERE / "us_rev1.json")
-    parser.add_argument("--shim-bindings", type=pathlib.Path, default=HERE / "shim-bindings.txt")
+    parser.add_argument("--manifest", type=pathlib.Path, default=portdir.fact("manifest.json"))
+    parser.add_argument("--shim-bindings", type=pathlib.Path, default=portdir.fact("shim-bindings.txt"))
     parser.add_argument("--worklist", type=pathlib.Path, help="worklist-rw.tsv, for trace_order in needs.jsonl")
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--steps", type=int, default=10)

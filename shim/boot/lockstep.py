@@ -39,6 +39,8 @@ import re
 import struct
 import subprocess
 import sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import portdir  # noqa: E402
 
 sys.dont_write_bytecode = True
 PAGE = 4096
@@ -899,7 +901,7 @@ def build_parser():
     c.add_argument("--rom", help="the ROM, to mask IPL3's boot copy the port never makes")
     c.add_argument("--persist", type=int, default=2)
     c.add_argument("--pak", type=int, default=708)
-    c.add_argument("--accept", default=str(pathlib.Path(__file__).with_name("lockstep-accept.tsv")),
+    c.add_argument("--accept", default=str(portdir.fact("lockstep-accept.tsv")),
                    help="reviewed exact differences with reasons (kept visible in the report)")
     c.add_argument("--json")
     return parser

@@ -4,6 +4,10 @@ import argparse
 import json
 import pathlib
 import re
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import portdir  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
 SDK_LO, SDK_HI = 0x802AE000, 0x802C8000
@@ -85,7 +89,7 @@ def load_project(manifest, source):
     project = json.loads(manifest.read_text())
     addresses = {name: int(address, 16) for name, (address, _) in pinned(source, project["version"]).items()}
     bindings = {}
-    for line in (HERE / "shim-bindings.txt").read_text().splitlines():
+    for line in portdir.fact("shim-bindings.txt").read_text().splitlines():
         if line.strip() and not line.startswith("#"):
             symbol, target, *_ = line.split()
             bindings[symbol] = target

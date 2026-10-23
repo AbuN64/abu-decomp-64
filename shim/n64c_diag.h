@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Run-on boot diagnostics. The walk build links decomp/runon.c, which defines these hooks. With N64C_RUN_ON=1 in
+/* Run-on boot diagnostics. The walk build links boot/runon.c, which defines these hooks. With N64C_RUN_ON=1 in
  * the environment, a failure that would end the boot is recorded as one "boot-diag:" line (in boot order) and the
  * boot goes on past it wherever the failing site has a defined way on. Without the hooks (the shipped build), or
  * with run-on off, every site stops exactly as before: run-on is a diagnostic, never an acceptance path. */
@@ -23,6 +23,6 @@ void n64c_diag_layout(const char *what,u32 rom,u32 bytes,const void *ram) __attr
 /* Completed graphics work reached a host frame boundary. Re-presenting the same
  * work, audio alone, or rendering without returning to the host is not progress. */
 void n64c_diag_rendered_frame(void) __attribute__((weak));
-/* The named boot stop (decomp/missing.c). Linked in the boot driver only. */
+/* The named boot stop (boot/missing.c). Linked in the boot driver only. */
 long long n64c_boot_missing(const char *symbol) __attribute__((weak));
 #endif

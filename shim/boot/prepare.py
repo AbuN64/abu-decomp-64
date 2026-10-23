@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import sys
 import zlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import portdir  # noqa: E402
 
 IDENT = r"[A-Za-z_][A-Za-z_0-9]*"
 
@@ -47,7 +49,7 @@ def markers(source, prefix):
 
 def known_fallbacks():
     """Sources recorded as known NON_MATCHING compile failures: each may still contribute its matched C."""
-    path = pathlib.Path(__file__).with_name("known-fallback-units.txt")
+    path = portdir.fact("known-fallback-units.txt")
     try:
         lines = path.read_text().splitlines()
     except OSError:

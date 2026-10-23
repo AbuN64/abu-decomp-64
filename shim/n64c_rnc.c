@@ -17,7 +17,7 @@ typedef struct { u16 mask, code; u8 bits, symbol; } Leaf;
 typedef struct { Leaf leaf[16]; int count; } Table;
 typedef struct { const u8 *p, *end; u32 buf; int cnt; } Bits;
 
-/* Run-on (decomp/runon.c): a corrupt stream is recorded and its unpack returns with dst as far as it got. */
+/* Run-on (boot/runon.c): a corrupt stream is recorded and its unpack returns with dst as far as it got. */
 static _Thread_local jmp_buf *escape;
 static _Noreturn void corrupt_stop(const char *method, const char *why)
 {
