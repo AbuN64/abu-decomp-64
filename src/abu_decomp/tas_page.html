@@ -266,7 +266,8 @@
     <div class="opt"><span>runs</span>
       <label title="8 MB RDRAM; off is the 4 MB console"><input type="checkbox" id="pak"> Expansion Pak</label>
       <label title="your save card, kept between your runs; off is an empty slot"><input type="checkbox" id="cpak"> Controller Pak</label>
-      <label title="draw extra pictures between game frames and present as fast as this host allows, for every run you start; the game, its timing and the recorded state are the same with it on or off"><input type="checkbox" id="fps"> Framerate unlock</label></div>
+      <label title="draw extra pictures between game frames and present as fast as this host allows, for every run you start; the game, its timing and the recorded state are the same with it on or off"><input type="checkbox" id="fps"> Framerate unlock</label>
+      <label title="begin at a place in the game (menus, areas) instead of power-on: the game's own inputs and saves, replayed"><select id="startpt"><option value="">start: power on</option></select></label></div>
     <div class="opt"><span>touch pad</span>
       <label><input type="checkbox" id="touchpad"> show the on-screen pad while I drive a run (on by default on touch screens)</label></div>
     <div id="ctlbody"></div>
@@ -961,7 +962,9 @@ async function play(movie, speed) {
 }
 async function newRun() {
   wake();
-  const r = await post("/api/play", { label: "owner", pak: $("pak").checked ? "on" : "off", cpak: $("cpak").checked ? "on" : "off", fps_unlock: $("fps").checked });
+  const start = $("startpt").value, fps_unlock = $("fps").checked;
+  const r = start ? await post("/api/play", { label: "owner", start, take: true, fps_unlock })
+    : await post("/api/play", { label: "owner", pak: $("pak").checked ? "on" : "off", cpak: $("cpak").checked ? "on" : "off", fps_unlock });
   if (r.id) { focusRun(r.id); $("scr").focus(); } else alert(r.error || "could not start a run");
 }
 async function takeRun(run) {
@@ -1185,6 +1188,20 @@ $("cpak").checked = store.get("tas.cpak", "on") === "on";
 $("fps").checked = store.get("tas.fps", "off") === "on";
 $("fps").onchange = () => store.set("tas.fps", $("fps").checked ? "on" : "off");
 $("pak").onchange = () => store.set("tas.pak", $("pak").checked ? "on" : "off");
+(async function fillPoints() {
+  try {
+    const pts = await (await fetch("/api/points")).json();
+    for (const p of pts.points || []) {
+      if (p.error) continue;
+      const o = document.createElement("option");
+      o.value = p.point; o.textContent = "start: " + (p.area || p.point);
+      $("startpt").appendChild(o);
+    }
+    const saved = store.get("tas.start", "");
+    if ([...$("startpt").options].some(o => o.value === saved)) $("startpt").value = saved;
+  } catch (e) { /* no points: power-on only */ }
+})();
+$("startpt").onchange = () => store.set("tas.start", $("startpt").value);
 $("cpak").onchange = () => store.set("tas.cpak", $("cpak").checked ? "on" : "off");
 $("orig").onchange = () => { O.on = $("orig").checked; store.set("tas.oracle", O.on ? "on" : "off"); };
 $("touchpad").onchange = () => { store.set("tas.touchpad", $("touchpad").checked ? "on" : "off"); render(); };

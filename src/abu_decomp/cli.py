@@ -331,6 +331,21 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         help="the recording started with no Controller Pak or a new one",
     )
     actions.add_parser("list", help="the saved movies and the newest recordings")
+    point = actions.add_parser("point", help="start points: places in the game a movie can begin")
+    point_verbs = point.add_subparsers(dest="verb", required=True, parser_class=_Parser)
+    point_verbs.add_parser("list", help="the start points, the areas they reach and the areas still without one")
+    card = point_verbs.add_parser(
+        "card", help="keep the card a replay run ended with, to start points from its save data"
+    )
+    card.add_argument("run", help="the replay run whose end-of-run Controller Pak card to keep")
+    keep_point = point_verbs.add_parser("save", help="keep the first polls of a movie or run as a start point")
+    keep_point.add_argument("name", help="lower-case words joined by '-', saying where the point is")
+    keep_point.add_argument("--movie", help="the saved movie whose polls make the point")
+    keep_point.add_argument("--run", help="the replay run (its recording) whose polls make the point")
+    keep_point.add_argument("--at", type=int, help="keep the first N polls (default: all of them)")
+    keep_point.add_argument("--area", default="", help="the game area it reaches (a name in points/areas.txt)")
+    keep_point.add_argument("--note", default="", help="one line: how the point gets there")
+    keep_point.add_argument("--replace", action="store_true", help="overwrite a point of the same name")
     coverage = actions.add_parser(
         "coverage", help="union the newest run of every movie into the game-code coverage table"
     )
@@ -420,6 +435,17 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     play.add_argument(
         "--oracle", action="store_true", help="replay it in the original game beside the port and compare pictures"
     )
+    play.add_argument(
+        "--from",
+        dest="start",
+        metavar="POINT",
+        help="begin at start point POINT: alone it replays the point; before NAME it replaces NAME's own start",
+    )
+    play.add_argument(
+        "--take",
+        action="store_true",
+        help="with --from and no movie: replay the point at turbo, then drive live; saved as a new movie",
+    )
 
 
 def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -433,6 +459,29 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         return saved, 0, []
     if args.action == "list":
         return tas.listing(profile), 0, []
+    if args.action == "point":
+        from abu_decomp import tas_points
+
+        if args.verb == "card":
+            return tas_points.keep_card(profile, args.run), 0, []
+        if args.verb == "save":
+            return (
+                tas_points.save_point(
+                    profile,
+                    args.name,
+                    movie=args.movie,
+                    run=args.run,
+                    at=args.at,
+                    area=args.area,
+                    note=args.note,
+                    replace=args.replace,
+                ),
+                0,
+                [],
+            )
+        listed = tas_points.listing(profile)
+        print(tas_points.render(listed), file=sys.stderr)
+        return listed, 0, []
     if args.action == "serve":
         from abu_decomp import tas_serve
 
@@ -456,8 +505,8 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
     inspect = {"shots_every": args.shots_every, "dump_ram_at": args.dump_ram_at, "trace_draws": args.trace_draws}
     if args.twice and any(inspect.values()):
         raise DecompError("tas.play", "--twice compares two plain runs; inspect with a single replay")
-    if not args.all and not args.name:
-        raise DecompError("tas.play", "give a movie name or --all")
+    if not args.all and not args.name and not args.start:
+        raise DecompError("tas.play", "give a movie name, --from POINT or --all")
     options = {
         "speed": args.speed,
         "port": args.port,
@@ -466,6 +515,8 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         "cpak": args.cpak,
         "oracle": args.oracle,
         "fps_unlock": args.fps_unlock,
+        "start": args.start,
+        "take": args.take,
     }
     if args.all:  # every play option applies to every movie
         result, code = tas.play_all(profile, jobs=args.jobs, twice=args.twice, **options, **inspect)

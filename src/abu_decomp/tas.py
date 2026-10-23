@@ -34,6 +34,11 @@ are the same with the box on or off (`same_twice` holds across the two), so it i
 ignores it, and the run's record keeps `fps_unlock` and `shown` (the port's own closing "boot-fps:" count: pictures
 presented and game frames per wall second).
 
+Start points (module tas_points): `play --from POINT` begins at a named place in the game (a menu, an area) by replaying
+the game's own inputs and save card from power-on; before a movie it makes the movie start there (header `start`),
+`--from POINT --take` replays the point at turbo and then hands live input over, saved as a movie that starts at
+the point. `point list` shows which game areas have a point.
+
 A replay runs under the supervisor's gdb bridge with the port's stop function as the breakpoint, so a stop or a
 host fault leaves the failing stack and every thread's stack in the run folder. The outcome is one of `ok`,
 `stop` (the port's own boot stop, with its subject), `crash` (a host fault or signal), `hang` (no exit within
@@ -65,6 +70,7 @@ from abu_decomp import (
     tas_findings,
     tas_health,
     tas_oracle,
+    tas_points,
     tas_rank,
     tas_symbolize,
 )
@@ -259,7 +265,10 @@ def _sha1(path: Path) -> str:
 def _movie(cfg: dict[str, Any], name: str) -> Path:
     if not _NAME.fullmatch(name):
         raise DecompError("tas.name", f"movie names are lower-case words joined by '-', not {name!r}")
-    return cfg["movies"] / f"{name}.tas"
+    path = cfg["movies"] / f"{name}.tas"
+    if not path.is_file() and (point := cfg["movies"] / "points" / f"{name}.tas").is_file():
+        return point  # a start point replays like a movie (module tas_points)
+    return path
 
 
 def _stamp(now: datetime | None) -> str:
@@ -289,9 +298,13 @@ def save(
     cpak_image: Path | None = None,
     parent: str | None = None,
     at: int | None = None,
+    start: str | None = None,
+    prefix: int = 0,
 ) -> dict[str, Any]:
     """Save polls as movie `name`; `parent`/`at` name the movie a take branched from and the poll it left it at
-    (header lines `from` / `at`; module tas_serve folds takes under their root movie)."""
+    (header lines `from` / `at`; module tas_serve folds takes under their root movie). `start` names the start point
+    the recording began from (module tas_points): its first `prefix` polls are the point's, kept in the point, not
+    here."""
     cfg = settings(profile)
     check_pak(pak)
     if not _CARD_MODE.fullmatch(cpak):
@@ -306,6 +319,10 @@ def save(
         source = live[-1]
     text = source.read_text()
     polls = parse_raw(text[: text.rfind("\n") + 1])  # a live recording may end in a half-written line
+    if start:
+        if len(polls) <= prefix:
+            raise DecompError("tas.save", f"{source} holds no polls after start point {start!r}")
+        polls = polls[prefix:]
     if not polls:
         raise DecompError("tas.save", f"{source} holds no polls")
     header = {
@@ -317,6 +334,8 @@ def save(
     }
     if note:
         header["note"] = " ".join(note.split())
+    if start:
+        header["start"] = start
     if parent:
         header["from"] = parent
         header["at"] = str(at or 0)
@@ -444,16 +463,18 @@ def classify(code: int | None, output: str) -> dict[str, Any]:
     return {"outcome": "exit", "subject": f"exit {code}"}
 
 
-def movie_pak(cfg: dict[str, Any], name: str) -> str:
+def movie_pak(cfg: dict[str, Any], name: str, start: str | None = None) -> str:
     """What the saved movie ran with: its header's `pak`, `on` for a movie from before the switch."""
-    pak = decode(_movie(cfg, name).read_text())[0].get("pak", "on")
+    header = decode(_movie(cfg, name).read_text())[0]
+    pak = tas_points.inherit(cfg, {**header, "start": start} if start else header, "pak", "on")
     check_pak(pak)
     return pak
 
 
-def movie_cpak(cfg: dict[str, Any], name: str) -> str:
+def movie_cpak(cfg: dict[str, Any], name: str, start: str | None = None) -> str:
     """The card a saved movie started with: its header's `cpak`; `none` for a movie from before the card."""
-    mode = decode(_movie(cfg, name).read_text())[0].get("cpak", "none")
+    header = decode(_movie(cfg, name).read_text())[0]
+    mode = tas_points.inherit(cfg, {**header, "start": start} if start else header, "cpak", "none")
     if not _CARD_MODE.fullmatch(mode):
         raise DecompError("tas.cpak", f"{name}: the cpak header is none, fresh or a SHA-256, not {mode!r}")
     return mode
@@ -475,8 +496,9 @@ def card_mode(image: bytes) -> str:
     return "fresh" if image == fresh_card() else hashlib.sha256(image).hexdigest()
 
 
-def movie_polls(cfg: dict[str, Any], name: str) -> list[Poll]:
-    """A saved movie's polls, refused when it was recorded on another ROM."""
+def movie_polls(cfg: dict[str, Any], name: str, start: str | None = None) -> list[Poll]:
+    """A saved movie's polls (its start point's first, `start` overriding the one it names), refused when it was
+    recorded on another ROM."""
     path = _movie(cfg, name)
     if not path.is_file():
         raise DecompError("tas.play", f"no movie {path}")
@@ -484,7 +506,7 @@ def movie_polls(cfg: dict[str, Any], name: str) -> list[Poll]:
     rom = _sha1(cfg["rom"])
     if header.get("rom-sha1") != rom:
         raise DecompError("tas.play", f"{path.name} was recorded on ROM {header.get('rom-sha1')}, not {rom}")
-    return polls
+    return tas_points.joined(cfg, header, polls, start)
 
 
 def retry_source(cfg: dict[str, Any], source: str, take_at: int | None) -> dict[str, Any]:
@@ -507,6 +529,8 @@ def retry_source(cfg: dict[str, Any], source: str, take_at: int | None) -> dict[
         "pak": str(row.get("pak") or "on"),
         "cpak": str(row.get("cpak") or "none"),
         "card": kept.read_bytes() if kept.is_file() else None,
+        "start": row.get("start") or None,
+        "prefix": int(row.get("prefix") or 0),
     }
 
 
@@ -745,7 +769,15 @@ def took_over_at(run: Path) -> int:
 
 
 def save_taken(
-    profile: Profile, cfg: dict[str, Any], run: Path, movie: str, human: bool, pak: str = "on", cpak: str = "none"
+    profile: Profile,
+    cfg: dict[str, Any],
+    run: Path,
+    movie: str,
+    human: bool,
+    pak: str = "on",
+    cpak: str = "none",
+    start: str | None = None,
+    prefix: int = 0,
 ) -> str | None:
     """Save a run that live input drove as a movie: the human's run under its own name, a takeover (or a retry) as a
     branch `<root>-take-STAMP` of its movie's root, with `from` = the movie it left and `at` = the poll it left it at.
@@ -769,6 +801,8 @@ def save_taken(
             cpak_image=kept if kept.is_file() else None,
             parent=None if human else movie,
             at=None if human else took_over_at(run),
+            start=start,
+            prefix=prefix,
         )["name"]
     except DecompError:
         return None
@@ -835,6 +869,8 @@ def play(
     take_at: int | None = None,
     fps_unlock: bool = False,
     batch: str | None = None,
+    start: str | None = None,
+    take: bool = False,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
@@ -851,7 +887,11 @@ def play(
     `source` (a run id) with `take_at` P retries that run from poll P: its own recorded polls up to P replay at turbo
     with its Expansion Pak and starting card, then live input drives the run from poll P on (port N64C_TAS_TAKE_AT),
     so the retry is exact; it is saved as a branch of the run's movie like any takeover.
-    `fps_unlock` runs the port with the framerate unlock (module docstring): presentation only, same run."""
+    `fps_unlock` runs the port with the framerate unlock (module docstring): presentation only, same run.
+    `start (a start point, module tas_points) plays the point's polls first: alone when `name` is None (the point
+    itself), else before the movie's own polls (instead of the start the movie names). With `take`, `name` None and
+    `start` the run replays the point at turbo and hands live input over at its end: a new take from that point,
+    saved as `play-STAMP` with the header `start`, without the point's polls."""
     cfg = with_port(settings(profile), port)
     check_label(label)
     if not 0 <= speed <= 1000:
@@ -864,7 +904,26 @@ def play(
     check_inspect(shots_every, dump_ram_at, trace_draws)
     check_pak(pak)
     check_cpak(cpak)
+    if take and (not start or name is not None or source is not None):
+        raise DecompError("tas.play", "--take starts a new run at a start point: give --from POINT and no movie")
+    if start and not take and name is None:
+        name = start  # the point alone, replayed like a movie
+        start = None
     retry = retry_source(cfg, source, take_at) if source is not None else None
+    if take:
+        point = tas_points.load(cfg, str(start))
+        mode_ = point["header"].get("cpak", "none")
+        retry = {
+            "movie": human_movie_name(now),
+            "polls": point["polls"],
+            "pak": point["header"].get("pak", "on"),
+            "cpak": mode_,
+            "card": start_card(cfg, mode_),
+            "start": start,
+            "prefix": len(point["polls"]),
+            "fresh": True,
+        }
+        take_at = len(point["polls"])
     human = name is None and retry is None
     if retry and (oracle or shots_every):
         raise DecompError("tas.retry", "a retry is driven by live input from its poll on: no oracle, no shots")
@@ -881,8 +940,13 @@ def play(
         name = human_movie_name(now)
         polls = []
     else:
-        polls = movie_polls(cfg, name)
-    pak = pak or ("on" if human else movie_pak(cfg, name))
+        polls = movie_polls(cfg, name, start)
+    if not retry and not human:
+        own_start = start or decode(_movie(cfg, name).read_text())[0].get("start")
+        started = (own_start, len(tas_points.load(cfg, own_start)["polls"])) if own_start else (None, 0)
+    else:
+        started = (retry["start"], retry["prefix"]) if retry else (None, 0)
+    pak = pak or ("on" if human else movie_pak(cfg, name, start))
     run = cfg["runs"] / "plays" / (run_id or new_run_id(cfg, name, now))
     user_dir = run / "user"
     user_dir.mkdir(parents=True)
@@ -905,7 +969,7 @@ def play(
             (run / CARD_START).write_bytes(start)
             mode = card_mode(start)
     else:
-        mode = movie_cpak(cfg, name)
+        mode = movie_cpak(cfg, name, start)
         if cpak == "off":
             mode = "none"
         elif cpak == "on" and mode == "none":
@@ -935,7 +999,8 @@ def play(
         (run / "movie.raw").write_text(format_raw(polls))
         env.update(N64C_TAS_PLAY=str(run / "movie.raw"), N64C_TAS_EXIT_AFTER=str(cfg["exit_after"]))
     if retry:
-        (run / TAKEN).write_text(f"retry of {source} from poll {take_at}\n")
+        where = f"start point {start}" if retry.get("fresh") else f"retry of {source}"
+        (run / TAKEN).write_text(f"{where} from poll {take_at}\n")
         env.update(N64C_TAS_TAKE_AT=str(take_at), N64C_VIEW_FPS="60")
     inspect = inspect_env(run, shots_every, dump_ram_at, trace_draws)
     env.update(inspect)
@@ -958,7 +1023,9 @@ def play(
         "cpak": mode,
         "fps_unlock": bool(fps_unlock),
     }
-    if retry:
+    if started[0]:
+        record.update({"start": started[0], "prefix": started[1]})
+    if retry and source is not None:
         record.update({"from": source, "at": take_at})
     oracle_process, oracle_end, oracle_waiter = None, {}, None
     if original:
@@ -1027,7 +1094,10 @@ def play(
     taken = (run / TAKEN).is_file()
     if taken:
         result.update(
-            taken=True, same_twice=None, compared_with=None, saved=save_taken(profile, cfg, run, name, human, pak, mode)
+            taken=True,
+            same_twice=None,
+            compared_with=None,
+            saved=save_taken(profile, cfg, run, name, human or bool(retry and retry.get("fresh")), pak, mode, *started),
         )
     keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
     keep += ("taken", "saved", "coverage", "frame", "fault", "shown")
@@ -1062,7 +1132,7 @@ def play(
 
 def play_twice(
     profile: Profile,
-    name: str,
+    name: str | None,
     *,
     speed: int = 0,
     port: Path | str | None = None,
@@ -1071,8 +1141,14 @@ def play_twice(
     oracle: bool = False,
     cpak: str | None = None,
     fps_unlock: bool = False,
+    start: str | None = None,
+    take: bool = False,
 ) -> dict[str, Any]:
     """Two replays back to back; the second's `same_twice` compares it with the first."""
+    if take:
+        raise DecompError("tas.play", "--take is a live run; it cannot be replayed twice")
+    if name is None and start:
+        name, start = start, None
     options = {
         "speed": speed,
         "port": port,
@@ -1081,6 +1157,7 @@ def play_twice(
         "oracle": oracle,
         "cpak": cpak,
         "fps_unlock": fps_unlock,
+        "start": start,
     }
     play(profile, name, **options)
     return play(profile, name, **options)

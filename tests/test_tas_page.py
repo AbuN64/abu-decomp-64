@@ -16,6 +16,7 @@ PAGE = Path(__file__).resolve().parents[1] / "src" / "abu_decomp" / "tas_page.ht
 CONTRACT = {
     "/api/state",
     "/api/board",
+    "/api/points",
     "/api/runs",
     "/api/pin",
     "/api/coverage",

@@ -47,6 +47,7 @@ from abu_decomp import (
     tas_findings,
     tas_health,
     tas_oracle,
+    tas_points,
     tas_triage,
 )
 from abu_decomp.config import Profile
@@ -389,7 +390,7 @@ class Server:
     ) -> None:
         polls = 0
         with contextlib.suppress(OSError):
-            polls = self.movie_meta(self.cfg["movies"] / f"{movie}.tas")["polls"]
+            polls = self.movie_meta(tas._movie(self.cfg, movie))["polls"]
         if pak is None:  # a replay keeps what its movie ran with
             with contextlib.suppress(DecompError, OSError):
                 pak = tas.movie_pak(self.cfg, movie)
@@ -503,12 +504,18 @@ class Server:
         source: str | None = None,
         take_at: int | None = None,
         fps_unlock: bool = False,
+        start: str | None = None,
+        take: bool = False,
     ) -> dict[str, Any]:
         if source:
             return self.retry(source, take_at, port, label, fps_unlock)
+        if start and take and not movie:
+            return self.from_point(start, port, label, fps_unlock)
+        if start and not movie:
+            movie, start = start, None  # the point alone, replayed like a movie
         if not movie:
             return self.new_human(port, label, pak, cpak, fps_unlock)
-        tas.movie_polls(self.cfg, movie)  # refuse a missing movie or another ROM here, not in the thread
+        tas.movie_polls(self.cfg, movie, start)  # refuse a missing movie or another ROM here, not in the thread
         if oracle:
             tas_oracle.required(self.profile)
         if not 0 <= speed <= 1000:
@@ -533,7 +540,7 @@ class Server:
                     "oracle": oracle,
                     "fps_unlock": fps_unlock,
                 }
-                tas.play(self.profile, movie, speed=speed, run_id=run_id, **options)
+                tas.play(self.profile, movie, speed=speed, run_id=run_id, start=start, **options)
             except Exception:  # the record says done; the page shows it
                 pass
             finally:
@@ -541,6 +548,45 @@ class Server:
 
         self.pool.submit(go)
         return {"id": run_id}
+
+    def from_point(self, start: str, port: str | None, label: str | None, fps_unlock: bool = False) -> dict[str, Any]:
+        """A new live run at start point `start`: the point's polls at turbo, then live input (tas.play take)."""
+        busy = self.human_running()
+        if busy:
+            raise DecompError("tas.live", f"live input already drives {busy}; stop it first")
+        tas.check_label(label)
+        point = tas_points.load(self.cfg, start)  # refuse a missing point here, not in the thread
+        exe = tas.with_port(self.cfg, port)["port"]
+        movie = tas.human_movie_name()
+        with self.lock:
+            run_id = tas.new_run_id(self.cfg, movie)
+        cpak, pak = point["header"].get("cpak", "none"), point["header"].get("pak", "on")
+        self._placeholder(run_id, movie, 0, exe, label or tas.HUMAN_LABEL, pak, cpak, fps_unlock)
+        with self.lock:
+            self.queued[run_id].update(input="human", took_at=len(point["polls"]), polls=len(point["polls"]))
+
+        def go() -> None:
+            try:
+                tas.play(
+                    self.profile,
+                    None,
+                    run_id=run_id,
+                    port=port or None,
+                    label=label or None,
+                    start=start,
+                    take=True,
+                    fps_unlock=fps_unlock,
+                )
+            except Exception:
+                pass
+            finally:
+                self._forget(run_id)
+
+        threading.Thread(target=go, daemon=True).start()  # never takes a replay slot
+        return {"id": run_id, "movie": movie, "start": start}
+
+    def points(self) -> dict[str, Any]:
+        return tas_points.listing(self.profile)
 
     def retry(
         self, source: str, take_at: int | None, port: str | None, label: str | None, fps_unlock: bool = False
@@ -669,6 +715,8 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.json(server.coverage())
                 elif path == "/api/corpus":
                     self.json(server.corpus())
+                elif path == "/api/points":
+                    self.json(server.points())
                 elif path == "/api/board":
                     self.json(server.board())
                 elif path == "/api/runs":
@@ -843,6 +891,8 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                             str(body.get("from") or "") or None,
                             int(body["at"]) if body.get("at") is not None else None,
                             bool(body.get("fps_unlock", False)),
+                            str(body.get("start") or "") or None,
+                            bool(body.get("take", False)),
                         )
                     )
                 elif self.path == "/api/play-all":
