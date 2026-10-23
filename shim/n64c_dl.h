@@ -18,8 +18,9 @@
  *   are read in place. Addresses past the image's end mirror back into it (mask).
  * A command whose address operand lies outside memory becomes a no-op and is counted in bad.
  *
- * Only commands of the F3DEX2 family are rewritten; every other command is copied unchanged. A
- * G_LOAD_UCODE is replaced by a no-op and counted: the host renderer keeps its own microcode state.
+ * Commands outside the F3DEX2/L3DEX2 and RDP opcode ranges end their list and are counted in
+ * unknown and bad; they must not reach host-only renderer extensions. Other commands pass through
+ * except G_LOAD_UCODE, replaced by a no-op: the host renderer keeps its own microcode state.
  *
  * L3DEX2 lines (G_LINE3D) become two triangles, since F3DEX2-only renderers have no line command.
  * n64c_dl tracks what the RSP would hold when the line runs: the modelview stack and projection

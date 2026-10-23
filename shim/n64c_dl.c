@@ -830,8 +830,16 @@ static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth)
             break;
         }
         default:
-            if ((w0 >> 24) > OP_LINE3D && (w0 >> 24) < OP_FIRST_SP && !c->stats->unknown++)
-                c->stats->unknown_op = w0 >> 24;
+            if ((w0 >> 24) > OP_LINE3D && (w0 >> 24) < OP_FIRST_SP) {
+                if (!c->stats->unknown++)
+                    c->stats->unknown_op = w0 >> 24;
+                /* These are not N64 commands. Host renderers use this range for extensions
+                 * with host-pointer operands; never let malformed game data invoke them. */
+                c->stats->bad++;
+                cmd[0] = (uintptr_t)OP_ENDDL << 24;
+                cmd[1] = 0;
+                return out;
+            }
             break;
         }
         if (cmd[1] == 0 && w1 != 0 && addressed(w0 >> 24)) { /* never hand the renderer a raw address */
