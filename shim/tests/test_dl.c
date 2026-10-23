@@ -302,7 +302,7 @@ static void test_color_image_hook(void)
     cmd(0xDFu << 24, 0);
     N64cDlArena arena = {0};
     N64cDlStats st;
-    const N64cDlHooks hooks = {hook, &hook_calls};
+    const N64cDlHooks hooks = {hook, &hook_calls, NULL};
     const uintptr_t *root = n64c_dl_translate(&mem, 0x1000, &arena, &st, &hooks);
     CHECK(root && hook_calls == 1 && hook_phys == 0xC000 && hook_width == 320);
     CHECK(root && op(root + 2) == 0xFF && op(root + 4) == 0xDE);
@@ -330,6 +330,41 @@ static void test_color_image_hook(void)
     hook_calls = 0;
     root = n64c_dl_translate(&mem, 0x1000, &arena, &st, &hooks);
     CHECK(root && hook_calls == 3 && hook_heights[0] == 360 && hook_heights[1] == 222 && hook_heights[2] == 240);
+    n64c_dl_arena_free(&arena);
+}
+static uintptr_t seen_cmd[4][2];
+static uint32_t seen_count;
+static void matrix_hook(void *user, const uintptr_t cmd[2])
+{
+    CHECK(user == &seen_count);
+    if (seen_count < 4) {
+        seen_cmd[seen_count][0] = cmd[0];
+        seen_cmd[seen_count][1] = cmd[1];
+    }
+    seen_count++;
+}
+/* The matrix hook sees each G_MTX once in execution order: the parameter byte
+ * (as the game wrote it) and the matrix as a host pointer, including one reached through a called list. */
+static void test_matrix_hook(void)
+{
+    N64cGfxMem mem = begin(0);
+    at = 0x2000;
+    cmd(0xDAu << 24 | 0x38u << 16 | 0x1, 0x3040); /* callee: projection, no load, no push */
+    cmd(0xDFu << 24, 0);
+    at = 0x1000;
+    cmd(0xDAu << 24 | 0x38u << 16 | 0x3, 0x3000); /* modelview load, no push */
+    cmd(0xDEu << 24, 0x2000);                     /* G_DL push */
+    cmd(0xDAu << 24 | 0x38u << 16 | 0x2, 0x3080); /* modelview multiply with push */
+    cmd(0xDFu << 24, 0);
+    N64cDlArena arena = {0};
+    N64cDlStats st;
+    seen_count = 0;
+    const N64cDlHooks with_user = {NULL, &seen_count, matrix_hook};
+    CHECK(n64c_dl_translate(&mem, 0x1000, &arena, &st, &with_user) != NULL);
+    CHECK(seen_count == 3);
+    CHECK(seen_cmd[0][1] == (uintptr_t)(ram + 0x3000) && seen_cmd[1][1] == (uintptr_t)(ram + 0x3040) &&
+          seen_cmd[2][1] == (uintptr_t)(ram + 0x3080));
+    CHECK((seen_cmd[0][0] & 0xFF) == 0x3 && (seen_cmd[1][0] & 0xFF) == 0x1 && (seen_cmd[2][0] & 0xFF) == 0x2);
     n64c_dl_arena_free(&arena);
 }
 /* The game's menu background strip (poll 1200): a 1:1 texture rectangle under bilinear filtering is
@@ -420,6 +455,7 @@ int main(void)
     test_line();
     test_modify_vertex();
     test_color_image_hook();
+    test_matrix_hook();
     test_replay_records();
     test_native_branch_z();
     test_cut_list();

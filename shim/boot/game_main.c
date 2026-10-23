@@ -31,6 +31,7 @@ int n64c_replay_run(const char *plan) __attribute__((weak));
 
 typedef struct {
     const char *rom, *user_dir, *capture, *pak, *cpak;
+    int fps_unlock;
     int no_dialog, verify_assets, extract_only, offscreen, version, help;
     u32 retrace, fb_w, fb_h, out_w, out_h;
 } Options;
@@ -49,6 +50,8 @@ static void usage(FILE *out, const char *name)
             "  --fb WxH          the game's framebuffer size (default 284x222)\n"
             "  --capture F --retrace N   run offscreen to retrace N and write the presented frame to F\n"
             "  --offscreen       run without a visible window\n"
+            "  --fps-unlock      draw extra pictures between game frames (matrices interpolated) and present as fast as the host\n"
+            "                    allows; the game's timing, audio and input are unchanged (also N64C_FPS_UNLOCK=1)\n"
             "  --cpak off|PATH   Controller Pak card file (32 KiB .mpk, made formatted when missing); default is controller-pak.mpk in the user folder (no Pak in a --capture run), off is no Pak\n"
             "  --pak on|off      Expansion Pak: 8 MB RDRAM (on) or the 4 MB console (off); default is the version's own\n"
             "exit: 0 ok, 1 runtime failure, 2 usage, 3 game data missing or ROM refused, 4 broken install\n",
@@ -95,6 +98,7 @@ static int parse(int argc,char **argv,Options *o)
         else if (!strcmp(arg,"--verify-assets")) o->verify_assets=1;
         else if (!strcmp(arg,"--extract-only")) o->extract_only=1;
         else if (!strcmp(arg,"--offscreen")) o->offscreen=1;
+        else if (!strcmp(arg,"--fps-unlock")) o->fps_unlock=1;
         else if (!strcmp(arg,"--version")) o->version=1;
         else if (!strcmp(arg,"--help") || !strcmp(arg,"-h")) o->help=1;
         else if (!strcmp(arg,"--rom") && value) { o->rom=value;i++; }
@@ -309,6 +313,10 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
     }
     const int live=!o->capture;
     n64c_boot_frame_host(shaders,settings,o->offscreen);
+    {
+        const char *env=getenv("N64C_FPS_UNLOCK");
+        n64c_boot_frame_unlock(o->fps_unlock || (env && *env && strcmp(env,"0")));
+    }
     if (!n64c_boot_frame_start(o->fb_w,o->fb_h,ram_bytes,n64c_boot_audio_abi,
                                live ? o->out_w : 0,live ? o->out_h : 0)) {
         fprintf(stderr,"boot-input: cannot configure native frame capture\n");

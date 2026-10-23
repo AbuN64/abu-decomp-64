@@ -8,6 +8,16 @@
 /* Program and user files for the renderer (shader archive, settings file; NULL: beside the executable) and an
  * offscreen live run (no visible window). Applies to the next n64c_boot_frame_start. */
 void n64c_boot_frame_host(const char *shaders,const char *settings,int offscreen);
+/* Frame-rate unlock (--fps-unlock, N64C_FPS_UNLOCK=1): between two game frames the live loop draws the scene again with
+ * its matrices moved part of the way (n64c_f3d_interp_draw) and presents that, as fast as the host allows, instead of
+ * showing the VI's picture once per retrace. Presentation only: the guest's clock, the VI, audio, input polls and
+ * the TAS recorder run exactly as without it, so a movie replays to the same per-poll state. Applies to the next
+ * n64c_boot_frame_start; a run with N64C_SPEED=0 (no wall-clock wait) has no time to draw in and is unchanged. */
+void n64c_boot_frame_unlock(int on);
+/* The rate unlock presents at: N64C_FPS_UNLOCK=N pictures a second, "max" for no limit, else the display's refresh rate
+ * or 120, whichever is more (a window on a faster screen gets its rate; an offscreen run, which has no display, 120).
+ * n64c_unlock_rate returns 0 for text that is none of these. */
+int n64c_unlock_rate(const char *text,u32 refresh_hz,u32 *hz);
 int n64c_boot_frame_start(u32 width,u32 height,u32 ram_bytes,int audio_abi,u32 window_width,u32 window_height);
 /* Run the original threads at the VI rate, showing every presentation, until the window closes (1) or
  * no original thread is left (0). Original stops exit the process. */

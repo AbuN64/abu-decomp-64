@@ -27,6 +27,13 @@ is per retrace, so a movie is the same run at any speed. `run.json` in the run f
 start and at the end), which `tas serve` reads. `same_twice` compares the hash file with the movie's previous run on
 the same port binary: true when every poll's RAM was identical, null when there is no earlier run to compare.
 
+`play --fps-unlock` (the page's "Framerate unlock" box) runs the port with `--fps-unlock`: between two game frames it
+draws the scene again with its matrices moved part of the way and presents as fast as the host allows. It changes what
+the window shows and nothing the game can see: the movie, the VI and audio timing, input polls and the per-poll hashes
+are the same with the box on or off (`same_twice` holds across the two), so it is not a movie header line, the oracle
+ignores it, and the run's record keeps `fps_unlock` and `shown` (the port's own closing "boot-fps:" count: pictures
+presented and game frames per wall second).
+
 A replay runs under the supervisor's gdb bridge with the port's stop function as the breakpoint, so a stop or a
 host fault leaves the failing stack and every thread's stack in the run folder. The outcome is one of `ok`,
 `stop` (the port's own boot stop, with its subject), `crash` (a host fault or signal), `hang` (no exit within
@@ -356,12 +363,41 @@ def delete(profile: Profile, name: str) -> dict[str, Any]:
     return {"deleted": str(path)}
 
 
-def _argv(cfg: dict[str, Any], user_dir: Path, pak: str = "on", card: Path | None = None) -> list[str]:
+def _argv(
+    cfg: dict[str, Any], user_dir: Path, pak: str = "on", card: Path | None = None, fps_unlock: bool = False
+) -> list[str]:
     """The port's command line. The Controller Pak is always named: `--cpak off` for an empty slot (the port's own
-    default is a card), else the card file the run owns."""
+    default is a card), else the card file the run owns. `--fps-unlock` is the framerate unlock (presentation only)."""
     argv = [str(cfg["port"]), "--cpak", str(card) if card else "off"]
     argv += [arg.replace("{user_dir}", str(user_dir)) for arg in cfg["args"]]
-    return [*argv, "--pak", "off"] if pak == "off" else argv
+    argv = [*argv, "--pak", "off"] if pak == "off" else argv
+    return [*argv, "--fps-unlock"] if fps_unlock else argv
+
+
+_FPS_LINE = re.compile(
+    r"boot-fps: \w+ unlock=(\d) speed=(\d+) retrace=(\d+) wall=([\d.]+) presented=(\d+) \(([\d.]+)/s\) "
+    r"game=(\d+) \(([\d.]+)/s\) interpolated=(\d+)"
+)
+
+
+def fps_shown(output: str) -> dict[str, Any] | None:
+    """What the port presented, from its last "boot-fps:" line: pictures per wall second the window got, game frames
+    per wall second, and how many pictures were drawn between game frames. None for a port without the line."""
+    lines = _FPS_LINE.findall(output)
+    if not lines:
+        return None
+    unlock, speed, retrace, wall, presented, per_s, game, game_per_s, interpolated = lines[-1]
+    return {
+        "unlock": unlock == "1",
+        "speed": int(speed),
+        "retraces": int(retrace),
+        "wall": float(wall),
+        "presented": int(presented),
+        "presented_per_s": float(per_s),
+        "game": int(game),
+        "game_per_s": float(game_per_s),
+        "interpolated": int(interpolated),
+    }
 
 
 def supervised(cfg: dict[str, Any], run_dir: Path, argv: list[str]) -> list[str]:
@@ -788,6 +824,7 @@ def play(
     cpak: str | None = None,
     source: str | None = None,
     take_at: int | None = None,
+    fps_unlock: bool = False,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
@@ -803,7 +840,8 @@ def play(
     human run: a fresh boot at speed 1 driven by live input from the first poll, saved as `play-STAMP`.
     `source` (a run id) with `take_at` P retries that run from poll P: its own recorded polls up to P replay at turbo
     with its Expansion Pak and starting card, then live input drives the run from poll P on (port N64C_TAS_TAKE_AT),
-    so the retry is exact; it is saved as a branch of the run's movie like any takeover."""
+    so the retry is exact; it is saved as a branch of the run's movie like any takeover.
+    `fps_unlock` runs the port with the framerate unlock (module docstring): presentation only, same run."""
     cfg = with_port(settings(profile), port)
     check_label(label)
     if not 0 <= speed <= 1000:
@@ -908,6 +946,7 @@ def play(
         "input": "human" if human or retry else "movie",
         "pak": pak,
         "cpak": mode,
+        "fps_unlock": bool(fps_unlock),
     }
     if retry:
         record.update({"from": source, "at": take_at})
@@ -926,7 +965,7 @@ def play(
         oracle_waiter = threading.Thread(target=reap, daemon=True)
         oracle_waiter.start()
     _write_record(run, record)
-    argv = supervised(cfg, run, _argv(cfg, user_dir, pak, card))
+    argv = supervised(cfg, run, _argv(cfg, user_dir, pak, card, fps_unlock))
     try:
         with (run / "output.txt").open("w") as output:
             process = subprocess.Popen(
@@ -974,13 +1013,14 @@ def play(
         result["compared_with"] = before.name
     result["fn"] = fn_of(result)
     result["cpak"] = mode
+    result["shown"] = fps_shown(text)
     taken = (run / TAKEN).is_file()
     if taken:
         result.update(
             taken=True, same_twice=None, compared_with=None, saved=save_taken(profile, cfg, run, name, human, pak, mode)
         )
     keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
-    keep += ("taken", "saved", "coverage", "frame", "fault")
+    keep += ("taken", "saved", "coverage", "frame", "fault", "shown")
     if oracle_waiter:
         oracle_waiter.join()
         wall, polls = oracle_end["wall"], tas_oracle.reached(run)
@@ -1018,9 +1058,18 @@ def play_twice(
     pak: str | None = None,
     oracle: bool = False,
     cpak: str | None = None,
+    fps_unlock: bool = False,
 ) -> dict[str, Any]:
     """Two replays back to back; the second's `same_twice` compares it with the first."""
-    options = {"speed": speed, "port": port, "label": label, "pak": pak, "oracle": oracle, "cpak": cpak}
+    options = {
+        "speed": speed,
+        "port": port,
+        "label": label,
+        "pak": pak,
+        "oracle": oracle,
+        "cpak": cpak,
+        "fps_unlock": fps_unlock,
+    }
     play(profile, name, **options)
     return play(profile, name, **options)
 
@@ -1087,8 +1136,8 @@ def play_all(
 ) -> tuple[dict[str, Any], int]:
     """Replay every saved movie in parallel at turbo, block until done, one row per movie against its recorded
     standing. `twice` replays each movie twice (same_twice then compares the two); `run_ids` names the run folders
-    (the page knows them before the runs start). `options` are `play`'s own (speed, port, label, pak, cpak, oracle and
-    the inspection options), applied to every movie.
+    (the page knows them before the runs start). `options` are `play`'s own (speed, port, label, pak, cpak, oracle,
+    fps_unlock and the inspection options), applied to every movie.
 
     The recorded standing is the best row so far in `runs/standing.json`, moved only when a movie is not worse, so a
     regression stays `worse` until fixed. Exit status 1 when any movie is worse."""

@@ -54,6 +54,26 @@ int n64c_f3d_read(N64cF3d *f,uint32_t phys,uint32_t *out,uint32_t w,uint32_t h)
     for (uint32_t i=0;i<w*h;i++) out[i]=0xff0000ff;
     return 1;
 }
+/* Frame-rate unlock stand-ins: every retrace is a new group that draws the same scene as the one before (3), the
+ * draws succeed, and the window closes at the second event poll. */
+static unsigned unlocked,group_begins,group_ends,interp_draws,interp_presents,interp_reads,polls;
+static int group_result=3;
+static float last_alpha;
+void n64c_f3d_unlock(N64cF3d *f,int on) { CHECK(f==(N64cF3d *)&renderer);unlocked=(unsigned)on; }
+void n64c_f3d_group_begin(N64cF3d *f) { CHECK(f==(N64cF3d *)&renderer);group_begins++; }
+int n64c_f3d_group_end(N64cF3d *f) { CHECK(f==(N64cF3d *)&renderer);group_ends++;return group_result; }
+int n64c_f3d_interp_draw(N64cF3d *f,float alpha) { CHECK(f==(N64cF3d *)&renderer && alpha>=0 && alpha<=1);last_alpha=alpha;interp_draws++;return 1; }
+int n64c_f3d_interp_present(N64cF3d *f) { CHECK(f==(N64cF3d *)&renderer);interp_presents++;return 1; }
+int n64c_f3d_interp_read(N64cF3d *f,uint32_t *out,uint32_t w,uint32_t h)
+{
+    CHECK(f==(N64cF3d *)&renderer);
+    for (uint32_t i=0;i<w*h;i++) out[i]=0xff00ff00;
+    interp_reads++;
+    return 1;
+}
+int n64c_f3d_interp_check(N64cF3d *f,uint32_t w,uint32_t h,uint32_t *d,uint32_t *g) { (void)d;(void)g; CHECK(f==(N64cF3d *)&renderer && w && h);return 0; }
+uint32_t n64c_f3d_refresh_hz(N64cF3d *f) { CHECK(f==(N64cF3d *)&renderer);return 144; }
+int n64c_f3d_events(N64cF3d *f) { CHECK(f==(N64cF3d *)&renderer);return ++polls<2; }
 /* Window stand-in: records what the VI showed; a live window is closed by its third presentation. */
 int n64c_f3d_present(N64cF3d *f,uint32_t phys)
 {
@@ -185,7 +205,26 @@ int main(int argc,char **argv)
     bmp=fopen(viewpath,"rb");CHECK(bmp!=NULL);got=fread(image,1,sizeof image,bmp);fclose(bmp);
     CHECK(got==54+12 && !memcmp(image+6,"\x04\x03\x02\x01",4) && image[10]==54);
     CHECK(unlink(viewpath)==0);
+    /* Frame-rate unlock: pictures drawn between the game's frames are what the window gets (many per retrace); the
+     * VI's own present only polls events, so input is read once per retrace as without it; a frame that is not the
+     * same scene as the one before is shown as the VI shows it. Without unlock none of this runs. */
+    CHECK(unlocked==0 && group_begins==0 && interp_draws==0);
+    n64c_boot_frame_unlock(1);
+    start(0);
+    CHECK(unlocked==1);
+    CHECK(n64c_boot_frame_live()==1 && retraces==3 && group_begins==3 && group_ends==3);
+    CHECK(presents==1 && polls==2);                      /* retrace 1 was before any interpolated group; 2 and 3 only polled */
+    CHECK(interp_draws>=2 && interp_presents==interp_draws && last_alpha>0);
     u32 fps=0;
+    CHECK(n64c_parse_view_fps(NULL,&fps) && fps==60);    /* a viewer of an unlocked run gets 60 pictures a second */
+    u32 hz=0;
+    CHECK(n64c_unlock_rate(NULL,60,&hz) && hz==120 && n64c_unlock_rate("",144,&hz) && hz==144 && n64c_unlock_rate("1",240,&hz) && hz==240);
+    CHECK(n64c_unlock_rate("90",240,&hz) && hz==90 && n64c_unlock_rate("max",60,&hz) && hz==0);
+    CHECK(!n64c_unlock_rate("0",60,&hz) && !n64c_unlock_rate("fast",60,&hz) && !n64c_unlock_rate("1x",60,&hz));
+    group_result=1;polls=0;presents=0;interp_draws=0;
+    start(0);CHECK(n64c_boot_frame_live()==1 && interp_draws==0 && presents==3 && polls==0);
+    group_result=3;n64c_boot_frame_unlock(0);
+    start(0);CHECK(unlocked==0);
     CHECK(n64c_parse_view_fps(NULL,&fps) && fps==15 && n64c_parse_view_fps("60",&fps) && fps==60);
     CHECK(!n64c_parse_view_fps("0",&fps) && !n64c_parse_view_fps("121",&fps) && !n64c_parse_view_fps("6x",&fps));
     start(1);CHECK(n64c_boot_frame_live()==0 && retraces==1);

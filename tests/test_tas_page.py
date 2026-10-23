@@ -152,6 +152,8 @@ def mock_state() -> dict:
         "pinned": False,
         "pak": "on",
         "cpak": "none",
+        "fps_unlock": True,
+        "shown": {"presented_per_s": 118.4, "game_per_s": 30.0},
         "oracle": {
             "frame": f"/oracle/{rid}",
             "status": "done",

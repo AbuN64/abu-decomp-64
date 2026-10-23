@@ -88,6 +88,9 @@ typedef struct N64cDlStats {
 typedef struct N64cDlHooks {
     int (*color_image)(void *user, uint32_t phys, uint32_t width, uint32_t height, uintptr_t extra[2]);
     void *user;
+    /* Called for each G_MTX in RSP execution order with its translated command words (cmd[0] holds the
+     * renderer-convention parameter byte, cmd[1] the host pointer to the matrix). May be NULL. */
+    void (*matrix)(void *user, const uintptr_t cmd[2]);
 } N64cDlHooks;
 /* Limit on commands per translation; a list that exceeds it is cut with G_ENDDL and counted in bad. */
 #define N64C_DL_MAX_COMMANDS (1u << 20)

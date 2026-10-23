@@ -263,9 +263,10 @@
       <label><input type="radio" name="side" value="port"> the port</label><label><input type="radio" name="side" value="oracle"> the original</label></div>
     <div class="opt"><span>original</span>
       <label><input type="checkbox" id="orig"> replays I start also run the original game beside the port</label></div>
-    <div class="opt"><span>new run</span>
+    <div class="opt"><span>runs</span>
       <label title="8 MB RDRAM; off is the 4 MB console"><input type="checkbox" id="pak"> Expansion Pak</label>
-      <label title="your save card, kept between your runs; off is an empty slot"><input type="checkbox" id="cpak"> Controller Pak</label></div>
+      <label title="your save card, kept between your runs; off is an empty slot"><input type="checkbox" id="cpak"> Controller Pak</label>
+      <label title="draw extra pictures between game frames and present as fast as this host allows, for every run you start; the game, its timing and the recorded state are the same with it on or off"><input type="checkbox" id="fps"> Framerate unlock</label></div>
     <div class="opt"><span>touch pad</span>
       <label><input type="checkbox" id="touchpad"> show the on-screen pad while I drive a run (on by default on touch screens)</label></div>
     <div id="ctlbody"></div>
@@ -438,6 +439,7 @@ function runBadges(r) {
   if (r.from) out.push(badge(`retry @${r.at}`, "you", `retry of run ${r.from} from poll ${r.at}`));
   else if (r.took_at != null) out.push(badge(`taken @${r.took_at}`, "you", "live input took this replay over at that poll"));
   if (r.pak === "off") out.push(badge("4 MB", "", "no Expansion Pak"));
+  if (r.fps_unlock) out.push(badge(r.shown ? `${Math.round(r.shown.presented_per_s)} fps` : "unlocked", "", "framerate unlock" + (r.shown ? `: ${r.shown.presented_per_s} pictures/s shown for ${r.shown.game_per_s} game frames/s` : "")));
   if (r.cpak && r.cpak !== "none") out.push(badge("cpak", "", "Controller Pak: " + r.cpak.slice(0, 12)));
   if (r.pinned) out.push(badge("kept", "warn", "pinned: never archived"));
   if (r.oracle && r.oracle.max_diff != null) out.push(badge(`Δ${pct(r.oracle.max_diff)}`, diffClass(r.oracle.max_diff), `worst ${pct(r.oracle.max_diff)} at poll ${r.oracle.max_poll} vs the original`));
@@ -933,13 +935,13 @@ function runItem(r) {
 async function play(movie, speed) {
   if (!movie) return;
   wake();
-  const r = await post("/api/play", { movie, speed, oracle: O.on });
+  const r = await post("/api/play", { movie, speed, oracle: O.on, fps_unlock: $("fps").checked });
   if (r.error) return alert(r.error);
   if (r.id) focusRun(r.id);
 }
 async function newRun() {
   wake();
-  const r = await post("/api/play", { label: "owner", pak: $("pak").checked ? "on" : "off", cpak: $("cpak").checked ? "on" : "off" });
+  const r = await post("/api/play", { label: "owner", pak: $("pak").checked ? "on" : "off", cpak: $("cpak").checked ? "on" : "off", fps_unlock: $("fps").checked });
   if (r.id) { focusRun(r.id); $("scr").focus(); } else alert(r.error || "could not start a run");
 }
 async function takeRun(run) {
@@ -949,7 +951,7 @@ async function takeRun(run) {
 }
 async function retry(run, at) {
   wake();
-  const r = await post("/api/play", { from: run.id, at, label: "owner" });
+  const r = await post("/api/play", { from: run.id, at, label: "owner", fps_unlock: $("fps").checked });
   if (r.id) { focusRun(r.id); $("scr").focus(); } else alert(r.error || "could not retry");
 }
 async function pinRun(run) {
@@ -1160,6 +1162,8 @@ function openSettings() {
 }
 $("pak").checked = store.get("tas.pak", "on") === "on";
 $("cpak").checked = store.get("tas.cpak", "on") === "on";
+$("fps").checked = store.get("tas.fps", "off") === "on";
+$("fps").onchange = () => store.set("tas.fps", $("fps").checked ? "on" : "off");
 $("pak").onchange = () => store.set("tas.pak", $("pak").checked ? "on" : "off");
 $("cpak").onchange = () => store.set("tas.cpak", $("cpak").checked ? "on" : "off");
 $("orig").onchange = () => { O.on = $("orig").checked; store.set("tas.oracle", O.on ? "on" : "off"); };

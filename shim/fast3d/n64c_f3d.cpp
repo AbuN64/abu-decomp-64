@@ -33,6 +33,23 @@ namespace Fast {
 void GfxSetInstance(std::shared_ptr<Interpreter> gfx);
 }
 
+// Frame-rate unlock (see n64c_f3d.h): what a graphics task asked for, kept so the same lists can be drawn again at a
+// moment between two game frames. A group is the tasks of one retrace.
+struct MtxRec {
+    const int32_t* addr; // the matrix in game memory: Fast3D finds a replacement by this pointer
+    MtxF value;
+    uint8_t params;
+};
+struct TaskRec {
+    uint32_t dl, other_mode_h, other_mode_h_known, scissor_lry; // the list and the RDP state its translation started from
+    uint32_t commands, lists;
+    size_t mtx_begin, mtx_end;
+};
+struct Group {
+    std::vector<TaskRec> tasks;
+    std::vector<MtxRec> mtx;
+    uint32_t surface = 0; // the colour image the frame's last task drew to
+};
 struct N64cF3d {
     N64cF3dConfig config;
     std::shared_ptr<Ship::Config> settings;
@@ -46,20 +63,57 @@ struct N64cF3d {
     uint32_t surface = 0;                       // latest colour image bound by the latest run
     uintptr_t wrapper[6] = {};
     std::string gl_renderer;
+    bool unlock = false, in_sub = false, have_cur = false, interp = false;
+    std::vector<uint8_t> snapshot;              // game memory as the latest task saw it: the interpolated draws read this
+    N64cGfxMem snapshot_mem = {};               // (the game goes on and rewrites its lists and data within the same retrace)
+    // Fast3D's RDP and RSP state keeps colours, tiles and modes from one list to the next, and a game's list may rely
+    // on what the frame before left. An interpolated draw starts from the state its real task started from and puts
+    // back the state that task ended in, so the next real task starts exactly as it would without any extra draw.
+    Fast::RDP rdp_start, rdp_end;
+    Fast::RSP rsp_start, rsp_end;
+    std::vector<const int32_t*> sub_seen;
+    Group pending, cur, prev;
+    std::vector<MtxRec>* capture = nullptr;
+    N64cDlArena sub_arena = {};                 // the interpolated draws translate with their own arena and
+    std::map<uint32_t, int> sub_surfaces;       // their own framebuffers: the game's colour images stay exactly as it drew them
+    uint32_t sub_surface = 0;
 };
 // n64c_dl hook: the framebuffer of this colour image, created on first use at the game's size (its
 // scissor's height; the configured one until the game has set a scissor).
 static int color_image(void* user, uint32_t phys, uint32_t width, uint32_t height, uintptr_t extra[2])
 {
     auto* f3d = static_cast<N64cF3d*>(user);
-    const int fb = N64c::ColorImageSurface(*f3d->interpreter, *f3d->renderer, f3d->surfaces,
+    const int fb = N64c::ColorImageSurface(*f3d->interpreter, *f3d->renderer,
+                                          f3d->in_sub ? f3d->sub_surfaces : f3d->surfaces,
                                           phys, width, height ? height : f3d->config.fb_h);
-    f3d->surface = phys;
+    (f3d->in_sub ? f3d->sub_surface : f3d->surface) = phys;
     extra[0] = (uintptr_t)(uint8_t)Fast::OTR_G_SETFB << 24;
     extra[1] = (uintptr_t)fb;
     return 1;
 }
 
+// The 16.16 fixed-point Mtx as Fast3D reads it (interpreter.cpp GfxSpMatrix).
+static MtxF decode_matrix(const int32_t* addr)
+{
+    MtxF m;
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j += 2) {
+            const int32_t int_part = addr[i * 2 + j / 2];
+            const uint32_t frac_part = (uint32_t)addr[8 + i * 2 + j / 2];
+            m.mf[i][j] = (int32_t)(((uint32_t)int_part & 0xffff0000u) | (frac_part >> 16)) / 65536.0f;
+            m.mf[i][j + 1] = (int32_t)((uint32_t)int_part << 16 | (frac_part & 0xffffu)) / 65536.0f;
+        }
+    }
+    return m;
+}
+static void matrix_seen(void* user, const uintptr_t cmd[2])
+{
+    auto* f3d = static_cast<N64cF3d*>(user);
+    if (f3d->in_sub)
+        f3d->sub_seen.push_back((const int32_t*)cmd[1]);
+    else if (f3d->capture)
+        f3d->capture->push_back({ (const int32_t*)cmd[1], decode_matrix((const int32_t*)cmd[1]), (uint8_t)cmd[0] });
+}
 // SDL's offscreen driver takes the first EGL device that initialises; pick Mesa's software device
 // instead so results do not depend on the host GPU.
 static void prefer_software_device()
@@ -123,34 +177,192 @@ extern "C" N64cF3d* n64c_f3d_open(const N64cF3dConfig* config)
     return f3d.release();
 }
 
-extern "C" int n64c_f3d_run(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N64cDlStats* stats)
+// One translation and Fast3D pass of the list at dl into the arena's colour images (the game's, or with in_sub the
+// interpolated draw's own). The caller has reset and primed the arena.
+struct SubPlan {
+    const Group *prev, *cur;
+    float alpha;
+};
+static MtxF lerp_matrix(const MtxF& a, const MtxF& b, float t);
+static int render(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N64cDlArena* arena, N64cDlStats* stats,
+                  const SubPlan* plan)
 {
-    auto context = f3d->window->UseContext();
-    n64c_dl_arena_reset(&f3d->arena);
-    f3d->surface = 0;
-    const N64cDlHooks hooks = {color_image, f3d};
-    const uintptr_t* root = n64c_dl_translate(mem, dl, &f3d->arena, stats, &hooks);
+    const N64cDlHooks hooks = { color_image, f3d, matrix_seen };
+    f3d->sub_seen.clear();
+    const uintptr_t* root = n64c_dl_translate(mem, dl, arena, stats, &hooks);
     if (!root)
         return -1;
+    // An interpolated draw moves each matrix of this translation (found by its place in execution order) between where
+    // the frame before had it and where this frame does.
+    std::unordered_map<Mtx*, MtxF> replacements;
+    if (plan) {
+        if (f3d->sub_seen.size() != plan->cur->mtx.size())
+            return -2;
+        replacements.reserve(f3d->sub_seen.size());
+        for (size_t i = 0; i < f3d->sub_seen.size(); i++)
+            replacements.emplace((Mtx*)f3d->sub_seen[i],
+                                 lerp_matrix(plan->prev->mtx[i].value, plan->cur->mtx[i].value, plan->alpha));
+    }
     f3d->wrapper[0] = (uintptr_t)0xDE << 24; // G_DL (push)
     f3d->wrapper[1] = (uintptr_t)root;
     f3d->wrapper[2] = (uintptr_t)(uint8_t)Fast::OTR_G_RESETFB << 24;
     f3d->wrapper[4] = (uintptr_t)0xDF << 24; // G_ENDDL
     auto& gfx = *f3d->interpreter;
     gfx.StartFrame();
-    const std::unordered_map<Mtx*, MtxF> no_replacements;
-    gfx.Run((Gfx*)f3d->wrapper, no_replacements);
+    gfx.Run((Gfx*)f3d->wrapper, replacements);
     // No flip here: a task draws into the game's colour images; the window shows what the VI presents.
     f3d->renderer->EndFrame();
     f3d->renderer->FinishRender();
     return (int)stats->commands;
 }
-extern "C" uint32_t n64c_f3d_surface(const N64cF3d* f3d) { return f3d->surface; }
-extern "C" int n64c_f3d_read(N64cF3d* f3d, uint32_t phys, uint32_t* rgba, uint32_t w, uint32_t h)
+extern "C" int n64c_f3d_run(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N64cDlStats* stats)
 {
     auto context = f3d->window->UseContext();
-    const auto it = f3d->surfaces.find(phys);
-    if (it == f3d->surfaces.end() || !rgba || !w || !h)
+    n64c_dl_arena_reset(&f3d->arena);
+    f3d->surface = 0;
+    f3d->in_sub = false;
+    TaskRec task = { dl, f3d->arena.other_mode_h, f3d->arena.other_mode_h_known, f3d->arena.scissor_lry, 0, 0,
+                     f3d->pending.mtx.size(), 0 };
+    f3d->capture = f3d->unlock ? &f3d->pending.mtx : nullptr;
+    if (f3d->unlock) {
+        f3d->rdp_start = *f3d->interpreter->mRdp;
+        f3d->rsp_start = *f3d->interpreter->mRsp;
+    }
+    const int commands = render(f3d, mem, dl, &f3d->arena, stats, nullptr);
+    f3d->capture = nullptr;
+    if (f3d->unlock) {
+        f3d->rdp_end = *f3d->interpreter->mRdp;
+        f3d->rsp_end = *f3d->interpreter->mRsp;
+    }
+    if (f3d->unlock && commands > 0) {
+        // The game runs on after this task returns and may rewrite what the list pointed at before the retrace ends:
+        // keep the memory as this task saw it (only a game with a base address for memory can be copied).
+        f3d->snapshot_mem = {};
+        if (mem->base && !mem->replay) {
+            f3d->snapshot.assign(mem->base, mem->base + (size_t)mem->mask + 1);
+            f3d->snapshot_mem = { f3d->snapshot.data(), mem->mask, 0 };
+        }
+        task.commands = stats->commands;
+        task.lists = stats->lists;
+        task.mtx_end = f3d->pending.mtx.size();
+        f3d->pending.tasks.push_back(task);
+    }
+    return commands;
+}
+extern "C" void n64c_f3d_unlock(N64cF3d* f3d, int on)
+{
+    f3d->unlock = on != 0;
+    f3d->pending = {};
+    f3d->cur = {};
+    f3d->prev = {};
+    f3d->have_cur = f3d->interp = false;
+}
+// Fast3D caches textures by address, and the copy of game memory has the same addresses for every frame: before the
+// game's next tasks run, drop the cache entries the interpolated draws made, so the cache is what it would be without
+// them (a texture the game rewrote in place is reloaded for the next frame's draws, and the game's own pictures are
+// the same with the unlock on or off).
+static void purge_snapshot_textures(N64cF3d* f3d)
+{
+    if (f3d->snapshot.empty())
+        return;
+    const uint8_t *lo = f3d->snapshot.data(), *hi = lo + f3d->snapshot.size();
+    auto& cache = f3d->interpreter->mTextureCache;
+    for (auto it = cache.map.begin(); it != cache.map.end();) {
+        if (it->first.texture_addr >= lo && it->first.texture_addr < hi) {
+            for (auto& bound : f3d->interpreter->mRenderingState.mTextures)
+                if (bound == &*it)
+                    bound = nullptr;
+            cache.lru.erase(it->second.lru_location);
+            cache.free_texture_ids.push_back(it->second.texture_id);
+            it = cache.map.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+extern "C" void n64c_f3d_group_begin(N64cF3d* f3d)
+{
+    f3d->pending = {};
+    if (f3d->unlock) {
+        auto context = f3d->window->UseContext();
+        purge_snapshot_textures(f3d);
+    }
+}
+// The two groups draw the same scene when every task has the same list and command counts and the matrices are the
+// same sequence of kinds; then the matrix at one position in one is the same object's in the other.
+static bool same_shape(const Group& a, const Group& b)
+{
+    if (a.tasks.size() != 1 || b.tasks.size() != 1 || a.mtx.size() != b.mtx.size() || a.mtx.empty())
+        return false;
+    for (size_t i = 0; i < a.tasks.size(); i++)
+        if (a.tasks[i].commands != b.tasks[i].commands || a.tasks[i].lists != b.tasks[i].lists ||
+            a.tasks[i].mtx_begin != b.tasks[i].mtx_begin)
+            return false;
+    for (size_t i = 0; i < a.mtx.size(); i++)
+        if (a.mtx[i].params != b.mtx[i].params)
+            return false;
+    return true;
+}
+extern "C" int n64c_f3d_group_end(N64cF3d* f3d)
+{
+    if (f3d->pending.tasks.empty())
+        return 0;
+    const bool had = f3d->have_cur;
+    f3d->prev = std::move(f3d->cur);
+    f3d->cur = std::move(f3d->pending);
+    f3d->cur.surface = f3d->surface;
+    f3d->pending = {};
+    f3d->have_cur = true;
+    f3d->interp = had && f3d->snapshot_mem.base && same_shape(f3d->prev, f3d->cur);
+    return 1 | (f3d->interp ? 2 : 0);
+}
+// One matrix between its previous and current value. A matrix that turned by more than about 20 degrees or changed
+// scale by a third between two game frames is a cut, a spawn or a different object: it keeps its current value.
+static MtxF lerp_matrix(const MtxF& a, const MtxF& b, float t)
+{
+    float scale = 1e-3f, delta = 0;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            scale = std::max(scale, std::max(std::fabs(a.mf[i][j]), std::fabs(b.mf[i][j])));
+            delta = std::max(delta, std::fabs(b.mf[i][j] - a.mf[i][j]));
+        }
+    if (delta > 0.35f * scale)
+        return b;
+    MtxF m;
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++)
+            m.mf[i][j] = a.mf[i][j] * (1.0f - t) + b.mf[i][j] * t; // exact at t = 0 and 1
+    return m;
+}
+extern "C" int n64c_f3d_interp_draw(N64cF3d* f3d, float alpha)
+{
+    if (!f3d->unlock || !f3d->have_cur || !f3d->interp)
+        return 0;
+    auto context = f3d->window->UseContext();
+    const TaskRec& task = f3d->cur.tasks.front();
+    f3d->in_sub = true;
+    f3d->sub_surface = 0;
+    n64c_dl_arena_reset(&f3d->sub_arena);
+    f3d->sub_arena.other_mode_h = task.other_mode_h;
+    f3d->sub_arena.other_mode_h_known = task.other_mode_h_known;
+    f3d->sub_arena.scissor_lry = task.scissor_lry;
+    N64cDlStats stats = {};
+    const SubPlan plan = { &f3d->prev, &f3d->cur, alpha };
+    *f3d->interpreter->mRdp = f3d->rdp_start;
+    *f3d->interpreter->mRsp = f3d->rsp_start;
+    const int drawn = render(f3d, &f3d->snapshot_mem, task.dl, &f3d->sub_arena, &stats, &plan);
+    *f3d->interpreter->mRdp = f3d->rdp_end;
+    *f3d->interpreter->mRsp = f3d->rsp_end;
+    f3d->in_sub = false;
+    return drawn > 0 && !stats.unknown && f3d->sub_surface;
+}
+extern "C" uint32_t n64c_f3d_surface(const N64cF3d* f3d) { return f3d->surface; }
+static int read_surface(N64cF3d* f3d, const std::map<uint32_t, int>& surfaces, uint32_t phys, uint32_t* rgba,
+                        uint32_t w, uint32_t h)
+{
+    auto context = f3d->window->UseContext();
+    const auto it = surfaces.find(phys);
+    if (it == surfaces.end() || !rgba || !w || !h)
         return 0;
     const auto info = f3d->interpreter->mFrameBuffers.find(it->second);
     if (info == f3d->interpreter->mFrameBuffers.end())
@@ -181,6 +393,45 @@ extern "C" int n64c_f3d_read(N64cF3d* f3d, uint32_t phys, uint32_t* rgba, uint32
         }
     }
     return 1;
+}
+extern "C" int n64c_f3d_read(N64cF3d* f3d, uint32_t phys, uint32_t* rgba, uint32_t w, uint32_t h)
+{
+    return read_surface(f3d, f3d->surfaces, phys, rgba, w, h);
+}
+// Debug check: the interpolated draw at alpha 1 must be the game's own picture of the same frame.
+extern "C" int n64c_f3d_interp_check(N64cF3d* f3d, uint32_t w, uint32_t h, uint32_t* drawn_out, uint32_t* game_out)
+{
+    if (!f3d->sub_surface || !f3d->cur.surface || !w || !h)
+        return -1;
+    std::vector<uint32_t> drawn((size_t)w * h), game((size_t)w * h);
+    if (!read_surface(f3d, f3d->sub_surfaces, f3d->sub_surface, drawn.data(), w, h) ||
+        !read_surface(f3d, f3d->surfaces, f3d->cur.surface, game.data(), w, h))
+        return -1;
+    if (drawn_out && game_out) {
+        std::copy(drawn.begin(), drawn.end(), drawn_out);
+        std::copy(game.begin(), game.end(), game_out);
+    }
+    int differing = 0;
+    for (size_t i = 0; i < drawn.size(); i++)
+        for (int c = 0; c < 3; c++)
+            if (std::abs((int)(drawn[i] >> (8 * c) & 255) - (int)(game[i] >> (8 * c) & 255)) > 2) {
+                differing++;
+                break;
+            }
+    if (differing)
+        std::fprintf(stderr, "f3d-check: differing=%d game surface 0x%08x drawn surface 0x%08x tasks=%zu matrices=%zu\n",
+                     differing, f3d->cur.surface, f3d->sub_surface, f3d->cur.tasks.size(), f3d->cur.mtx.size());
+    return differing;
+}
+extern "C" uint32_t n64c_f3d_refresh_hz(N64cF3d* f3d)
+{
+    uint32_t hz = 0;
+    f3d->window->GetActiveWindowRefreshRate(&hz);
+    return hz;
+}
+extern "C" int n64c_f3d_interp_read(N64cF3d* f3d, uint32_t* rgba, uint32_t w, uint32_t h)
+{
+    return f3d->sub_surface && read_surface(f3d, f3d->sub_surfaces, f3d->sub_surface, rgba, w, h);
 }
 // The port's own 5x7 status font: printable ASCII 0x20-0x5f, one byte per row, bit 4 the leftmost
 // column. Lower case is drawn upper case. Hand-drawn for this file.
@@ -270,18 +521,19 @@ static void status_text(uint32_t ww, uint32_t wh, const char* text)
     if (!scissor)
         glDisable(GL_SCISSOR_TEST);
 }
-static int present(N64cF3d* f3d, uint32_t phys, const char* text)
+static int present(N64cF3d* f3d, const std::map<uint32_t, int>& surfaces, uint32_t phys, const char* text, bool events)
 {
     auto context = f3d->window->UseContext();
-    f3d->window->HandleEvents();
+    if (events)
+        f3d->window->HandleEvents();
     uint32_t ww = 0, wh = 0;
     int32_t x = 0, y = 0;
     f3d->window->GetDimensions(&ww, &wh, &x, &y);
     f3d->renderer->UpdateFramebufferParameters(0, ww, wh, 1, false, true, true, true);
     f3d->renderer->StartDrawToFramebuffer(0, 1);
     f3d->renderer->ClearFramebuffer(true, true);
-    const auto it = phys ? f3d->surfaces.find(phys) : f3d->surfaces.end();
-    if (it != f3d->surfaces.end()) {
+    const auto it = phys ? surfaces.find(phys) : surfaces.end();
+    if (it != surfaces.end()) {
         const auto info = f3d->interpreter->mFrameBuffers.find(it->second);
         if (info != f3d->interpreter->mFrameBuffers.end())
             f3d->renderer->CopyFramebuffer(0, it->second, 0, 0, (int)info->second.applied_width,
@@ -297,11 +549,22 @@ static int present(N64cF3d* f3d, uint32_t phys, const char* text)
 }
 extern "C" int n64c_f3d_present(N64cF3d* f3d, uint32_t phys)
 {
-    return present(f3d, phys, nullptr);
+    return present(f3d, f3d->surfaces, phys, nullptr, true);
+}
+// The interpolated draw's picture, with no event poll: input is read once per VI present as ever.
+extern "C" int n64c_f3d_interp_present(N64cF3d* f3d)
+{
+    return present(f3d, f3d->sub_surfaces, f3d->sub_surface, nullptr, false);
+}
+extern "C" int n64c_f3d_events(N64cF3d* f3d)
+{
+    auto context = f3d->window->UseContext();
+    f3d->window->HandleEvents();
+    return f3d->window->IsRunning() ? 1 : 0;
 }
 extern "C" int n64c_f3d_present_text(N64cF3d* f3d, uint32_t phys, const char* text)
 {
-    return present(f3d, phys, text ? text : "");
+    return present(f3d, f3d->surfaces, phys, text ? text : "", true);
 }
 extern "C" const char* n64c_f3d_renderer(const N64cF3d* f3d) { return f3d->gl_renderer.c_str(); }
 
@@ -311,6 +574,7 @@ extern "C" void n64c_f3d_close(N64cF3d* f3d)
         return;
     auto context = f3d->window->UseContext();
     n64c_dl_arena_free(&f3d->arena);
+    n64c_dl_arena_free(&f3d->sub_arena);
     f3d->interpreter->Destroy();
     f3d->interpreter.reset();
     delete f3d->renderer;

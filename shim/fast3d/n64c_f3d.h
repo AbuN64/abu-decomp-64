@@ -35,6 +35,26 @@ int n64c_f3d_present(N64cF3d *f3d, uint32_t phys);
 /* n64c_f3d_present with the port's own status text (ASCII, lines split by newlines) drawn over the image on
  * a dark panel at the top left: what the port shows when the original run cannot draw (a boot stop). */
 int n64c_f3d_present_text(N64cF3d *f3d, uint32_t phys, const char *text);
+/* Frame-rate unlock. The game draws a picture every game frame (a retrace, or every second one); with unlock on the
+ * renderer also keeps what the frame's graphics tasks asked for and can draw that scene again at a moment between
+ * two game frames, with each matrix moved part of the way from where it was in the frame before to where this frame
+ * puts it (Fast3D's matrix replacement). The draws go to their own framebuffers, never to the game's colour images, and
+ * read game memory only: nothing the game or the TAS recorder can see changes.
+ *   group_begin before the retrace's tasks run; group_end after: returns 0 when no task ran, else 1, plus 2 when the
+ *   frame draws the same scene as the one before (so interp_draw works). interp_draw(alpha 0..1) draws the current
+ *   frame at alpha of the way from the previous one; 0 when it cannot (the caller shows the VI's picture instead).
+ *   interp_present shows that picture and flips; interp_read reads it like n64c_f3d_read; events polls the window. */
+void n64c_f3d_unlock(N64cF3d *f3d, int on);
+void n64c_f3d_group_begin(N64cF3d *f3d);
+int n64c_f3d_group_end(N64cF3d *f3d);
+int n64c_f3d_interp_draw(N64cF3d *f3d, float alpha);
+int n64c_f3d_interp_present(N64cF3d *f3d);
+int n64c_f3d_interp_read(N64cF3d *f3d, uint32_t *rgba, uint32_t w, uint32_t h);
+int n64c_f3d_events(N64cF3d *f3d);
+/* Pixels (of w x h) where the interpolated draw differs from the game's own picture of the same frame: meaningful at
+ * alpha 1 only; -1 when either picture is missing. The refresh rate of the display the window is on (60 when unknown). */
+int n64c_f3d_interp_check(N64cF3d *f3d, uint32_t w, uint32_t h, uint32_t *drawn, uint32_t *game);
+uint32_t n64c_f3d_refresh_hz(N64cF3d *f3d);
 const char *n64c_f3d_renderer(const N64cF3d *f3d);
 void n64c_f3d_close(N64cF3d *f3d);
 #ifdef __cplusplus

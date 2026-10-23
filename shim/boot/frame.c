@@ -130,6 +130,26 @@ static void unsupported_task(OSTask *task,void *user)
     snprintf(message,sizeof message,"task type %u has no native handler",(unsigned)task->type);
     task_stop(subject,message);
 }
+/* Frame-rate unlock (frame.h): `live` while the current game frame draws the same scene as the one before, so its
+ * interpolated pictures are what the window shows; the VI's own present then only polls events. */
+static struct {
+    int on,live,final_shown,drawn;
+    u32 last_n,period;
+    struct timespec t_commit;
+    long long cost_ns;
+    unsigned long long flips,groups,interpolated,checked,mismatched;
+    int worst,check;
+    u32 hz;
+    struct timespec t0;
+} unlock;
+static long long ns_since(const struct timespec *a,const struct timespec *b)
+{
+    return (long long)(b->tv_sec-a->tv_sec)*1000000000ll+(b->tv_nsec-a->tv_nsec);
+}
+void n64c_boot_frame_unlock(int on)
+{
+    unlock.on=on!=0;
+}
 /* Every retrace the window shows what the VI shows: the colour image it was last given (black while
  * it is blanked or that image was never drawn). */
 static void present(void *fb,void *user)
@@ -137,7 +157,9 @@ static void present(void *fb,void *user)
     (void)user;
     frame.presented=fb;
     u32 physical=fb ? n64c_memory_physical(fb) : 0;
-    if (!n64c_f3d_present(frame.f3d,physical)) frame.closed=1;
+    if (unlock.live) { if (!n64c_f3d_events(frame.f3d)) frame.closed=1; }
+    else if (!n64c_f3d_present(frame.f3d,physical)) frame.closed=1;
+    else unlock.flips++;
     /* Only new, successfully rendered work across a frame boundary proves
      * progress. An idle VI repaint must not conceal a blocked game thread. */
     if (!frame.closed && frame.tasks!=frame.progress_tasks) {
@@ -197,16 +219,20 @@ int n64c_boot_frame_start(u32 width,u32 height,u32 ram_bytes,int audio_abi,u32 w
     n64c_set_task_handler(M_GFXTASK,graphics,NULL);
     n64c_set_task_handler(M_AUDTASK,frame.audio ? audio : unsupported_task,NULL);
     n64c_set_present(present,NULL);
+    n64c_f3d_unlock(frame.f3d,unlock.on);
+    unlock.live=0;
     if (live) n64c_boot_stop_hook=live_stop;
     return 1;
 }
 /* The VI shows whichever color image it was given; double buffering presents an earlier rendered surface,
  * never the last one by assumption. Reads it back scaled to width x height (caller frees), NULL when never rendered. */
-static uint32_t *read_presented(u32 width,u32 height,int quiet)
+static uint32_t *read_presented(u32 width,u32 height,int quiet,int shown)
 {
     u32 physical=n64c_memory_physical(frame.presented);
     uint32_t *pixels=malloc((size_t)width*height*sizeof *pixels);
     if (!pixels) return NULL;
+    /* shown: the window's picture (the live viewer); otherwise the VI's, which a movie's shots compare */
+    if (shown && unlock.live && unlock.drawn && n64c_f3d_interp_read(frame.f3d,pixels,width,height)) return pixels;
     if (!n64c_f3d_read(frame.f3d,physical,pixels,width,height)) {
         if (!quiet) fprintf(stderr,"boot-frame: presented surface 0x%08x was never rendered\n",physical);
         free(pixels);
@@ -217,7 +243,7 @@ static uint32_t *read_presented(u32 width,u32 height,int quiet)
 /* Writes the presented image as a binary PPM; never replaces an existing file. */
 static int write_presented(const char *path,u32 width,u32 height)
 {
-    uint32_t *pixels=read_presented(width,height,0);
+    uint32_t *pixels=read_presented(width,height,0,0);
     if (!pixels) return 0;
     FILE *out=fopen(path,"wbx");
     if (!out) { free(pixels);perror("boot-frame output");return 0; }
@@ -276,7 +302,7 @@ static struct {
 } view;
 int n64c_parse_view_fps(const char *text,u32 *fps)
 {
-    if (!text || !*text) { *fps=VIEW_FPS_DEFAULT; return 1; }
+    if (!text || !*text) { *fps=unlock.on ? 60 : VIEW_FPS_DEFAULT; return 1; }
     char *end;
     unsigned long v=strtoul(text,&end,10);
     if (*end || v<1 || v>120) return 0;
@@ -309,7 +335,7 @@ static void view_write(int force)
     if (!force && view.written &&
         (long long)(now.tv_sec-view.last.tv_sec)*1000000000ll+(now.tv_nsec-view.last.tv_nsec)<view.interval_ns) return;
     /* Early on the VI can show a surface not drawn yet: no picture this time, try again next interval. */
-    uint32_t *pixels=read_presented(TAS_SHOT_WIDTH,TAS_SHOT_HEIGHT,1);
+    uint32_t *pixels=read_presented(TAS_SHOT_WIDTH,TAS_SHOT_HEIGHT,1,1);
     if (!pixels) return;
     view.last=now;view.written=1;
     int ok=n64c_write_bmp_tagged(view.tmp,pixels,TAS_SHOT_WIDTH,TAS_SHOT_HEIGHT,(u32)n64c_tas_live_seq()) &&
@@ -364,11 +390,112 @@ int n64c_parse_pak(const char *text,u32 profile_bytes,u32 *ram)
     else return 0;
     return 1;
 }
+#define CHECK_W 284
+#define CHECK_H 222
+static void sleep_until(const struct timespec *due)
+{
+    while (clock_nanosleep(CLOCK_MONOTONIC,TIMER_ABSTIME,due,NULL)!=0) {}
+}
+int n64c_unlock_rate(const char *text,u32 refresh_hz,u32 *hz)
+{
+    if (!text || !*text || !strcmp(text,"1")) { *hz=refresh_hz>120 ? refresh_hz : 120;return 1; }
+    if (!strcmp(text,"max")) { *hz=0;return 1; }
+    char *end;
+    unsigned long v=strtoul(text,&end,10);
+    if (*end || v<2 || v>100000) return 0;
+    *hz=(u32)v;
+    return 1;
+}
+/* Frame-rate unlock: a game frame that drew the same scene as the one before is shown from the previous frame's
+ * placement to its own over the retraces until the next frame is due (alpha by wall time, so the pictures keep to
+ * the clock whatever the host's speed); the window gets a new picture as soon as the last one is out. */
+static void unlock_commit(u32 n)
+{
+    int groups=n64c_f3d_group_end(frame.f3d);
+    if (!(groups&1)) return;
+    unlock.groups++;
+    unlock.period=n-unlock.last_n<1 ? 1 : n-unlock.last_n>6 ? 6 : n-unlock.last_n;
+    unlock.last_n=n;
+    clock_gettime(CLOCK_MONOTONIC,&unlock.t_commit);
+    unlock.final_shown=unlock.drawn=0;
+    const int was_live=unlock.live;
+    unlock.live=(groups&2)!=0;
+    if (unlock.check && unlock.live && n64c_f3d_interp_draw(frame.f3d,1.0f)) { /* debug: the machinery at alpha 1 is the game's own picture */
+        static uint32_t drawn[CHECK_W*CHECK_H],game[CHECK_W*CHECK_H];
+        int bad=n64c_f3d_interp_check(frame.f3d,CHECK_W,CHECK_H,drawn,game);
+        if (bad>=0) {
+            unlock.checked++;
+            if (bad) {
+                unlock.mismatched++;if (bad>unlock.worst) unlock.worst=bad;
+                const char *dir=getenv("N64C_FPS_UNLOCK_CHECK");
+                if (dir && dir[0]=='/' && unlock.mismatched<=12) { /* a directory: keep both pictures of the first differences */
+                    char path[1100];
+                    snprintf(path,sizeof path,"%s/drawn-%03llu.bmp",dir,unlock.mismatched);
+                    (void)n64c_write_bmp(path,drawn,CHECK_W,CHECK_H);
+                    snprintf(path,sizeof path,"%s/game-%03llu.bmp",dir,unlock.mismatched);
+                    (void)n64c_write_bmp(path,game,CHECK_W,CHECK_H);
+                }
+            }
+        }
+    }
+    if (was_live && !unlock.live && frame.presented) {
+        if (!n64c_f3d_present(frame.f3d,n64c_memory_physical(frame.presented))) frame.closed=1;
+        else unlock.flips++;
+    }
+}
 static void wait_retrace(const struct timespec *start,u32 n,u32 speed)
 {
     struct timespec due;
     if (!n64c_retrace_due(start,n,speed,&due)) return;
-    while (clock_nanosleep(CLOCK_MONOTONIC,TIMER_ABSTIME,&due,NULL)!=0) {}
+    if (unlock.on && unlock.live && !frame.closed) {
+        const long long total=(long long)unlock.period*16683333ll/speed;
+        for (;;) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC,&now);
+            if (unlock.final_shown || ns_since(&now,&due)<=unlock.cost_ns) break;
+            long long since=ns_since(&unlock.t_commit,&now);
+            float alpha=since>=total ? 1.0f : (float)since/(float)total;
+            if (!n64c_f3d_interp_draw(frame.f3d,alpha)) { unlock.live=0;break; }
+            unlock.drawn=1;
+
+            if (!n64c_f3d_interp_present(frame.f3d)) { frame.closed=1;break; }
+            unlock.flips++;unlock.interpolated++;
+            if (alpha>=1.0f) unlock.final_shown=1;
+            view_write(0);
+            struct timespec end;
+            clock_gettime(CLOCK_MONOTONIC,&end);
+            long long took=ns_since(&now,&end);
+            unlock.cost_ns=unlock.cost_ns ? (unlock.cost_ns*3+took)/4 : took;
+            if (unlock.hz && !unlock.final_shown) { /* the next picture is due 1/hz after this one began */
+                long long gap=1000000000ll/unlock.hz-took;
+                if (gap>0) {
+                    struct timespec next={end.tv_sec,end.tv_nsec+gap};
+                    if (next.tv_nsec>=1000000000l) { next.tv_sec++;next.tv_nsec-=1000000000l; }
+                    if (ns_since(&next,&due)<=unlock.cost_ns) break;
+                    sleep_until(&next);
+                }
+            }
+        }
+    }
+    sleep_until(&due);
+}
+static u32 live_speed;
+static void fps_report(const char *why,u32 speed)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC,&now);
+    double wall=(double)ns_since(&unlock.t0,&now)/1e9;
+    if (wall<=0) return;
+    if (unlock.check)
+        fprintf(stderr,"boot-fps-check: pictures at alpha 1 compared with the game's own: %llu, differing %llu, worst %d pixels of %d\n",
+                unlock.checked,unlock.mismatched,unlock.worst,CHECK_W*CHECK_H);
+    fprintf(stderr,"boot-fps: %s unlock=%d speed=%u retrace=%u wall=%.2f presented=%llu (%.1f/s) game=%llu (%.1f/s) interpolated=%llu\n",
+            why,unlock.on,speed,osViGetRetraceCount(),wall,unlock.flips,unlock.flips/wall,
+            (unsigned long long)frame.tasks,frame.tasks/wall,unlock.interpolated);
+}
+void n64c_boot_run_ended(void)
+{
+    fps_report("ended",live_speed);
 }
 int n64c_boot_frame_live(void)
 {
@@ -383,14 +510,28 @@ int n64c_boot_frame_live(void)
         fprintf(stderr,"boot-frame: cannot write N64C_AUDIO_OUT %s\n",audio_out);
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC,&start);
+    live_speed=speed;
+    unlock.t0=start;unlock.flips=unlock.groups=unlock.interpolated=0;unlock.last_n=0;unlock.cost_ns=0;
+    unlock.checked=unlock.mismatched=0;unlock.worst=0;
+    unlock.check=getenv("N64C_FPS_UNLOCK_CHECK") && *getenv("N64C_FPS_UNLOCK_CHECK") && strcmp(getenv("N64C_FPS_UNLOCK_CHECK"),"0");
+    if (unlock.on) {
+        const char *text=getenv("N64C_FPS_UNLOCK");
+        if (!n64c_unlock_rate(text,n64c_f3d_refresh_hz(frame.f3d),&unlock.hz)) {
+            fprintf(stderr,"boot-frame: N64C_FPS_UNLOCK must be a rate, max or 1, got %s; using the default\n",text);
+            (void)n64c_unlock_rate(NULL,n64c_f3d_refresh_hz(frame.f3d),&unlock.hz);
+        }
+        fprintf(stderr,"boot-fps: unlock on, %u pictures a second at most\n",unlock.hz);
+    }
     u32 base=0; /* retraces before the pacing restarted (a run taken over by live input plays at 1x from there) */
     for (u32 n=1;!frame.closed;n++) {
         if (speed!=1 && n64c_tas_live_taken()) {
             fprintf(stderr,"boot-frame: live input: real time from retrace %u\n",osViGetRetraceCount());
-            speed=1;base=n-1;clock_gettime(CLOCK_MONOTONIC,&start);
+            speed=live_speed=1;base=n-1;clock_gettime(CLOCK_MONOTONIC,&start);
         }
         if (n64c_tas_live_taken() && view.path) view.interval_ns=1000000000ll/60-2000000ll;
+        if (unlock.on) n64c_f3d_group_begin(frame.f3d);
         const int alive=n64c_frame();
+        if (unlock.on) unlock_commit(n);
         if (n64c_sched_halted()) {
             show_stop(n64c_boot_stop_symbol);
             if (n64c_coverage_dump) n64c_coverage_dump();
@@ -407,11 +548,13 @@ int n64c_boot_frame_live(void)
             if (!write_presented(path,TAS_SHOT_WIDTH,TAS_SHOT_HEIGHT)) fprintf(stderr,"n64c-tas: shot %ld failed\n",shot);
         }
         view_write(0);
+        if (n%600==0) fps_report("running",speed);
         if (n%600==0)
             fprintf(stderr,"boot-step: retrace=%u tasks=%u audio=%u commands=%llu\n",osViGetRetraceCount(),
                     frame.tasks,frame.audio_tasks,(unsigned long long)frame.commands);
         wait_retrace(&start,n-base,speed);
     }
+    fps_report("closed",speed);
     fprintf(stderr,"boot-frame: window closed at retrace %u\n",osViGetRetraceCount());
     return 1;
 }

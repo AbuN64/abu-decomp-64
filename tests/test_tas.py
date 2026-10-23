@@ -313,6 +313,58 @@ class MovieTests(unittest.TestCase):
         self.assertEqual(tas.read_record(Path(kept["run"]))["pak"], "off")
         self.assertEqual({m["name"]: m["pak"] for m in tas.listing(self.profile)["movies"]}["short"], "off")
 
+    def test_framerate_unlock_is_a_flag_and_a_record_and_nothing_else(self):
+        self.movie()
+        argvs, envs = [], []
+
+        class Port:
+            def __init__(self, argv, env, stdout, **kwargs):
+                argvs.append(argv)
+                envs.append(env)
+                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n")
+                Path(env["N64C_TAS_HASH"]).write_text("1 aa\n2 bb\n")  # the same state every poll, unlock or not
+                unlocked = "--fps-unlock" in argv
+                stdout.write(
+                    "boot-fps: running unlock=0 speed=1 retrace=600 wall=10.00 presented=300 (30.0/s) "
+                    "game=300 (30.0/s) interpolated=0\n"
+                )
+                stdout.write(
+                    f"boot-fps: ended unlock={int(unlocked)} speed=1 retrace=1200 wall=20.00 "
+                    + (
+                        "presented=2400 (120.0/s) game=600 (30.0/s) interpolated=1800\n"
+                        if unlocked
+                        else "presented=600 (30.0/s) game=600 (30.0/s) interpolated=0\n"
+                    )
+                )
+                self.pid = 1
+                self.stdin = io.StringIO()
+
+            def wait(self, timeout=None):
+                return 0
+
+        with mock.patch.object(tas.subprocess, "Popen", Port):
+            off = tas.play(self.profile, "m", now=T0)
+            on = tas.play(self.profile, "m", now=T0, fps_unlock=True)
+            human = tas.play(self.profile, None, now=T0, fps_unlock=True)
+        self.assertNotIn("--fps-unlock", argvs[0])
+        self.assertEqual(argvs[1][-1], "--fps-unlock")
+        plain = lambda argv: [a for a in argv if "/plays/" not in a]  # noqa: E731 - each run has its own folder
+        self.assertEqual(
+            plain(argvs[1])[:-1], plain(argvs[0])
+        )  # the one option; the command line is otherwise the same
+        self.assertEqual(argvs[2][-1], "--fps-unlock")
+        for key in ("N64C_SPEED", "N64C_TAS_PLAY", "N64C_TAS_EXIT_AFTER"):
+            self.assertEqual(envs[0].get(key) is None, envs[1].get(key) is None)
+        self.assertIs(on["same_twice"], True)  # a run with the box on is compared with the one without: the same state
+        self.assertEqual(on["compared_with"], Path(off["run"]).name)
+        records = [tas.read_record(Path(r["run"])) for r in (off, on, human)]
+        self.assertEqual([r["fps_unlock"] for r in records], [False, True, True])
+        self.assertEqual(records[0]["shown"]["presented_per_s"], 30.0)
+        self.assertEqual((records[1]["shown"]["presented_per_s"], records[1]["shown"]["game_per_s"]), (120.0, 30.0))
+        self.assertEqual((records[1]["shown"]["unlock"], records[1]["shown"]["interpolated"]), (True, 1800))
+        self.assertIsNone(tas.fps_shown("no such line\n"))
+        self.assertNotIn("fps_unlock", tas.decode((self.root / "movies" / f"{human['saved']}.tas").read_text())[0])
+
     def test_the_controller_pak_is_a_header_a_card_copy_and_a_record(self):
         self.movie()  # a movie from before the card: no cpak line, so its slot was empty
         runs, ends = [], []

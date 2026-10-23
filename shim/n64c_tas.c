@@ -230,6 +230,8 @@ static void ram_state(void)
     }
 }
 
+/* Defined by the boot's frame loop (boot/frame.c): its closing frame-rate line, written before the process ends here. */
+void n64c_boot_run_ended(void) __attribute__((weak));
 void n64c_tas_poll(OSContPad *pad)
 {
     if (!started) start();
@@ -244,6 +246,8 @@ void n64c_tas_poll(OSContPad *pad)
         if (play_done) {
             if (exit_after >= 0 && polls - played >= exit_after) {
                 fprintf(stderr, "n64c-tas: done polls=%ld\n", polls);
+                if (n64c_boot_run_ended)
+                    n64c_boot_run_ended();
                 fflush(stderr);
                 _Exit(0);
             }

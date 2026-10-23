@@ -668,8 +668,11 @@ static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth)
             break;
         case OP_MTX:
             cmd[1] = operand(c, w1, 64, plain_words, 1);
-            if (cmd[1])
+            if (cmd[1]) {
                 geo_matrix(&c->geo, cmd);
+                if (c->hooks && c->hooks->matrix)
+                    c->hooks->matrix(c->hooks->user, cmd);
+            }
             break;
         case OP_POPMTX:
             for (uint32_t k = w1 / 64; k-- && c->geo.mv_size > 0;)

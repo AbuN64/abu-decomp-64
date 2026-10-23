@@ -383,6 +383,11 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         help="replay every saved movie in parallel; exit 1 if any is worse (the other options apply to each movie)",
     )
     play.add_argument("--jobs", type=int, default=4, help="parallel replays with --all (default 4)")
+    play.add_argument(
+        "--fps-unlock",
+        action="store_true",
+        help="framerate unlock: draw and present extra pictures between game frames; the run itself is unchanged",
+    )
     play.add_argument("--speed", type=int, default=0, help="0 = turbo (default), 1 = real time with sound, k = k times")
     play.add_argument("--twice", action="store_true", help="replay twice; same_twice compares the two runs' RAM")
     play.add_argument("--port", type=Path, help="run this build's executable instead of the profile's (a lane's build)")
@@ -450,6 +455,7 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         "pak": args.pak,
         "cpak": args.cpak,
         "oracle": args.oracle,
+        "fps_unlock": args.fps_unlock,
     }
     if args.all:  # every play option applies to every movie
         result, code = tas.play_all(profile, jobs=args.jobs, twice=args.twice, **options, **inspect)

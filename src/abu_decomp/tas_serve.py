@@ -257,6 +257,8 @@ class Server:
             "pinned": (run / tas.PINNED).exists(),
             "pak": record.get("pak") or "on",
             "cpak": record.get("cpak") or "none",
+            "fps_unlock": bool(record.get("fps_unlock")),
+            "shown": record.get("shown") or None,
             "oracle": self.oracle(run, record, running),
         }
 
@@ -372,6 +374,7 @@ class Server:
         label: str | None,
         pak: str | None = None,
         cpak: str | None = None,
+        fps_unlock: bool = False,
     ) -> None:
         polls = 0
         with contextlib.suppress(OSError):
@@ -391,7 +394,7 @@ class Server:
         row.update(
             label=label or None, port=str(port), input="movie", took_at=None, stopped=False, saved=None, pinned=False
         )
-        row.update(pak=pak or "on", oracle=None, **{"from": None, "at": None})
+        row.update(pak=pak or "on", oracle=None, fps_unlock=fps_unlock, shown=None, **{"from": None, "at": None})
         with self.lock:
             self.queued[run_id] = row
 
@@ -408,7 +411,12 @@ class Server:
             return next((k for k, r in self.queued.items() if r.get("input") == "human"), None)
 
     def new_human(
-        self, port: str | None, label: str | None, pak: str | None = None, cpak: str | None = None
+        self,
+        port: str | None,
+        label: str | None,
+        pak: str | None = None,
+        cpak: str | None = None,
+        fps_unlock: bool = False,
     ) -> dict[str, Any]:
         busy = self.human_running()
         if busy:
@@ -420,7 +428,7 @@ class Server:
         movie = tas.human_movie_name()
         with self.lock:
             run_id = tas.new_run_id(self.cfg, movie)
-        self._placeholder(run_id, movie, 1, exe, label or tas.HUMAN_LABEL, pak or "on", cpak or "on")
+        self._placeholder(run_id, movie, 1, exe, label or tas.HUMAN_LABEL, pak or "on", cpak or "on", fps_unlock)
         with self.lock:
             self.queued[run_id]["input"] = "human"
 
@@ -435,6 +443,7 @@ class Server:
                     label=label or None,
                     pak=pak,
                     cpak=cpak,
+                    fps_unlock=fps_unlock,
                 )
             except Exception:
                 pass
@@ -482,11 +491,12 @@ class Server:
         cpak: str | None = None,
         source: str | None = None,
         take_at: int | None = None,
+        fps_unlock: bool = False,
     ) -> dict[str, Any]:
         if source:
-            return self.retry(source, take_at, port, label)
+            return self.retry(source, take_at, port, label, fps_unlock)
         if not movie:
-            return self.new_human(port, label, pak, cpak)
+            return self.new_human(port, label, pak, cpak, fps_unlock)
         tas.movie_polls(self.cfg, movie)  # refuse a missing movie or another ROM here, not in the thread
         if oracle:
             tas_oracle.required(self.profile)
@@ -500,11 +510,18 @@ class Server:
             run_id = tas.new_run_id(self.cfg, movie)
             while run_id in self.queued:
                 run_id += "-q"
-        self._placeholder(run_id, movie, speed, exe, label, pak, cpak)
+        self._placeholder(run_id, movie, speed, exe, label, pak, cpak, fps_unlock)
 
         def go() -> None:
             try:
-                options = {"port": port or None, "label": label or None, "pak": pak, "cpak": cpak, "oracle": oracle}
+                options = {
+                    "port": port or None,
+                    "label": label or None,
+                    "pak": pak,
+                    "cpak": cpak,
+                    "oracle": oracle,
+                    "fps_unlock": fps_unlock,
+                }
                 tas.play(self.profile, movie, speed=speed, run_id=run_id, **options)
             except Exception:  # the record says done; the page shows it
                 pass
@@ -514,7 +531,9 @@ class Server:
         self.pool.submit(go)
         return {"id": run_id}
 
-    def retry(self, source: str, take_at: int | None, port: str | None, label: str | None) -> dict[str, Any]:
+    def retry(
+        self, source: str, take_at: int | None, port: str | None, label: str | None, fps_unlock: bool = False
+    ) -> dict[str, Any]:
         """Retry run `source` from poll `take_at`: its recording to that poll at turbo, then live input (tas.play)."""
         busy = self.human_running()
         if busy:
@@ -524,7 +543,9 @@ class Server:
         exe = tas.with_port(self.cfg, port)["port"]
         with self.lock:
             run_id = tas.new_run_id(self.cfg, found["movie"])
-        self._placeholder(run_id, found["movie"], 0, exe, label or tas.HUMAN_LABEL, found["pak"], found["cpak"])
+        self._placeholder(
+            run_id, found["movie"], 0, exe, label or tas.HUMAN_LABEL, found["pak"], found["cpak"], fps_unlock
+        )
         with self.lock:
             self.queued[run_id].update(input="human", took_at=take_at, polls=len(found["polls"]))
             self.queued[run_id].update({"from": source, "at": take_at})
@@ -533,7 +554,7 @@ class Server:
             try:
                 tas.play(
                     self.profile, None, run_id=run_id, port=port or None, label=label or None, source=source,
-                    take_at=take_at,
+                    take_at=take_at, fps_unlock=fps_unlock,
                 )  # fmt: skip
             except Exception:
                 pass
@@ -810,6 +831,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                             str(body.get("cpak") or "") or None,
                             str(body.get("from") or "") or None,
                             int(body["at"]) if body.get("at") is not None else None,
+                            bool(body.get("fps_unlock", False)),
                         )
                     )
                 elif self.path == "/api/play-all":
