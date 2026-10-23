@@ -164,7 +164,9 @@ class Cycle:
             if mask & ISDIR:
                 if mask & (CREATE | MOVED_TO) and path.name not in self.config["exclude"] and path.is_dir():
                     self.add_tree(path)
-                    found.extend(str(item) for item in path.rglob("*") if item.name.lower().endswith(self.config["suffixes"]))
+                    found.extend(
+                        str(item) for item in path.rglob("*") if item.name.lower().endswith(self.config["suffixes"])
+                    )
                 continue
             if path.name.lower().endswith(self.config["suffixes"]):
                 found.append(str(path))

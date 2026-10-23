@@ -9,7 +9,12 @@ from abu_decomp import DecompError
 from abu_decomp.behave import movie
 
 ROWS = [
-    {"name": "Hit", "in_version": True, "state": "both", "oracle": {"hit": True, "movie": "walk", "poll": 200}},
+    {
+        "name": "Hit",
+        "in_version": True,
+        "state": "both",
+        "oracle": {"hit": True, "movie": "walk", "poll": 200, "count": 40},
+    },
     {"name": "Never", "in_version": True, "state": "neither", "oracle": {"hit": False, "movie": None, "poll": None}},
     {"name": "Other", "in_version": False, "state": "neither", "oracle": {"hit": False, "movie": None, "poll": None}},
 ]
@@ -43,6 +48,7 @@ class MovieTests(unittest.TestCase):
         own, finding = self.choose("Hit")
         self.assertIsNone(finding)
         self.assertEqual((own["movie"], own["poll"], own["seconds"]), ("walk", 200, movie.MIN_SECONDS + 100))
+        self.assertEqual(own["count"], 40)  # the movie's polls and how often it enters the function
         env = own["env"]
         self.assertEqual((env["N64R_PAK"], env["N64R_PADS"], env["N64R_CLOCK"]), ("off", "1", "entries"))
         self.assertEqual(Path(env["N64R_TAS_PLAY"]).read_text(), "0000 0 0\n0001 2 3\n")

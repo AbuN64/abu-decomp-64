@@ -37,7 +37,8 @@ def _stored(directory: Path, data: bytes, suffix: str) -> Path:
 def choose(
     profile: Profile, work: Path, function: str, version: str, poll_seconds: float
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """(the capture's own run, a finding). The run is {env, seconds, movie, poll}; None with no finding means the
+    """(the capture's own run, a finding). The run is {env, seconds, movie, poll, count (entries in the movie)};
+    None with no finding means the
     table cannot say (no TAS section, no table, another version): the profile's fixed script stands. A function
     the table says no movie reaches is None with the `behave.no_movie` finding."""
     try:
@@ -75,4 +76,10 @@ def choose(
     card = _stored(directory, start, ".mpk") if start is not None else None
     env = tas_oracle.movie_env(play, pak, tas.pad_count(polls), cfg["exit_after"], card)
     seconds = MIN_SECONDS + int(poll * poll_seconds + 0.999)
-    return {"env": env, "seconds": seconds, "movie": name, "poll": poll}, None
+    return {
+        "env": env,
+        "seconds": seconds,
+        "movie": name,
+        "poll": poll,
+        "count": int(row["oracle"].get("count") or 0),
+    }, None

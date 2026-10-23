@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError, arity
-from abu_decomp.behave import abi, classify, compare, describe, inputs, movie, prototype
+from abu_decomp.behave import abi, classify, compare, describe, hits, inputs, movie, prototype
 from abu_decomp.behave import candidate as build_candidate
 from abu_decomp.config import Profile
 from abu_decomp.tools import drain_cache, invoke, settings
@@ -30,6 +30,7 @@ DEFAULTS: dict[str, Any] = {
     "event_budget": 20000,  # call/stub/store events one case may write; a case over it ends fatal event-budget
     "event_budget_cap": 300000,  # the most the budget is raised to for a function that needs more
     "depth_cap": 3,  # calls deep the original callees may run when no case ran to completion with fewer
+    "real_hits": hits.WANTED,  # entries of the function (first included) captured from the movie; 1 = first only
     "capture_poll_seconds": 0.1,  # oracle seconds a movie needs per poll up to the function's first call (time limit)
     "learn_cases": 8,
     "learn_rounds": 8,
@@ -192,6 +193,36 @@ def capture_seed(
         return None, why, key
     result = called.document["result"]
     return {**result["seed"], "capture": result["capture"]}, "", ""
+
+
+def capture_states(
+    profile: Profile,
+    config: dict[str, Any],
+    version: str,
+    function: str,
+    hit: int,
+    stubs: list[str],
+    own: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, str, str]:
+    """`capture_seed` for the first entry, plus (seed["real"]) the cases of further entries of the covering movie:
+    real call states, each over the first entry's memory as bounded patches. Only with a movie that enters the
+    function more than once; an entry that cannot be captured is left out with a note (seed["real_notes"])."""
+    seed, why, key = capture_seed(profile, version, function, hit, stubs, own)
+    wanted = int(config["real_hits"])
+    if seed is None or own is None or hit != 1 or wanted < 2:
+        return seed, why, key
+    later = hits.choose(int(own.get("count") or 0), wanted)
+    limit = hits.seconds(movie.MIN_SECONDS, own["poll"], float(config["capture_poll_seconds"]))
+
+    def capture(number: int) -> dict[str, Any] | str:
+        try:
+            got, reason, _ = capture_seed(profile, version, function, number, stubs, {**own, "seconds": limit})
+        except BehaveError as exc:
+            return str(exc)
+        return got or reason
+
+    cases, notes = hits.real_cases(seed, later, capture)
+    return {**seed, "real": cases, "real_notes": notes, "real_asked": [1, *later]}, why, key
 
 
 def _no_seed(why: str, key: str, stubs: bool = False) -> dict[str, Any]:
@@ -417,7 +448,12 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
     if options.seeded:  # the registers the real game entered the function with, over the captured memory, and the
         # same entry with one argument moved off its real value at a time
         entry = options.seeded["case"]
-        cases = [*cases, {**entry, "labels": {"seed": entry["name"]}}, *inputs.around(entry, proto, max(1, count // 8))]
+        cases = [
+            *cases,
+            {**entry, "labels": {"seed": entry["name"]}},
+            *inputs.around(entry, proto, max(1, count // 8)),
+            *options.seeded.get("real", []),  # the other entries of the covering movie, over their own memory
+        ]
     memory_end = layout.reach(regions)
     image = None
     if candidate_file:
@@ -505,7 +541,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         seed, why, key = (
             (None, "", "")
             if no_movie  # nothing recorded reaches it: the cases stay synthetic and the time limit is not spent
-            else capture_seed(profile, version, target, options.hit, sorted(record.get("stubs", {})), own)
+            else capture_states(profile, config, version, target, options.hit, sorted(record.get("stubs", {})), own)
         )
         if no_movie:
             findings.append(no_movie)
@@ -531,8 +567,9 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         # the probe's call): a probe with other stubs (another depth) needs its own capture
         asked = set(options.seeded["capture"].get("stubs", []))
         if set(record.get("stubs", {})) - asked:
-            seed, why, key = capture_seed(
+            seed, why, key = capture_states(
                 profile,
+                config,
                 version,
                 target,
                 options.hit,
@@ -582,21 +619,24 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
     if options.seeded:
         shown = options.seeded["capture"]
         seed_used = {
-            k: shown[k]
-            for k in (
-                "function",
-                "hit",
-                "rom_sha1",
-                "rdram_sha256",
-                "sp",
-                "rdram_path",
-                "cached",
-                "calls",
-                "calls_complete",
-                "calls_unresolved",
-                "calls_dropped_writes",
-            )
-            if k in shown
+            **{k: options.seeded[k] for k in ("real_asked", "real_notes") if k in options.seeded},
+            **{
+                k: shown[k]
+                for k in (
+                    "function",
+                    "hit",
+                    "rom_sha1",
+                    "rdram_sha256",
+                    "sp",
+                    "rdram_path",
+                    "cached",
+                    "calls",
+                    "calls_complete",
+                    "calls_unresolved",
+                    "calls_dropped_writes",
+                )
+                if k in shown
+            },
         }
     common = {
         "function": options.function,
@@ -605,6 +645,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         "prototype": proto.describe(),
         "cases": len(cases),
         **({"synthetic": swapped} if swapped else {}),
+        "sources": sources(cases, original["cases"]),
         "seed": options.seed,
         "depth": depth,
         "probe": {k: record[k] for k in PROBE_KEYS if k in record},
@@ -701,6 +742,22 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         "cache": cache,
     }
     return result, 0, findings
+
+
+def sources(cases: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[str, int]:
+    """Where the cases come from and how many ran: real call states (entries the game made, in the covering movie, and
+    the first entry with one argument moved), synthetic ones (generated), and how many of each did not run."""
+    real = [r for c, r in zip(cases, results, strict=True) if "seed" in c["labels"]]
+    synthetic = [r for c, r in zip(cases, results, strict=True) if "seed" not in c["labels"]]
+    entries = [c for c in cases if "seed" in c["labels"] and set(c["labels"]) <= {"seed", "hit"}]
+    return {
+        "real_entries": len(entries),
+        "real_cases": len(real),
+        "real_untestable": sum(r["status"] != "ok" for r in real),
+        "synthetic_cases": len(synthetic),
+        "synthetic_untestable": sum(r["status"] != "ok" for r in synthetic),
+        "untestable": sum(r["status"] != "ok" for r in results),
+    }
 
 
 def _null_deref(case: dict[str, Any]) -> bool:

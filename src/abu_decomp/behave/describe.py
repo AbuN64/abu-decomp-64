@@ -92,7 +92,7 @@ def read_globals(
 
 def _seeded_word(case: dict[str, Any], region: Region, offset: int) -> int | None:
     for patch in case.get("inputs", {}).get("memory", []):
-        if int(patch["addr"]) == region.base:
+        if "hex" in patch and int(str(patch["addr"]), 0) == region.base:
             data = bytes.fromhex(patch["hex"])
             if offset + 4 <= len(data):
                 return struct.unpack(">I", data[offset : offset + 4])[0]

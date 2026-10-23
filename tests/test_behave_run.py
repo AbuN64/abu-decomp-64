@@ -27,7 +27,7 @@ def fake_cases(request, delta):
     rows = []
     for case in request["cases"]:
         regs = case["registers"]
-        region = case["memory"][0]["addr"] if case.get("memory") else 0
+        region = int(str(case["memory"][0]["addr"]), 0) if case.get("memory") else 0
         a0, a1 = regs.get("a0", 0), regs.get("a1", 0)
         ok = a0 != 0
         row = {
@@ -397,6 +397,49 @@ class RunTests(unittest.TestCase):
         self.assertEqual(asked[0][-1], own)
         seeded = [f for f in json.loads(stdout.getvalue())["findings"] if f["key"] == "behave.seed"]
         self.assertIn("movie walk poll 200", seeded[0]["message"])
+
+    def test_further_entries_of_the_movie_ride_as_real_cases_over_the_first_entry_image(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        images = {}
+        for hit in (1, 2, 3):
+            data = bytearray(1 << 14)
+            data[64 * hit : 64 * hit + 4] = bytes([hit]) * 4
+            images[hit] = Path(directory.name) / f"ram{hit}.bin"
+            images[hit].write_bytes(bytes(data))
+        own = {"env": {}, "seconds": 160, "movie": "walk", "poll": 200, "count": 40}
+        asked, sent = [], []
+
+        def grab(profile, version, function, hit, stubs, movie):
+            asked.append((hit, movie["seconds"]))
+            if hit not in images:
+                return None, "the oracle ended before the entry", "repro.capture.unreached"
+            seed = self.seed()
+            seed["capture"].update(hit=hit, rdram_path=str(images[hit]))
+            seed["case"] = {"name": f"seed-f-hit{hit}", "registers": {"r4": "0x80000100", "r5": hex(hit)}}
+            return seed, "", ""
+
+        def probe(profile, work, name, request, function):
+            sent.append(request)
+            return self.seeded_probe(profile, work, name, request, function)
+
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(run, "probe", probe),
+            mock.patch.object(run, "capture_seed", grab),
+            mock.patch.object(run, "capture_movie", lambda *a: (own, None)),
+            mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
+            contextlib.redirect_stdout(stdout),
+        ):
+            main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6"])
+        result = json.loads(stdout.getvalue())["result"]
+        self.assertEqual(sorted({h for h, _ in asked})[:3], [1, 2, 3])
+        self.assertEqual(max(s for h, s in asked if h > 1), run.hits.seconds(run.movie.MIN_SECONDS, 200, 0.1))
+        self.assertEqual(result["sources"]["real_entries"], 3)  # the first entry and the two more that exist
+        self.assertTrue(any("entry 4" in n for n in result["oracle_seed"]["real_notes"]))
+        real = next(c for c in sent[-1]["cases"] if c["name"] == "seed-f-hit3")
+        self.assertEqual(real["registers"]["r5"], "0x3")
+        self.assertEqual(real["memory"][0]["addr"], "0x80000040")  # from where it differs from the first image
 
     def test_a_function_no_movie_reaches_skips_the_capture_and_says_so(self):
         asked = []
