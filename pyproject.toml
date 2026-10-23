@@ -17,7 +17,7 @@ dependencies = [
   "gcovr==8.3",
   "unbake @ git+https://github.com/AbuN64/cake-unbake-64@95d51fc1666a3ca87315d55ea5fab8eae8f1c87f",
   "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@047283a24617d1a4b9337e4d3292cb595c55b57c",
-  "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@f2723ccf9567655f6d125b9d75d0d4bea11fec3d",
+  "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@859619a3ac0a63c0231df94f649afea49ff967bb",
 ]
 
 [project.optional-dependencies]
