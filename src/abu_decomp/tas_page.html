@@ -5,135 +5,472 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TAS</title>
 <style>
-  :root { --bg: #111; --fg: #ddd; --dim: #888; --line: #333; --accent: #4a9; --bad: #d65; }
-  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px system-ui, sans-serif; display: flex; gap: 12px; padding: 12px; }
-  #game { flex: 1; min-width: 0; }
-  #game img { width: 100%; background: #000; aspect-ratio: 4 / 3; display: block; outline: none; }
-  #game img:focus { box-shadow: 0 0 0 2px var(--accent); }
-  aside { width: 300px; display: flex; flex-direction: column; gap: 10px; }
-  button { background: #222; color: var(--fg); border: 1px solid var(--line); padding: 6px 10px; cursor: pointer; }
-  button.main { border-color: var(--accent); }
-  input { background: #000; color: var(--fg); border: 1px solid var(--line); padding: 6px; width: 100%; box-sizing: border-box; }
-  .row { display: flex; gap: 6px; align-items: center; }
-  .dim { color: var(--dim); font-size: 12px; }
-  .bad { color: var(--bad); }
-  ul { list-style: none; margin: 0; padding: 0; }
-  li { display: flex; gap: 6px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); }
-  li span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-  pre { white-space: pre-wrap; margin: 0; font-size: 11px; color: var(--dim); }
-  .tabs { display: flex; gap: 4px; }
-  .tabs button.on { border-color: var(--accent); color: var(--accent); }
-  #tabtext { height: 260px; overflow-y: auto; background: #000; border: 1px solid var(--line); padding: 4px; font: 11px/1.35 ui-monospace, monospace; color: var(--fg); white-space: pre-wrap; word-break: break-word; }
-  @media (max-width: 800px) { body { flex-direction: column; } aside { width: auto; } }
+  :root {
+    --bg: #0d0e10; --panel: #131518; --line: #23262b; --hover: #1a1d21; --sel: #1d2a27;
+    --fg: #d6d8db; --dim: #7a8089; --faint: #4a4f57;
+    --ok: #6fb39f; --warn: #c8a24c; --bad: #d8705c;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+         display: flex; flex-direction: column; overflow: hidden; }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  .dim { color: var(--dim); } .faint { color: var(--faint); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  button { font: inherit; color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 3px;
+           padding: 3px 9px; cursor: pointer; }
+  button:hover { background: var(--hover); }
+  kbd { font: 11px var(--mono); color: var(--dim); }
+
+  header { display: flex; align-items: center; gap: 14px; padding: 7px 12px; border-bottom: 1px solid var(--line);
+           white-space: nowrap; min-height: 38px; }
+  header .name { font-weight: 600; letter-spacing: .04em; }
+  header .grow { flex: 1; }
+
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 30vw, 560px); }
+  #left { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+  #right { display: flex; flex-direction: column; min-height: 0; }
+  .head { display: flex; align-items: center; gap: 10px; padding: 6px 12px; color: var(--dim); font-size: 12px;
+          border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .head b { color: var(--fg); font-weight: 500; }
+  .head .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+  #tiles { flex: none; min-height: 120px; padding: 10px 12px; display: grid; gap: 10px; align-content: start;
+           justify-content: start; overflow: hidden; }
+  #tiles .empty { color: var(--dim); align-self: center; }
+  .tile { cursor: pointer; min-width: 0; }
+  .tile canvas { display: block; width: 100%; aspect-ratio: 4 / 3; background: #000; image-rendering: pixelated;
+                 border: 1px solid var(--line); border-radius: 2px; }
+  .tile:hover canvas { border-color: var(--faint); }
+  .tile.sel canvas { border-color: var(--ok); }
+  .tile.done canvas { opacity: .55; }
+  .tile .cap { display: flex; gap: 6px; align-items: baseline; margin-top: 3px; height: 18px; overflow: hidden; }
+  .tile .cap .mv { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tiles.small .tile .cnt { display: none; }
+  .tile .bar { height: 2px; background: var(--line); margin-top: 2px; }
+  .tile .bar i { display: block; height: 100%; background: var(--dim); }
+  .badge { font: 11px var(--mono); padding: 0 4px; border: 1px solid var(--line); border-radius: 2px; color: var(--dim); }
+  .badge.one { color: var(--ok); border-color: var(--ok); }
+
+  #movies { flex: 1 1 0; min-height: 90px; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+  #movies .scroll { flex: 1; min-height: 0; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th { position: sticky; top: 0; background: var(--bg); text-align: left; font-weight: 400; color: var(--dim);
+       font-size: 11px; padding: 5px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 4px 10px; border-bottom: 1px solid #181a1e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+       max-width: 260px; font-family: var(--mono); font-size: 12px; }
+  td.name { font-family: inherit; font-size: 13px; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--hover); }
+  tbody tr.sel { background: var(--sel); }
+  td.num, th.num { text-align: right; }
+
+  #cycle { flex: 0 1 auto; max-height: 38%; display: flex; flex-direction: column; min-height: 0; }
+  #inbox { overflow: auto; min-height: 0; padding: 4px 0; }
+  #inbox div { display: flex; gap: 8px; padding: 2px 12px; font: 12px var(--mono); }
+  #inbox div span:last-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #inbox .mark { width: 62px; flex: none; }
+
+  #console { flex: 1; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--line); position: relative; }
+  #log { flex: 1; min-height: 0; overflow: auto; padding: 4px 0 8px; font: 12px/1.45 var(--mono); }
+  #log div { display: flex; gap: 10px; padding: 0 12px; }
+  #log .t { flex: none; text-align: right; color: var(--faint); user-select: none; }
+  #log .x { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
+  #latest { position: absolute; right: 16px; bottom: 12px; background: var(--panel); display: none; }
+  #latest.on { display: block; }
+
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+    #left { border-right: 0; border-bottom: 1px solid var(--line); } .keys { display: none; } }
 </style>
 </head>
 <body>
-<div id="game">
-  <div id="view" class="dim"></div><div id="runs" class="row"></div>
-  <img id="video" src="/video" tabindex="0" alt="port">
-  <audio id="audio" preload="none"></audio>
-  <p class="dim">Click the picture (starts sound), then play: arrows stick · X A · C B · Z Z · Enter Start · A/S L/R · I J K L C buttons · F9 marks the moment weird</p>
-</div>
-<aside>
-  <div class="row"><button class="main" id="new">New recording</button><span id="run" class="dim"></span></div>
-  <pre id="tail"></pre>
-  <div class="row"><input id="name" placeholder="movie-name"></div>
-  <div class="row"><input id="note" placeholder="note (what it shows)"><button id="save">Save</button></div>
-  <div class="row"><input id="weirdnote" placeholder="weird note (optional)"><button id="weird" title="F9">Weird</button></div>
-  <div id="msg" class="dim"></div>
-  <ul id="movies"></ul>
-  <div class="tabs"><button data-tab="ai" class="on">AI</button><button data-tab="port">Port</button><button data-tab="functions">Functions</button></div>
-  <pre id="tabtext"></pre>
-</aside>
+<header>
+  <span class="name">TAS</span>
+  <span id="build" class="mono dim"></span>
+  <span class="grow"></span>
+  <span id="conn" class="dim"></span>
+  <span class="keys dim"><kbd>space</kbd> play 1x · <kbd>a</kbd> all · <kbd>x</kbd> stop · <kbd>↑↓</kbd> pick</span>
+  <button id="sound" title="Sound for the 1x run">sound on</button>
+  <button id="all" title="Replay every movie at turbo (a)">play all</button>
+</header>
+<main>
+  <section id="left">
+    <div id="tiles"></div>
+    <div id="movies">
+      <div class="head"><b>movies</b><span id="mcount" class="grow"></span></div>
+      <div class="scroll"><table>
+        <thead><tr><th>movie</th><th>outcome</th><th>subject</th><th class="num">reached</th><th>twice</th><th>fn</th><th>train</th><th class="num">last run</th></tr></thead>
+        <tbody id="mbody"></tbody>
+      </table></div>
+    </div>
+  </section>
+  <section id="right">
+    <div id="cycle">
+      <div class="head"><b>cycle</b><span id="ctarget" class="grow mono"></span></div>
+      <div id="inbox"></div>
+    </div>
+    <div id="console">
+      <div class="head"><b>console</b><span id="lrun" class="grow mono"></span></div>
+      <div id="log"></div>
+      <button id="latest">↓ latest</button>
+    </div>
+  </section>
+</main>
 <script>
+"use strict";
 const $ = id => document.getElementById(id);
-const post = (path, body) => fetch(path, {method: "POST", body: JSON.stringify(body || {})}).then(r => r.json());
-const say = (text, bad) => { $("msg").textContent = text; $("msg").className = bad ? "bad" : "dim"; };
-const held = new Set();
-let bound = null;
-// A new active run swaps picture and sound in place: the stream elements are re-bound, never the page reloaded.
-function follow(v) {
-  const run = v ? v.run : null;
-  if (run === bound) return;
-  const first = bound === null; bound = run;
-  if (first) return;
-  $("video").src = "/video?run=" + encodeURIComponent(run || "") + "&t=" + Date.now();
-  const a = $("audio");
-  if (!a.paused) { a.src = "/audio?" + Date.now(); a.play().catch(() => {}); }
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const FRAME_MS = 66, KEEP_DONE_S = 120, MAX_TILES = 16, MAX_LOG = 3000;
+
+let S = null, skew = 0;          // last /api/state; server clock minus ours (seconds)
+const sel = { movie: null, run: null };
+const now = () => Date.now() / 1000 + skew;
+function ago(t) {
+  if (t == null) return "—";
+  const s = Math.max(0, Math.round(now() - t));
+  return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.floor(s / 60)} m ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`;
 }
-function sound() { const a = $("audio"); if (a.paused) { a.src = "/audio?" + Date.now(); a.play().catch(() => {}); } }
-$("video").addEventListener("click", sound);
-$("video").addEventListener("focus", sound);
-$("video").addEventListener("keydown", e => { e.preventDefault(); if (!held.has(e.key)) { held.add(e.key); post("/key", {key: e.key, down: true}); } });
-$("video").addEventListener("keyup", e => { e.preventDefault(); held.delete(e.key); post("/key", {key: e.key, down: false}); });
-$("video").addEventListener("blur", () => { held.forEach(k => post("/key", {key: k, down: false})); held.clear(); });
-$("new").onclick = () => post("/new").then(() => { say("recording from reset"); $("video").focus(); });
-$("save").onclick = () => post("/save", {name: $("name").value.trim(), note: $("note").value}).then(r =>
-  r.error ? say(r.error, true) : (say(`saved ${r.name} (${r.polls} polls)`), $("name").value = "", $("note").value = ""));
-function weird() {
-  post("/mark", {note: $("weirdnote").value}).then(r =>
-    r.error ? say(r.error, true) : (say(`weird at poll ${r.poll}: saved ${r.movie}`), $("weirdnote").value = ""));
+const speedText = v => v === 0 ? "turbo" : `${v}x`;
+const OUT = { ok: "ok", stop: "warn", crash: "bad", hang: "bad", exit: "dim" };
+const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })
+  .then(r => r.json()).catch(() => ({}));
+
+/* ---------- state ---------- */
+async function poll() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    S = await r.json();
+    skew = S.now - Date.now() / 1000;
+    $("conn").textContent = ""; $("conn").className = "dim";
+  } catch (e) {
+    $("conn").textContent = "server unreachable"; $("conn").title = String(e); $("conn").className = "bad";
+  }
+  render();
+  setTimeout(poll, S && S.runs.some(r => r.status === "running") ? 500 : 1000);
 }
-$("weird").onclick = weird;
-document.addEventListener("keydown", e => { if (e.key === "F9") { e.preventDefault(); weird(); } });
-function row(m) {
-  const li = document.createElement("li");
-  const name = document.createElement("span");
-  name.textContent = m.name; name.title = m.note || "";
-  const info = document.createElement("span");
-  info.className = "dim"; info.textContent = m.error ? "unreadable" : `${m.seconds}s`;
-  const play = document.createElement("button"); play.textContent = "Play";
-  play.onclick = () => post("/play", {name: m.name}).then(r => { say(r.error || `playing ${m.name}; your keys take over when it ends`, !!r.error); if (!r.error) $("video").focus(); });
-  const del = document.createElement("button"); del.textContent = "Delete";
-  del.onclick = () => confirm(`Delete ${m.name}?`) && post("/delete", {name: m.name}).then(r => say(r.error || `deleted ${m.name}`, !!r.error));
-  li.append(name, info, play, del);
-  return li;
+const runsOf = movie => S.runs.filter(r => r.movie === movie).sort((a, b) => b.started - a.started);
+function selectedRun() {
+  if (!S) return null;
+  const byId = S.runs.find(r => r.id === sel.run);
+  if (byId) return byId;
+  if (sel.movie) return runsOf(sel.movie)[0] || null;
+  const live = S.runs.filter(r => r.status === "running").sort((a, b) => b.started - a.started);
+  return live[0] || null;
 }
-function showView(s) {
-  const v = s.view;
-  follow(v);
-  $("view").textContent = v ? v.label + (s.pinned ? " (pinned)" : " (newest active)") : "no run yet";
-  const others = (s.runs || []).filter(r => r.state === "running");
-  const shown = others.length > 1 || s.pinned ? s.runs.slice(-6) : [];
-  $("runs").replaceChildren(...shown.map(r => {
-    const b = document.createElement("button");
-    b.textContent = `${r.kind === "live" ? "live" : r.movie} ${r.state === "running" ? "▶" : "■"}`;
-    b.className = v && r.run === v.run ? "main" : "";
-    b.onclick = () => post("/pick", {run: v && r.run === v.run && s.pinned ? "" : r.run});
-    return b;
+function select(movie, run) { sel.movie = movie; sel.run = run || null; render(); }
+
+function render() {
+  if (!S) return;
+  const b = S.build || {};
+  $("build").textContent = b.pin ? `${String(b.pin).slice(0, 9)} · built ${ago(b.built)}` : "no build";
+  $("build").title = b.port || "";
+  const t = S.cycle && S.cycle.target;
+  const tt = t ? `${t.kind} · ${t.fn} · ${t.movie}` : "no target";
+  $("ctarget").textContent = tt;
+  renderTiles(); renderMovies(); renderInbox(); followLog(); followAudio();
+}
+
+/* ---------- live tiles ---------- */
+const tiles = new Map();          // run id -> {node, canvas, ctx, run, busy, last, got, timer}
+function tileRuns() {
+  const live = S.runs.filter(r => r.status === "running").sort((a, b) => a.started - b.started);
+  let done = S.runs.filter(r => r.status === "done" && now() - r.started < KEEP_DONE_S).sort((a, b) => b.started - a.started);
+  if (!live.length && !done.length) done = S.runs.slice().sort((a, b) => b.started - a.started).slice(0, 1);
+  return live.concat(done).slice(0, MAX_TILES);
+}
+function makeTile(r) {
+  const node = el("div", "tile"), canvas = el("canvas");
+  canvas.width = 320; canvas.height = 240;
+  const cap = el("div", "cap"), mv = el("span", "mv"), badge = el("span", "badge"), count = el("span", "cnt mono dim");
+  cap.append(mv, badge, count);
+  const bar = el("div", "bar"), fill = el("i"); bar.append(fill);
+  node.append(canvas, cap, bar);
+  const t = { node, canvas, ctx: canvas.getContext("2d"), mv, badge, count, fill, run: r, busy: false, got: false, misses: 0 };
+  t.ctx.imageSmoothingEnabled = false;
+  node.onclick = () => {
+    const cur = t.run;
+    if (cur.status === "running" && cur.speed === 1) return select(cur.movie, cur.id);
+    play(cur.movie, 1);
+  };
+  return t;
+}
+function renderTiles() {
+  const want = tileRuns(), box = $("tiles"), ids = new Set(want.map(r => r.id));
+  for (const [id, t] of tiles) if (!ids.has(id)) { clearTimeout(t.timer); t.node.remove(); tiles.delete(id); }
+  const cur = selectedRun();
+  want.forEach((r, i) => {
+    let t = tiles.get(r.id);
+    if (!t) { t = makeTile(r); tiles.set(r.id, t); }
+    const wasDone = t.run.status === "done";
+    t.run = r;
+    if (box.children[i] !== t.node) box.insertBefore(t.node, box.children[i] || null);
+    t.mv.textContent = r.movie;
+    t.mv.title = r.id;
+    const out = r.status === "done" ? (r.outcome || "done") : null;
+    t.badge.textContent = out || speedText(r.speed);
+    t.badge.className = "badge" + (out ? " " + (OUT[out] || "dim") : r.speed === 1 ? " one" : "");
+    t.count.textContent = `${r.poll}/${r.polls}`;
+    t.fill.style.width = r.polls ? `${Math.min(100, 100 * r.poll / r.polls)}%` : "0";
+    t.node.classList.toggle("done", r.status === "done");
+    t.node.classList.toggle("sel", !!cur && cur.id === r.id);
+    t.node.title = r.subject ? `${r.movie}: ${r.subject}` : r.movie;
+    if (!t.busy && (r.status === "running" || !t.got || !wasDone)) frame(t);
+  });
+  const empty = box.querySelector(".empty");
+  if (!want.length && !empty) box.append(el("div", "empty", "no replays yet · a plays every movie"));
+  if (want.length && empty) empty.remove();
+  fit();
+}
+// Load the next picture only after the previous one landed: at most one request in flight per tile, ~15 fps.
+function frame(t) {
+  if (!tiles.has(t.run.id)) return;
+  t.busy = true;
+  const started = performance.now(), img = new Image();
+  img.onload = () => {
+    t.ctx.drawImage(img, 0, 0, t.canvas.width, t.canvas.height);
+    t.got = true; t.misses = 0; next(t, Math.max(0, FRAME_MS - (performance.now() - started)));
+  };
+  img.onerror = () => { t.misses++; next(t, t.misses > 20 ? 2000 : 400); };
+  img.src = `/frame/${encodeURIComponent(t.run.id)}?n=${Date.now()}`;
+}
+function next(t, wait) {
+  t.busy = false;
+  if (!tiles.has(t.run.id) || document.hidden) return;
+  if (t.run.status === "running" || !t.got) { t.busy = true; t.timer = setTimeout(() => frame(t), wait); }
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) tiles.forEach(t => { if (!t.busy) frame(t); }); });
+// Size the tiles so every one fits the area at the largest 4:3 size (no page scroll).
+function fit() {
+  const box = $("tiles"), n = tiles.size;
+  if (!n) { box.style.gridTemplateColumns = ""; box.style.height = ""; return; }
+  const W = box.clientWidth - 24, H = Math.max(100, $("left").clientHeight * (n > 4 ? 0.7 : 0.6)) - 20, gap = 10, cap = 26;
+  let best = 0, cols = 1;
+  for (let c = 1; c <= n; c++) {
+    const rows = Math.ceil(n / c);
+    const w = Math.min((W - gap * (c - 1)) / c, ((H - gap * (rows - 1)) / rows - cap) * 4 / 3);
+    if (w > best) { best = w; cols = c; }
+  }
+  best = Math.max(80, Math.min(Math.floor(best), 960));
+  const rows = Math.ceil(n / cols);
+  box.style.gridTemplateColumns = `repeat(${cols}, ${best}px)`;
+  box.classList.toggle("small", best < 230);
+  box.style.height = `${Math.ceil(rows * (best * 3 / 4 + cap) + gap * (rows - 1) + 20)}px`;
+}
+window.addEventListener("resize", fit);
+
+/* ---------- movie table ---------- */
+function cell(text, cls, title) { const td = el("td", cls, text); if (title) td.title = title; return td; }
+function renderMovies() {
+  const rows = S.movies.map(m => {
+    const tr = el("tr");
+    const live = runsOf(m.name).find(r => r.status === "running");
+    tr.append(cell(m.name, "name"));
+    tr.append(cell(m.outcome || "—", OUT[m.outcome] || "dim"));
+    tr.append(cell(m.subject || "", "", m.subject || ""));
+    tr.append(cell(live ? `${live.poll}/${m.polls}` : `${m.reached}/${m.polls}`, "num" + (live ? " ok" : m.reached < m.polls ? " warn" : "")));
+    tr.append(m.same_twice == null ? cell("—", "faint") : m.same_twice ? cell("same", "ok") : cell("DIFF", "bad"));
+    if (m.fn) {
+      const td = cell("", "", `${m.fn.name}: ${m.fn.state}`);
+      td.append(el("span", "", m.fn.name + " "), el("span", m.fn.state === "exact" ? "ok" : m.fn.state === "fuzzy" ? "warn" : "dim", m.fn.state));
+      tr.append(td);
+    } else tr.append(cell("—", "faint"));
+    if (m.train) {
+      const mark = m.train.mark;
+      tr.append(cell(mark || "queued", mark === "LANDED" ? "ok" : mark === "DROPPED" ? "bad" : "dim", m.train.line));
+    } else tr.append(cell("—", "faint"));
+    tr.append(cell(live ? "running" : ago(m.last_run), "num" + (live ? " ok" : " dim")));
+    if (m.name === sel.movie) tr.className = "sel";
+    tr.dataset.movie = m.name;
+    return tr;
+  });
+  $("mbody").replaceChildren(...rows);
+  const bad = S.movies.filter(m => m.outcome && m.outcome !== "ok").length;
+  const running = S.runs.filter(r => r.status === "running").length;
+  $("mcount").textContent = `${S.movies.length}` + (bad ? ` · ${bad} stopped` : "") + (running ? ` · ${running} running` : "");
+}
+const rowMovie = e => { const tr = e.target.closest("tr"); return tr && tr.dataset.movie; };
+$("mbody").addEventListener("click", e => { const m = rowMovie(e); if (m) select(m, null); });
+$("mbody").addEventListener("dblclick", e => { const m = rowMovie(e); if (m) play(m, 1); });
+function moveSel(d) {
+  if (!S || !S.movies.length) return;
+  const i = S.movies.findIndex(m => m.name === sel.movie);
+  const j = i < 0 ? 0 : Math.max(0, Math.min(S.movies.length - 1, i + d));
+  select(S.movies[j].name, null);
+  const tr = $("mbody").children[j]; if (tr) tr.scrollIntoView({ block: "nearest" });
+}
+
+/* ---------- cycle ---------- */
+function renderInbox() {
+  const lines = (S.cycle && S.cycle.inbox) || [];
+  const box = $("inbox");
+  if (!lines.length) { box.replaceChildren(el("div", "dim", "inbox empty")); return; }
+  box.replaceChildren(...lines.map(l => {
+    const d = el("div"), m = l.mark;
+    d.append(el("span", "mark " + (m === "LANDED" ? "ok" : m === "DROPPED" ? "bad" : "faint"), m || "·"), el("span", "", l.line));
+    d.title = l.line;
+    return d;
   }));
 }
-async function refresh() {
-  try {
-    const s = await (await fetch("/state")).json();
-    const held = s.stopped && s.stopped.subject ? ` · STOPPED: ${s.stopped.subject}` : "";
-    const driving = s.movie && s.polls < s.movie_polls ? `playing ${s.movie} ${s.polls}/${s.movie_polls}` : "recording";
-    $("run").textContent = (s.running ? `${driving} · ${s.polls} polls` : s.exit === null ? "no run" : `ended (exit ${s.exit}) · ${s.polls} polls`) + held + (s.marks && s.marks.count ? ` · ${s.marks.count} weird` : "");
-    $("run").className = held ? "bad" : "dim";
-    showView(s);
-    $("tail").textContent = (s.tail || []).join("\n");
-    $("movies").replaceChildren(...s.movies.map(row));
-  } catch (e) { $("run").textContent = "server unreachable"; }
+
+/* ---------- console: tail /log/<id>, follow the bottom unless scrolled up ---------- */
+const L = { id: null, from: 0, dec: null, part: "", busy: false, follow: true, gen: 0 };
+function followLog() {
+  const r = selectedRun();
+  const id = r ? r.id : null;
+  $("lrun").textContent = r ? `${r.movie} · ${r.id} · ${r.status === "running" ? speedText(r.speed) : r.outcome || "done"}` : "";
+  if (id === L.id) return;
+  Object.assign(L, { id, from: 0, dec: new TextDecoder(), part: "", follow: true, gen: L.gen + 1, busy: false });
+  $("log").replaceChildren(); $("latest").classList.remove("on");
+  if (id) tail(L.gen, true);
 }
-let tab = "ai";
-document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
-  tab = b.dataset.tab;
-  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
-  $("tabtext").textContent = ""; tabs();
-});
-async function tabs() {
-  const box = $("tabtext"), want = tab;
+async function tail(gen, backlog) {
+  if (gen !== L.gen || !L.id) return;
+  L.busy = true;
   try {
-    const r = await (await fetch("/tab?name=" + want)).json();
-    if (want !== tab) return;
-    const text = r.error || (r.lines || []).join("\n");
-    if (text === box.textContent) return;
-    const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
-    box.textContent = text;
-    if (stick) box.scrollTop = box.scrollHeight;
+    const r = await fetch(`/log/${encodeURIComponent(L.id)}?from=${L.from}`, { cache: "no-store" });
+    if (gen !== L.gen) return;
+    if (r.ok) {
+      const buf = await r.arrayBuffer();
+      if (gen !== L.gen) return;
+      L.from += buf.byteLength;
+      const text = L.part + L.dec.decode(buf, { stream: true });
+      const parts = text.split("\n");
+      L.part = parts.pop();
+      if (parts.length) addLines(parts, backlog ? null : now());
+      backlog = false;
+    }
+  } catch (e) {}
+  if (gen !== L.gen) return;
+  const run = S && S.runs.find(x => x.id === L.id);
+  setTimeout(() => tail(gen, backlog), run && run.status === "running" ? 400 : 2000);
+}
+function addLines(lines, t) {
+  const box = $("log"), frag = document.createDocumentFragment();
+  for (const line of lines) {
+    const d = el("div"), age = el("span", "t", t == null ? "" : ago(t));
+    if (t != null) age.dataset.t = t;
+    d.append(el("span", "x", line), age);
+    frag.append(d);
+  }
+  box.append(frag);
+  while (box.childElementCount > MAX_LOG) box.firstChild.remove();
+  if (L.follow) box.scrollTop = box.scrollHeight;
+}
+$("log").addEventListener("scroll", () => {
+  const b = $("log");
+  L.follow = b.scrollTop + b.clientHeight >= b.scrollHeight - 6;
+  $("latest").classList.toggle("on", !L.follow);
+});
+$("latest").onclick = () => { const b = $("log"); L.follow = true; b.scrollTop = b.scrollHeight; $("latest").classList.remove("on"); };
+setInterval(() => {
+  document.querySelectorAll("#log .t[data-t]").forEach(s => { s.textContent = ago(+s.dataset.t); });
+  if (S) { renderMovies(); const b = S.build || {}; if (b.pin) $("build").textContent = `${String(b.pin).slice(0, 9)} · built ${ago(b.built)}`; }
+}, 1000);
+
+/* ---------- audio: one stream, the 1x run (selected first), on by default ---------- */
+const A = { on: true, ctx: null, id: null, abort: null, head: 0 };
+try { A.on = localStorage.getItem("tas.sound") !== "off"; } catch (e) {}
+function soundLabel() {
+  const waiting = A.on && A.id && (!A.ctx || A.ctx.state !== "running");
+  $("sound").textContent = !A.on ? "sound off" : waiting ? "sound on · click anywhere" : "sound on";
+  $("sound").className = A.on && A.id && !waiting ? "ok" : "";
+}
+function wake() {
+  if (!A.on) return;
+  try {
+    if (!A.ctx) A.ctx = new AudioContext();
+    if (A.ctx.state === "suspended") A.ctx.resume().then(soundLabel, () => {});
   } catch (e) {}
 }
-refresh(); tabs(); setInterval(tabs, 1000); setInterval(refresh, 1000);
+document.addEventListener("pointerdown", wake, true);
+document.addEventListener("keydown", wake, true);
+$("sound").onclick = () => {
+  A.on = !A.on;
+  try { localStorage.setItem("tas.sound", A.on ? "on" : "off"); } catch (e) {}
+  if (!A.on) stopAudio(); else wake();
+  followAudio(); soundLabel();
+};
+function followAudio() {
+  let want = null;
+  if (A.on && S) {
+    const ones = S.runs.filter(r => r.status === "running" && r.speed === 1).sort((a, b) => b.started - a.started);
+    const cur = selectedRun();
+    want = cur && ones.includes(cur) ? cur.id : ones.length ? ones[0].id : null;
+  }
+  if (want !== A.id) { stopAudio(); A.id = want; if (want) streamAudio(want); }
+  soundLabel();
+}
+function stopAudio() { if (A.abort) A.abort.abort(); A.abort = null; A.id = null; A.head = 0; }
+async function streamAudio(id) {
+  const ctl = new AbortController(); A.abort = ctl;
+  try {
+    const r = await fetch(`/audio/${encodeURIComponent(id)}`, { signal: ctl.signal });
+    if (!r.ok || !r.body) return;
+    const reader = r.body.getReader();
+    let buf = new Uint8Array(0), fmt = null;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done || ctl.signal.aborted) break;
+      const joined = new Uint8Array(buf.length + value.length); joined.set(buf); joined.set(value, buf.length); buf = joined;
+      if (!fmt) { const h = wavHeader(buf); if (!h) continue; fmt = h; buf = buf.slice(h.data); }
+      const n = Math.floor(buf.length / fmt.align);
+      if (!n) continue;
+      pcm(buf.subarray(0, n * fmt.align), fmt, n);
+      buf = buf.slice(n * fmt.align);
+    }
+  } catch (e) {}
+}
+// RIFF/WAVE: walk the chunks to "fmt " and "data"; a live stream's data size is unknown, so play to the end.
+function wavHeader(b) {
+  if (b.length < 12) return null;
+  const v = new DataView(b.buffer, b.byteOffset, b.length);
+  let p = 12, fmt = null;
+  while (p + 8 <= b.length) {
+    const id = String.fromCharCode(b[p], b[p + 1], b[p + 2], b[p + 3]), size = v.getUint32(p + 4, true);
+    if (id === "fmt ") {
+      if (p + 24 > b.length) return null;
+      fmt = { channels: v.getUint16(p + 10, true), rate: v.getUint32(p + 12, true), align: v.getUint16(p + 20, true) };
+    } else if (id === "data") {
+      return fmt ? Object.assign(fmt, { data: p + 8 }) : null;
+    }
+    p += 8 + size + (size & 1);
+  }
+  return null;
+}
+function pcm(bytes, fmt, n) {
+  const c = A.ctx;
+  if (!c || c.state !== "running") return;               // no gesture yet: drop, never queue up lag
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.length), ab = c.createBuffer(fmt.channels, n, fmt.rate);
+  for (let ch = 0; ch < fmt.channels; ch++) {
+    const out = ab.getChannelData(ch);
+    for (let i = 0; i < n; i++) out[i] = v.getInt16(i * fmt.align + ch * 2, true) / 32768;
+  }
+  const src = c.createBufferSource(); src.buffer = ab; src.connect(c.destination);
+  if (A.head < c.currentTime + 0.03 || A.head > c.currentTime + 0.4) A.head = c.currentTime + 0.05;
+  src.start(A.head); A.head += ab.duration;
+}
+
+/* ---------- actions ---------- */
+async function play(movie, speed) {
+  if (!movie) return;
+  wake();
+  const r = await post("/api/play", { movie, speed });
+  select(movie, r.id || null);
+}
+$("all").onclick = () => post("/api/play-all", {});
+document.addEventListener("keydown", e => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === " ") { e.preventDefault(); const r = selectedRun(); play(sel.movie || (r && r.movie), 1); }
+  else if (e.key === "a") post("/api/play-all", {});
+  else if (e.key === "x") { const r = selectedRun(); if (r && r.status === "running") post("/api/stop", { id: r.id }); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); }
+});
+document.addEventListener("click", e => { if (e.target.tagName === "BUTTON") e.target.blur(); });
+poll();
 </script>
 </body>
 </html>
