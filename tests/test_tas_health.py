@@ -93,6 +93,28 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(tas.compare(stop, {**stop, "polls_reached": 10}), "worse")
         self.assertEqual(tas.compare(stop, {**stop, "polls_reached": 60}), "better")
 
+    def test_play_all_hands_every_play_option_to_each_movie(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "m").mkdir()
+            (root / "m" / "a.tas").write_text("# tas 1\n")
+            cfg = {"movies": root / "m", "runs": root / "r", "build": {}, "rank": tas_rank.settings(None)}
+            seen = []
+
+            def play(profile, name, **kwargs):
+                seen.append(kwargs)
+                return {"movie": name, "outcome": "ok", "polls": 9, "polls_reached": 9}
+
+            with (
+                mock.patch.object(tas, "settings", return_value=cfg),
+                mock.patch.object(tas, "play", side_effect=play),
+                mock.patch("abu_decomp.tas_coverage.build", return_value=None),
+            ):
+                tas.play_all(None, label="LANE", port="/p/exe", pak="off", oracle=True)
+            self.assertEqual(
+                [(k["label"], k["port"], k["pak"], k["oracle"]) for k in seen], [("LANE", "/p/exe", "off", True)]
+            )
+
     def test_play_all_rows_exit_and_standing(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -107,6 +129,7 @@ class CompareTests(unittest.TestCase):
             with (
                 mock.patch.object(tas, "settings", return_value=cfg),
                 mock.patch.object(tas, "play", side_effect=lambda p, n, **k: results[n]),
+                mock.patch("abu_decomp.tas_coverage.build", return_value=None),  # coverage has its own tests
             ):
                 out, code = tas.play_all(None)
                 self.assertEqual((code, [r["vs_recorded"] for r in out["movies"]]), (0, ["new", "new"]))

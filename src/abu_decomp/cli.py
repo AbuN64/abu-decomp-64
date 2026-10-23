@@ -365,7 +365,11 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         actions.add_parser(verb, help=text).add_argument("name")
     play = actions.add_parser("play", help="replay a movie (or every movie with --all) and report the outcome")
     play.add_argument("name", nargs="?")
-    play.add_argument("--all", action="store_true", help="replay every saved movie in parallel; exit 1 if any is worse")
+    play.add_argument(
+        "--all",
+        action="store_true",
+        help="replay every saved movie in parallel; exit 1 if any is worse (the other options apply to each movie)",
+    )
     play.add_argument("--jobs", type=int, default=4, help="parallel replays with --all (default 4)")
     play.add_argument("--speed", type=int, default=0, help="0 = turbo (default), 1 = real time with sound, k = k times")
     play.add_argument("--twice", action="store_true", help="replay twice; same_twice compares the two runs' RAM")
@@ -421,16 +425,9 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
     if args.action == "delete":
         return tas.delete(profile, args.name), 0, []
     inspect = {"shots_every": args.shots_every, "dump_ram_at": args.dump_ram_at, "trace_draws": args.trace_draws}
-    if args.all and (args.port or args.label or args.pak or args.cpak or args.oracle or any(inspect.values())):
-        raise DecompError(
-            "tas.play",
-            "--port, --label, --pak, --cpak, --oracle and the inspection options replay one movie, not --all",
-        )
-    if args.all:
-        result, code = tas.play_all(profile, jobs=args.jobs, twice=args.twice)
-        print(tas.table(result), file=sys.stderr)
-        return result, code, []
-    if not args.name:
+    if args.twice and any(inspect.values()):
+        raise DecompError("tas.play", "--twice compares two plain runs; inspect with a single replay")
+    if not args.all and not args.name:
         raise DecompError("tas.play", "give a movie name or --all")
     options = {
         "speed": args.speed,
@@ -440,9 +437,11 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         "cpak": args.cpak,
         "oracle": args.oracle,
     }
+    if args.all:  # every play option applies to every movie
+        result, code = tas.play_all(profile, jobs=args.jobs, twice=args.twice, **options, **inspect)
+        print(tas.table(result), file=sys.stderr)
+        return result, code, []
     if args.twice:
-        if any(inspect.values()):
-            raise DecompError("tas.play", "--twice compares two plain runs; inspect with a single replay")
         twice = tas.play_twice(profile, args.name, **options)
         return twice, 0, []
     played = tas.play(profile, args.name, **options, **inspect)

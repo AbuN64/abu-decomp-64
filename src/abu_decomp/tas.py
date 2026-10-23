@@ -946,10 +946,12 @@ def play_all(
     now: datetime | None = None,
     twice: bool = False,
     run_ids: dict[str, str] | None = None,
+    **options: Any,
 ) -> tuple[dict[str, Any], int]:
     """Replay every saved movie in parallel at turbo, block until done, one row per movie against its recorded
     standing. `twice` replays each movie twice (same_twice then compares the two); `run_ids` names the run folders
-    (the page knows them before the runs start).
+    (the page knows them before the runs start). `options` are `play`'s own (speed, port, label, pak, cpak, oracle and
+    the inspection options), applied to every movie.
 
     The recorded standing is the best row so far in `runs/standing.json`, moved only when a movie is not worse, so a
     regression stays `worse` until fixed. Exit status 1 when any movie is worse."""
@@ -963,8 +965,9 @@ def play_all(
     def one(name: str) -> dict[str, Any]:
         try:
             if twice:
-                play(profile, name, now=now, health=health)
-            return play(profile, name, now=now, health=health, run_id=(run_ids or {}).get(name) if not twice else None)
+                play(profile, name, now=now, health=health, **options)
+            run_id = (run_ids or {}).get(name) if not twice else None
+            return play(profile, name, now=now, health=health, run_id=run_id, **options)
         except DecompError as error:
             return {"movie": name, "outcome": "refused", "subject": str(error), "polls_reached": 0}
 
