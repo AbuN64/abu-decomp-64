@@ -130,6 +130,38 @@ class ContinueTests(unittest.TestCase):
         self.units.add("lane-A-1")
         return directory
 
+    def test_continue_hands_the_work_tree_on_and_end_removes_it_after_saving_the_diff(self):
+        def git(*args, cwd):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True,
+                           capture_output=True)  # fmt: skip
+
+        shared, trees = self.root / "shared", self.root / "wt"
+        shared.mkdir()
+        trees.mkdir()
+        git("init", "-q", cwd=shared)
+        (shared / "f.c").write_text("a\n")
+        git("add", "f.c", cwd=shared)
+        git("commit", "-qm", "x", cwd=shared)
+        git("worktree", "add", "--detach", "-q", str(trees / "A-1"), cwd=shared)
+        (trees / "A-1" / "f.c").write_text("a\nb\n")
+        (trees / "A-1" / "new.c").write_text("n\n")
+        seat = json.loads((self.root / "seat.json").read_text())
+        seat["lanes"]["worktrees"] = str(trees)
+        (self.root / "seat.json").write_text(json.dumps(seat))
+        old = self.launch_a()
+        self.units.clear()
+        code, envelope = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "A-2"])
+        self.assertEqual(code, 0, envelope)
+        self.assertFalse((trees / "A-1").exists())
+        self.assertEqual((trees / "A-2" / "f.c").read_text(), "a\nb\n")  # uncommitted work moved with the tree
+        saved = (old / "saved-A-1.diff").read_text()
+        self.assertTrue("+b" in saved and "new.c" in saved)
+        self.assertIn(str(trees / "A-2"), (self.root / "A-2/brief.md").read_text())
+        code, envelope = run([*self.seat, "lane", "end", "--name", "A-2", "--reason", "done"])
+        self.assertEqual(code, 0, envelope)
+        self.assertFalse((trees / "A-2").exists())
+        self.assertIn("+b", (self.root / "A-2" / "saved-A-2.diff").read_text())
+
     def test_refused_while_the_old_unit_is_active(self):
         old = self.launch_a()
         code, envelope = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "A-2"])

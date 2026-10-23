@@ -24,6 +24,7 @@ from abu_decomp.lanes import Ladder, Lane, continuation, jobs, overlap_findings,
 DONE_WHEN = ("identical", "result")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _KEYS = frozenset({"registry", "ladder", "codex", "socket_dir", "rules"})
+_OPTIONAL = frozenset({"worktrees"})  # the directory holding lane work trees: continue hands them on, end removes them
 # Spec keys a registry row keeps so `decomp lane continue` can relaunch the lane as it was.
 INHERITED = ("model", "kind", "effort", "wall", "continues", "owns", "track", "done_when", "fanout", "max_agents")
 RUNNER = Path(__file__).with_name("runner.py")
@@ -41,10 +42,16 @@ class Settings:
 def settings(profile: Profile) -> Settings:
     """The `lanes` section: registry file, model ladder, codex binary, socket directory and brief rules."""
     table = profile.section("lanes")
-    config.check_keys(profile.source_file, "lanes", table, _KEYS, _KEYS)
+    config.check_keys(profile.source_file, "lanes", table, _KEYS, _KEYS | _OPTIONAL)
     return Settings(
         *[profile.path(f"lanes.{key}", table[key]) for key in ("registry", "ladder", "codex", "socket_dir", "rules")]
     )
+
+
+def trees_dir(profile: Profile) -> Path | None:
+    """The directory of lane work trees (`lanes.worktrees`), or none when the seat does not pool them."""
+    value = profile.section("lanes").get("worktrees")
+    return profile.path("lanes.worktrees", value) if value else None
 
 
 def announce(profile: Profile, row: dict[str, Any], status: str, message: str) -> dict[str, Any] | None:
@@ -265,7 +272,12 @@ def end(profile: Profile, name: str, reason: str, stop: bool) -> dict[str, Any]:
                 raise DecompError("lanes.live", f"{row['unit']} is still running; pass --stop to stop it")
             stop_unit(row["unit"])
         row.update(state="ended", ended=time.time(), reason=reason)
-    return {"lane": row, "event": announce(profile, row, "passed", f"ended {name}: {reason}")}
+    trees = []
+    if trees_dir(profile) and row.get("dir"):  # saved diff first, then the lane's trees go (never lost work)
+        from abu_decomp import lane_trees
+
+        trees = lane_trees.release(trees_dir(profile), name, Path(row["dir"]))
+    return {"lane": row, "trees": trees, "event": announce(profile, row, "passed", f"ended {name}: {reason}")}
 
 
 def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, Any], wait: int = 0) -> dict[str, Any]:
@@ -336,5 +348,22 @@ def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, A
         owns=[str(path) for path in spec["owns"]],
         owner_override=spec.get("owner_override") or None,
     )
-    result = launch(profile, spec, replaces={"name": old_name, "dir": str(old_dir)}, new_brief=brief)
-    return {**result, "continued_from": {"name": old_name, "dir": str(old_dir), "unit": unit, "sources": sources}}
+    from abu_decomp import lane_trees
+
+    moved = []
+    if trees_dir(profile):  # the predecessor's work trees (7.5 GB each) go to the new lane, saved diff first
+        moved = lane_trees.adopt(trees_dir(profile), old_name, name, old_dir)
+        done = [m for m in moved if m.get("saved")]
+        if done:
+            brief += "\n\n## Work trees handed on\n\n" + "".join(
+                f"- {m['from']} is now {m['to']} (uncommitted work and builds kept; saved diff {m['saved']})\n" for m in done
+            )
+    try:
+        result = launch(profile, spec, replaces={"name": old_name, "dir": str(old_dir)}, new_brief=brief)
+    except Exception:
+        for m in moved:  # a refused launch hands the trees back
+            if m.get("saved") and Path(m["to"]).exists():
+                lane_trees.adopt(trees_dir(profile), name, old_name, old_dir)
+                break
+        raise
+    return {**result, "trees": moved, "continued_from": {"name": old_name, "dir": str(old_dir), "unit": unit, "sources": sources}}
