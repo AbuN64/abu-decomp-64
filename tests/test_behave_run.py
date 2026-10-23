@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 from abu_decomp import tools
@@ -583,7 +584,7 @@ if __name__ == "__main__":
 class RealStateTests(unittest.TestCase):
     """run._real_states: over a real call state, generated cases the original cannot run are swapped for real ones."""
 
-    ENTRY = {"name": "seed-f-hit1", "registers": {}}
+    ENTRY: ClassVar[dict] = {"name": "seed-f-hit1", "registers": {}}
 
     def parts(self, statuses):
         cases = [{"name": n, "labels": {"seed": "seed-f-hit1"} if n.startswith("seed") else {"a": n}} for n in statuses]

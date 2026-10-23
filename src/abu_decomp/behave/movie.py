@@ -56,8 +56,8 @@ def choose(
             "key": NO_MOVIE,
             "blocking": False,
             "message": f"no recorded movie reaches {function} in the original (coverage table, "
-            f"{table['summary']['movies']} movies, state {row['state']}): its cases stay synthetic; record a movie that calls it (`decomp tas`) and "
-            "run `decomp tas coverage`",
+            f"{table['summary']['movies']} movies, state {row['state']}): "
+            "its cases stay synthetic; record a movie that calls it, then run `decomp tas coverage`",
         }
     name, poll = row["oracle"]["movie"], int(row["oracle"]["poll"] or 0)
     try:
