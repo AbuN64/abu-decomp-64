@@ -32,8 +32,9 @@ The shim is hand-written C with no third-party code. AUDIT.md explains why the p
 AI output: `osAiSetNextBuffer` forwards a word-swapped S16 stereo buffer through
 `n64a_ai_submit`. Full builds use SDL3; shim-only builds use a null sink. Tests
 can replace the same callback with `n64c_set_audio_sink`. Buffers are copied
-synchronously and then post `OS_EVENT_AI`; FIFO depth, playback-completion timing,
-and hardware rate-divider quantization are not emulated. SDL errors return -1.
+synchronously into a two-entry FIFO on the virtual clock; `OS_EVENT_AI` is posted
+when each buffer's playing time has elapsed (the game refills on it), and hardware
+rate-divider quantization is not emulated. SDL errors return -1.
 `RAGE_N64COMPAT_M32` selects 32-bit compilation for the whole project, including
 SDL and the audio ABI, so every linked library has the same architecture.
 

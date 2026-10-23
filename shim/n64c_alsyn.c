@@ -19,7 +19,8 @@
 
 /* RSP audio ABI command numbers and flags (see audio_abi/n64a_abi.c). */
 enum { C_ADPCM = 1, C_CLEAR = 2, C_ENVMIX = 3, C_LOAD = 4, C_RESAMPLE = 5, C_SAVE = 6, C_SETBUF = 8,
-       C_SETVOL = 9, C_MOVE = 10, C_LOADADPCM = 11, C_MIX = 12, C_INTERLEAVE = 13, C_POLEF = 14, C_SETLOOP = 15 };
+       C_SETVOL = 9, C_MOVE = 10, C_LOADADPCM = 11, C_MIX = 12, C_INTERLEAVE = 13, C_POLEF = 14, C_SETLOOP = 15,
+       C_LOADRAW = 16 /* the shim's own: bytes as they sit in RAM from a cartridge DMA */ };
 enum { F_INIT = 1, F_LOOP = 2, F_LEFT = 2, F_VOL = 4, F_AUX = 8 };
 
 /* Working memory layout, offsets relative to the ABI's mixing area. */
@@ -115,7 +116,7 @@ static Acmd *clearbuf(Acmd *p, u32 dmem, u32 bytes)
 {
     return emit(p, (C_CLEAR << 24) | (dmem & 0xffffu), bytes & 0xfffu);
 }
-static Acmd *loadbuf(Acmd *p, u32 addr) { return emit(p, C_LOAD << 24, addr); }
+static Acmd *loadraw(Acmd *p, u32 addr) { return emit(p, C_LOADRAW << 24, addr); }
 static Acmd *savebuf(Acmd *p, u32 addr) { return emit(p, C_SAVE << 24, addr); }
 static Acmd *movebuf(Acmd *p, u32 from, u32 to, u32 bytes)
 {
@@ -376,11 +377,9 @@ static u32 pitch_q16(const N64cVoice *v) { return v->pitchField << 1; }
 static Acmd *dma_load(N64cVoice *v, Acmd *c, u32 romAddr, u32 bytes, u32 dmem, u32 *off)
 {
     u32 pa = v->syn->dma ? (u32)v->syn->dma((s32)romAddr, (s32)bytes, v->syn->dmaState) : 0;
-    u32 o = pa & 7u;
-    u32 n = (o + bytes + 7u) & ~7u;
-    *off = o;
-    c = setbuf(c, dmem, 0, n);
-    return loadbuf(c, pa & ~7u);
+    *off = 0;
+    c = setbuf(c, dmem, 0, bytes);
+    return loadraw(c, pa);
 }
 
 /* Appends `take` samples of the wave, starting at the voice position, to the resampler input at sample w. */

@@ -228,7 +228,8 @@ s32 n64c_al_ctl_file(const u8 *ctl, s32 len, s32 n, u32 *fileOffset)
 /* ---- byte-order map of a control bank used in place ----
  * Games that map the container straight into their address space (pointers already linked, high flag bits set)
  * read its records natively, so the PI layer must turn every multibyte field to host order on the way in. The walk
- * visits the same records as the reader above and marks each field start with its width (2 or 4); bytes left 0 are
+ * visits the same records as the reader above and marks each field start with its width (2 or 4; the loop state and
+ * codebook halfwords are marked 4 because only the audio ABI reads them, in its word-swapped layout); bytes left 0 are
  * single bytes, padding or unreferenced data and stay as in the ROM. */
 typedef struct {
     Rd r;
@@ -263,13 +264,13 @@ static void map_wave(Wm *m, u32 o)
         mark(m, o + 12, 4, 2);              /* loop, book */
         if (lo && fresh(m, lo)) {
             mark(m, lo, 4, 3);              /* start, end, count */
-            mark(m, lo + 12, 2, 16);        /* state */
+            mark(m, lo + 12, 4, 8);         /* state: halfwords the audio ABI reads in its word-swapped layout */
         }
         if (bk && fresh(m, bk)) {
             s32 order = s32at(&m->r, bk), np = s32at(&m->r, bk + 4);
             if (order < 0 || np < 0 || order > 16 || np > 64) { m->r.bad = 1; return; }
             mark(m, bk, 4, 2);
-            mark(m, bk + 8, 2, (u32)(order * np * 8));
+            mark(m, bk + 8, 4, (u32)(order * np * 4)); /* codebook halfwords, likewise */
         }
     } else {
         mark(m, o + 12, 4, 1);              /* loop */

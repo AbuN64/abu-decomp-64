@@ -19,18 +19,9 @@
 
 enum { CSP_CHANNELS = 16, CSP_TRACKS = 16, SEQ_HEADER = 0x44 };
 
-/* Sequence bytes are read from guest memory, which stores bytes within a word in reverse order. */
-#ifndef N64C_AL_GUEST_BYTES
-#define N64C_AL_GUEST_BYTES 1
-#endif
-static u8 rd8(const u8 *base, u32 off)
-{
-#if N64C_AL_GUEST_BYTES
-    return *(const u8 *)((uintptr_t)(base + off) ^ 3u);
-#else
-    return base[off];
-#endif
-}
+/* The sequence is a byte stream the game DMAs from the cartridge raw (the PI layer leaves byte data as it is), so
+ * byte i is at base + i. */
+static u8 rd8(const u8 *base, u32 off) { return base[off]; }
 static u32 rd32be(const u8 *base, u32 off)
 {
     return (u32)rd8(base, off) << 24 | (u32)rd8(base, off + 1) << 16 | (u32)rd8(base, off + 2) << 8 | rd8(base, off + 3);

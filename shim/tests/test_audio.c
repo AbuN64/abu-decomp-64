@@ -57,6 +57,8 @@ int main(int argc, char **argv)
     CHECK(osAiSetNextBuffer(ram, sizeof ram) == 0);
     if (argc == 1) CHECK(sink.frames == 300 && sink.calls == 2);
     CHECK(osAiGetLength() == 0);
+    CHECK(osRecvMesg(&events, &message, OS_MESG_NOBLOCK) == -1); /* no interrupt until the buffer has played */
+    n64c_clock_advance_to(500000);                               /* 300 frames at 32 kHz end at 439453 ticks */
     CHECK(osRecvMesg(&events, &message, OS_MESG_NOBLOCK) == 0 && message.data32 == 42);
     CHECK(osRecvMesg(&events, &message, OS_MESG_NOBLOCK) == -1);
     CHECK(osAiSetFrequency(44100) == 44100);
@@ -64,6 +66,8 @@ int main(int argc, char **argv)
     sink.frames = sink.calls = 0;
     CHECK(osAiSetNextBuffer(ram, 4) == 0);
     if (argc == 1) CHECK(sink.frames == 1 && sink.calls == 1);
+    CHECK(osRecvMesg(&events, &message, OS_MESG_NOBLOCK) == -1);
+    n64c_clock_advance_to(n64c_clock_now() + 2000);              /* one frame at 44.1 kHz is 1063 ticks */
     CHECK(osRecvMesg(&events, &message, OS_MESG_NOBLOCK) == 0 && message.data32 == 42);
     n64c_shutdown();
     /* Init restores the default rate and releases any SDL device. */
@@ -96,6 +100,23 @@ int main(int argc, char **argv)
     CHECK(osAiGetStatus() == AI_STATUS_DMA_BUSY);
     n64c_clock_advance_to(150000);
     CHECK(osAiGetStatus() == 0);
+    n64c_shutdown();
+    /* One AI interrupt per buffer, each at the end of its own playing time. */
+    n64c_init(NULL);
+    n64c_set_audio_sink(drop, NULL);
+    osCreateMesgQueue(&events, messages, 4);
+    osSetEventMesg(OS_EVENT_AI, &events, (OSMesg){.data32=42});
+    CHECK(osAiSetFrequency(32000) == 32000);
+    CHECK(osAiSetNextBuffer(ram, 32*4) == 0);   /* ends at 46875 */
+    CHECK(osAiSetNextBuffer(ram, 64*4) == 0);   /* ends at 140625 */
+    n64c_clock_advance_to(46874);
+    CHECK(osRecvMesg(&events, &message, OS_MESG_NOBLOCK) == -1);
+    n64c_clock_advance_to(46875);
+    CHECK(osRecvMesg(&events, &message, OS_MESG_NOBLOCK) == 0 && osRecvMesg(&events, &message, OS_MESG_NOBLOCK) == -1);
+    n64c_clock_advance_to(140625);
+    CHECK(osRecvMesg(&events, &message, OS_MESG_NOBLOCK) == 0 && osRecvMesg(&events, &message, OS_MESG_NOBLOCK) == -1);
+    n64c_clock_advance_to(900000);
+    CHECK(osRecvMesg(&events, &message, OS_MESG_NOBLOCK) == -1);
     n64c_shutdown();
     /* The tap (N64C_AUDIO_OUT): every frame the sink gets is appended, the rate kept beside it; reset closes it. */
     n64c_init(NULL);

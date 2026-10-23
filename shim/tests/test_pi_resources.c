@@ -335,11 +335,12 @@ int main(void)
     CHECK(ctlB[0x18]==0 && ctlB[0x19]==1);
     memcpy(&w32,ctlB+0x20,4);CHECK(w32==0x8000E0);
     memcpy(&w32,ctlB+0x38,4);CHECK(w32==3);
-    memcpy(&h16,ctlB+0x3C,2);CHECK(h16==(s16)0xFF00);
-    memcpy(&h16,ctlB+0x3C+30,2);CHECK(h16==(s16)0xFF0F);
+    /* loop state and codebook halfwords arrive in the audio ABI's word-swapped layout: element k sits at k ^ 1 */
+    memcpy(&h16,ctlB+0x3C,2);CHECK(h16==(s16)0xFF01);
+    memcpy(&h16,ctlB+0x3C+30,2);CHECK(h16==(s16)0xFF0E);
     memcpy(&w32,ctlB+0x64,4);CHECK(w32==2);
-    memcpy(&h16,ctlB+0x68,2);CHECK(h16==-4000);
-    memcpy(&h16,ctlB+0x68+62,2);CHECK(h16==31*257-4000);
+    memcpy(&h16,ctlB+0x68,2);CHECK(h16==257-4000);
+    memcpy(&h16,ctlB+0x68+62,2);CHECK(h16==30*257-4000);
     CHECK(osPiStartDma(NULL,0,OS_READ,CTL+0x92,cut,4,&queue)==0);
     event(1);
     CHECK(cut[0]==0 && cut[1]==0 && cut[2]==0x28 && cut[3]==0x23);

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* AI DMA submission to a native S16 stereo sink; playback is owned by SDL3.
  * Completion means copied to the host sink, not played by the physical device.
- * The two-entry DMA FIFO is modeled on the virtual clock (osAiGetStatus); interrupt timing is not. */
+ * The two-entry DMA FIFO is modeled on the virtual clock (osAiGetStatus); the AI interrupt follows each buffer's end on it. */
 #include "n64c_audio.h"
 #include "n64c_internal.h"
 #include <stdio.h>
@@ -16,14 +16,15 @@ static u32 sample_rate = 32000;
 static int sink_failed;
 static OSTime fifo_end[2]; /* virtual time each held buffer finishes playing, oldest first */
 static u32 fifo_count;
-static void fifo_drain(void)
+static void fifo_drain_to(OSTime now)
 {
-    OSTime now = osGetTime();
     while (fifo_count && fifo_end[0] <= now) {
         fifo_end[0] = fifo_end[1];
         fifo_count--;
     }
 }
+static void fifo_drain(void) { fifo_drain_to(osGetTime()); }
+static void buffer_done(void);
 #ifdef N64C_AUDIO_SDL3
 static SDL_AudioStream *stream;
 static int audio_initialized;
@@ -149,6 +150,13 @@ void n64c_audio_reset(void)
     fifo_count = 0;
 }
 
+/* The AI interrupt: the buffer at the head of the FIFO has played, so a slot is free for the next one. */
+static void buffer_done(void)
+{
+    fifo_drain_to(n64c_clock_now());
+    if (fifo_count) n64c_clock_arm_ai(fifo_end[0], buffer_done);
+    n64c_event_post(OS_EVENT_AI);
+}
 s32 osAiSetFrequency(u32 frequency)
 {
     if (frequency < 4000 || frequency > 192000) return -1;
@@ -168,7 +176,7 @@ s32 osAiSetNextBuffer(void *buffer, u32 bytes)
     /* Plays after the buffer ahead of it, at the rate in force now; frames * counter / rate in exact integers. */
     OSTime start = fifo_count ? fifo_end[fifo_count - 1] : osGetTime();
     fifo_end[fifo_count++] = start + ((OSTime)(bytes / 4u) * OS_CPU_COUNTER + sample_rate - 1) / sample_rate;
-    n64c_event_post(OS_EVENT_AI);
+    n64c_clock_arm_ai(fifo_end[0], buffer_done); /* the AI interrupt follows when the oldest held buffer has played */
     return 0;
 }
 

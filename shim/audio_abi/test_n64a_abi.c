@@ -11,7 +11,7 @@
 
 enum { RAM = 1 << 20, LIST = 0x1000, SRC = 0x2000, DST = 0x3000, STATE = 0x4000, BASE = 0x5c0 };
 enum { OP_CLEAR = 2, OP_ADPCM = 1, OP_ENVMIX = 3, OP_LOAD = 4, OP_RESAMPLE = 5, OP_SAVE = 6, OP_SEGMENT = 7,
-       OP_SETBUF = 8, OP_SETVOL = 9, OP_MOVE = 10, OP_LOADADPCM = 11, OP_MIX = 12, OP_INTERLEAVE = 13 };
+       OP_SETBUF = 8, OP_SETVOL = 9, OP_MOVE = 10, OP_LOADADPCM = 11, OP_MIX = 12, OP_INTERLEAVE = 13, OP_LOADRAW = 16 };
 enum { F_INIT = 1, F_LEFT = 2, F_VOL = 4, F_AUX = 8 };
 
 static int failures;
@@ -52,6 +52,22 @@ static void test_copy_clear(void)
     N64aAbi *a = run();
     for (int i = 0; i < 64; i++) CHECK(get_s16(DST + 2u * i) == (int16_t)(i * 100 - 3000));
     for (int i = 0; i < 64; i++) CHECK(get_s16(DST + 0x100 + 2u * i) == 0);
+    n64a_abi_destroy(a);
+}
+
+/* LOADRAW: bytes as a cartridge DMA leaves them in RAM (byte i at i) arrive as the working memory's byte i, so a
+ * big-endian halfword pair in the stream reads back as that halfword. */
+static void test_load_raw(void)
+{
+    begin();
+    for (int i = 0; i < 32; i++) { ram[SRC + 2u * i] = (uint8_t)((uint16_t)(i * 700 - 9000) >> 8); ram[SRC + 2u * i + 1] = (uint8_t)(i * 700 - 9000); }
+    setbuff(0, 0x100, 64);
+    cmd(OP_LOADRAW, 0, 0, SRC);
+    setbuff(0x100, 0x100, 64);
+    cmd(OP_MOVE, 0, 0, (0x100u << 16) | 64);
+    cmd(OP_SAVE, 0, 0, DST);
+    N64aAbi *a = run();
+    for (int i = 0; i < 32; i++) CHECK(get_s16(DST + 2u * i) == (int16_t)(i * 700 - 9000));
     n64a_abi_destroy(a);
 }
 
@@ -228,6 +244,7 @@ int main(void)
     ram = calloc(1, RAM);
     if (!ram) return 1;
     test_copy_clear();
+    test_load_raw();
     test_mix_interleave();
     test_segment();
     test_adpcm();

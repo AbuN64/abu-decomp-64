@@ -11,6 +11,7 @@ uint32_t n64c_sched_waiting(void);
 void n64c_event_post(u32 event);              /* non-blocking send to the queue set by osSetEventMesg */
 void n64c_clock_advance_to(OSTime t);         /* fire timers due up to t, stepping threads after each */
 OSTime n64c_clock_now(void);
+void n64c_clock_arm_ai(OSTime t, void (*due)(void)); /* call due once the clock reaches t (one slot: the audio FIFO) */
 void n64c_sched_trace(void (*sink)(const char *line, void *user), void *user);
 /* n64c_vi.c */
 void n64c_vi_reset(void);

@@ -99,7 +99,6 @@ static void synthetic(void)
     CHECK(!n64c_al_bnkf_read(&heap, c, LEN, FILE_, 0));
     /* byte-order map of the same container: field starts carry their width, bytes and the key map stay 0 */
     u8 wm[LEN];
-    CHECK(!n64c_al_ctl_widths(c, LEN, wm));  /* the 2x2 book above runs into the raw wave record: two widths */
     w32(c, BOOK + 4, 1);                      /* one predictor: the book ends at BOOK + 40 */
     CHECK(n64c_al_ctl_widths(c, LEN, wm));
     CHECK(wm[0] == 4 && wm[4] == 4 && wm[8] == 4 && wm[12] == 0);
@@ -108,8 +107,8 @@ static void synthetic(void)
     CHECK(wm[INST0] == 0 && wm[INST0 + 12] == 2 && wm[INST0 + 14] == 2 && wm[INST0 + 20] == 4 && wm[INST1 + 16] == 4);
     CHECK(wm[SND0 + 8] == 4 && wm[SND0 + 12] == 0 && wm[ENV + 8] == 4 && wm[ENV + 12] == 0);
     for (int i = 0; i < 6; i++) CHECK(wm[KEY + i] == 0);
-    CHECK(wm[WAVE0 + 4] == 4 && wm[WAVE0 + 8] == 0 && wm[WAVE0 + 16] == 4 && wm[LOOP + 12] == 2 && wm[LOOP + 42] == 2);
-    CHECK(wm[BOOK + 4] == 4 && wm[BOOK + 8] == 2 && wm[BOOK + 38] == 2 && wm[BOOK + 40] == 0);
+    CHECK(wm[WAVE0 + 4] == 4 && wm[WAVE0 + 8] == 0 && wm[WAVE0 + 16] == 4 && wm[LOOP + 12] == 4 && wm[LOOP + 40] == 4 && wm[LOOP + 42] == 0);
+    CHECK(wm[BOOK + 4] == 4 && wm[BOOK + 8] == 4 && wm[BOOK + 36] == 4 && wm[BOOK + 38] == 0 && wm[BOOK + 40] == 0);
     CHECK(wm[WAVE1 + 12] == 4 && wm[WAVE1 + 16] == 0 && wm[RLOOP + 8] == 4 && wm[RLOOP + 12] == 0);
     memcpy(bad, c, LEN);
     w32(bad, INST1 + 16, SND0 + 2);

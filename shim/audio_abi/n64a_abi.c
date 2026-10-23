@@ -205,6 +205,11 @@ static void command(N64aAbi *abi, uint8_t *ram, uint32_t w1, uint32_t w2)
     case 13: if (abi->count) alist_interleave(hle, abi->out, (uint16_t)((w2 >> 16) + DMEM_BASE), (uint16_t)(w2 + DMEM_BASE), (uint16_t)((abi->count + 15u) & ~15u)); break;
     case 14: if (abi->count) alist_polef(hle, flags & F_INIT, abi->out, abi->in, (uint16_t)((abi->count + 15u) & ~15u), (uint16_t)w1, abi->table, seg_addr(abi, w2)); break;
     case 15: abi->loop = seg_addr(abi, w2); break;
+    case 16: { /* load raw bytes: RAM bytes in transport order (cartridge sample data) into the working memory */
+        const uint32_t a = seg_addr(abi, w2) & 0xffffffu;
+        for (unsigned i = 0; i < abi->count; i++) hle->alist_buffer[((abi->in + i) ^ 3u) & 0xfffu] = ram[a + i];
+        break;
+    }
     default: abi->warnings++; break;
     }
 }

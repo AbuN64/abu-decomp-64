@@ -4,6 +4,7 @@
 #include "../n64c_pi.h"
 #include "../n64c_cont.h"
 #include "../n64c_audio.h"
+#include "../n64c_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -250,6 +251,7 @@ int main(void)
     ai[1]=16;
     /* The submitted buffer plays on the virtual clock: AI_STATUS reads DMA busy (one of two FIFO entries held). */
     CHECK(samples==4 && sample_rate==48681812u/1521u && ai[1]==0 && ai[3]==AI_STATUS_DMA_BUSY);
+    n64c_clock_advance_to(n64c_clock_now()+100000); /* the AI interrupt follows the buffer's playing time */
     expect_event(12);
     n64c_cont_set_input(input,NULL);
     message.data32=13;

@@ -2,7 +2,8 @@
 /* Audio library subset: heap and list semantics, the sound player's state machine, voice priority, and the
  * command list that alAudioFrame builds, executed through the audio ABI core (n64a_abi) so the PCM it
  * implies is checked. The test RAM is a plain array: addresses in the commands are made relative to it
- * before the list runs, and sample bytes are stored in the ABI's word-swapped layout (byte i at i ^ 3). */
+ * before the list runs. Cartridge bytes (sample data, sequences) sit as the PI layer leaves them, byte i at i; the codebook and
+ * loop state halfwords are in the ABI's word-swapped layout, as the control-bank byte-order map delivers them. */
 #include "../n64c_al.h"
 #include "../audio_abi/n64a_abi.h"
 #include <stddef.h>
@@ -16,8 +17,9 @@ static int fails;
 enum { RAM_BYTES = 4 << 20, HEAP_OFF = 0x10000, HEAP_LEN = 0x100000, ROM_OFF = 0x200000, OUT_OFF = 0x300000, LIST_OFF = 0x310000, BOOK_OFF = 0x330000, LOOP_OFF = 0x331000 };
 static _Alignas(16) u8 ram[RAM_BYTES];
 
-static void put8(u32 a, u8 v) { ram[a ^ 3u] = v; }
-static void put16(u32 a, s16 v) { memcpy(ram + (a ^ 2u), &v, 2); }
+static void put8(u32 a, u8 v) { ram[a] = v; }
+/* A big-endian halfword of raw PCM, as a cartridge DMA leaves it. */
+static void put_pcm(u32 a, s16 v) { ram[a] = (u8)((u16)v >> 8); ram[a + 1] = (u8)v; }
 static s16 get16(u32 a) { return n64a_ram_s16(ram, a); }
 
 static s32 rom_dma(s32 addr, s32 len, void *state)
@@ -66,7 +68,7 @@ static s32 run_frame(N64aAbi *abi, s32 samples)
     s32 n = 0;
     Acmd *end = alAudioFrame(list, &n, (s16 *)(uintptr_t)OUT_OFF, samples);
     CHECK(end == list + n);
-    for (s32 i = 0; i < n; i++) CHECK(list[i].w0 >> 24 <= 15);
+    for (s32 i = 0; i < n; i++) CHECK(list[i].w0 >> 24 <= 16);
     if (n) {
         /* the save command carries the output offset directly; everything else is rebased */
         rebase(list, n);
@@ -128,7 +130,7 @@ static void test_events(void)
 /* A raw 16-bit wave of `len` samples with value `v` at ROM offset off. */
 static void make_raw(ALWaveTable *w, u32 off, u32 len, s16 v)
 {
-    for (u32 i = 0; i < len; i++) put16(ROM_OFF + off + 2 * i, v);
+    for (u32 i = 0; i < len; i++) put_pcm(ROM_OFF + off + 2 * i, v);
     memset(w, 0, sizeof *w);
     w->base = (u8 *)(uintptr_t)off;
     w->len = (s32)(2 * len);

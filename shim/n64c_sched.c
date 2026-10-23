@@ -60,6 +60,9 @@ static int interrupt_enabled(u32 event)
 static OSTimer *timers;            /* sorted by value (absolute due time) */
 static OSTime clock_now;
 static OSTime compare_deadline;
+static OSTime ai_deadline; /* virtual time the audio FIFO's oldest buffer finishes playing */
+static int ai_armed;
+static void (*ai_due)(void);
 static int compare_armed;
 /* A guest thread that keeps reading the clock without giving up the CPU is waiting on it (a delay or a fault
  * handler's watchdog loop). On the console Count runs on regardless; here it moves only when the host advances
@@ -555,11 +558,29 @@ void __osSetCompare(u32 value)
     if (timers && timers->value <= clock_now) pending_events |= 1u << OS_EVENT_COUNTER;
     pthread_mutex_unlock(&big);
 }
+void n64c_clock_arm_ai(OSTime t, void (*due)(void))
+{
+    pthread_mutex_lock(&big);
+    ai_deadline = t;
+    ai_due = due;
+    ai_armed = 1;
+    pthread_mutex_unlock(&big);
+}
 void n64c_clock_advance_to(OSTime t)
 {
     for (;;) {
         pthread_mutex_lock(&big);
         OSTimer *due = timers && timers->value <= t ? timers : NULL;
+        /* The audio FIFO's oldest buffer finished: the AI interrupt that tells the game to refill it. */
+        if (ai_armed && ai_deadline <= t && (!due || ai_deadline <= due->value) &&
+            (!compare_armed || ai_deadline <= compare_deadline)) {
+            ai_armed = 0;
+            if (ai_deadline > clock_now) clock_now = ai_deadline;
+            pthread_mutex_unlock(&big);
+            ai_due();
+            if (!self()) n64c_sched_run_idle();
+            continue;
+        }
         if (compare_armed && compare_deadline <= t &&
             (!due || !interrupt_enabled(OS_EVENT_COUNTER) || compare_deadline <= due->value)) {
             compare_armed = 0;
@@ -681,6 +702,7 @@ void n64c_sched_reset(void)
     clock_now = 0;
     compare_deadline = 0;
     compare_armed = 0;
+    ai_armed = 0;
     interrupt_mask = OS_IM_ALL;
     pending_events = 0;
     memset(events, 0, sizeof events);
