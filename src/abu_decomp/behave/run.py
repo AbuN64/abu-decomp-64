@@ -458,6 +458,29 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         ),
     )
     mark = lap("original", mark)
+    swapped: dict[str, int] | None = None
+    if options.seeded:
+        # over a real call state, a generated case the original cannot run (a null or unmapped argument the game
+        # never passes) is no state to compare: it is swapped for a real one (the entry with one argument moved)
+        # when there is one, else dropped, and the result says how many
+        cases, original, swapped = _real_states(
+            cases,
+            original,
+            options.seeded["case"],
+            proto,
+            lambda kept: ask(
+                "original-real",
+                _request(
+                    version=version,
+                    address=address,
+                    cases=kept,
+                    config=config,
+                    depth=depth,
+                    memory_end=memory_end,
+                    question=question,
+                ),
+            ),
+        )
     record = original["record"]
     cut = [name for name, why in record.get("stubs", {}).items() if why == "boundary"]
     # a case the original could not finish for want of memory is not compared. Widening the memory leaves the cases
@@ -581,6 +604,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         "address": f"0x{address:08X}",
         "prototype": proto.describe(),
         "cases": len(cases),
+        **({"synthetic": swapped} if swapped else {}),
         "seed": options.seed,
         "depth": depth,
         "probe": {k: record[k] for k in PROBE_KEYS if k in record},
@@ -677,6 +701,37 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         "cache": cache,
     }
     return result, 0, findings
+
+
+def _real_states(
+    cases: list[dict[str, Any]],
+    original: dict[str, Any],
+    entry: dict[str, Any],
+    proto: prototype.Prototype,
+    ask_again: Any,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, int] | None]:
+    """Cases and the original's results with the generated cases that did not run swapped for real call states.
+    Real is the captured entry and the entry with one argument moved off its real value (`inputs.around`): their
+    pointers stay where the game aimed them. Nothing changes unless the captured entry itself ran; a generated case
+    is only judged unrunnable when the original stopped on memory it was not given (null or unmapped pointer)."""
+    pairs = list(zip(cases, original["cases"], strict=True))
+    real = [(c, r) for c, r in pairs if "seed" in c["labels"]]
+    if not any(c["labels"] == {"seed": entry["name"]} and r["status"] == "ok" for c, r in real):
+        return cases, original, None
+    failed = [i for i, (c, r) in enumerate(pairs) if "seed" not in c["labels"] and _unmapped(r)]
+    if not failed:
+        return cases, original, None
+    have = {c["name"] for c in cases}
+    more = [c for c in inputs.around(entry, proto, len(cases)) if c["name"] not in have][: len(failed)]
+    gone = set(failed)
+    kept = [c for i, c in enumerate(cases) if i not in gone]
+    if more:
+        cases = [*kept, *more]
+        original = ask_again(cases)
+    else:
+        original = {**original, "cases": [r for i, r in enumerate(original["cases"]) if i not in gone]}
+        cases = kept
+    return cases, original, {"unrunnable": len(failed), "replaced_by_real": len(more)}
 
 
 def _function_sha256(image: Any, function: str) -> str | None:

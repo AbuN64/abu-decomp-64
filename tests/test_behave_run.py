@@ -578,3 +578,46 @@ class RunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RealStateTests(unittest.TestCase):
+    """run._real_states: over a real call state, generated cases the original cannot run are swapped for real ones."""
+
+    ENTRY = {"name": "seed-f-hit1", "registers": {}}
+
+    def parts(self, statuses):
+        cases = [{"name": n, "labels": {"seed": "seed-f-hit1"} if n.startswith("seed") else {"a": n}} for n in statuses]
+        cases[0]["labels"] = {"seed": "seed-f-hit1"}
+        result = {"record": {}, "cases": [{"status": st, "detail": "unmapped 0 4 last 0"} for st in statuses.values()]}
+        return cases, result
+
+    def real(self, *names):
+        return [{"name": n, "labels": {"seed": "seed-f-hit1", "x": n}} for n in names]
+
+    def test_unrunnable_generated_cases_are_swapped_for_real_states_and_counted(self):
+        cases, result = self.parts({"seed-f-hit1": "ok", "g1": "ok", "g2": "unmapped", "g3": "unmapped"})
+        asked = []
+
+        def again(kept):
+            asked.append([c["name"] for c in kept])
+            return {"record": {}, "cases": [{"status": "ok", "detail": ""} for _ in kept]}
+
+        with mock.patch.object(run.inputs, "around", lambda *a: self.real("r1", "r2", "r3")):
+            got, original, swapped = run._real_states(cases, result, self.ENTRY, mock.Mock(), again)
+        self.assertEqual([c["name"] for c in got], ["seed-f-hit1", "g1", "r1", "r2"])
+        self.assertEqual(asked, [["seed-f-hit1", "g1", "r1", "r2"]])
+        self.assertEqual(swapped, {"unrunnable": 2, "replaced_by_real": 2})
+        self.assertEqual(len(original["cases"]), 4)
+
+    def test_without_enough_real_states_the_unrunnable_ones_are_dropped_not_asked_again(self):
+        cases, result = self.parts({"seed-f-hit1": "ok", "g1": "unmapped", "g2": "ok"})
+        with mock.patch.object(run.inputs, "around", lambda *a: []):
+            got, original, swapped = run._real_states(cases, result, self.ENTRY, mock.Mock(), lambda k: 1 / 0)
+        self.assertEqual([c["name"] for c in got], ["seed-f-hit1", "g2"])
+        self.assertEqual([r["status"] for r in original["cases"]], ["ok", "ok"])
+        self.assertEqual(swapped, {"unrunnable": 1, "replaced_by_real": 0})
+
+    def test_nothing_changes_when_the_captured_entry_itself_did_not_run(self):
+        cases, result = self.parts({"seed-f-hit1": "unmapped", "g1": "unmapped"})
+        got, original, swapped = run._real_states(cases, result, self.ENTRY, mock.Mock(), lambda k: 1 / 0)
+        self.assertEqual((got, original, swapped), (cases, result, None))
