@@ -592,6 +592,15 @@ static int fixup(u32 dev,u8 *destination,u32 bytes)
     }
     return 1;
 }
+/* Keep the newest provenance when a split or DMA fills the bounded history. */
+static void append_origin(Origin *entries,int *count,Origin entry)
+{
+    if (*count==MAX_ORIGIN) {
+        memmove(entries,entries+1,(MAX_ORIGIN-1)*sizeof entries[0]);
+        (*count)--;
+    }
+    entries[(*count)++]=entry;
+}
 /* Drop the origins of RAM [lo, hi): entries it covers go, entries it cuts keep their outside parts. */
 static void drop_origins(uintptr_t lo,uintptr_t hi)
 {
@@ -599,9 +608,9 @@ static void drop_origins(uintptr_t lo,uintptr_t hi)
     int n=0;
     for (int i=0;i<n_origin;i++) {
         Origin o=origin[i];
-        if (o.hi<=lo || o.lo>=hi) { kept[n++]=o; continue; }
-        if (o.lo<lo) kept[n++]=(Origin){o.lo,lo,o.dev};
-        if (o.hi>hi && n<MAX_ORIGIN) kept[n++]=(Origin){hi,o.hi,o.dev+(u32)(hi-o.lo)};
+        if (o.hi<=lo || o.lo>=hi) { append_origin(kept,&n,o); continue; }
+        if (o.lo<lo) append_origin(kept,&n,(Origin){o.lo,lo,o.dev});
+        if (o.hi>hi) append_origin(kept,&n,(Origin){hi,o.hi,o.dev+(u32)(hi-o.lo)});
     }
     memcpy(origin,kept,(size_t)n*sizeof origin[0]);
     n_origin=n;
@@ -612,11 +621,7 @@ static void remember(const void *ram,u32 bytes,u32 dev)
     if (!bytes) return;
     pthread_mutex_lock(&origin_lock);
     drop_origins(lo,lo+bytes);
-    if (n_origin==MAX_ORIGIN) { /* the oldest goes */
-        memmove(origin,origin+1,(MAX_ORIGIN-1)*sizeof origin[0]);
-        n_origin--;
-    }
-    origin[n_origin++]=(Origin){lo,lo+bytes,dev};
+    append_origin(origin,&n_origin,(Origin){lo,lo+bytes,dev});
     pthread_mutex_unlock(&origin_lock);
 }
 int n64c_pi_origin(const void *ram,u32 *dev)

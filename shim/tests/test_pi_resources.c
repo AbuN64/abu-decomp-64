@@ -367,6 +367,27 @@ int main(void)
     CHECK(osPiStartDma(NULL,0,OS_READ,OVL+6,(u8 *)parts+6,sizeof parts-6,&queue)==0);
     event(1);
     CHECK(memcmp(parts,setups,sizeof setups)==0 && parts[0].behaviour==5 && parts[0].gravity==-2304.0f);
+    /* Splitting one entry in a full provenance history must evict the oldest
+     * fragment without corrupting the ROM handle or losing the newest origin. */
+    {
+        enum { ORIGIN_CAPACITY=1024 };
+        static u8 buffers[ORIGIN_CAPACITY][4];
+        u32 source;
+        for (unsigned index=0;index<ORIGIN_CAPACITY;index++) {
+            CHECK(osPiStartDma(NULL,0,OS_READ,TEXT,buffers[index],sizeof buffers[index],&queue)==0);
+            event(1);
+        }
+        n64c_pi_forget(buffers[0]+1,1);
+        CHECK(!n64c_pi_origin(buffers[0],&source));
+        CHECK(!n64c_pi_origin(buffers[0]+1,&source));
+        CHECK(n64c_pi_origin(buffers[0]+2,&source) && source==TEXT+2);
+        CHECK(n64c_pi_origin(buffers[ORIGIN_CAPACITY-1]+3,&source) && source==TEXT+3);
+        CHECK(osPiStartDma(NULL,0,OS_READ,TEXT,scratch,4,&queue)==0);
+        event(1);
+        CHECK(memcmp(scratch,"Disp",4)==0);
+        CHECK(!n64c_pi_origin(buffers[0]+2,&source));
+        CHECK(n64c_pi_origin(buffers[ORIGIN_CAPACITY-1],&source) && source==TEXT);
+    }
     n64c_shutdown();
     CHECK(remove(path)==0);
     printf("PI resource descriptors: %d checks; swap32 header, image and font records, glyphs, offsets, map, audio table, directory, raw text, tagged widget pages, audio control bank, overlay image, refusals\n",checks);
