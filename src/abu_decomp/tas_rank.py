@@ -94,10 +94,9 @@ def owes_rows(owes: dict[str, Any] | None, taken: set[str], limit: int) -> list[
             continue
         out.append(
             {
-                "kind": "type before match" if row.get("waits") else "owes a match",
+                "kind": "owes a match",
                 "where": f"{row['function']} at {row['file']}",
-                "error": f"{row['level']}, reached by {row['reached']} runs"
-                + (f"; its `void *` parameter needs the record {row['waits']} first" if row.get("waits") else ""),
+                "error": f"{row['level']}, reached by {row['reached']} runs",
                 "layer": "game source",
                 "next": row["next"],
             }

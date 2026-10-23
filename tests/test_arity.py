@@ -164,7 +164,7 @@ def test_gate_leaves_an_unrelated_edit_alone(tmp_path):
 
 
 def test_next_command_names_the_fix():
-    assert arity.next_command("w.json", "f", ["call", "prototype"]).endswith("recipe work f --kind declaration")
+    assert arity.next_command("w.json", "f", ["call", "prototype"]).endswith("arity show f")
     assert arity.next_command("w.json", "f", ["call"]).endswith("arity show f")
 
 
@@ -219,7 +219,7 @@ def test_notes_name_the_disagreeing_frame_first(monkeypatch):
         SimpleNamespace(source_file="w.json"), ["func_80209CD8_de", "func_80208158_de", "func_80209CD8_de"]
     )
     assert [r["function"] for r in found] == ["func_80209CD8_de"]
-    assert "first" in found[0]["first"] and found[0]["next"].endswith("recipe work func_80209CD8_de --kind declaration")
+    assert "first" in found[0]["first"] and found[0]["next"].endswith("arity show func_80209CD8_de")
 
 
 def test_notes_never_raise_without_a_project(monkeypatch):

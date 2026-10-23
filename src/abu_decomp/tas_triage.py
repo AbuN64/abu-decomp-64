@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, arity, evidence, recipe_needs
+from abu_decomp import DecompError, arity, evidence
 
 _FUNCTION = re.compile(r"func_[0-9A-Fa-f]{8}\w*")
 _POINTER = re.compile(r"(?:code-pointer-|D_)([0-9A-Fa-f]{8})$")
@@ -123,14 +123,14 @@ def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None
                 kind="no C body",
                 cannot_help="input cannot pass this point: the function exists only as INCLUDE_ASM",
                 owner=f"{subject} at {site}",
-                next=recipe_needs.route(project, subject, f"recipe work {subject}"),
+                next=arity.next_command(source, subject, []),
             )
         elif owed == subject:
             out.update(
                 kind="non-matching body",
                 cannot_help="input cannot pass this point: the guarded body does not behave like the original",
                 owner=f"{subject} at {definition_site(project, subject)}",
-                next=recipe_needs.route(project, subject, f"recipe work {subject}"),
+                next=arity.next_command(source, subject, []),
             )
         else:
             out.update(
@@ -166,11 +166,10 @@ def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None
         out["owes"] = (
             f"{who} owes a match: its frame is "
             + ("an INCLUDE_ASM stand-in" if not owed else "a NON_MATCHING body")
-            + f"; the match is the target (recipe work {who}); recipe says when its budget is spent and the best "
-            "behaves-the-same body may land fenced"
+            + f"; the match is the target ({arity.next_command(source, who, [])})"
         )
         if owed and out["kind"] == "host fault" and not any(n["function"] == owed for n in notes):
-            out["next"] = f"recipe work {owed}"
+            out["next"] = arity.next_command(source, owed, [])
     out["claim"] = (
         f"{out['kind']}: {subject or what}; blocking={str(out['blocking']).lower()}; {out['cannot_help']}"
         + (f"; owner {out['owner']}" if "owner" in out else "")

@@ -66,7 +66,9 @@ def test_lists_guarded_bodies_and_reached_stand_ins_ranked_by_runs(tmp_path, pro
         ("func_80000010_de", "C unproven", 2),
         ("func_80000020_de", "asm", 1),
     ]
-    assert got["next"] == "recipe work func_80000010_de"  # an unreached stand-in (30) and a plain body (40) owe nothing
+    assert (
+        got["next"] == "decomp --profile p.json arity show func_80000010_de"
+    )  # an unreached stand-in (30) and a plain body (40) owe nothing
 
 
 def test_a_cached_measure_of_the_file_as_it_stands_gives_the_behaves_level(tmp_path, project, monkeypatch):
@@ -78,22 +80,3 @@ def test_a_measure_of_other_text_is_not_a_level(tmp_path, project, monkeypatch):
     (project / "src" / "a.c").write_text(NM_FILE.replace("return a;", "return a + 2;"))
     got = run_with(tmp_path, project, monkeypatch, {"func_80000010_de": (7, 48)}, NM_FILE)
     assert got["levels"]["behaves"] == 0
-
-
-def test_a_function_waiting_for_a_type_item_ranks_by_that_items_command(tmp_path, project, monkeypatch):
-    needs = project / ".unbake" / "recipe" / "needs.json"
-    needs.parent.mkdir(parents=True)
-    needs.write_text(
-        json.dumps(
-            {
-                "func_80000010_de": {
-                    "item": "func_80000010_de.arg0",
-                    "next": "recipe work func_80000010_de.arg0 --kind type",
-                }
-            }
-        )
-    )
-    got = run_with(tmp_path, project, monkeypatch)
-    assert got["next"] == "recipe work func_80000010_de.arg0 --kind type"
-    assert got["top"][0]["waits"] == "func_80000010_de.arg0" and "waits" not in got["top"][1]
-    assert got["top"][1]["next"] == "recipe work func_80000020_de"

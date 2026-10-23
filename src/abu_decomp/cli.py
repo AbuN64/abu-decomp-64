@@ -680,12 +680,6 @@ def _ship_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--regen-age", type=float, default=900.0, help="with --regen: seconds since the last that make it due"
     )
-    parser.add_argument(
-        "--from-try",
-        metavar="F[:MESSAGE]",
-        help="the candidate `recipe try F` proved exact is the input: `unbake submit` writes it into the tree (no diff "
-        "to write), the ship gates, commits and pushes it; a refusal leaves the tree at the branch",
-    )
 
 
 def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -693,16 +687,12 @@ def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     from abu_decomp.ship import ship
 
     if args.regen:
-        if args.patch or args.worktree or args.from_try:
+        if args.patch or args.worktree:
             raise DecompError("ship.arguments", "--regen is a ship of its own; give it no input")
         return ship(
             _profile(args.profile), args.tree, [], regen=True, regen_now=args.regen_now,
             regen_min=args.regen_min, regen_age=args.regen_age,
         )  # fmt: skip
-    if args.from_try:
-        name, _, message = args.from_try.partition(":")
-        messages = {name: message.strip()} if message.strip() else {}
-        return ship(_profile(args.profile), args.tree, [], messages=messages, from_try=name)
     if args.patch and args.worktree:
         raise DecompError("ship.arguments", "--worktree is the input itself; give it without --patch")
     if args.patch:

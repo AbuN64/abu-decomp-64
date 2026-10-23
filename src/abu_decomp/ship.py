@@ -58,9 +58,8 @@ class ShipError(DecompError):
 
 def _parked_line(row: dict[str, Any]) -> str:
     """The one line a parked-change notice prints (Recipe prints the same rows from `.unbake/ship-parked.json`)."""
-    who = ", ".join(row["owners"]) or "owner unknown (no live lease names them)"
     return (
-        f"ship.parked: {' '.join(row['files'])} set aside by a ship at {row['time']} no longer apply; owners: {who}; "
+        f"ship.parked: {' '.join(row['files'])} set aside by a ship at {row['time']} no longer apply; "
         f"git apply --3way {row['patch']} then delete it"
     )
 
@@ -132,7 +131,6 @@ class Ship:
         lock_wait: float = LOCK_WAIT_SECONDS,
         cgroup: Callable[[], str] = lambda: Path("/proc/self/cgroup").read_text(),
         worktree: str | None = None,
-        from_try: str | None = None,
         invoke: Callable[..., Any] = tools.invoke,
         build: land.Run = land.build_process,
         proof: bool = True,
@@ -156,19 +154,19 @@ class Ship:
         self.landed: dict[str, str] = {}  # lane -> its commit
         self.held = 0.0  # when this ship took the lock
         self.profile, self.patches, self.messages = profile, list(patches), dict(messages or {})
-        self.from_try, self.invoke = from_try, invoke  # from_try: the function whose proven candidate is the input
+        self.invoke = invoke
         self.worktree: str | None = worktree  # the work tree's own tracked changes are the input (see capture)
         self.saved: dict[str, Any] | None = None
         self.parked: list[tuple[Path, list[str]]] = []  # other work's tracked changes, set aside for the ship (park)
         self.tree = tree.expanduser().resolve()
         if not (self.tree / ".git").exists():
             raise ShipError("ship.tree", f"{self.tree} is not a git checkout")
-        if sum(map(bool, (self.worktree, self.patches, self.from_try))) > 1:
-            raise ShipError("ship.arguments", "--patch, --worktree and --from-try are each the input; give one")
-        if self.regen and (self.patches or self.worktree or self.from_try):
+        if self.worktree and self.patches:
+            raise ShipError("ship.arguments", "--patch and --worktree are each the input; give one")
+        if self.regen and (self.patches or self.worktree):
             raise ShipError("ship.arguments", "--regen takes no input")
-        if not (self.patches or self.worktree or self.from_try or self.regen):
-            raise ShipError("ship.arguments", "ship needs at least one --patch, --worktree NAME or --from-try F")
+        if not (self.patches or self.worktree or self.regen):
+            raise ShipError("ship.arguments", "ship needs at least one --patch or --worktree NAME")
         if len({lane for lane, _ in self.patches}) != len(self.patches):
             raise ShipError("ship.arguments", "two --patch inputs carry one lane name; each input needs its own")
         table = land.settings(profile, tree)
@@ -231,7 +229,7 @@ class Ship:
         mine = tickets / f"{time.time_ns():020d}-{os.getpid()}"
         mine.touch()
         batch = self.batch = Batch(tickets.parent, mine.name) if self.patches and not self.worktree else None
-        if batch and not self.from_try:
+        if batch:
             batch.publish(self.patches, self.messages)
         handle = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
         began, said = self.clock(), None
@@ -273,7 +271,7 @@ class Ship:
 
     def adopt(self) -> None:
         """The inputs of the ships queued behind this one land in this round (one commit per input)."""
-        if self.batch is None or self.from_try:
+        if self.batch is None:
             return
         rows = self.batch.adopt({lane for lane, _ in self.patches}, self.accepts())
         self.patches += rows
@@ -303,7 +301,7 @@ class Ship:
         While the round carries over, an input must also hold on the branch tip."""
         if self.train_round:  # the types train: header halves only, landed together with a full build
             return lambda rows: all(lane.endswith(shipproof.TYPES) for lane, _ in rows)
-        if self.worktree or self.from_try:
+        if self.worktree:
             return None
         own = self.proven(self.patches) if self.proof else None
         if own is None:
@@ -385,7 +383,7 @@ class Ship:
         """Before the queue wait: every `--patch` input that has a work tree (`<tree>/../wt/<LANE>`) gets its proof
         record, built there in the lane's own time (shipproof.prove) and stored beside the lock. A patch whose proof
         build fails is refused here, at once, not after the queue. The refusing finding, None when all pass."""
-        if not self.proof or self.worktree or self.from_try:
+        if not self.proof or self.worktree:
             return None
         common = self.common()
         for lane, path in self.patches:
@@ -425,7 +423,7 @@ class Ship:
         types train (a ship round of header halves only, batched with every other queued one: one setup, one check,
         one commit each) and the body then carries over, because the branch holds exactly the header text the proof
         built with (shipproof.judge by blob). A refused train leaves the whole patch to the full land as before."""
-        if not self.split or self.train_round or self.worktree or self.from_try:
+        if not self.split or self.train_round or self.worktree:
             return
         common, generated = self.common(), self.generated_globs()
         folder = common / "decomp-ship.train"
@@ -484,7 +482,7 @@ class Ship:
     def carry_mode(self, tip: str, rows: Sequence[tuple[str, Path]]) -> bool:
         """Whether every input of `rows` brings a proof that still holds on `tip` (shipproof.judge): such a round
         builds nothing. The reason of the first input that does not is kept in `self.carry_why`."""
-        if not self.proof or self.worktree or self.from_try or not rows:
+        if not self.proof or self.worktree or not rows:
             return False
         common, generated = self.common(), self.generated_globs()
         for lane, path in rows:
@@ -580,7 +578,7 @@ class Ship:
     def unpark(self) -> list[dict[str, Any]]:
         """The parked changes back on the tree as the ship leaves it, file by file. A file that no longer applies (the
         ship changed the same lines) stays in the patch: the finding and `.unbake/ship-parked.json` name it with the
-        lanes whose leased items it touches, and every later ship and recipe command prints it until the patch is
+        the files, and every later ship and recipe command prints it until the patch is
         gone (`git apply PATCH` by its owner, then delete the patch)."""
         found = []
         with self.landing_lock():
@@ -589,8 +587,7 @@ class Ship:
                 if not lost:
                     path.unlink(missing_ok=True)
                     continue
-                owners = self.owners(path.read_text(errors="replace"))
-                row = {"patch": str(path), "files": lost, "owners": owners, "time": time.strftime("%H:%M")}
+                row = {"patch": str(path), "files": lost, "time": time.strftime("%H:%M")}
                 notice = self.tree / ".unbake/ship-parked.json"
                 rows = [*self.notices(), row]
                 notice.write_text(json.dumps(rows))
@@ -599,16 +596,6 @@ class Ship:
                 sys.stderr.write(f"decomp: {message}\n")
         self.parked = []
         return found
-
-    def owners(self, text: str) -> list[str]:
-        """`SESSION (item)` for each live recipe lease whose item the patch text names."""
-        out = []
-        for lease in sorted((self.tree / ".unbake/recipe/leases").glob("*.json")):
-            with suppress(OSError, ValueError):
-                row = json.loads(lease.read_text())
-                if row.get("session") and re.search(rf"\b{re.escape(row['item'])}\b", text):
-                    out.append(f"{row['session']} ({row['item']})")
-        return out
 
     def notices(self) -> list[dict[str, Any]]:
         """The parked-change notices whose patch still exists (its owner has not applied and deleted it yet)."""
@@ -664,35 +651,9 @@ class Ship:
             raise ShipError("ship.worktree_restore", f"the work tree does not match its capture {saved['path']}")
         self.saved = None
 
-    def enter(self, name: str) -> None:
-        """`--from-try F`: the candidate `recipe try F` proved exact becomes the tree's tracked change, written by
-        `unbake submit` at the branch tip (F out of its NON_MATCHING fence or its INCLUDE_ASM replaced, its own pool
-        rows brought, plus the header, alias or config files under work/F.overlay/ at their project paths); the ship
-        then takes it as a --worktree input, so no lane writes a diff."""
-        self.tip()
-        file = self.tree / ".unbake/recipe/work" / f"{name}.c"
-        if not file.is_file():
-            raise ShipError(
-                "ship.from_try", f"{file} does not exist: no candidate for {name}", next=f"recipe work {name}"
-            )
-        overlay = self.tree / ".unbake/recipe/work" / f"{name}.overlay"  # companions: project path -> its new text
-        extras = [f"{p.relative_to(overlay)}={p}" for p in sorted(overlay.rglob("*")) if p.is_file()]
-        called = self.invoke("unbake", self.profile, ["submit", str(file), *extras], project=self.tree)
-        result = called.document.get("result") or {}
-        rows = result.get("submissions") or [{}]
-        refused = (result.get("drain") or {}).get("refused") or []
-        found = [*(rows[0].get("findings") or []), *(called.document.get("findings") or []), *refused]
-        if not called.ok or rows[0].get("operation") != "publish" or refused or not self.git("diff", "HEAD")[1]:
-            why = next((str(f.get("message") or f.get("key")) for f in found if isinstance(f, dict)), "not exact")
-            raise ShipError("ship.from_try", f"unbake submit refused {name}: {why}", next=f"recipe try {name}")
-        self.worktree = name
-
     def abandon(self) -> None:
-        """A ship that pushed nothing puts a --worktree input back; a --from-try input was never the lane's own
-        work, so the shared tree goes back to the branch clean instead of staying dirty."""
+        """A ship that pushed nothing puts a --worktree input back."""
         self.restore()
-        if self.from_try:
-            self.clean(self.git("rev-parse", "HEAD")[1].strip())
 
     def settle(self, sha: str) -> None:
         """After a push the work tree is clean at the new commit; a tree that sat on a branch moves it there."""
@@ -811,7 +772,7 @@ class Ship:
     def locked(self) -> Result:
         started = self.clock()
         if refusal := self.precheck():
-            lanes = ", ".join(lane for lane, _ in self.patches) or self.worktree or self.from_try or ""
+            lanes = ", ".join(lane for lane, _ in self.patches) or self.worktree or ""
             shipped = {"lane": lanes, "inputs": [], "base": None, "pushed": None, "functions": [], "seconds": 0.0,
                        "cpu": 0.0, "steps": [], "refused": refusal, "land": {}}  # fmt: skip
             return shipped, 1, [refusal]
@@ -837,8 +798,8 @@ class Ship:
             for row in self.notices():  # every ship says it until the owner takes the parked change back
                 self.notes.append({"key": "ship.parked", "message": _parked_line(row), "blocking": False})
                 sys.stderr.write(f"decomp: {_parked_line(row)}\n")
-            # sync, check and commit rewrite tracked files and the extraction: readers of the tree (recipe try, work,
-            # unbake probe) wait for the window, and their waits are the readers' to print
+            # sync, check and commit rewrite tracked files and the extraction: readers of the tree (unbake probe)
+            # wait for the window, and their waits are the readers' to print
             with treelock.hold(self.tree, exclusive=True, who="ship"):
                 # a round whose inputs all carry proofs that hold builds nothing: the extraction is not touched
                 try:
@@ -847,8 +808,6 @@ class Ship:
                     self.carry = False
                 self.kept = None if self.carry else self.keep_extraction()
                 try:
-                    if self.from_try:
-                        self.enter(self.from_try)
                     outcome = self.attempts(started)
                 except BaseException:
                     self.abandon()

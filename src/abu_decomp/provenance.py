@@ -1,27 +1,20 @@
-"""Two checks on the function bodies a change adds or changes, both read from the code, never self-reported.
+"""The names check on the function bodies a change adds or changes, read from the code, never self-reported.
 
-provenance  a body must equal (normalised text, or up to a consistent identifier rename) one that `recipe try`
-            recorded: the tries stream of the project's
-            Recipe state holds each candidate file it measured, so a hand-written body has no record.
 names       a body may not add machine-generated leftovers: the rules (name, regex, hint) come from the seat profile
             and run on the body's code lines (comments and strings blanked); a leftover the parent body already had
             does not block (no step down, as the evidence ladder).
 
-A body counts as changed unless the parent held the same braces text (a declaration or name edit outside it); both
-plain bodies (the project's check proves their bytes) need no try but still face the names ratchet.
-Both checks only refuse; the evidence gate runs them.
+A body counts as changed unless the parent held the same braces text (a declaration or name edit outside it).
+The check only refuses; the evidence gate runs it.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from collections import Counter
-from pathlib import Path
-from typing import Any
 
 from abu_decomp import evidence
-from abu_decomp.evidence import ASM, NM, PLAIN, Fn
+from abu_decomp.evidence import ASM, Fn
 
 
 def inner(fn: Fn) -> str:
@@ -37,18 +30,6 @@ _FIXED = frozenset(
         "s8 u8 s16 u16 s32 u32 s64 u64 f32 f64 NULL TRUE FALSE",
     )
 )
-
-
-def shape(fn: Fn) -> str:
-    """The body with each non-keyword identifier numbered by first use: bodies that differ only by a consistent
-    rename (`recipe name` after the try) share it, so name and body can land in one commit."""
-    seen: dict[str, int] = {}
-    body = re.sub(
-        r"[A-Za-z_]\w*",
-        lambda m: m[0] if m[0] in _FIXED else f"@{seen.setdefault(m[0], len(seen))}",
-        inner(fn),
-    )
-    return "\0shape:" + body
 
 
 _TYPE_WORDS = frozenset(
@@ -77,80 +58,11 @@ _TYPE_WORDS = frozenset(
 )
 
 
-def loose(fn: Fn) -> str:
-    """The body with identifiers numbered by first use and every basic type word erased: bodies that differ only by
-    renames and retyped declarations or casts share it (a type edit inside a NON_MATCHING body changes no byte)."""
-    seen: dict[str, int] = {}
-
-    def word(m: re.Match[str]) -> str:
-        if m[0] in _TYPE_WORDS:
-            return "@T"
-        return m[0] if m[0] in _FIXED else f"@{seen.setdefault(m[0], len(seen))}"
-
-    return re.sub(r"[A-Za-z_]\w*", word, inner(fn))
-
-
 def edited(before: Fn | None, after: Fn) -> bool:
     """Whether a function body was added or its braces text edited (a header edit alone is not)."""
     if after.kind == ASM or before == after:
         return False
     return before is None or before.kind == ASM or inner(before) != inner(after)
-
-
-def changed(before: Fn | None, after: Fn) -> bool:
-    """Whether the body also needs a try: both plain bodies are proven by the project's check, so they need none."""
-    return edited(before, after) and not (before is not None and before.kind == PLAIN and after.kind == PLAIN)
-
-
-def worktrees(root: Path) -> list[Path]:
-    """The other work trees of the repository at `root` (`git worktree list`): lanes crack in their own."""
-    import subprocess
-
-    try:
-        done = subprocess.run(
-            ["git", "-C", str(root), "worktree", "list", "--porcelain"], capture_output=True, text=True, check=False
-        )
-    except OSError:
-        return []
-    found = [Path(line[9:]) for line in done.stdout.splitlines() if line.startswith("worktree ")]
-    return [p for p in found if p.resolve() != Path(root).resolve() and (p / ".unbake").is_dir()]
-
-
-def recorded(paths: list[Path]) -> dict[str, dict[str, Any]]:
-    """Body text -> the try that produced it (item, session, time), over every candidate a try compiled and scored
-    (a failed try proved nothing)."""
-    found: dict[str, dict[str, Any]] = {}
-    for path in paths:
-        if not path.is_file():
-            continue
-        for raw in path.read_text(errors="replace").splitlines():
-            try:
-                row = json.loads(raw)
-            except ValueError:
-                continue
-            if not isinstance(row, dict) or not row.get("text") or row.get("result") == "failed":
-                continue
-            who = {k: row.get(k) for k in ("item", "session", "time")}
-            for fn in evidence.parse(str(row["text"])).values():
-                if fn.kind != ASM:
-                    found.setdefault(inner(fn), who)
-                    found.setdefault(shape(fn), who)
-    return found
-
-
-def unproven(base: dict[str, Fn], new: dict[str, Fn], tries: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
-    return [
-        {
-            "function": name,
-            "why": f"{name} body was not produced/proven by recipe try (no recorded candidate has this body)",
-            "next": f"recipe try {name}",
-        }
-        for name, fn in sorted(new.items())
-        if changed(base.get(name), fn)
-        and inner(fn) not in tries
-        and shape(fn) not in tries
-        and not (base.get(name) is not None and base[name].kind == NM and loose(base[name]) == loose(fn))
-    ]
 
 
 def leftovers(fn: Fn, text: str, rules: list[dict[str, str]]) -> list[tuple[str, int, str]]:

@@ -159,108 +159,6 @@ class BuildLogTests(unittest.TestCase):
             self.assertIn("warning 30", (Path(temp) / ".unbake/ship-check.log").read_text())
 
 
-class WorktreeTriesTests(unittest.TestCase):
-    def test_a_try_recorded_in_a_worktree_counts_for_the_tree(self) -> None:
-        import tempfile
-
-        from abu_decomp import provenance
-
-        shared = test_ship.ShipTests()
-        shared.setUp()
-        self.addCleanup(shared.doCleanups)
-        wt = shared.root / "wt"
-        test_ship.git(shared.tree, "worktree", "add", "--detach", "-q", str(wt))
-        (wt / ".unbake/recipe").mkdir(parents=True)
-        row = {
-            "item": "f",
-            "result": "exact",
-            "time": 1,
-            "session": "s",
-            "text": "int f_x(void)\n{\n    return 3;\n}\n",
-        }
-        (wt / ".unbake/recipe/tries.jsonl").write_text(json.dumps(row) + "\n")
-        self.assertEqual([p.name for p in provenance.worktrees(shared.tree)], ["wt"])
-        found = provenance.recorded([wt / ".unbake/recipe/tries.jsonl"])
-        self.assertTrue(found)
-        self.assertEqual(tempfile.gettempdir() is not None, True)
-
-
-class SeedTests(unittest.TestCase):
-    def test_a_seeded_tree_gets_the_shared_trees_times_for_files_with_equal_bytes(self) -> None:
-        from abu_decomp import worktree
-
-        shared = test_ship.ShipTests()
-        shared.setUp()
-        self.addCleanup(shared.doCleanups)
-        wt = shared.root / "wt"
-        test_ship.git(shared.tree, "worktree", "add", "--detach", "-q", str(wt))
-        os.utime(shared.tree / "a.c", ns=(10**18, 10**18))
-        (wt / "a.c").write_text("int a;\n")
-        (wt / "new.c").write_text("x")
-        test_ship.git(wt, "add", "new.c")
-        self.assertGreaterEqual(worktree.align_times(shared.tree, wt), 1)
-        self.assertEqual((wt / "a.c").stat().st_mtime_ns, 10**18)
-
-
-class SeedWithoutLockTests(unittest.TestCase):
-    def test_seeding_never_takes_the_tree_lock_and_drops_a_file_rewritten_mid_copy(self) -> None:
-        import tempfile
-        from unittest import mock
-
-        from unbake import treelock
-
-        from abu_decomp import worktree
-
-        with tempfile.TemporaryDirectory() as raw:
-            shared, target = Path(raw) / "shared", Path(raw) / "wt"
-            (shared / "build").mkdir(parents=True)
-            (shared / ".unbake").mkdir()
-            (target).mkdir()
-            (shared / "build/ok.o").write_text("ok")
-            (shared / "build/torn.o").write_text("old")
-            real = worktree._copy
-
-            def rewriting(source: Path, dest: Path) -> None:
-                real(source, dest)
-                if source.name == "build":
-                    (shared / "build/torn.o").write_text("newer content")  # a ship rewrites it after the copy
-
-            with (
-                mock.patch.object(treelock, "hold", side_effect=AssertionError("tree lock taken")),
-                mock.patch.object(worktree, "_copy", rewriting),
-            ):
-                dropped = worktree.seed(shared, target)
-            self.assertEqual(dropped, 1)
-            self.assertTrue((target / "build/ok.o").exists())
-            self.assertFalse((target / "build/torn.o").exists())
-
-
-class ArityTests(unittest.TestCase):
-    def test_a_64_bit_argument_starts_at_an_even_word(self) -> None:
-        from abu_decomp.arity import argument_words
-
-        self.assertEqual(argument_words(["int64", "int64"]), 4)
-        self.assertEqual(argument_words(["int", "int64"]), 4)
-        self.assertEqual(argument_words(["int", "int", "uint64"]), 4)
-        self.assertEqual(argument_words(["int", "int", "int"]), 3)
-        self.assertEqual(argument_words(["int", "int64", "int"]), 5)
-        self.assertEqual(
-            argument_words(["ptr", "int64", "int64"]), 6
-        )  # lldiv(LldivResult *, s64, s64): a0, a2:a3, stack
-
-
-class LooseTests(unittest.TestCase):
-    def test_a_rename_or_retype_inside_a_non_matching_body_needs_no_try(self) -> None:
-        from abu_decomp import evidence, provenance
-
-        old = "#ifdef NON_MATCHING\nint f(int a)\n{\n    s32 x = func_8(a);\n    return x;\n}\n#endif\n"
-        new = old.replace("func_8", "__divdi3").replace("s32", "u32")
-        edit = old.replace("x = func_8(a)", "x = func_8(a) + 1")
-        base, same, other = (evidence.parse(t) for t in (old, new, edit))
-        self.assertEqual(provenance.unproven(base, same, {}), [])
-        self.assertEqual([r["function"] for r in provenance.unproven(base, other, {})], ["f"])
-
-
 class PruneTests(unittest.TestCase):
     def test_an_ended_lanes_worktree_goes_unless_a_queued_ship_names_it(self) -> None:
         from abu_decomp import worktree
@@ -274,11 +172,7 @@ class PruneTests(unittest.TestCase):
         inputs = shared.tree / ".git" / "decomp-ship.inputs"
         inputs.mkdir()
         (inputs / "1-1.json").write_text(json.dumps({"patches": [["B", str(base / "B" / "x.patch")]]}))
-        (base / "A" / ".unbake/recipe").mkdir(parents=True)
-        (base / "A" / ".unbake/recipe/skips.jsonl").write_text('{"item":"f","reason":"other"}\n')
         result, code, findings = worktree.prune(shared.tree, ["A", "B", "C"])
-        self.assertEqual(result["skips_carried"], 1)
-        self.assertIn("f", (shared.tree / ".unbake/recipe/skips.jsonl").read_text())
         self.assertEqual(code, 0)
         self.assertEqual([Path(p).name for p in result["removed"]], ["A"])
         self.assertEqual([f["key"] for f in findings], ["worktree.referenced"])

@@ -2,7 +2,7 @@
 
 `getrusage(RUSAGE_CHILDREN)` counts a child only when its parent waited for it. A tool that is stopped (a cap, a
 timeout, ^C) leaves its workers and their compilers behind: they reparent to init, finish unseen and their CPU is in no
-meter, so a stopped `recipe work` read as a few seconds while its workers had used a hundred. Two readings close the
+meter, so a stopped tool read as a few seconds while its workers had used a hundred. Two readings close the
 gap, and neither waits for a child (a wait here could take the exit status of a child another thread watches): `cpu()`
 adds the CPU of the processes still running below this one to the reaped total, and `stop_marked()` finds the workers a
 stopped tool left behind by the mark its environment carried, reads their CPU and ends them.

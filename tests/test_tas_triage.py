@@ -30,12 +30,12 @@ class TriageTests(unittest.TestCase):
         self.notes = patch.start()
         self.addCleanup(patch.stop)
 
-    def test_no_c_body_says_input_cannot_help_and_names_recipe_work(self):
+    def test_no_c_body_says_input_cannot_help_and_names_the_arity_command(self):
         got = tas_triage.claim(self.profile, {"outcome": "stop", "subject": "func_8041CAD8_de"})
         self.assertEqual((got["kind"], got["blocking"]), ("no C body", True))
         self.assertIn("input cannot pass this point", got["cannot_help"])
         self.assertEqual(got["owner"], "func_8041CAD8_de at src/a.CPP:2")
-        self.assertEqual(got["next"], "recipe work func_8041CAD8_de")
+        self.assertEqual(got["next"], "decomp --profile /p/w.json arity show func_8041CAD8_de")
         self.assertIn("no C body", got["claim"])
 
     def test_unmapped_data_word_names_the_symbol_site(self):
@@ -55,13 +55,15 @@ class TriageTests(unittest.TestCase):
         stack = self.project / "st.txt"
         stack.write_text("#0 func_80209DDD_de (a=1)\n#1 func_8041CAD8_de ()\n")
         got = tas_triage.claim(self.profile, {"outcome": "crash", "subject": "host-fault-080f2e1c"}, [str(stack)])
-        self.assertEqual(got["next"], "recipe work func_80209DDD_de")
+        self.assertEqual(got["next"], "decomp --profile /p/w.json arity show func_80209DDD_de")
         self.assertIn("func_80209DDD_de owes a match", got["owes"])
         self.assertIn("NON_MATCHING body", got["claim"])
 
     def test_a_stop_in_a_non_matching_body_is_a_match_target_not_unknown(self):
         got = tas_triage.claim(self.profile, {"outcome": "stop", "subject": "func_80209DDD_de"})
-        self.assertEqual((got["kind"], got["next"]), ("non-matching body", "recipe work func_80209DDD_de"))
+        self.assertEqual(
+            (got["kind"], got["next"]), ("non-matching body", "decomp --profile /p/w.json arity show func_80209DDD_de")
+        )
 
     def test_an_include_asm_stop_also_says_it_owes_a_match(self):
         got = tas_triage.claim(self.profile, {"outcome": "stop", "subject": "func_8041CAD8_de"})

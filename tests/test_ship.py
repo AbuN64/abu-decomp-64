@@ -151,18 +151,15 @@ class ShipTests(unittest.TestCase):
         self,
     ) -> None:
         (self.tree / "a.c").write_text("int a; /* f_matched draft */\n")
-        leases = self.tree / ".unbake/recipe/leases"
-        leases.mkdir(parents=True)
-        (leases / "f_matched.json").write_text(json.dumps({"item": "f_matched", "session": "LANE-9"}))
         _, code, findings = self.ship()
         parked = [f for f in findings if f["key"] == "ship.parked"]
         self.assertEqual((code, len(parked)), (0, 1))
-        self.assertIn("owners: LANE-9 (f_matched)", parked[0]["message"])
+        self.assertIn("a.c", parked[0]["message"])
         row = json.loads((self.tree / ".unbake/ship-parked.json").read_text())[0]
         self.assertEqual(row["files"], ["a.c"])
         self.assertIn("f_matched draft", Path(row["patch"]).read_text())
         _, _, again = self.ship()  # the next ship says it again, until the owner deletes the patch
-        self.assertIn("LANE-9", next(f["message"] for f in again if f["key"] == "ship.parked"))
+        self.assertIn("a.c", next(f["message"] for f in again if f["key"] == "ship.parked"))
 
     def test_a_generated_file_left_in_the_tree_goes_back_to_head_and_is_never_parked(self) -> None:
         (self.other / "x.ld").write_text("/* generated from config.toml; do not edit */\n")

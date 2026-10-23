@@ -357,7 +357,7 @@ def evidence_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
     if given is None:
         return None
     unknown = (
-        set(given) - {"suffixes", "guard", "stand_in", "headers", "roms", "slow_seconds", "provenance", "names"}
+        set(given) - {"suffixes", "guard", "stand_in", "headers", "roms", "slow_seconds", "names"}
         if isinstance(given, dict)
         else {"?"}
     )
@@ -372,19 +372,8 @@ def evidence_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
         "headers": list(given.get("headers", ["include"])),
         "roms": list(given.get("roms", [])),
         "slow_seconds": float(given.get("slow_seconds", 60)),
-        "provenance": provenance_settings(profile, given.get("provenance")),
         "names": names_settings(profile, given.get("names")),
     }
-
-
-def provenance_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
-    """`land.evidence.provenance` (absent: off): `tries`, the Recipe tries streams a changed body must appear in
-    (relative paths resolve against the profile's project; default `.unbake/recipe/tries.jsonl`)."""
-    if given is None:
-        return None
-    if not isinstance(given, dict) or set(given) - {"tries"}:
-        raise LandError("config.schema", f"{profile.source_file}:land.evidence.provenance: expected {{tries: [...]}}")
-    return {"tries": [str(t) for t in given.get("tries", [".unbake/recipe/tries.jsonl"])]}
 
 
 def names_settings(profile: Profile, given: Any) -> list[dict[str, str]]:

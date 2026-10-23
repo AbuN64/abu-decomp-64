@@ -513,10 +513,8 @@ def explain(name: str, entry: dict[str, Any]) -> str:
 
 
 def next_command(profile_file: Path | str | None, name: str, kinds: list[str]) -> str:
-    """One command to start the fix: a prototype that differs is Recipe's declaration item, anything else is read."""
+    """One command to start the fix: read what the function's callers and its assembly disagree on."""
     profile = f" --profile {profile_file}" if profile_file else ""
-    if "prototype" in kinds:
-        return f"decomp{profile} recipe work {name} --kind declaration"
     return f"decomp{profile} arity show {name}"
 
 

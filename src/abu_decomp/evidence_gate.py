@@ -165,15 +165,6 @@ class Gate:
         result, _, _ = call(options)
         return result
 
-    def tries(self) -> dict[str, dict[str, Any]] | None:
-        """The bodies `recipe try` recorded (None: the provenance check is off)."""
-        given = self.config.get("provenance")
-        if given is None:
-            return None
-        root = Path(str(tools.project_dir(self.landing.profile)))
-        # a try recorded in any worktree of the tree counts: the proof is the body text, not the tree that tried it
-        return provenance.recorded([r / t for r in (root, *provenance.worktrees(root)) for t in given["tries"]])
-
     def provenance(
         self,
         relative: str,
@@ -181,27 +172,21 @@ class Gate:
         new_fns: dict[str, evidence.Fn],
         old: str,
         new: str,
-        tries: dict[str, dict[str, Any]] | None,
     ) -> list[dict[str, str]]:
-        """Refusals for a body no `recipe try` produced and for machine-generated leftovers it adds."""
-        rows = [] if tries is None else provenance.unproven(base_fns, new_fns, tries)
-        rows += provenance.leftover_names(base_fns, new_fns, old, new, self.config.get("names") or [])
+        """Refusals for the machine-generated leftovers a changed body adds."""
+        rows = provenance.leftover_names(base_fns, new_fns, old, new, self.config.get("names") or [])
         profile = self.landing.profile.source_file
-        out = []
-        for row in rows:
-            leftover = "leftovers" in row["why"]
-            command = f"recipe style {relative}" if leftover else row["next"]
-            out.append(
-                {
-                    "function": row["function"],
-                    "base": "body",
-                    "new": "leftover names" if leftover else "unproven body",
-                    "why": row["why"],
-                    "file": relative,
-                    "reproduce": f"decomp --profile {profile} {command}",
-                }
-            )
-        return out
+        return [
+            {
+                "function": row["function"],
+                "base": "body",
+                "new": "leftover names",
+                "why": row["why"],
+                "file": relative,
+                "reproduce": f"decomp --profile {profile} recipe style {relative}",
+            }
+            for row in rows
+        ]
 
     def renamed(self, pair: tuple[str, str]) -> bool:
         """Whether (old, new) is a rename of the whole landing: no C source of the tree holds the old name any more
@@ -242,7 +227,6 @@ class Gate:
             str, str
         ] = {}  # function -> the file whose base held its body or INCLUDE_ASM line and the tree lacks it
         gained: dict[str, str] = {}  # function -> a file that holds it now and did not at the base
-        tries = self.tries()
         for relative in files:
             old = landing.git("show", f"{landing.extra['base']}:{relative}", ok=False)
             path = landing.tree / relative
@@ -258,11 +242,11 @@ class Gate:
             ) -> evidence.Score:
                 return self.measure(side, relative, texts[side], function)
 
-            # an identifier-only change owes no try and no behave evidence: it keeps its parent's rung
-            # a body no try produced, or full of leftovers, is refused without paying for its behave measure
+            # an identifier-only change owes no behave evidence: it keeps its parent's rung
+            # a body full of leftovers is refused without paying for its behave measure
             same = self.identifier_only(base_fns, new_fns)
             kept = {n: f for n, f in new_fns.items() if n not in same}
-            blocked = self.provenance(relative, base_fns, kept, old, new, tries)
+            blocked = self.provenance(relative, base_fns, kept, old, new)
             judged = {n: f for n, f in kept.items() if n not in {row["function"] for row in blocked}}
             try:
                 bad, good = evidence.judge(base_fns, judged, measure)

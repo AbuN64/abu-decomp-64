@@ -27,7 +27,7 @@ class HelperTests(unittest.TestCase):
 
     def test_problems_finds_each_kind_of_wrong_next(self) -> None:
         cases = {
-            "edit the file, then run: recipe try x": "not a command",
+            "edit the file, then run: edit it by hand": "not a command",
             "decomp ship --tree /t --patch LANE=PATH:SHORTER_MESSAGE": "placeholder",
             "decomp ship --tree /t --worktree w:<what moved>": "placeholder",
             "decomp nonsense --x": "decomp parser",

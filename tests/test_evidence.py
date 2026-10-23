@@ -201,8 +201,7 @@ def test_gate_refuses_a_body_that_moved_to_another_unit_and_passes_it_in_place(t
     assert evidence_gate.Gate(landing_for({"a.c": body, "b.c": other}), cfg, lambda: "v").run()[0] == []
 
 
-# provenance and leftover names ------------------------------------------------------------------------------------
-import json  # noqa: E402
+# leftover names ------------------------------------------------------------------------------------
 
 from abu_decomp import provenance  # noqa: E402
 
@@ -215,42 +214,9 @@ DIRTY = "void f(int *p) {\n    int sp50;\n    sp50 = *p;\n    *(int *)((char *)p
 BASE = 'INCLUDE_ASM("o", f);\n'
 
 
-def tries_file(tmp_path, *bodies):
-    path = tmp_path / "tries.jsonl"
-    path.write_text("".join(json.dumps({"item": "f", "session": "s", "time": 1, "text": b}) + "\n" for b in bodies))
-    return provenance.recorded([path])
-
-
 def test_parse_lines():
     fn = evidence.parse("\nint f(void)\n{\n  return 1;\n}\n")["f"]
     assert (fn.start, fn.end) == (2, 4)
-
-
-def test_unrecorded_body_refused(tmp_path):
-    tries = tries_file(tmp_path, "#include <x.h>\n" + CLEAN.replace("count = *p", "count = p[1]"))
-    rows = provenance.unproven(evidence.parse(BASE), evidence.parse(CLEAN), tries)
-    assert [r["function"] for r in rows] == ["f"] and rows[0]["next"] == "recipe try f"
-    assert "not produced/proven by recipe try" in rows[0]["why"]
-
-
-def test_recorded_body_passes_even_with_other_header_and_whitespace(tmp_path):
-    tries = tries_file(tmp_path, "#include <x.h>\nstatic void f(int *p)\n{ int count; /* hi */ count = *p; }\n")
-    assert provenance.unproven(evidence.parse(BASE), evidence.parse(CLEAN), tries) == []
-
-
-def test_a_consistently_renamed_recorded_body_passes_and_a_different_shape_does_not(tmp_path):
-    tries = tries_file(tmp_path, CLEAN.replace("count", "n").replace("f(", "func_80000000("))
-    assert provenance.unproven(evidence.parse(BASE), evidence.parse(CLEAN), tries) == []
-    swapped = "void f(int *p) {\n    int count;\n    count = *p;\n    count = count;\n}\n"
-    assert provenance.unproven(evidence.parse(BASE), evidence.parse(swapped), tries) != []
-
-
-def test_declaration_edit_and_byte_checked_plain_need_no_try(tmp_path):
-    tries = tries_file(tmp_path)
-    old = evidence.parse("#ifndef NON_MATCHING\nvoid f(int *p) { *p = 1; }\n#endif")
-    assert provenance.unproven(old, evidence.parse("void f(s32 *p) { *p = 1; }"), tries) == []
-    plain_old, plain_new = evidence.parse("void f(int *p) { *p = 1; }"), evidence.parse("void f(int *p) { *p = 2; }")
-    assert provenance.unproven(plain_old, plain_new, tries) == []
 
 
 def test_leftovers_refused_with_lines():
@@ -300,14 +266,12 @@ def rename_gate(tmp_path, base, new, held, behave=None, *, monkeypatch):
     )
     cfg = {"suffixes": (".c",), "guard": "NON_MATCHING", "stand_in": "INCLUDE_ASM", "headers": [], "roms": []}
     cfg["slow_seconds"] = 60
-    cfg["provenance"] = {"tries": []}
     import abu_decomp.behave.run as run_module
 
     work = tmp_path / "work"
     monkeypatch.setattr(run_module, "configuration", lambda profile: {"work": str(work)})
     monkeypatch.setattr(run_module, "work_dir", lambda config: work)
     gate = evidence_gate.Gate(landing, cfg, lambda: "v")
-    gate.tries = lambda: {}  # nothing was ever tried
     return gate
 
 
