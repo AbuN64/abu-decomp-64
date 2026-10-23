@@ -51,6 +51,9 @@
   #tiles.small .tile .cnt { display: none; }
   .tile .bar { height: 2px; background: var(--line); margin-top: 2px; }
   .tile .bar i { display: block; height: 100%; background: var(--dim); }
+  .tile .close { font: 13px var(--mono); line-height: 1; padding: 0 4px; border: 1px solid var(--line); border-radius: 2px;
+                 color: var(--dim); background: none; cursor: pointer; }
+  .tile .close:hover { color: var(--fg, #eee); border-color: var(--faint); }
   .badge { font: 11px var(--mono); padding: 0 4px; border: 1px solid var(--line); border-radius: 2px; color: var(--dim); }
   .badge.one { color: var(--ok); border-color: var(--ok); }
 
@@ -94,6 +97,7 @@
   <span class="keys dim"><kbd>space</kbd> play 1x · <kbd>a</kbd> all · <kbd>x</kbd> stop · <kbd>↑↓</kbd>/click pick</span>
   <button id="sound" title="Sound for the 1x run">sound on</button>
   <button id="all" title="Replay every movie at turbo (a)">play all</button>
+  <button id="clear" title="Stop every running replay and close every picture">close all</button>
 </header>
 <main>
   <section id="left">
@@ -157,7 +161,7 @@ function selectedRun() {
   const byId = S.runs.find(r => r.id === sel.run);
   if (byId) return byId;
   if (sel.movie) return runsOf(sel.movie)[0] || null;
-  const live = S.runs.filter(r => r.status === "running").sort((a, b) => b.started - a.started);
+  const live = S.runs.filter(r => r.status === "running" && !closed.has(r.id)).sort((a, b) => b.started - a.started);
   return live[0] || null;
 }
 function select(movie, run) { sel.movie = movie; sel.run = run || null; render(); }
@@ -174,24 +178,33 @@ function render() {
 }
 
 /* ---------- live tiles ---------- */
+const closed = new Set();         // finished run ids the viewer closed with ✕
 const tiles = new Map();          // run id -> {node, canvas, ctx, run, busy, last, got, timer}
 function tileRuns() {
-  const live = S.runs.filter(r => r.status === "running").sort((a, b) => a.started - b.started);
-  let done = S.runs.filter(r => r.status === "done" && now() - r.started < KEEP_DONE_S).sort((a, b) => b.started - a.started);
-  if (!live.length && !done.length) done = S.runs.slice().sort((a, b) => b.started - a.started).slice(0, 1);
+  const live = S.runs.filter(r => r.status === "running" && !closed.has(r.id)).sort((a, b) => a.started - b.started);
+  let done = S.runs.filter(r => r.status === "done" && !closed.has(r.id) && now() - r.started < KEEP_DONE_S).sort((a, b) => b.started - a.started);
+  if (!live.length && !done.length) done = S.runs.filter(r => !closed.has(r.id)).slice().sort((a, b) => b.started - a.started).slice(0, 1);
   return live.concat(done).slice(0, MAX_TILES);
 }
 function makeTile(r) {
   const node = el("div", "tile"), canvas = el("canvas");
   canvas.width = 320; canvas.height = 240;
   const cap = el("div", "cap"), mv = el("span", "mv"), badge = el("span", "badge"), count = el("span", "cnt mono dim");
-  cap.append(mv, badge, count);
+  const close = el("button", "close", "✕");
+  close.title = "stop this replay, or close it when finished";
+  close.onclick = e => { e.stopPropagation(); closeRun(t.run); };
+  cap.append(mv, badge, count, close);
   const bar = el("div", "bar"), fill = el("i"); bar.append(fill);
   node.append(canvas, cap, bar);
   const t = { node, canvas, ctx: canvas.getContext("2d"), mv, badge, count, fill, run: r, busy: false, got: false, misses: 0 };
   t.ctx.imageSmoothingEnabled = false;
   node.onclick = () => select(t.run.movie, t.run.id);  // select only: replays start from space, a or a row double-click
   return t;
+}
+// ✕: a running replay is stopped (its picture stays, dimmed, until closed); a finished one leaves the screen.
+function closeRun(r) {
+  if (r.status === "running") post("/api/stop", { id: r.id });
+  else { closed.add(r.id); render(); }
 }
 function renderTiles() {
   const want = tileRuns(), box = $("tiles"), ids = new Set(want.map(r => r.id));
@@ -457,6 +470,10 @@ async function play(movie, speed) {
   select(movie, r.id || null);
 }
 $("all").onclick = () => post("/api/play-all", {});
+$("clear").onclick = () => {
+  for (const r of S ? S.runs : []) { if (r.status === "running") post("/api/stop", { id: r.id }); closed.add(r.id); }
+  render();
+};
 document.addEventListener("keydown", e => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === " ") { e.preventDefault(); const r = selectedRun(); play(sel.movie || (r && r.movie), 1); }
