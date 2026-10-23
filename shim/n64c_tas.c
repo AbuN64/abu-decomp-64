@@ -6,12 +6,18 @@
  * none), and N64C_TAS_EXIT_AFTER polls later the process exits 0. N64C_TAS_RECORD appends every poll's channel 0 in the
  * same format, flushed per line, so a crash leaves the polls it reached.
  * N64C_TAS_SHOT_EVERY and N64C_TAS_SHOT_DIR ask the frame loop for a
- * picture every N polls, to compare with the oracle's at the same poll. */
+ * picture every N polls, to compare with the oracle's at the same poll.
+ * N64C_TAS_HASH writes "<poll> <hash>" of all guest RDRAM at every poll and N64C_TAS_DUMP_AT=P with
+ * N64C_TAS_DUMP_PATH writes RDRAM at poll P: two runs of one movie must give the same lines, and two dumps
+ * at the first differing poll name the addresses that carry run-to-run state (seeds, clocks, host pointers). */
 #include "n64c_tas.h"
 #include "n64c_os.h"
+#include "n64c_memory.h"
+#include <stdint.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static int started;
 static FILE *play, *record;
@@ -20,7 +26,9 @@ static int play_done;
 static long shot_every;
 static const char *shot_dir;
 static atomic_long shot_due = -1;
-static FILE *trace;
+static FILE *trace, *hash;
+static long dump_at = -1;
+static const char *dump_path;
 
 static void start(void)
 {
@@ -42,6 +50,20 @@ static void start(void)
     if (path && *path && !(trace = fopen(path, "w"))) {
         fprintf(stderr, "n64c-tas: cannot write %s\n", path);
         _Exit(2);
+    }
+    path = getenv("N64C_TAS_HASH");
+    if (path && *path && !(hash = fopen(path, "w"))) {
+        fprintf(stderr, "n64c-tas: cannot write %s\n", path);
+        _Exit(2);
+    }
+    const char *at = getenv("N64C_TAS_DUMP_AT");
+    dump_path = getenv("N64C_TAS_DUMP_PATH");
+    if (at && *at) {
+        if (!dump_path || !*dump_path) {
+            fprintf(stderr, "n64c-tas: N64C_TAS_DUMP_AT needs N64C_TAS_DUMP_PATH\n");
+            _Exit(2);
+        }
+        dump_at = strtol(at, NULL, 10);
     }
     const char *after = getenv("N64C_TAS_EXIT_AFTER");
     if (after && *after) exit_after = strtol(after, NULL, 10);
@@ -70,6 +92,39 @@ static int next(OSContPad *pad)
     return 0;
 }
 
+/* 64-bit words folded with a multiply-xorshift: order sensitive and fast enough for every poll of 8 MB. */
+uint64_t n64c_tas_hash_bytes(const void *data, size_t bytes)
+{
+    const unsigned char *p = data;
+    uint64_t h = 0x9E3779B97F4A7C15ull ^ bytes;
+    for (size_t i = 0; i + 8 <= bytes; i += 8) {
+        uint64_t w;
+        memcpy(&w, p + i, 8);
+        h = (h ^ w) * 0xFF51AFD7ED558CCDull;
+        h ^= h >> 32;
+    }
+    for (size_t i = bytes & ~(size_t)7; i < bytes; i++) h = (h ^ p[i]) * 0x100000001B3ull;
+    return h;
+}
+
+static void ram_state(void)
+{
+    u32 size = n64c_memory_ram_size();
+    const void *ram = size ? n64c_memory_ram(0, size) : NULL;
+    if (hash) {
+        fprintf(hash, "%ld %016llx\n", polls, ram ? (unsigned long long)n64c_tas_hash_bytes(ram, size) : 0ull);
+        fflush(hash);
+    }
+    if (polls == dump_at) {
+        FILE *f = fopen(dump_path, "wb");
+        if (!f || !ram || fwrite(ram, 1, size, f) != size || fclose(f)) {
+            fprintf(stderr, "n64c-tas: dump at poll %ld to %s failed\n", polls, dump_path);
+            _Exit(2);
+        }
+        fprintf(stderr, "n64c-tas: dumped %u bytes at poll %ld\n", size, polls);
+    }
+}
+
 void n64c_tas_poll(OSContPad *pad)
 {
     if (!started) start();
@@ -87,6 +142,7 @@ void n64c_tas_poll(OSContPad *pad)
         }
     }
     polls++;
+    if (hash || dump_at >= 0) ram_state();
     if (trace) { fprintf(trace, "%ld %u\n", polls, (unsigned)osViGetRetraceCount()); fflush(trace); }
     if (shot_every > 0 && polls % shot_every == 0) atomic_store(&shot_due, polls);
     if (record) {

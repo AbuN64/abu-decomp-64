@@ -11,6 +11,8 @@ typedef struct {
 int n64c_memory_open(const N64cMemoryConfig *config);
 void n64c_memory_close(void);
 void *n64c_memory_ram(u32 physical, u32 bytes);
+/* Bytes of guest RDRAM, 0 before open or where unsupported. */
+u32 n64c_memory_ram_size(void);
 u32 n64c_memory_physical(const void *pointer);
 /* Nonzero when a /proc/<pid>/status text names a tracer (TracerPid not 0). */
 int n64c_memory_tracer_in_status(const char *text);

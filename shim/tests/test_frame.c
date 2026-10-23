@@ -20,6 +20,7 @@ static int scenario,dump_test;
 void n64c_set_task_handler(u32 kind,N64cTaskFn fn,void *user) { (void)user;tasks[kind]=fn; }
 void n64c_set_present(N64cPresentFn fn,void *user) { (void)user;presenter=fn; }
 void *n64c_memory_ram(u32 address,u32 size) { return ((!address && size==sizeof ram) || (address && address<=sizeof ram && size<=sizeof ram-address)) ? ram+address : NULL; }
+u32 n64c_memory_ram_size(void) { return sizeof ram; }
 u32 n64c_memory_physical(const void *p) { return (u32)(uintptr_t)p & 0x1fffffffu; }
 /* Renderer stand-in: one handle, tasks counted, the presented colour image (physical 0x300) was
  * rendered unless scenario 4. */

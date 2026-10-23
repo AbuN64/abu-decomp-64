@@ -433,6 +433,7 @@ void *n64c_memory_ram(u32 physical,u32 bytes)
     if (physical>ram_size || bytes>ram_size-physical || !ram_size) return NULL;
     return (void *)(uintptr_t)(0x80000000u+physical);
 }
+u32 n64c_memory_ram_size(void) { return ram_size; }
 u32 n64c_probe_tlb(const void *pointer)
 {
     uintptr_t value=(uintptr_t)pointer;
@@ -457,6 +458,7 @@ u32 n64c_memory_physical(const void *pointer)
 int n64c_memory_open(const N64cMemoryConfig *config) { (void)config; return 0; }
 void n64c_memory_close(void) {}
 void *n64c_memory_ram(u32 physical,u32 bytes) { (void)physical; (void)bytes; return NULL; }
+u32 n64c_memory_ram_size(void) { return 0; }
 u32 n64c_memory_physical(const void *pointer) { return (u32)(uintptr_t)pointer; }
 u32 n64c_probe_tlb(const void *pointer) { (void)pointer; return UINT32_MAX; }
 void osUnmapTLB(s32 index) { (void)index; }

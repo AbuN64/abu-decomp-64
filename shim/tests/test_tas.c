@@ -3,6 +3,7 @@
  * hands the pad back to the live source after the movie, and exits cleanly a fixed
  * number of polls after the movie ends. */
 #include "../n64c_cont.h"
+#include "../n64c_tas.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +21,11 @@ static void live(int port, OSContPad *pad, void *user)
 
 int main(void)
 {
-    const char *movie = "n64c_test_tas.movie", *log = "n64c_test_tas.log";
+    const unsigned char a[11] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, b[11] = {2, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+    CHECK(n64c_tas_hash_bytes(a, sizeof a) == n64c_tas_hash_bytes(a, sizeof a));
+    CHECK(n64c_tas_hash_bytes(a, sizeof a) != n64c_tas_hash_bytes(b, sizeof b)); /* order sensitive */
+    CHECK(n64c_tas_hash_bytes(a, 10) != n64c_tas_hash_bytes(a, 11));             /* the tail counts */
+    const char *movie = "n64c_test_tas.movie", *log = "n64c_test_tas.log", *hashes = "n64c_test_tas.hash";
     FILE *f = fopen(movie, "w");
     CHECK(f != NULL);
     fputs("# raw movie\n8000 0 0\n1000 -80 80\n\n0400 5 -5\n", f);
@@ -29,6 +34,7 @@ int main(void)
     setenv("N64C_TAS_PLAY", movie, 1);
     setenv("N64C_TAS_RECORD", log, 1);
     setenv("N64C_TAS_EXIT_AFTER", "2", 1);
+    setenv("N64C_TAS_HASH", hashes, 1);
     n64c_cont_set_input(live, NULL);
     pid_t child = fork();
     if (child == 0) {
@@ -49,8 +55,15 @@ int main(void)
     CHECK(f != NULL);
     if (f) { CHECK(fread(got, 1, sizeof got - 1, f) > 0); fclose(f); }
     CHECK(strcmp(got, "8000 0 0\n1000 -80 80\n0400 5 -5\n0020 0 0\n0020 0 0\n") == 0);
+    f = fopen(hashes, "r");
+    CHECK(f != NULL);
+    int lines = 0;
+    for (int c; f && (c = fgetc(f)) != EOF;) lines += c == '\n';
+    if (f) fclose(f);
+    CHECK(lines == 5); /* one RAM hash per poll the game made (no RAM here: hash 0) */
     remove(movie);
     remove(log);
+    remove(hashes);
     if (!fails) puts("n64c_tas ok");
     return fails != 0;
 }
