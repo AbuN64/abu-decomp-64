@@ -1039,6 +1039,10 @@ def continue_lane(terminal):
     from abu_decomp.lanes import control, relaunch
 
     directory = Path(a.dir)
+    try:  # the registry must say the lane is over as soon as its unit is, not at the next launch
+        control.close_row(load_profile(Path(a.profile)), a.name, directory, "lane runner exited")
+    except Exception as error:
+        print("RegistryNotClosed: %s" % error, file=sys.stderr, flush=True)
     said = relaunch.result_text(directory)
     progressed = relaunch.progress(said, a.owns or [], STARTED, a.export or [], EXPORTS_BEFORE)
     action, why = relaunch.plan(
@@ -1063,7 +1067,7 @@ def continue_lane(terminal):
         if action == "blocked":
             control.announce(profile, row, "blocked", "%s not continued: %s" % (a.name, why))
             return
-        successor = relaunch.next_name(a.name)
+        successor = relaunch.next_name(a.name, relaunch.taken_names(directory, control.registered_names(profile)))
         unit = relaunch.spawn(
             Path(a.profile),
             directory,

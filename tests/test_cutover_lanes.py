@@ -23,6 +23,25 @@ class RelaunchRuleTests(unittest.TestCase):
         self.assertEqual(relaunch.next_name("lane-007"), "lane-008")
         self.assertEqual(relaunch.next_name("lane"), "lane2")
 
+    def test_successor_name_skips_names_a_sibling_lane_already_uses(self):
+        self.assertEqual(relaunch.next_name("TOP-7", {"TOP-8", "TOP-9"}), "TOP-10")
+        self.assertEqual(relaunch.next_name("lane", {"lane2"}), "lane3")
+
+    def test_taken_names_are_sibling_lane_dirs_and_registry_rows(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "TOP-7").mkdir()
+            (root / "TOP-7" / "brief.md").write_text("x")
+            (root / "TOP-8").mkdir()
+            (root / "TOP-8" / "brief.md").write_text("x")
+            (root / "EMPTY-9").mkdir()
+            taken = relaunch.taken_names(root / "TOP-7", ["TOP-9"])
+            self.assertEqual(relaunch.next_name("TOP-7", taken), "TOP-10")
+
+    def test_context_handoff_with_budget_left_continues_even_without_progress(self):
+        action, _ = relaunch.plan("result", 3, "", True, True, False, "")
+        self.assertEqual(action, "continue")
+
     def test_plan_continues_unfinished_results_and_handoffs_within_the_budget(self):
         plan = relaunch.plan
         self.assertEqual(plan("result", 2, "partial: next step X", False, False, False)[0], "continue")

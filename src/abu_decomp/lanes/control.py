@@ -280,6 +280,19 @@ def end(profile: Profile, name: str, reason: str, stop: bool) -> dict[str, Any]:
     return {"lane": row, "trees": trees, "event": announce(profile, row, "passed", f"ended {name}: {reason}")}
 
 
+def registered_names(profile: Profile) -> list[str]:
+    """Every lane name in the registry, live or ended."""
+    return [str(row.get("name")) for row in registry.load(settings(profile).registry)]
+
+
+def close_row(profile: Profile, name: str, directory: Path, reason: str) -> None:
+    """Mark the lane's live registry row ended once its runner exits, so the registry matches the unit."""
+    with registry.locked(settings(profile).registry) as rows:
+        for row in rows:
+            if row.get("state") == "live" and row.get("name") == name and row.get("dir") == str(directory):
+                row.update(state="ended", ended=time.time(), reason=reason)
+
+
 def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, Any], wait: int = 0) -> dict[str, Any]:
     """Launch NAME as the continuation of the closed lane in OLD_DIR, in the sibling directory NAME.
 

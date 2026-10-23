@@ -27,13 +27,32 @@ DONE_RULE = (
 TRAILING = re.compile(r"(\d+)$")
 
 
-def next_name(name: str) -> str:
-    """The successor's name: the trailing number plus one (zero padding kept); a name without one gets 2."""
-    match = TRAILING.search(name)
-    if match is None:
-        return name + "2"
-    digits = match[1]
-    return name[: match.start()] + str(int(digits) + 1).zfill(len(digits))
+def next_name(name: str, taken: set[str] | frozenset[str] = frozenset()) -> str:
+    """The successor's name: the trailing number plus one (zero padding kept; a name without one gets 2).
+
+    A name in `taken` (a sibling lane dir or registry row, such as TOP-8 beside TOP-7) is skipped by counting on, so a
+    family of lanes named TOP-n never collides with its own successor.
+    """
+    candidate = name
+    while True:
+        match = TRAILING.search(candidate)
+        if match is None:
+            candidate += "2"
+        else:
+            digits = match[1]
+            candidate = candidate[: match.start()] + str(int(digits) + 1).zfill(len(digits))
+        if candidate not in taken:
+            return candidate
+
+
+def taken_names(directory: Path, registered: list[str]) -> set[str]:
+    """Lane names already in use next to `directory`: non-empty sibling lane dirs and every registry row name."""
+    siblings = (
+        {entry.name for entry in directory.parent.iterdir() if entry.is_dir() and any(entry.iterdir())}
+        if directory.parent.is_dir()
+        else set()
+    )
+    return siblings | set(registered)
 
 
 def result_text(directory: Path) -> str:
