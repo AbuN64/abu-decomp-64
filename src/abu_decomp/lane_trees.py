@@ -1,7 +1,8 @@
-"""A lane's work trees across its lifecycle (`lanes.worktrees` in the seat profile): `decomp lane continue` hands the closed
-predecessor's trees (7.5 GB each, warm) to the new lane instead of leaving them behind, and `decomp lane end` removes a
-lane's trees. Both save a diff of everything the tree holds beyond the remote main first; a tree that is in use, or
-whose diff cannot be saved, stays. (Worktree creation and ship pruning are worktree.py.)"""
+"""A lane's work trees across its lifecycle (`lanes.worktrees` in the seat profile): `decomp lane continue` hands
+the closed predecessor's trees (7.5 GB each, warm) to the new lane instead of leaving them behind, and `decomp
+lane end` removes a lane's trees. Both save a diff of everything the tree holds beyond the remote main first;
+a tree that is in use, or whose diff cannot be saved, stays. (Worktree creation and ship pruning are
+worktree.py.)"""
 
 from __future__ import annotations
 
@@ -39,7 +40,9 @@ def _shared_of(tree: Path) -> Path:
 
 
 def lane_trees(base: Path, lane: str) -> list[Path]:
-    """A lane's work trees under `base`: `LANE` and `LANE-*` (a lane may own a unit-specific tree beside its main one)."""
+    """A lane's work trees under `base`: `LANE` and `LANE-*`
+    (a lane may own a unit-specific tree beside its main one).
+    """
     found = [base / lane] if (base / lane / ".git").exists() else []
     return found + [p for p in sorted(base.glob(f"{lane}-*")) if (p / ".git").exists()]
 
@@ -110,7 +113,9 @@ def adopt(base: Path, old: str, new: str, dest: Path) -> list[dict[str, Any]]:
 
 
 def release(base: Path, lane: str, dest: Path) -> list[dict[str, Any]]:
-    """A closed lane's trees: save the diff, then remove the tree. A tree in use, or whose diff cannot be saved, stays."""
+    """A closed lane's trees: save the diff, then remove the tree.
+    A tree in use, or whose diff cannot be saved, stays.
+    """
     gone = []
     for tree in lane_trees(base, lane):
         entry: dict[str, Any] = {"tree": str(tree)}

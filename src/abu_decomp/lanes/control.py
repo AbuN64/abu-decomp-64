@@ -356,7 +356,8 @@ def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, A
         done = [m for m in moved if m.get("saved")]
         if done:
             brief += "\n\n## Work trees handed on\n\n" + "".join(
-                f"- {m['from']} is now {m['to']} (uncommitted work and builds kept; saved diff {m['saved']})\n" for m in done
+                f"- {m['from']} is now {m['to']} (uncommitted work and builds kept; saved diff {m['saved']})\n"
+                for m in done
             )
     try:
         result = launch(profile, spec, replaces={"name": old_name, "dir": str(old_dir)}, new_brief=brief)
@@ -366,4 +367,8 @@ def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, A
                 lane_trees.adopt(trees_dir(profile), name, old_name, old_dir)
                 break
         raise
-    return {**result, "trees": moved, "continued_from": {"name": old_name, "dir": str(old_dir), "unit": unit, "sources": sources}}
+    return {
+        **result,
+        "trees": moved,
+        "continued_from": {"name": old_name, "dir": str(old_dir), "unit": unit, "sources": sources},
+    }
