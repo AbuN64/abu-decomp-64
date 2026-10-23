@@ -219,13 +219,17 @@ class PadTests(PointBase):
         with self.assertRaises(DecompError):
             tas.decode("# tas 1\n# pads 5\nA\n")
 
-    def test_a_movie_after_a_two_pad_point_must_drive_the_same_pads(self):
-        self.movie("lobby", "- | -\n", "# pads 2\n# area Multiplayer\n", "points")
-        self.movie("one", "A\n")
-        self.movie("two", "A | START\n", "# pads 2\n")
-        with self.assertRaises(DecompError):
-            tas.movie_polls(self.cfg, "one", "lobby")
-        self.assertEqual(tas.movie_polls(self.cfg, "two", "lobby"), [(0, 0, 0, 0, 0, 0), (0x8000, 0, 0, 0x1000, 0, 0)])
+    def test_a_stretch_with_fewer_pads_gets_neutral_extra_pads(self):
+        self.movie("menu", "A *2\n", "", "points")
+        self.movie("lobby", "- | START\n", "# pads 2\n# start menu\n# area Multiplayer\n", "points")
+        self.movie("one", "B\n", "# start lobby\n")
+        self.movie("two", "A | START\n", "# pads 2\n# start menu\n")
+        self.assertEqual(
+            tas_points.load(self.cfg, "lobby")["polls"], [(0x8000, 0, 0, 0, 0, 0)] * 2 + [(0, 0, 0, 0x1000, 0, 0)]
+        )
+        self.assertEqual(tas.movie_polls(self.cfg, "one")[-1], (0x4000, 0, 0, 0, 0, 0))
+        self.assertEqual(len(tas.movie_polls(self.cfg, "two")[0]), 6)
+        self.assertEqual(tas.movie_polls(self.cfg, "two")[-1], (0x8000, 0, 0, 0x1000, 0, 0))
 
     def test_play_gives_port_and_oracle_the_pad_count_and_a_take_saves_both_pads(self):
         self.movie("lobby", "- | - *3\n", "# pads 2\n# area Multiplayer\n", "points")

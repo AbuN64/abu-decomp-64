@@ -6,7 +6,9 @@ with (header `cpak`, kept beside it as `<movies>/<sha256>.mpk` like any movie's)
 original or the port: both sides replay the same polls from power-on, so the original and the port reach the same
 place by the same inputs and the behaviour diff still works.
 Header lines of a point: `area` (the game area it reaches, a name from `points/areas.txt`), `note`, `pak`, `cpak`,
-and `start` (another point it continues from: a chain of short hops).
+and `start` (another point it continues from: a chain of short hops). `pads N` says how many controllers it drives;
+a point or movie that continues another with fewer pads gets neutral extra pads, so a Multiplayer point can build
+on the one-pad menu points (the extra controller was plugged in from power-on).
 A movie with the header `start NAME` is the polls of that point followed by its own: replay, take, retry and the
 oracle all see the one joined poll list; a take recorded from a point is saved without the prefix. The movie's own
 `pak`/`cpak` lines win; when it has none it ran with the point's.
@@ -43,6 +45,18 @@ def exists(cfg: dict[str, Any], name: str) -> bool:
     return bool(_NAME.fullmatch(name)) and path(cfg, name).is_file()
 
 
+def widen(polls: list[Poll], width: int) -> list[Poll]:
+    """The polls with neutral pads added up to `width` ints (3 per pad): a pad nobody touches."""
+    return [(*poll, *([0] * (width - len(poll)))) for poll in polls] if polls and len(polls[0]) < width else polls
+
+
+def align(before: list[Poll], own: list[Poll]) -> tuple[list[Poll], list[Poll]]:
+    """Two stretches of one run with the same pads: the one with fewer controllers gets neutral extra pads (the
+    console had them plugged in all along; nobody pressed them)."""
+    width = max(len(before[0]) if before else 3, len(own[0]) if own else 3)
+    return widen(before, width), widen(own, width)
+
+
 def load(cfg: dict[str, Any], name: str, _seen: tuple[str, ...] = ()) -> dict[str, Any]:
     """A point with its whole chain resolved: `header`, `polls` (the joined polls from power-on), `own` (its own
     count), `chain` (names, first hop first)."""
@@ -62,12 +76,7 @@ def load(cfg: dict[str, Any], name: str, _seen: tuple[str, ...] = ()) -> dict[st
     if header.get("start"):
         parent = load(cfg, header["start"], (*_seen, name))
         before, chain = parent["polls"], [*parent["chain"], name]
-        if before and own and len(before[0]) != len(own[0]):
-            raise DecompError(
-                "tas.point",
-                f"{name!r} drives {len(own[0]) // 3} pad(s) after {header['start']!r} drove {len(before[0]) // 3}: "
-                "name the same `pads` in both",
-            )
+        before, own = align(before, own)
     return {"name": name, "header": header, "polls": before + own, "own": len(own), "chain": chain}
 
 
@@ -88,13 +97,7 @@ def inherit(cfg: dict[str, Any], header: dict[str, str], key: str, default: str)
 def joined(cfg: dict[str, Any], header: dict[str, str], own: list[Poll], start: str | None = None) -> list[Poll]:
     """The polls a replay feeds the game: the start point's, then the movie's own. `start` overrides the header's."""
     name = start if start is not None else header.get("start")
-    before = load(cfg, name)["polls"] if name else []
-    if before and own and len(before[0]) != len(own[0]):
-        raise DecompError(
-            "tas.point",
-            f"the movie drives {len(own[0]) // 3} pad(s) after start point {name!r} drove {len(before[0]) // 3}: "
-            "name the same `pads` in its header",
-        )
+    before, own = align(load(cfg, name)["polls"] if name else [], own)
     return before + own
 
 
