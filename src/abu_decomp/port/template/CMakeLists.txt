@@ -1,38 +1,29 @@
 cmake_minimum_required(VERSION 3.28)
 project({{cmake_project}} VERSION 0.1.0 LANGUAGES C)
 include(CTest)
-include(cmake/warnings.cmake)
-option(PORT_SANITIZERS "Enable address and undefined behavior sanitizers" OFF)
+include(cmake/shim.cmake)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-add_library(port_options INTERFACE)
-target_compile_features(port_options INTERFACE c_std_23)
-if(PORT_SANITIZERS AND NOT MSVC)
-    target_compile_options(port_options INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
-    target_link_options(port_options INTERFACE -fsanitize=address,undefined)
+# The shim and the original are 32-bit.
+option(N64C_M32 "Build the project and the shim with -m32" ON)
+if(N64C_M32)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -m32")
 endif()
+include("${N64C_SHIM_DIR}/cmake/n64compat_audio.cmake")
+include("${N64C_SHIM_DIR}/cmake/n64compat.cmake")
+include("${N64C_SHIM_DIR}/cmake/n64lint.cmake")
 
-# Platform boundary: the only library that may include OS or device headers.
-add_library(port_platform STATIC src/platform/sys_core.c)
-# Boot chain: original owners in boot order, each native or an explicit stop.
-add_library(port_boot STATIC src/boot/boot.c)
-foreach(target port_platform port_boot)
-    target_include_directories(${target} PUBLIC src)
-    target_link_libraries(${target} PUBLIC port_options)
-    port_warnings(${target})
-endforeach()
-target_link_libraries(port_boot PUBLIC port_platform)
-
-add_executable({{executable}} src/main.c)
-target_link_libraries({{executable}} PRIVATE port_boot)
-port_warnings({{executable}})
+# n64lint: N64 names stay inside the shim and platform/port; the ledger there only shrinks.
+file(GLOB_RECURSE lint_inputs CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" src/*.c src/*.h)
+list(JOIN lint_inputs "\n" lint_list)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/n64lint_files.txt" "${lint_list}\n")
+set(n64lint_args --root "${CMAKE_CURRENT_SOURCE_DIR}" --ledger platform/port
+    --files-from "${CMAKE_CURRENT_BINARY_DIR}/n64lint_files.txt")
+add_custom_target(lint_n64 COMMAND n64lint ${n64lint_args} DEPENDS n64lint COMMENT "n64lint" VERBATIM)
 
 if(BUILD_TESTING)
-    add_executable(test_boot tests/test_boot.c)
-    target_link_libraries(test_boot PRIVATE port_boot)
-    port_warnings(test_boot)
-    add_test(NAME boot COMMAND test_boot)
-    # The boot gate runs the real executable and requires every line of tests/boot_gate.txt in order.
-    add_test(NAME boot_gate COMMAND ${CMAKE_COMMAND} -DEXECUTABLE=$<TARGET_FILE:{{executable}}>
-        -DGATE=${CMAKE_CURRENT_SOURCE_DIR}/tests/boot_gate.txt -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/boot_gate.cmake)
+    add_test(NAME n64lint COMMAND n64lint ${n64lint_args})
+    add_executable(test_shim_link platform/port/test_shim_link.c)
+    target_link_libraries(test_shim_link PRIVATE n64compat)
+    target_compile_options(test_shim_link PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME shim_link COMMAND test_shim_link)
 endif()

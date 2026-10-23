@@ -1,0 +1,1 @@
+# Empty bindings for the shim's own tests; a port's real file is in its N64C_PORT_DIR.

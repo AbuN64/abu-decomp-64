@@ -752,7 +752,7 @@ COMMANDS: dict[str, Command] = {
     "probe": Command("queue oracle probe requests and join them to PROBE events", _probe_arguments, _run_probe),
     "cycle": Command("rerun Recipe and unbake report whenever the decomp sources settle", _none, _run_cycle),
     "stream": Command("serve, supervise, control and capture the headless tile stream", _passthrough, _run_stream),
-    "port": Command("generate a native port repository skeleton", _port_arguments, _run_port),
+    "port": Command("generate a port repository skeleton on the n64 shim", _port_arguments, _run_port),
     "standalone": Command(
         "list the lines of a game repo (or those it adds over --against) that name one of our tools",
         _standalone_arguments,

@@ -2,8 +2,8 @@
 
 | Module | Contract | Responsibility |
 | --- | --- | --- |
-| Platform | `src/platform/sys_public.h` | The host boundary: lifecycle, logging, explicit stops. Only platform code includes OS or device headers. |
-| Boot | `src/boot/boot.h` | The original boot chain in order. Each owner is native or stops with `has no native implementation`. |
-| Application | `src/main.c` | Options, platform start, then the boot chain. |
+| Shim | abu-decomp-64 `shim/` (pinned in `cmake/shim.cmake`) | The N64 OS, display-list, audio and controller layer, Fast3D glue and the boot tools. Game-agnostic: it holds no facts of {{title}}. |
+| Port facts | `platform/port/` | The manifest of the original source (`manifest.json`), the bindings of its libultra functions to shim functions, the boot trace, accepted lockstep differences, and the ENTRY_POINTS ledger of what still depends on the shim. The shim's boot tools read them through `N64C_PORT_DIR`. |
+| Port code | `src/` | Code written for this port. It reaches N64 names only through `platform/port`; `n64lint` enforces it. |
 
-`tests/boot_gate.txt` lists the boot lines the executable must print, in order, ending at the current stop. When an owner becomes native, its stop line gives way to its real output and the next owner's stop. `port.json` holds this port's project facts; the code reads none of them at run time.
+`port.json` holds this port's project facts (shim pin, original source repository and version, entry); the code reads none of them at run time. The ledger stays per port: phase 2 removes the port's use of the shim row by row, so its rows only fall.

@@ -3,6 +3,7 @@
 import argparse
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -15,6 +16,7 @@ parser.add_argument("--m32", action="store_true")
 args = parser.parse_args()
 args.work.mkdir(parents=True, exist_ok=True)
 ROOT = pathlib.Path(__file__).resolve().parent
+os.environ.setdefault("N64C_PORT_DIR", str(ROOT / "fixtures"))  # a port facts directory when set
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("boot_image", ROOT / "image.py")
 image = importlib.util.module_from_spec(spec)

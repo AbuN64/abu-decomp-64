@@ -5,6 +5,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import struct
 import subprocess
@@ -19,6 +20,7 @@ parser.add_argument("--m32", action="store_true")
 args = parser.parse_args()
 args.work.mkdir(parents=True, exist_ok=True)
 ROOT = pathlib.Path(__file__).resolve().parent
+os.environ.setdefault("N64C_PORT_DIR", str(ROOT / "fixtures"))  # a port facts directory when set
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("lockstep", ROOT / "lockstep.py")
 ls = importlib.util.module_from_spec(spec)

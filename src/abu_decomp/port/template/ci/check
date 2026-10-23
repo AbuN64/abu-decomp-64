@@ -1,5 +1,5 @@
 #!/bin/sh
-# Debug build with sanitizers, unit tests and the boot gate.
+# Debug build of the port on the shim, its tests and the n64lint ledger.
 set -eu
 cd "$(dirname "$0")/.."
 cmake --preset debug >/dev/null

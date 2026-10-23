@@ -7,14 +7,15 @@ from pathlib import Path
 from abu_decomp import DecompError
 from abu_decomp.port import PortError, generate, load_spec
 
+PIN_SHIM, PIN_DECOMP = "a" * 40, "b" * 40
 SPEC = {
-    "schema_version": 1,
+    "schema_version": 2,
     "name": "example-port",
     "title": "Example",
-    "executable": "example",
-    "license": "CC0-1.0",
-    "boot": {"subsystem": "Boot", "label": "entry", "owner": "0x80001000"},
-    "decomp": {"repo": "https://example.invalid/example-decomp", "version": "us"},
+    "license": "GPL-3.0-or-later",
+    "shim": {"repo": "https://example.invalid/abu-decomp-64.git", "pin": PIN_SHIM},
+    "decomp": {"repo": "https://example.invalid/example-decomp.git", "version": "us", "pin": PIN_DECOMP},
+    "boot": {"entry": "func_80001000_de", "rdram_bytes": "0x800000", "video_clock_hz": 48681812},
 }
 
 
@@ -40,28 +41,52 @@ class PortTests(unittest.TestCase):
             "CMakePresets.json",
             "ci/check",
             "port.json",
-            "src/platform/sys_public.h",
-            "src/boot/boot.c",
-            "tests/boot_gate.txt",
-            "cmake/boot_gate.cmake",
+            "cmake/deps.cmake",
+            "cmake/shim.cmake",
+            "platform/port/manifest.json",
+            "platform/port/ENTRY_POINTS.tsv",
+            "platform/port/OPEN_COUNT",
+            "platform/port/VERSION_DEBT",
+            "platform/port/shim-bindings.txt",
+            "platform/port/boot-trace.tsv",
+            "platform/port/test_shim_link.c",
         ):
             self.assertIn(name, result["files"])
         for path in out.rglob("*"):
             if path.is_file():
                 self.assertIsNone(re.search(r"\{\{", path.read_text()), path)
-        self.assertIn("owner 0x80001000 has no native implementation", (out / "src/boot/boot.c").read_text())
+        self.assertIn(f"abu_shim https://example.invalid/abu-decomp-64.git {PIN_SHIM}", (out / "cmake/shim.cmake").read_text())
+        manifest = json.loads((out / "platform/port/manifest.json").read_text())
+        self.assertEqual(
+            manifest,
+            {
+                "source_pin": PIN_DECOMP,
+                "version": "us",
+                "rdram_bytes": "0x800000",
+                "video_clock_hz": 48681812,
+                "entry": "func_80001000_de",
+                "sources": [],
+            },
+        )
         readme = (out / "README.md").read_text().splitlines()
         self.assertEqual(readme[0], "# example-port")
         self.assertIn("> This is a personal tool. It is not officially maintained", "\n".join(readme))
         self.assertTrue((out / "ci/check").stat().st_mode & 0o100)
         self.assertEqual(json.loads((out / "port.json").read_text()), SPEC)
         self.assertEqual(list(out.glob("LICENSE.*")), [])
+        self.assertIn("GNU GENERAL PUBLIC LICENSE", (out / "LICENSE").read_text())
+        self.assertFalse((out / "src/platform").exists(), "the retired native-crawl shape is gone")
 
     def test_bad_specs_and_nonempty_destinations_are_refused(self):
         for changes in (
             {"name": "Bad Name"},
-            {"license": "MIT"},
-            {"boot": {**SPEC["boot"], "owner": "1000"}},
+            {"license": "CC0-1.0"},
+            {"schema_version": 1},
+            {"shim": {**SPEC["shim"], "pin": "abc123"}},
+            {"decomp": {**SPEC["decomp"], "pin": "B" * 40}},
+            {"boot": {**SPEC["boot"], "entry": "not a symbol"}},
+            {"boot": {**SPEC["boot"], "rdram_bytes": "8MB"}},
+            {"boot": {**SPEC["boot"], "video_clock_hz": 0}},
             {"title": 'quote"'},
             {"extra": 1},
         ):

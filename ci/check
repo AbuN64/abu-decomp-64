@@ -17,3 +17,20 @@ done
 # shellcheck disable=SC2046
 cc -Wall -Wextra -Werror -O2 -I"$scratch" "$stream/input_bridge.c" "$scratch/virtual-keyboard.c" \
   "$scratch/virtual-pointer.c" $(pkg-config --cflags --libs wayland-client xkbcommon) -o "$scratch/input-bridge"
+# The n64 shim (shim/): its standalone 32-bit build with unit tests, and the boot tools' tests that need no port facts
+# (test_link.py and test_closure.py read a port's real files and run in the port's own ctest). Skipped without -m32.
+if echo 'int main(void){return 0;}' | cc -m32 -x c - -o "$scratch/m32probe" 2>/dev/null; then
+  cmake -S shim -B "$scratch/shim" -G Ninja -DBUILD_TESTING=ON >/dev/null
+  cmake --build "$scratch/shim" -j4
+  ctest --test-dir "$scratch/shim" --output-on-failure -j4
+  for t in fl0 prepare_failclosed prepare trace lockstep image tile_parity hangcore gates sweep; do
+    case $t in
+      prepare|trace|lockstep|image) set -- --compiler cc --m32 --work "$scratch/boot-$t" ;;
+      fl0|prepare_failclosed) set -- --work "$scratch/boot-$t" ;;
+      *) set -- ;;
+    esac
+    python3 -I "shim/boot/test_$t.py" "$@"
+  done
+else
+  echo "ci/check: no 32-bit toolchain, skipping the shim build and tests"
+fi

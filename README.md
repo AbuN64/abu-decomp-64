@@ -19,7 +19,7 @@ pip install git+https://github.com/AbuN64/abu-decomp-64 && decomp dependencies
 
 ```sh
 decomp --profile seat.json unbake report --next
-decomp port new --spec port.json ../my-port
+decomp port new --spec port.json ../my-port   # a port on the n64 shim (shim/)
 ```
 
 ```sh

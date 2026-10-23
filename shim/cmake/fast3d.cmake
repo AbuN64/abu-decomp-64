@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Consumer contract: rage_dep(name repo pin [FetchContent_Declare options]) (shared dependency sources), the
+# Consumer contract: n64c_dep (defined here unless the consumer has its own; cmake/deps.cmake), the
 # SDL3::SDL3-static target, N64C_M32 and the n64compat target (cmake/n64compat.cmake).
 # Fast3D renderer (LUS c6ecfdb, Emill MIT lineage) built from the pinned sources against the
 # clean interface headers in fast3d/ (AUDIT.md). No LUS file is copied or
 # forked: the clean headers come first on the include path and every grey LUS header is
 # replaced by a stub that stops the build if anything still includes it.
 get_filename_component(N64C_SHIM_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+if(NOT COMMAND n64c_dep)
+    include("${CMAKE_CURRENT_LIST_DIR}/deps.cmake")
+endif()
 if(NOT N64C_M32)
     message(FATAL_ERROR "The Fast3D renderer is built for the 32-bit port (N64C_M32=ON)")
 endif()
@@ -22,24 +25,24 @@ if(NOT TARGET SDL3::SDL3-static)
 endif()
 set(fast3d_dir "${N64C_SHIM_DIR}/fast3d")
 
-rage_dep(lus https://github.com/Kenix3/libultraship.git c6ecfdb491cc3a0d08aa04eff2f17f0bf5946297
+n64c_dep(lus https://github.com/Kenix3/libultraship.git c6ecfdb491cc3a0d08aa04eff2f17f0bf5946297
     GIT_SHALLOW FALSE
     GIT_SUBMODULES ""
     SOURCE_SUBDIR fetch-only)
 # Dependencies at the versions LUS pins in cmake/dependencies/common.cmake. ImGui takes LUS's
 # own configuration patch (ImTextureID as a pointer, which the renderer API relies on).
-rage_dep(lus_imgui https://github.com/ocornut/imgui.git v1.91.9b-docking
+n64c_dep(lus_imgui https://github.com/ocornut/imgui.git v1.91.9b-docking
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR fetch-only)
-rage_dep(lus_threadpool https://github.com/bshoshany/thread-pool.git v4.1.0
+n64c_dep(lus_threadpool https://github.com/bshoshany/thread-pool.git v4.1.0
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR fetch-only)
-rage_dep(lus_prism https://github.com/KiritoDv/prism-processor.git 1de054450e7b3c5f777d2e3dfcb228ad120c329d
+n64c_dep(lus_prism https://github.com/KiritoDv/prism-processor.git 1de054450e7b3c5f777d2e3dfcb228ad120c329d
     GIT_SHALLOW FALSE)
-rage_dep(lus_monocypher https://github.com/LoupVaillant/Monocypher.git 0d85f98c9d9b0227e42cf795cb527dff372b40a4
+n64c_dep(lus_monocypher https://github.com/LoupVaillant/Monocypher.git 0d85f98c9d9b0227e42cf795cb527dff372b40a4
     GIT_SHALLOW FALSE
     SOURCE_SUBDIR fetch-only)
-rage_dep(lus_stb https://github.com/nothings/stb.git 0bc88af4de5fb022db643c2d8e549a0927749354
+n64c_dep(lus_stb https://github.com/nothings/stb.git 0bc88af4de5fb022db643c2d8e549a0927749354
     GIT_SHALLOW FALSE
     SOURCE_SUBDIR fetch-only)
 set(PRISM_STANDALONE OFF CACHE BOOL "" FORCE)

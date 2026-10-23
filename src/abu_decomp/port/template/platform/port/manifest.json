@@ -1,0 +1,8 @@
+{
+  "source_pin": "{{decomp_pin}}",
+  "version": "{{decomp_version}}",
+  "rdram_bytes": "{{rdram_bytes}}",
+  "video_clock_hz": {{video_clock_hz}},
+  "entry": "{{entry}}",
+  "sources": []
+}

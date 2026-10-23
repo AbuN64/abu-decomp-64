@@ -1,9 +1,25 @@
-# n64compat
-The only directory where N64 names may appear; everything else reaches them through the n64compat target.
-ENTRY_POINTS.tsv is the deprecation ledger: symbol, kind, subsystem, shim_component, native_replacement, removal_lane, status.
-Rows are open or removed; OPEN_COUNT may only fall and VERSION_DEBT counts VERSION_ conditionals still allowed.
-tools/n64lint.c enforces the ledger on every build (target lint_n64, ctest n64lint).
-Marking a row removed bans the name everywhere, so flip it only in the commit that deletes the last use.
+# n64 shim
+The game-agnostic N64 compatibility layer for AbuN64 ports: hand-written OS, display-list, audio, controller and
+ROM-DMA code (`n64c_*.c`), the Fast3D glue (`fast3d/`), the vendored RSP audio core (`audio_abi/`) and the boot
+tooling that links an original-C game against it (`boot/`). GPL-3.0-or-later; every file keeps its SPDX header,
+vendored code keeps its notices (`audio_abi/SOURCES.md`, `audio_abi/PROVENANCE.md`, `AUDIT.md`).
+It holds no game facts: a port owns those in its own repository and hands them over as below.
+
+- `cmake/`: `n64compat.cmake` (the `n64compat` target and its tests), `n64compat_audio.cmake`, `fast3d.cmake`,
+  `n64lint.cmake`. Consumer contract: set `N64C_M32` for a 32-bit build, provide an `SDL3::SDL3-static` target for the
+  window/input/audio backends; Fast3D sources come through `n64c_dep(name repo pin [FetchContent_Declare options])`
+  (`cmake/deps.cmake`, shared sources under `N64C_DEPS_DIR`; a consumer may define its own)
+  (`CMakeLists.txt` here is the standalone shim build that CI runs: `cmake -S shim -B build && ctest`).
+- `boot/`: the boot tools (`prepare.py`, `link.py`, `closure.py`, `advance.py`, `lockstep.py`, `gates.py`, ...) and
+  their C halves (`game_main.c`, `frame.c`, `runon.c`, `trace.c`, `missing.c`). The port's facts are files in one directory,
+  named by `N64C_PORT_DIR`: `manifest.json` (sources, entry, resources), `shim-bindings.txt`, `boot-trace.tsv`,
+  `lockstep-accept.tsv`, `gates-baseline.tsv`, `known-fallback-units.txt`, `sched_glue.c`. See `boot/README.md`.
+- The port's ledger directory (`--ledger`, default `platform/port`): `ENTRY_POINTS.tsv` is the deprecation ledger (symbol,
+  kind, subsystem, shim_component, native_replacement, removal_lane, status; rows are open or removed), `OPEN_COUNT` may
+  only fall and `VERSION_DEBT` counts VERSION_ conditionals still allowed. `tools/n64lint.c` enforces it on every port
+  build and exempts the shim and that directory, the only places N64 names may appear. Marking a row removed bans the
+  name everywhere, so flip it only in the commit that deletes the last use. The ledger stays per port.
+- `decomp port new` (abu-decomp-64) scaffolds a port on this shim.
 
 The shim is hand-written C with no third-party code. AUDIT.md explains why the pinned libultraship is not linked.
 - n64c_sched.c: guest threads (one runs at a time, by priority), mesg queues, timers, CPU/RCP interrupt masking, and cache no-ops.

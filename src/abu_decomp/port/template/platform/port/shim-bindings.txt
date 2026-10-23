@@ -1,0 +1,2 @@
+# Original libultra functions identified for the n64 shim: ORIGINAL SHIM-NAME EVIDENCE.
+# closure.py binds one to the shim when the shim declares SHIM-NAME, else it stays a stop naming it.

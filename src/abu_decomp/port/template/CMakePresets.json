@@ -3,8 +3,8 @@
   "cmakeMinimumRequired": {"major": 3, "minor": 28, "patch": 0},
   "configurePresets": [
     {"name": "base", "hidden": true, "generator": "Ninja", "binaryDir": "${sourceDir}/build/${presetName}",
-     "cacheVariables": {"BUILD_TESTING": "ON"}},
-    {"name": "debug", "inherits": "base", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "PORT_SANITIZERS": "ON"}},
+     "cacheVariables": {"BUILD_TESTING": "ON", "N64C_M32": "ON"}},
+    {"name": "debug", "inherits": "base", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}},
     {"name": "release", "inherits": "base", "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo"}}
   ],
   "buildPresets": [
