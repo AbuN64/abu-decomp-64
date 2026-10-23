@@ -3,6 +3,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "n64c_input.h"
 #include "n64c_internal.h"
+#include "n64c_tas.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +33,7 @@ SDL_JoystickID *SDL_GetGamepads(int *count)
     return ids;
 }
 void SDL_free(void *p) { free(p); }
+void n64c_tas_poll(OSContPad *pad) { (void)pad; } /* no movie: the live device is the only source */
 SDL_Gamepad *SDL_OpenGamepad(SDL_JoystickID id)
 {
     ++opens;
