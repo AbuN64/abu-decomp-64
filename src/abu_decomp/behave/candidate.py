@@ -19,7 +19,7 @@ from typing import Any
 from abu_decomp import DecompError
 from abu_decomp.behave import names
 from abu_decomp.config import Profile
-from abu_decomp.tools import api_call, invoke, settings
+from abu_decomp.tools import DependencyError, api_call, invoke, settings
 
 LOADABLE = (".text", ".rodata", ".data")
 
@@ -52,6 +52,30 @@ def host_tools(host: Path) -> dict[str, str]:
         raise CandidateError(
             "behave.host", f"{host}: needs tools.mips_ld, mips_objcopy and mips_objdump ({exc})"
         ) from exc
+
+
+def symbols_near(
+    profile: Profile, function: str, version: str, project: Path | None, host: Path | None, span: int = 0x10
+) -> list[str]:
+    """Other symbols of the version within `span` bytes of `function`'s address: where the version keeps the code a
+    symbol with no assembly file of its own stands for."""
+    table = symbol_table(profile, version, project, host)
+    row = table.get(function)
+    if not row or row[0] is None:
+        return []
+    return sorted(
+        n for n, r in table.items() if n != function and r and r[0] is not None and 0 < abs(r[0] - row[0]) <= span
+    )
+
+
+def no_asm_message(function: str, version: str, path: str, near: list[str]) -> str:
+    """Why a function of the version's symbol table cannot be built as a candidate: the version has no assembly for it
+    (the module compiles another body there, so the name is only an alias from another version's naming)."""
+    hint = f"; the version names the code at that place {', '.join(near[:3])}: behave that name" if near else ""
+    return (
+        f"{function} is a symbol of {version} but the version has no assembly file {path.split('/asm/')[-1]} for it "
+        f"(its source compiles another body in this version){hint}"
+    )
 
 
 def symbol_table(profile: Profile, version: str, project: Path | None, host: Path | None) -> dict[str, list[Any]]:
@@ -304,7 +328,18 @@ def build(
     chosen = settings(profile, project, host)
     tools = host_tools(chosen.host)
     text = "".join(f"#define {d} 1\n" for d in defines) + source.read_text(errors="replace")
-    context = api_call(profile, "build_context", [function, version, text], project=project, host=host)
+    try:
+        context = api_call(profile, "build_context", [function, version, text], project=project, host=host)
+    except DependencyError as exc:
+        missing = re.search(r"FileNotFoundError: .*?'([^']*\.s)'", str(exc))
+        if missing is None:
+            raise
+        raise CandidateError(
+            "behave.no_asm",
+            no_asm_message(
+                function, version, missing.group(1), symbols_near(profile, function, version, project, host)
+            ),
+        ) from exc
     work.mkdir(parents=True, exist_ok=True)
     unit = work / "candidate.c"
     unit.write_text(context["source"])  # preprocessed as the build's compiler reads it, includes resolved

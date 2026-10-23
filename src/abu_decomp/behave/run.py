@@ -77,6 +77,9 @@ class Options:
     hit: int = 1  # which entry of the function the capture stops at
     recaptured: bool = False  # the capture was repeated for this probe's stubs (once per run: no loop)
     seeded: dict[str, Any] | None = None  # the capture's seed (see capture_seed): RDRAM image, sp, entry case
+    plan: list[tuple[int, list[str]]] | None = (
+        None  # precapture: collect the (depth, stubs) every capture would ask for
+    )
 
 
 def configuration(profile: Profile) -> dict[str, Any]:
@@ -444,6 +447,11 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         (not any(c["status"] == "ok" for c in original["cases"]) and any(_unmapped(c) for c in original["cases"]))
         or any(_unmapped(c, floor=NULL_PAGE) for c in original["cases"])
     )
+    if options.plan is not None:
+        # precapture (behave.precapture): note the stub set the capture below would be asked for and go on without
+        # the oracle, so a depth step or a lenient re-run notes its own set the same way
+        options.plan.append((depth, sorted(record.get("stubs", {}))))
+        options = replace(options, capture=False)
     if options.capture and options.seeded is None:
         # every comparison runs over the state the real game entered the function with: the ROM is run to its entry
         # and both bodies run again over that memory, with its entry registers (and variations around them) as more

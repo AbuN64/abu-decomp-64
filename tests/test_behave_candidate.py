@@ -228,5 +228,58 @@ class ApiTests(unittest.TestCase):
             api_call(mock.Mock(), "load", [])
 
 
+class NoAsmTests(unittest.TestCase):
+    """A symbol of the version with no assembly file (the source compiles another body there) is a named refusal."""
+
+    def test_a_missing_assembly_file_is_named_with_the_symbols_the_version_keeps_there(self):
+        missing = DependencyError(
+            "dependency.api",
+            "unbake api build_context failed:     return io.open(self, mode) | FileNotFoundError: [Errno 2] No such "
+            "file or directory: '/p/asm/us-rev1/nonmatchings/span_1000/func_a.s'",
+        )
+        table = {**SYMBOLS, "func_a4": [0x80001004, 0, 0x40, "func"]}
+        with (
+            mock.patch.object(cand, "api_call", side_effect=missing),
+            mock.patch.object(cand, "symbol_table", return_value=table),
+            mock.patch.object(cand, "settings", return_value=mock.Mock(project=Path("/p"), host=Path("/h"))),
+            mock.patch.object(cand, "host_tools", return_value={}),
+            mock.patch.object(Path, "read_text", return_value="int func_a(void){return 0;}"),
+            self.assertRaises(cand.CandidateError) as raised,
+        ):
+            cand.build(
+                mock.Mock(),
+                version="us-rev1",
+                function="func_a",
+                source=Path("/f.c"),
+                work=Path("/w"),
+                base=0x80800000,
+                project=None,
+                host=None,
+            )
+        self.assertEqual(raised.exception.key, "behave.no_asm")
+        self.assertIn("no assembly file us-rev1/nonmatchings/span_1000/func_a.s", str(raised.exception))
+        self.assertIn("func_a4", str(raised.exception))
+
+    def test_another_api_failure_is_not_taken_for_a_missing_file(self):
+        other = DependencyError("dependency.api", "unbake api build_context failed: ValueError: bad")
+        with (
+            mock.patch.object(cand, "api_call", side_effect=other),
+            mock.patch.object(cand, "settings", return_value=mock.Mock(project=Path("/p"), host=Path("/h"))),
+            mock.patch.object(cand, "host_tools", return_value={}),
+            mock.patch.object(Path, "read_text", return_value=""),
+            self.assertRaises(DependencyError),
+        ):
+            cand.build(
+                mock.Mock(),
+                version="us-rev1",
+                function="func_a",
+                source=Path("/f.c"),
+                work=Path("/w"),
+                base=0x80800000,
+                project=None,
+                host=None,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

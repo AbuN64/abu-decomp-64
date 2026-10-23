@@ -789,6 +789,13 @@ def _behave_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-capture", action="store_true", help="compare without the oracle's captured entry state")
     parser.add_argument("--capture-hit", type=int, default=1, help="which entry of the function the capture stops at")
     parser.add_argument(
+        "--precapture",
+        metavar="LIST",
+        help="fill the oracle capture store for many functions in ONE oracle boot, so each later behave on them is "
+        "cached: open-nonmatching (every NON_MATCHING body that is a symbol of the version), a file of names, or "
+        "names separated by commas",
+    )
+    parser.add_argument(
         "--replay",
         action="store_true",
         help="batch mode: real calls recorded in the oracle from corpus movies, run again through the port's build of "
@@ -800,7 +807,11 @@ def _behave_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--port", type=Path, help="--replay: a port executable with replay.c (default tas.port)")
     parser.add_argument("--source", type=Path, help="--replay: the game sources the port was built from")
     parser.add_argument("--refresh", action="store_true", help="--replay: record the movies again")
-    parser.add_argument("--cpu-budget", type=float, help="--replay: CPU seconds the batch may spend (default 300)")
+    parser.add_argument(
+        "--cpu-budget",
+        type=float,
+        help="--replay: CPU seconds the batch may spend (default 300); --precapture: the planning (default 120)",
+    )
     parser.add_argument("--no-findings", action="store_true", help="--replay: do not write findings.jsonl")
 
 
@@ -824,6 +835,21 @@ def _run_behave(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dic
                 cpu_budget=args.cpu_budget or replay.CPU_BUDGET,
                 findings=not args.no_findings,
             ),
+        )
+    if args.precapture:
+        from abu_decomp.behave import precapture
+
+        if args.function or args.candidate:
+            raise DecompError(
+                "behave.arguments", "--precapture takes its functions from LIST, no --function/--candidate"
+            )
+        return precapture.run(
+            _profile(args.profile),
+            Options(
+                "", None, args.version, args.cases, args.seed, args.project, args.host, args.depth, hit=args.capture_hit
+            ),
+            args.precapture,
+            args.cpu_budget or precapture.CPU_BUDGET,
         )
     if not args.function or len(args.function) != 1:
         raise DecompError("behave.arguments", "behave takes exactly one --function (--replay takes any number)")

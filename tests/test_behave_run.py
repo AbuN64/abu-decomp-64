@@ -10,6 +10,7 @@ from abu_decomp import tools
 from abu_decomp.behave import candidate as cand
 from abu_decomp.behave import run
 from abu_decomp.cli import describe, main
+from abu_decomp.config import load_profile
 
 ROOT_VRAM = 0x80001000
 SYMBOLS = {
@@ -514,6 +515,29 @@ class RunTests(unittest.TestCase):
         row = next(c for c in describe()["commands"] if c["name"] == "behave")
         flags = {f for a in row["arguments"] for f in a["flags"]}
         self.assertTrue({"--function", "--candidate", "--version", "--cases", "--seed", "--project", "--host"} <= flags)
+
+    def test_a_plan_run_notes_the_stub_sets_of_each_capture_it_would_ask_for_and_never_asks_the_oracle(self):
+        plan = []
+
+        def probe(profile, work, name, request, function):
+            done = self.fake_probe(profile, work, name, request, function)
+            done["record"]["stubs"] = {"g": "boundary"}
+            return done
+
+        asked = []
+        with (
+            mock.patch.object(run, "probe", probe),
+            mock.patch.object(run, "capture_seed", lambda *a: asked.append(a) or (None, "", "")),
+            mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
+        ):
+            result, code, _ = run.run(
+                load_profile(self.seat), run.Options("f", None, None, 6, 1, None, None, plan=plan)
+            )
+        self.assertEqual((asked, code, result["mode"]), ([], 0, "describe"))
+        self.assertEqual(plan[0], (1, ["g"]))
+
+    def test_without_a_plan_nothing_is_collected(self):
+        self.assertIsNone(run.Options("f", None, None, 6, 1, None, None).plan)
 
 
 if __name__ == "__main__":
