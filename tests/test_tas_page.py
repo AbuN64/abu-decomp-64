@@ -19,12 +19,29 @@ NOW = 1_800_000_000
 
 def mock_state() -> dict:
     movie = lambda name, **kw: {  # noqa: E731
-        "name": name, "polls": 900, "outcome": "ok", "subject": None, "reached": 900, "same_twice": True,
-        "fn": None, "train": None, "last_run": NOW - 75, **kw,
+        "name": name,
+        "polls": 900,
+        "outcome": "ok",
+        "subject": None,
+        "reached": 900,
+        "same_twice": True,
+        "fn": None,
+        "train": None,
+        "last_run": NOW - 75,
+        **kw,
     }
     run = lambda rid, name, **kw: {  # noqa: E731
-        "id": rid, "movie": name, "status": "running", "speed": 0, "poll": 300, "polls": 900, "outcome": None,
-        "subject": None, "started": NOW - 5, "frame": f"/frame/{rid}", **kw,
+        "id": rid,
+        "movie": name,
+        "status": "running",
+        "speed": 0,
+        "poll": 300,
+        "polls": 900,
+        "outcome": None,
+        "subject": None,
+        "started": NOW - 5,
+        "frame": f"/frame/{rid}",
+        **kw,
     }
     return {
         "now": NOW,
@@ -32,22 +49,47 @@ def mock_state() -> dict:
         "runs": [
             run("r1", "boot-idle"),
             run("r2", "model-preview", speed=1, poll=120, polls=1400, started=NOW - 4),
-            run("r3", "title-to-player-select", status="done", outcome="crash", poll=611, polls=1200,
-                subject="func_80256C90_de+0x10", started=NOW - 30),
+            run(
+                "r3",
+                "title-to-player-select",
+                status="done",
+                outcome="crash",
+                poll=611,
+                polls=1200,
+                subject="func_80256C90_de+0x10",
+                started=NOW - 30,
+            ),
         ],
         "movies": [
             movie("boot-idle"),
-            movie("model-preview", polls=1400, outcome="crash", subject="func_80256C90_de+0x10", reached=611,
-                  same_twice=False, fn={"name": "func_80256C90_de", "state": "fuzzy"},
-                  train={"line": "final-80256C90.diff", "mark": None}),
-            movie("title-to-player-select", polls=1200, outcome="crash", subject="func_80256C90_de+0x10",
-                  reached=611, fn={"name": "func_80256C90_de", "state": "exact"},
-                  train={"line": "final-80256C90.diff", "mark": "LANDED"}),
+            movie(
+                "model-preview",
+                polls=1400,
+                outcome="crash",
+                subject="func_80256C90_de+0x10",
+                reached=611,
+                same_twice=False,
+                fn={"name": "func_80256C90_de", "state": "fuzzy"},
+                train={"line": "final-80256C90.diff", "mark": None},
+            ),
+            movie(
+                "title-to-player-select",
+                polls=1200,
+                outcome="crash",
+                subject="func_80256C90_de+0x10",
+                reached=611,
+                fn={"name": "func_80256C90_de", "state": "exact"},
+                train={"line": "final-80256C90.diff", "mark": "LANDED"},
+            ),
             movie("boot-missing", outcome="hang", reached=328, same_twice=None, last_run=None),
         ],
-        "cycle": {"target": {"movie": "model-preview", "fn": "func_80256C90_de", "kind": "null deref"},
-                  "inbox": [{"line": "final-80256C90.diff  func_80256C90_de", "mark": "LANDED"},
-                            {"line": "final-80209CD8.diff  func_80209CD8_de", "mark": None}]},
+        "cycle": {
+            "target": {"movie": "model-preview", "fn": "func_80256C90_de", "kind": "null deref"},
+            "inbox": [
+                {"line": "final-80256C90.diff  func_80256C90_de", "mark": "LANDED"},
+                {"line": "final-80209CD8.diff  func_80209CD8_de", "mark": None},
+            ],
+        },
     }
 
 
@@ -120,7 +162,7 @@ class PageTests(unittest.TestCase):
         used = set(re.findall(r'["`](/[a-z\-/]*)', script()))
         self.assertTrue(used, "no endpoints found")
         self.assertLessEqual(used, CONTRACT)
-        self.assertLessEqual({"/api/state", "/frame/", "/audio/", "/log/", "/api/play", "/api/play-all", "/api/stop"}, used)
+        self.assertLessEqual(CONTRACT, used)
 
     def test_page_renders_every_contract_field(self):
         js = script()
@@ -153,14 +195,38 @@ class PageTests(unittest.TestCase):
         self.addCleanup(stub.close)
         with tempfile.TemporaryDirectory() as profile:
             dom = subprocess.run(
-                [chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run",
-                 f"--user-data-dir={profile}", "--window-size=1920,1080", "--virtual-time-budget=3000",
-                 "--dump-dom", stub.url],
-                capture_output=True, text=True, timeout=60,
+                [
+                    chrome,
+                    "--headless=new",
+                    "--no-sandbox",
+                    "--disable-gpu",
+                    "--no-first-run",
+                    f"--user-data-dir={profile}",
+                    "--window-size=1920,1080",
+                    "--virtual-time-budget=3000",
+                    "--dump-dom",
+                    stub.url,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
             ).stdout
         self.assertEqual(dom.count('class="tile'), 3)  # two running + the crash still fresh
-        for text in ("boot-idle", "boot-missing", "func_80256C90_de", "LANDED", "DIFF", "fuzzy", "turbo", "1x",
-                     "null deref", "step 3 start", "crash", "611/1200", "2574d74ed"):
+        for text in (
+            "boot-idle",
+            "boot-missing",
+            "func_80256C90_de",
+            "LANDED",
+            "DIFF",
+            "fuzzy",
+            "turbo",
+            "1x",
+            "null deref",
+            "step 3 start",
+            "crash",
+            "611/1200",
+            "2574d74ed",
+        ):
             self.assertIn(text, dom, text)
         self.assertRegex(dom, r"id=\"conn\" class=\"dim\"></span>")  # state fetched
 

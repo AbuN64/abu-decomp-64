@@ -95,21 +95,22 @@ def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None
     project = _project(profile)
     frames = arity.frame_names(stacks or [])
     out: dict[str, Any] = {"blocking": True}
+    movie = str(outcome.get("movie") or "")
+    # Seeing it: the same replay at real speed, picture and sound on the TAS page.
+    look = f"decomp --profile {source} tas play {movie} --speed 1" if movie else f"decomp --profile {source} tas list"
     owed = nonmatching(project, [n for n in dict.fromkeys([subject, *frames]) if _FUNCTION.fullmatch(n)])
     if what == "hang":
         out.update(
             kind="hang",
             cannot_help="more input is useless unless the picture shows the game waiting for a button",
-            next=f"decomp --profile {source} tas look",
+            next=look,
         )
     elif _FAULT.match(subject):
         owner_fn = next(iter(frames), None)
         out.update(
             kind="host fault",
             cannot_help="input cannot pass this point: the fault repeats on every replay",
-            next=f"decomp --profile {source} arity show {owner_fn}"
-            if owner_fn
-            else f"decomp --profile {source} tas look",
+            next=f"decomp --profile {source} arity show {owner_fn}" if owner_fn else look,
         )
         if owner_fn:
             site = definition_site(project, owner_fn) or include_asm_site(project, owner_fn)
@@ -154,7 +155,7 @@ def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None
         out.update(
             kind="unknown",
             cannot_help="unknown, so treat as blocking: do not keep pressing buttons",
-            next=f"decomp --profile {source} tas look",
+            next=look,
         )
     names = [n for n in dict.fromkeys([subject, *frames]) if _FUNCTION.fullmatch(n)]
     notes = arity.notes(profile, names) if names else []

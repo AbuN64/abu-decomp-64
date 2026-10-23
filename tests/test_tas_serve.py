@@ -1,223 +1,230 @@
+"""`tas serve` against the page contract (orch plans/TAS-PAGE-CONTRACT.md): state from run folders, frames, logs,
+the 1x sound as a growing WAV, play / play-all / stop. Mocked: no port runs."""
+
+import hashlib
 import json
 import os
+import struct
 import tempfile
+import threading
+import time
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
-from abu_decomp import DecompError, tas_serve, tas_tabs
+from abu_decomp import DecompError, tas, tas_serve
 from abu_decomp.config import load_profile
 
 
-class ServeTests(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         (self.root / "game.z64").write_bytes(b"rom")
+        (self.root / "port").write_text("bin")
+        movies = self.root / "movies"
+        movies.mkdir()
+        sha = hashlib.sha1(b"rom").hexdigest()
+        (movies / "boot-idle.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\n- *900\n")
+        (movies / "model-preview.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA *1400\n")
+        (self.root / "inbox.md").write_text(
+            "# inbox\nL1 /x/final-func_80256C90_de.diff exact  | LANDED 47ee537\n"
+            "DEPLOY: decomp 1e51919  | DROPPED apply failed\nL2 /x/final-func_80209CD8_de.diff fuzzy\n"
+        )
+        (self.root / "states.json").write_text(json.dumps({"versions": {"us-rev1": {"none_fns": ["func_80000000"]}}}))
+        self.plays = self.root / "runs" / "plays"
+        self.plays.mkdir(parents=True)
         self.seat = self.root / "seat.json"
+        self.project = self.root / "decomp"
+        (self.project / "src").mkdir(parents=True)
+        (self.project / "src" / "t.CPP").write_text(
+            "#ifdef NON_MATCHING\nvoid func_80256C90_de(int a)\n{\n}\n#else\n"
+            'INCLUDE_ASM("o", func_80256C90_de);\n#endif\n'
+        )
+        patch = mock.patch("abu_decomp.tas_triage._project", return_value=self.project)
+        patch.start()
+        self.addCleanup(patch.stop)
 
-    def profile(self, **tas):
+    def profile(self, **serve):
         table = {
             "movies": "movies",
             "runs": "runs",
             "port": "port",
             "rom": "game.z64",
-            "args": ["--window", "640x480"],
-            **tas,
+            "args": [],
+            "serve": {"listen": "127.0.0.1:0", "inbox": "inbox.md", "states": "states.json", **serve},
         }
         self.seat.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": table}))
         return load_profile(self.seat)
 
-    def test_keysym_maps_only_bound_keys(self):
-        self.assertEqual(tas_serve.keysym("ArrowDown"), "Down")
-        self.assertEqual(tas_serve.keysym("Enter"), "Return")
-        self.assertEqual(tas_serve.keysym("X"), "x")
-        self.assertIsNone(tas_serve.keysym("F5"))
-        self.assertIsNone(tas_serve.keysym("1"))
-
-    def test_session_reads_serve_settings_and_window(self):
-        session = tas_serve.Session(self.profile(serve={"listen": "0.0.0.0:9000", "display": ":5"}))
-        self.assertEqual((session.listen, session.display, session.size), ("0.0.0.0:9000", ":5", "640x480"))
-        with self.assertRaises(DecompError):
-            tas_serve.Session(self.profile(serve={"port": 1}))
-
-    def test_window_is_required_and_save_needs_a_run(self):
-        with self.assertRaises(DecompError):
-            tas_serve.window_size(["--rom", "x"])
-        session = tas_serve.Session(self.profile())
-        with self.assertRaises(DecompError):
-            session.save("m", "")
-        state = session.state()
-        self.assertEqual((state["running"], state["polls"], state["movies"]), (False, 0, []))
-
-    def test_page_shows_the_newest_active_run_and_falls_back_to_the_last_finished(self):
-        session = tas_serve.Session(self.profile())
-        plays = self.root / "runs" / "plays"
-        for stamp, state, started in (("20261021T000001Z-a", "running", 10), ("20261021T000002Z-b", "running", 20)):
-            run = plays / stamp
-            run.mkdir(parents=True)
-            (run / "view.json").write_text(
-                json.dumps(
-                    {"state": state, "pid": os.getpid(), "started": started, "movie": stamp[-1], "kind": "proof replay"}
-                )
-            )
-            (run / "frame.jpg").write_bytes(b"\xff\xd8" + stamp[-1].encode() + b"\xff\xd9")
-        view = session.view_state()
-        self.assertEqual((view["view"]["movie"], len(view["runs"])), ("b", 2))
-        self.assertIn("proof replay · b · poll 0", view["view"]["label"])
-        self.assertEqual(session.frame_of(session.current()), b"\xff\xd8b\xff\xd9")
-        session.pin(str(plays / "20261021T000001Z-a"))
-        self.assertEqual(session.current()["movie"], "a")
-        session.pin(None)
-        for stamp in ("20261021T000001Z-a", "20261021T000002Z-b"):
-            (plays / stamp / "view.json").write_text(
-                json.dumps(
-                    {
-                        "state": "done",
-                        "outcome": "ok",
-                        "pid": 1,
-                        "started": 20 if stamp.endswith("b") else 10,
-                        "movie": stamp[-1],
-                    }
-                )
-            )
-        done = session.view_state()["view"]
-        self.assertEqual((done["movie"], done["state"]), ("b", "done"))
-        self.assertIn("ended ok", done["label"])
-
-    def test_an_active_replay_outranks_a_newer_but_finished_live_run(self):
-        session = tas_serve.Session(self.profile())
-        run = self.root / "runs" / "plays" / "20261021T000001Z-a"
-        run.mkdir(parents=True)
-        (run / "view.json").write_text(
-            json.dumps({"state": "running", "pid": os.getpid(), "started": 10, "movie": "a"})
-        )
-        session.run_dir, session.started = self.root / "runs" / "live" / "x", 20
-        self.assertEqual(session.live_view()["state"], "done")
-        self.assertEqual(session.current()["movie"], "a")
-
-    def test_held_stop_reports_stopped_not_running(self):
-        session = tas_serve.Session(self.profile())
-
-        class Alive:
-            returncode = None
-
-            def poll(self):
-                return None
-
-        session.port, session.log = Alive(), self.root / "run.log"
-        session.log.write_text("boot\ndebug-reason: n64c_boot_stopped\n")
-        state = session.state()
-        self.assertEqual((state["running"], state["stopped"]["outcome"]), (False, "stop"))
-        session.log.write_text("boot\n")
-        self.assertTrue(session.state()["running"])
-
-    def test_mark_saves_frame_movie_and_reports_in_state(self):
-        session = tas_serve.Session(self.profile())
-        with self.assertRaises(DecompError):
-            session.mark("x")
-        run = self.root / "runs" / "live" / "20261021T000000Z"
-        run.mkdir(parents=True)
-        session.run_dir, session.recording = run, run.with_suffix(".raw")
-        session.recording.write_text("8000 0 0\n0000 1 2\n0010 0")  # last line cut mid-write
-        session.frame = b"\xff\xd8jpeg\xff\xd9"
-        row = session.mark("odd  menu")
-        self.assertEqual((row["poll"], row["note"]), (2, "odd menu"))
-        self.assertEqual(Path(row["frame"]).read_bytes(), session.frame)
-        self.assertEqual(Path(row["frame"]).name, "poll-2.jpg")
-        self.assertTrue(row["movie"].startswith("weird-"))
-        self.assertEqual(session.state()["marks"], {"count": 1, "last": row})
-        self.assertEqual(len((run / "marks.jsonl").read_text().splitlines()), 1)
-        again = session.mark("")  # same second: still a distinct movie
-        self.assertNotEqual(again["movie"], row["movie"])
-        self.assertEqual(session.state()["marks"]["count"], 2)
-
-    def test_stop_ends_the_run_and_clears_the_held_stop(self):
-        session = tas_serve.Session(self.profile())
-
-        class Gone:
-            returncode = -15
-
-            def poll(self):
-                return -15
-
-        session.port, session.log = Gone(), self.root / "run.log"
-        session.log.write_text("debug-reason: n64c_boot_stopped\n")
-        self.assertEqual(session.state()["stopped"]["outcome"], "stop")
-        session.stop()
-        self.assertEqual(session.state()["stopped"], {})
-
-    def test_tabs(self):
-        ai = self.root / "ai"
-        ai.mkdir()
-        rows = [
-            {
-                "type": "assistant",
-                "timestamp": "2026-10-21T01:02:03Z",
-                "message": {
-                    "content": [
-                        {"type": "thinking", "thinking": "x"},
-                        {"type": "text", "text": "hello  world"},
-                        {"type": "tool_use", "name": "Bash", "input": {"command": "ls", "description": "list"}},
-                    ]
-                },
-            },
-            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "no"}]}},
-        ]
-        (ai / "a.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
-        self.assertEqual(tas_tabs.ai_lines(ai), ["01:02:03 hello world", "01:02:03 > Bash: list"])
-        threads = "Thread 2 (x):\n#0 idle\nThread 1 (y):\n#0 n64c_game_scheduler_main ()\n"
-        self.assertEqual(tas_tabs.game_threads(threads), ["Thread 1 (y):", "#0 n64c_game_scheduler_main ()"])
-        run = self.root / "run"
+    def make_run(self, run_id, **record):
+        run = self.plays / run_id
         run.mkdir()
-        (run / "failure-stack.txt").write_text("S1\n")
-        (run / "failure-threads.txt").write_text(threads)
-        log = self.root / "p.log"
-        log.write_text("L1\n")
-        self.assertEqual(tas_tabs.port_lines(log, run, False), ["L1"])
-        self.assertEqual(tas_tabs.port_lines(log, run, True)[:3], ["L1", "--- failure-stack.txt", "S1"])
-        feed = self.root / "e.jsonl"
-        feed.write_text(
-            json.dumps({"kind": "LANE", "message": "x"})
-            + "\n"
-            + json.dumps(
-                {
-                    "kind": "PROBE",
-                    "time": "2026-10-21T02:27:14+00:00",
-                    "message": "m",
-                    "payload": {"function": "f", "verdict": "same"},
-                }
-            )
-        )
-        self.assertEqual(tas_tabs.function_lines(feed), ["02:27:14 PROBE f same"])
+        (run / "run.json").write_text(json.dumps({"id": run_id, **record}))
+        return run
 
-    def test_play_runs_the_movie_visibly_and_keeps_recording(self):
-        import hashlib
-        from unittest import mock
 
-        profile = self.profile()
-        (self.root / "movies").mkdir()
-        sha = hashlib.sha1(b"rom").hexdigest()
-        (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA *2\n")
-        session = tas_serve.Session(profile)
-        seen = {}
+class ServeTests(Base):
+    def test_unknown_serve_keys_are_refused(self):
+        with self.assertRaises(DecompError):
+            tas_serve.Server(self.profile(display=":97"))
 
-        class Port:
-            pid = 7
+    def test_state_follows_the_contract(self):
+        server = tas_serve.Server(self.profile())
+        live = self.make_run(
+            "20261022T170000Z-boot-idle", movie="boot-idle", status="running", speed=0, polls=900, started=10.0,
+            pid=os.getpid(),
+        )  # fmt: skip
+        (live / "hash.txt").write_text("1 aa\n2 bb\n3 c")  # the last line is still being written
+        self.make_run(
+            "20261022T160000Z-model-preview", movie="model-preview", status="done", speed=0, polls=1400, started=5.0,
+            outcome="crash", subject="host-fault-10", polls_reached=611, same_twice=True, fn="func_80256C90_de",
+            kind="host fault", ended=6.0,
+        )  # fmt: skip
+        self.make_run("20261022T150000Z-boot-idle", movie="boot-idle", status="running", pid=2**22 + 7, started=1.0)
+        state = server.state()
+        self.assertEqual(set(state), {"now", "build", "runs", "movies", "cycle"})
+        self.assertEqual(state["build"]["port"], str(self.root / "port"))
+        self.assertGreater(state["build"]["built"], 0)
+        runs = {r["id"]: r for r in state["runs"]}
+        self.assertEqual([r["started"] for r in state["runs"]], [1.0, 5.0, 10.0])
+        now = runs["20261022T170000Z-boot-idle"]
+        self.assertEqual((now["status"], now["poll"], now["polls"], now["outcome"]), ("running", 2, 900, None))
+        self.assertEqual(now["frame"], "/frame/20261022T170000Z-boot-idle")
+        self.assertEqual(runs["20261022T150000Z-boot-idle"]["status"], "done")  # its process is gone
+        done = runs["20261022T160000Z-model-preview"]
+        self.assertEqual((done["outcome"], done["poll"], done["subject"]), ("crash", 611, "host-fault-10"))
+        movies = {m["name"]: m for m in state["movies"]}
+        self.assertEqual(movies["boot-idle"]["polls"], 900)
+        self.assertIsNone(movies["boot-idle"]["fn"])
+        preview = movies["model-preview"]
+        self.assertEqual((preview["outcome"], preview["reached"], preview["same_twice"]), ("crash", 611, True))
+        self.assertEqual(preview["fn"], {"name": "func_80256C90_de", "state": "fuzzy"})
+        self.assertEqual(preview["train"], {"line": "L1 /x/final-func_80256C90_de.diff exact", "mark": "LANDED"})
+        self.assertEqual(preview["last_run"], 6.0)
+        cycle = state["cycle"]
+        self.assertEqual(cycle["target"], {"movie": "model-preview", "fn": "func_80256C90_de", "kind": "host fault"})
+        self.assertEqual([row["mark"] for row in cycle["inbox"]], ["LANDED", "DROPPED", None])
+        self.assertEqual(cycle["inbox"][1]["line"], "DEPLOY: decomp 1e51919")
 
-            def __init__(self, argv, env, **kwargs):
-                seen.update(env=env)
+    def test_fn_state_reads_the_source_and_the_progress_states(self):
+        server = tas_serve.Server(self.profile())
+        (self.project / "src" / "u.CPP").write_text("void func_80209CD8_de(int a)\n{\n}\n")
+        self.assertEqual(server.fn_state("func_80209CD8_de"), "exact")
+        self.assertEqual(server.fn_state("func_80256C90_de"), "fuzzy")
+        self.assertEqual(server.fn_state("func_80000000"), "none")
+        self.assertEqual(server.fn_state("func_8041CAD8_de"), "none")
 
-            def poll(self):
-                return None
+    def test_wav_header_is_a_stereo_s16_stream(self):
+        head = tas_serve.wav_header(22050)
+        self.assertEqual((head[:4], head[8:16], head[36:40], len(head)), (b"RIFF", b"WAVEfmt ", b"data", 44))
+        channels, rate, _, align, bits = struct.unpack("<HIIHH", head[22:36])
+        self.assertEqual((channels, rate, align, bits), (2, 22050, 4, 16))
 
-        with mock.patch.object(tas_serve.subprocess, "Popen", Port), mock.patch.object(tas_serve.threading, "Thread"):
-            session.new_run("m")
-        played = Path(seen["env"]["N64C_TAS_PLAY"])
-        self.assertEqual(played.read_text(), "8000 0 0\n8000 0 0\n")
-        self.assertIn("N64C_TAS_RECORD", seen["env"])
-        self.assertNotIn("N64C_TAS_EXIT_AFTER", seen["env"])
-        self.assertEqual((session.movie, session.movie_length), ("m", 2))
+
+class HttpTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.server = tas_serve.Server(self.profile())
+        self.http = ThreadingHTTPServer(("127.0.0.1", 0), tas_serve.handler(self.server))
+        self.http.daemon_threads = True
+        threading.Thread(target=self.http.serve_forever, daemon=True).start()
+        self.addCleanup(self.http.server_close)
+        self.addCleanup(self.http.shutdown)
+        self.base = f"http://127.0.0.1:{self.http.server_address[1]}"
+
+    def get(self, path):
+        with urllib.request.urlopen(self.base + path, timeout=10) as reply:
+            return reply.status, reply.headers.get("Content-Type"), reply.read()
+
+    def post(self, path, body):
+        request = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=10) as reply:
+                return reply.status, json.load(reply)
+        except urllib.error.HTTPError as error:
+            return error.code, json.load(error)
+
+    def status(self, path):
+        try:
+            return self.get(path)[0]
+        except urllib.error.HTTPError as error:
+            return error.code
+
+    def test_page_state_frame_and_log(self):
+        status, kind, body = self.get("/")
+        self.assertEqual((status, kind), (200, "text/html; charset=utf-8"))
+        self.assertIn(b"/api/state", body)
+        self.assertEqual(json.loads(self.get("/api/state")[2])["runs"], [])
+        run = self.make_run("r1", movie="boot-idle", status="done", speed=0, started=1.0, outcome="ok")
+        self.assertEqual(self.status("/frame/r1"), 404)  # no picture yet
+        (run / "view.bmp").write_bytes(b"BMpicture")
+        self.assertEqual(self.get("/frame/r1")[1:], ("image/bmp", b"BMpicture"))
+        (run / "output.txt").write_bytes(b"line one\nline two\n")
+        self.assertEqual(self.get("/log/r1?from=0")[2], b"line one\nline two\n")
+        self.assertEqual(self.get("/log/r1?from=9")[2], b"line two\n")
+        self.assertEqual(self.status("/log/nope"), 404)
+        self.assertEqual(self.status("/frame/..%2Fx"), 404)
+        self.assertEqual(self.status("/audio/r1"), 404)  # turbo runs have no sound
+
+    def test_audio_streams_the_growing_pcm_of_a_1x_run_as_wav(self):
+        run = self.make_run("r2", movie="boot-idle", status="running", speed=1, started=1.0, pid=os.getpid())
+        (run / "audio.pcm").write_bytes(b"\x01\x00\x02\x00" * 10)
+        (run / "audio.pcm.rate").write_text("32000\n")
+
+        def finish():
+            time.sleep(0.3)
+            with (run / "audio.pcm").open("ab") as handle:
+                handle.write(b"\x03\x00\x04\x00" * 5)
+            time.sleep(0.3)
+            (run / "run.json").write_text(json.dumps({"id": "r2", "status": "done", "speed": 1}))
+
+        threading.Thread(target=finish, daemon=True).start()
+        status, kind, body = self.get("/audio/r2")
+        self.assertEqual((status, kind), (200, "audio/wav"))
+        self.assertEqual(struct.unpack("<I", body[24:28])[0], 32000)
+        self.assertEqual(body[44:], b"\x01\x00\x02\x00" * 10 + b"\x03\x00\x04\x00" * 5)
+
+    def test_play_play_all_and_stop(self):
+        started = []
+
+        def fake_play(profile, movie, *, speed=0, run_id=None, **kwargs):
+            started.append((movie, speed, run_id))
+            return {}
+
+        with mock.patch.object(tas, "play", fake_play):
+            status, reply = self.post("/api/play", {"movie": "boot-idle", "speed": 1})
+            self.assertEqual(status, 200)
+            self.assertTrue(reply["id"].endswith("-boot-idle"))
+            for _ in range(100):
+                if started:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(started, [("boot-idle", 1, reply["id"])])
+        self.assertEqual(self.post("/api/play", {"movie": "nope", "speed": 0})[0], 400)
+        release = threading.Event()
+        with mock.patch.object(tas, "play_all", side_effect=lambda *a, **k: release.wait(10)) as play_all:
+            status, reply = self.post("/api/play-all", {})
+            self.assertEqual(len(reply["ids"]), 2)
+            state = json.loads(self.get("/api/state")[2])
+            queued = {r["id"]: r for r in state["runs"]}
+            self.assertEqual({queued[i]["status"] for i in reply["ids"]}, {"running"})
+            for _ in range(100):
+                if play_all.called:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(set(play_all.call_args.kwargs["run_ids"].values()), set(reply["ids"]))
+            release.set()
+        run = self.make_run("r3", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid(), pgid=4242)
+        with mock.patch.object(tas_serve.os, "killpg") as kill:
+            self.assertEqual(self.post("/api/stop", {"id": "r3"}), (200, {"id": "r3", "stopped": True}))
+        kill.assert_called_once_with(4242, tas_serve.signal.SIGTERM)
+        self.assertTrue((run / "stopped").is_file())
+        self.assertEqual(self.post("/api/stop", {"id": "missing"})[0], 400)
 
 
 if __name__ == "__main__":

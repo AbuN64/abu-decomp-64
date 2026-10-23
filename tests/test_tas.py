@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
-from abu_decomp import DecompError, tas, tas_capture
+from abu_decomp import DecompError, tas
 from abu_decomp.config import load_profile
 
 T0 = datetime(2026, 10, 20, 19, 0, tzinfo=UTC)
@@ -121,10 +121,6 @@ class MovieTests(unittest.TestCase):
         tas.delete(self.profile, "press-a")
         self.assertEqual(tas.listing(self.profile)["movies"], [])
 
-    def unseen(self):
-        # A host without a display for the run: the replay still runs, just not on the page.
-        return mock.patch.object(tas_capture.Capture, "start_display", side_effect=OSError("no Xvfb"))
-
     def test_play_refuses_another_rom(self):
         (self.root / "movies").mkdir()
         (self.root / "movies" / "m.tas").write_text("# tas 1\n# rom-sha1 0000\nA\n")
@@ -153,7 +149,7 @@ class MovieTests(unittest.TestCase):
             def wait(self, timeout=None):
                 return 125
 
-        with mock.patch.object(tas.subprocess, "Popen", Port), self.unseen():
+        with mock.patch.object(tas.subprocess, "Popen", Port):
             result = tas.play(self.profile, "m", now=T0)
         self.assertEqual(result["outcome"], "crash")
         self.assertEqual(result["subject"], "host-fault-00002b88")
@@ -163,35 +159,6 @@ class MovieTests(unittest.TestCase):
         self.assertIn(tas.STOP_FUNCTION, seen["argv"])
         user = seen["argv"][-1]
         self.assertTrue(user.endswith("/user") and Path(user).is_dir())
-
-    def test_cheap_play_uses_the_replay_args_without_a_view_and_reports_cpu(self):
-        (self.root / "movies").mkdir()
-        sha = hashlib.sha1(b"rom").hexdigest()
-        (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA\n")
-        cfg = tas.settings(self.profile)
-        cfg["replay"] = {"args": ["--window", "64x48", "--user-dir", "{user_dir}"], "view": False}
-        seen = {}
-
-        class Port:
-            stdin = io.StringIO()
-            pid = 1
-
-            def __init__(self, argv, env, stdout, **kwargs):
-                seen["argv"] = argv
-                stdout.write("n64c-tas: done\n")
-
-            def wait(self, timeout=None):
-                return 0
-
-        with (
-            mock.patch.object(tas.subprocess, "Popen", Port),
-            mock.patch.object(tas, "settings", return_value=cfg),
-            mock.patch.object(tas_capture.PlayView, "open") as view,
-        ):
-            cheap = tas.play(self.profile, "m", now=T0, cheap=True)
-        view.assert_not_called()
-        self.assertIn("64x48", seen["argv"])
-        self.assertEqual((cheap["outcome"], cheap["cpu_seconds"]), ("ok", 1.5))
 
     def test_play_kills_a_hang(self):
         (self.root / "movies").mkdir()
@@ -214,57 +181,109 @@ class MovieTests(unittest.TestCase):
         with (
             mock.patch.object(tas.subprocess, "Popen", Port),
             mock.patch.object(tas.os, "killpg") as kill,
-            self.unseen(),
         ):
             result = tas.play(self.profile, "m", now=T0)
         kill.assert_called_once()
         self.assertEqual(result["outcome"], "hang")
 
-    def test_play_with_a_display_publishes_its_view_and_points_the_port_at_it(self):
-        (self.root / "movies").mkdir()
+    def movie(self, text="A *2\n"):
+        (self.root / "movies").mkdir(exist_ok=True)
         sha = hashlib.sha1(b"rom").hexdigest()
-        (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA\n")
-        seen = {}
+        (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\n{text}")
 
-        def start(capture):
-            capture.display = ":42"
-            capture.frame = b"\xff\xd8last\xff\xd9"
+    def port(self, hashes, seen):
+        """A port stand-in: writes the hash lines it is given and its picture, then ends cleanly."""
 
         class Port:
+            pid = 1
             stdin = io.StringIO()
 
             def __init__(self, argv, env, stdout, **kwargs):
-                seen["env"] = env
-                stdout.write("n64c-tas: done\n")
-                view = json.loads((Path(argv[argv.index("--run-dir") + 1]) / "view.json").read_text())
-                seen["during"] = view["state"]
+                seen.append(env)
+                run = Path(argv[argv.index("--run-dir") + 1])
+                seen.append(json.loads((run / "run.json").read_text()))
+                Path(env["N64C_TAS_HASH"]).write_text(hashes)
+                Path(env["N64C_VIEW"]).write_bytes(b"BM")
+                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n8000 0 0\n")
+                stdout.write("n64c-tas: done polls=2\n")
 
             def wait(self, timeout=None):
                 return 0
 
-        with (
-            mock.patch.object(tas.subprocess, "Popen", Port),
-            mock.patch.object(tas_capture.Capture, "start_display", start),
-            mock.patch.object(tas_capture.Capture, "close"),
-            mock.patch.object(tas_capture, "window_size", return_value="64x48"),
-        ):
-            result = tas.play(self.profile, "m", now=T0)
-        self.assertEqual(result["outcome"], "ok")
-        self.assertEqual((seen["env"]["DISPLAY"], seen["env"]["SDL_VIDEODRIVER"]), (":42", "x11"))
-        self.assertEqual(seen["during"], "running")
-        run = Path(result["run"])
-        self.assertEqual((run / "frame.jpg").read_bytes(), b"\xff\xd8last\xff\xd9")
-        (row,) = tas_capture.read_views(self.root / "runs")
-        self.assertEqual((row["state"], row["outcome"], row["movie"], row["kind"]), ("done", "ok", "m", "proof replay"))
+        return mock.patch.object(tas.subprocess, "Popen", Port)
 
-    def test_a_replay_whose_process_vanished_reads_as_died(self):
+    def test_every_play_is_visible_hashed_and_turbo_by_default(self):
+        self.movie()
+        seen = []
+        with self.port("1 aa\n2 bb\n", seen):
+            result = tas.play(self.profile, "m", now=T0)
+        env, during = seen
+        run = Path(result["run"])
+        self.assertEqual((env["N64C_VIEW"], env["N64C_TAS_HASH"]), (str(run / "view.bmp"), str(run / "hash.txt")))
+        self.assertEqual(env["N64C_SPEED"], "0")
+        self.assertNotIn("N64C_AUDIO_OUT", env)
+        self.assertEqual((during["status"], during["movie"], during["speed"], during["polls"]), ("running", "m", 0, 2))
+        record = tas.read_record(run)
+        self.assertEqual((record["status"], record["outcome"], record["polls_reached"]), ("done", "ok", 2))
+        self.assertIsNone(result["same_twice"])  # nothing to compare with yet
+        self.assertEqual(tas.last_poll(run / "hash.txt"), 2)
+
+    def test_speed_one_plays_sound_and_waits_for_the_movie_in_real_time(self):
+        self.movie("A *600\n")
+        seen, waited = [], []
+
+        def wait(process, timeout):
+            waited.append(timeout)
+            return process.wait(), 1.0
+
+        with self.port("1 aa\n", seen), mock.patch.object(tas, "_wait", wait):
+            result = tas.play(self.profile, "m", speed=1, now=T0)
+        self.assertEqual(seen[0]["N64C_AUDIO_OUT"], str(Path(result["run"]) / "audio.pcm"))
+        self.assertEqual(seen[0]["N64C_SPEED"], "1")
+        self.assertAlmostEqual(waited[0], 5 + (600 + 7) / 60)
+        with self.assertRaises(DecompError):
+            tas.play(self.profile, "m", speed=-1)
+
+    def test_same_twice_compares_with_the_previous_run_on_the_same_build(self):
+        self.movie()
+        with self.port("1 aa\n2 bb\n", []):
+            first = tas.play(self.profile, "m", now=T0)
+            second = tas.play(self.profile, "m", now=T0)
+        self.assertNotEqual(first["run"], second["run"])
+        self.assertTrue(Path(second["run"]).name.endswith("-m-2"))
+        self.assertIs(second["same_twice"], True)
+        self.assertEqual(second["compared_with"], Path(first["run"]).name)
+        with self.port("1 aa\n2 cc\n", []):
+            third = tas.play(self.profile, "m", now=T0)
+        self.assertIs(third["same_twice"], False)
+        (self.root / "port").write_text("rebuilt")  # another build: nothing to compare with
+        with self.port("1 aa\n2 cc\n", []):
+            fourth = tas.play(self.profile, "m", now=T0)
+        self.assertIsNone(fourth["same_twice"])
+        with self.port("1 aa\n2 cc\n", []):
+            twice = tas.play_twice(self.profile, "m")
+        self.assertIs(twice["same_twice"], True)
+
+    def test_a_run_whose_process_vanished_reads_as_done_without_outcome(self):
         run = self.root / "runs" / "plays" / "20261021T000000Z-m"
         run.mkdir(parents=True)
-        (run / "view.json").write_text(
-            json.dumps({"state": "running", "pid": 2**22 + 12345, "started": 1, "movie": "m"})
+        (run / "run.json").write_text(json.dumps({"id": run.name, "status": "running", "pid": 2**22 + 12345}))
+        ((_, row),) = tas.run_rows(tas.settings(self.profile))
+        self.assertEqual((row["status"], row["outcome"]), ("done", None))
+
+    def test_fn_of_names_the_function_an_outcome_points_at(self):
+        self.assertEqual(tas.fn_of({"subject": "func_80256C90_de+0x10"}), "func_80256C90_de")
+        self.assertEqual(tas.fn_of({"subject": "func_8041CAD8_de"}), "func_8041CAD8_de")
+        self.assertEqual(
+            tas.fn_of({"subject": "host-fault-1", "owner": "func_80209CD8_de at src/a.CPP:3"}), "func_80209CD8_de"
         )
-        (row,) = tas_capture.read_views(self.root / "runs")
-        self.assertEqual((row["state"], row["outcome"]), ("done", "died"))
+        self.assertIsNone(tas.fn_of({"subject": "exit 3"}))
+
+    def test_table_has_a_same_twice_column(self):
+        row = {"movie": "m", "outcome": "ok", "subject": "", "polls_reached": 2, "polls": 2, "vs_recorded": "same"}
+        text = tas.table({"movies": [{**row, "same_twice": True, "next": ""}]})
+        self.assertIn("same_twice", text)
+        self.assertIn(" yes ", text)
 
 
 if __name__ == "__main__":

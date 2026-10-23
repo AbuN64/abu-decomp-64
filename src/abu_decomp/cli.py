@@ -345,25 +345,7 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     save.add_argument("--note", default="", help="one line: what the movie shows")
     save.add_argument("--replace", action="store_true", help="overwrite a movie of the same name")
     actions.add_parser("list", help="the saved movies and the newest recordings")
-    watch = actions.add_parser("watch", help="print one JSON line per game event from the running page")
-    watch.add_argument("--next", dest="once", action="store_true", help="block for the next event, print it, exit 0")
-    new = actions.add_parser("new", help="start a recorded run from reset on the page (optionally driven by a movie)")
-    new.add_argument("--movie", help="a saved movie drives the pad first; the run keeps recording after it ends")
-    press = actions.add_parser("press", help="press buttons in turn on the page, keyed to controller polls")
-    press.add_argument(
-        "keys", nargs="+", metavar="KEY", help="A B Z START L R CUP CDOWN CLEFT CRIGHT UP DOWN LEFT RIGHT"
-    )
-    press.add_argument("--hold-polls", type=int, default=6, help="polls each button is held (default 6)")
-    press.add_argument("--then-wait-polls", type=int, default=12, help="polls to wait after each (default 12)")
-    actions.add_parser("state", help="the page's state: running, polls, marks, stop, run folder")
-    mark = actions.add_parser("mark", help="mark this moment weird: saves frame, poll and a movie of the run so far")
-    mark.add_argument("note", nargs="+")
-    actions.add_parser("stop", help="end the live run")
-    look = actions.add_parser("look", help="write the frame, a contact sheet and an audio spectrogram as small PNGs")
-    look.add_argument("--frames", type=int, default=12, help="tiles on the contact sheet (default 12)")
-    look.add_argument("--span-polls", type=int, default=180, help="the sheet covers the last P polls (default 180)")
-    look.add_argument("--audio-seconds", type=float, default=5.0, help="seconds of audio for the spectrogram")
-    actions.add_parser("serve", help="serve the page that plays the port live, records runs and manages movies")
+    actions.add_parser("serve", help="serve the TAS page: every replay's picture, sound, log and the cycle state")
     for verb, text in (
         ("show", "one movie's header and polls"),
         ("delete", "remove one movie"),
@@ -373,6 +355,8 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     play.add_argument("name", nargs="?")
     play.add_argument("--all", action="store_true", help="replay every saved movie in parallel; exit 1 if any is worse")
     play.add_argument("--jobs", type=int, default=4, help="parallel replays with --all (default 4)")
+    play.add_argument("--speed", type=int, default=0, help="0 = turbo (default), 1 = real time with sound, k = k times")
+    play.add_argument("--twice", action="store_true", help="replay twice; same_twice compares the two runs' RAM")
 
 
 def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -383,37 +367,23 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         return tas.save(profile, args.name, source=args.source, note=args.note, replace=args.replace), 0, []
     if args.action == "list":
         return tas.listing(profile), 0, []
-    if args.action in ("new", "press", "state", "mark", "stop", "look"):
-        from abu_decomp import tas_drive
-
-        if args.action == "new":
-            return tas_drive.new(profile, args.movie), 0, []
-        if args.action == "press":
-            return tas_drive.press(profile, args.keys, args.hold_polls, args.then_wait_polls), 0, []
-        if args.action == "mark":
-            return tas_drive.mark(profile, " ".join(args.note)), 0, []
-        if args.action == "look":
-            return tas_drive.look(profile, args.frames, args.span_polls, args.audio_seconds), 0, []
-        return getattr(tas_drive, args.action)(profile), 0, []
     if args.action == "serve":
         from abu_decomp import tas_serve
 
         return tas_serve.serve(profile), 0, []
-    if args.action == "watch":
-        from abu_decomp import tas_watch
-
-        raise _Text(tas_watch.watch(profile, once=args.once))  # event lines are the whole output
     if args.action == "show":
         return tas.show(profile, args.name), 0, []
     if args.action == "delete":
         return tas.delete(profile, args.name), 0, []
     if args.all:
-        result, code = tas.play_all(profile, jobs=args.jobs)
+        result, code = tas.play_all(profile, jobs=args.jobs, twice=args.twice)
         print(tas.table(result), file=sys.stderr)
         return result, code, []
     if not args.name:
         raise DecompError("tas.play", "give a movie name or --all")
-    return tas.play(profile, args.name), 0, []
+    if args.twice:
+        return tas.play_twice(profile, args.name, speed=args.speed), 0, []
+    return tas.play(profile, args.name, speed=args.speed), 0, []
 
 
 def _run_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:

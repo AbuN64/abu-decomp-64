@@ -11,6 +11,13 @@ movie. A movie (`NAME.tas`) is the readable form of the same polls: `#` header l
 polls, `BUTTONS [X,Y] [*COUNT]`, where BUTTONS is `-` or names joined by `+` (`A+START`) and the stick is omitted
 when centred. Replay keys input to the poll index, so a movie is the same run at any host speed.
 
+Every replay is the same one kind of run, and every one is visible: the port writes its latest picture to the run
+folder (`N64C_VIEW`, a BMP at most ~15 times a second), a per-poll RAM hash (`N64C_TAS_HASH`) and, at speed 1 only,
+the sound it plays (`N64C_AUDIO_OUT`). Speed 0 (turbo, the default) skips the retrace sleep; the game's own clock
+is per retrace, so a movie is the same run at any speed. `run.json` in the run folder is the run's record (written at
+start and at the end), which `tas serve` reads. `same_twice` compares the hash file with the movie's previous run on
+the same port binary: true when every poll's RAM was identical, null when there is no earlier run to compare.
+
 A replay runs under the supervisor's gdb bridge with the port's stop function as the breakpoint, so a stop or a
 host fault leaves the failing stack and every thread's stack in the run folder. The outcome is one of `ok`,
 `stop` (the port's own boot stop, with its subject), `crash` (a host fault or signal), `hang` (no exit within
@@ -20,6 +27,7 @@ host fault leaves the failing stack and every thread's stack in the run folder. 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import resource
@@ -31,7 +39,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas_capture, tas_health, tas_rank, tas_symbolize
+from abu_decomp import DecompError, tas_health, tas_rank, tas_symbolize
 from abu_decomp.config import Profile, check_keys
 
 SCHEMA = 1
@@ -67,7 +75,6 @@ _KEYS = frozenset(
         "gdb",
         "serve",
         "build",
-        "replay",
         "rank",
     }
 )
@@ -103,20 +110,8 @@ def settings(profile: Profile) -> dict[str, Any]:
         "timeout_seconds": int(table.get("timeout_seconds", 300)),
         "gdb": str(table.get("gdb", "gdb")),
         "build": _build(profile, table.get("build")),
-        "replay": _replay(profile, table.get("replay")),
         "rank": tas_rank.settings(table.get("rank")),
     }
-
-
-def _replay(profile: Profile, table: Any) -> dict[str, Any]:
-    """Section `tas.replay`: the cheap mode `play --all` uses: {args: port arguments (default tas.args), view: false}.
-
-    The picture a replay is rendered at costs most of its CPU and the outcome never reads it, so the cheap mode runs
-    the same port at a tiny window with no capture. A watched `tas play NAME` keeps `tas.args` and its view."""
-    table = table or {}
-    check_keys(profile.source_file, "tas.replay", table, frozenset(), frozenset({"args", "view"}))
-    args = [str(a) for a in table["args"]] if "args" in table else None
-    return {"args": args, "view": bool(table.get("view", False))}
 
 
 def parse_raw(text: str) -> list[Poll]:
@@ -350,22 +345,130 @@ def _wait(process: subprocess.Popen, timeout: float) -> tuple[int | None, float]
         time.sleep(0.05)
 
 
+VIEW, HASH, AUDIO, RECORD = "view.bmp", "hash.txt", "audio.pcm", "run.json"
+_builds: dict[tuple[str, int, int], str] = {}
+
+
+def build_id(port: Path) -> str:
+    """SHA-1 of the port executable (cached per path, mtime and size): runs compare only on the same build."""
+    try:
+        stat = port.stat()
+    except OSError:
+        return ""
+    key = (str(port), stat.st_mtime_ns, stat.st_size)
+    if key not in _builds:
+        _builds[key] = _sha1(port)
+    return _builds[key]
+
+
+def new_run_id(cfg: dict[str, Any], name: str, now: datetime | None = None) -> str:
+    """`STAMP-NAME`, with `-2`, `-3`... when that folder is taken (two plays of one movie in one second)."""
+    plays, base = cfg["runs"] / "plays", f"{_stamp(now)}-{name}"
+    run_id, n = base, 1
+    while (plays / run_id).exists():
+        n += 1
+        run_id = f"{base}-{n}"
+    return run_id
+
+
+def read_record(run: Path) -> dict[str, Any] | None:
+    try:
+        row = json.loads((run / RECORD).read_text())
+    except (OSError, ValueError):
+        return None
+    return row if isinstance(row, dict) else None
+
+
+def _write_record(run: Path, row: dict[str, Any]) -> None:
+    tmp = run / (RECORD + ".tmp")
+    tmp.write_text(json.dumps(row, sort_keys=True) + "\n")
+    tmp.replace(run / RECORD)
+
+
+def alive(pid: Any) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
+def run_rows(cfg: dict[str, Any]) -> list[tuple[Path, dict[str, Any]]]:
+    """Every replay folder with its record, oldest first. A record left `running` by a process that is gone (killed
+    server, reboot) reads as done with no outcome."""
+    plays = cfg["runs"] / "plays"
+    rows = []
+    for run in sorted(plays.iterdir()) if plays.is_dir() else []:
+        row = read_record(run)
+        if row is None:
+            continue
+        if row.get("status") == "running" and not alive(row.get("pid")):
+            row = {**row, "status": "done", "outcome": None}
+        rows.append((run, row))
+    return rows
+
+
+def last_poll(path: Path) -> int:
+    """The last poll a hash file names (it gains one line per poll while the run goes)."""
+    try:
+        with path.open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - 128))
+            data = handle.read()
+    except OSError:
+        return 0
+    lines = data[: data.rfind(b"\n") + 1].splitlines()  # a line still being written is left out
+    for line in reversed(lines):
+        head = line.split(b" ", 1)[0]
+        if head.isdigit():
+            return int(head)
+    return 0
+
+
+def previous_run(cfg: dict[str, Any], name: str, build: str, before: str) -> Path | None:
+    """The newest finished run of `name` on this build (by folder name, older than `before`) with a hash file."""
+    for run, row in reversed(run_rows(cfg)):
+        if run.name >= before or row.get("movie") != name or row.get("build") != build:
+            continue
+        if row.get("status") == "done" and not row.get("stopped") and row.get("outcome") and (run / HASH).is_file():
+            return run
+    return None
+
+
+def same_hashes(a: Path, b: Path) -> bool:
+    try:
+        return (a / HASH).read_bytes() == (b / HASH).read_bytes()
+    except OSError:
+        return False
+
+
+def fn_of(result: dict[str, Any]) -> str | None:
+    """The function a non-clean outcome names: its subject (`func_X` or `func_X+0x10`), else the owner of the fault."""
+    for text in (str(result.get("subject") or ""), str(result.get("owner") or "")):
+        match = re.match(r"(func_[0-9A-Fa-f]{8}\w*?)(?:\+0x[0-9a-fA-F]+)?(?:\s|$)", text)
+        if match:
+            return match[1]
+    return None
+
+
 def play(
     profile: Profile,
     name: str,
     *,
+    speed: int = 0,
     now: datetime | None = None,
     health: dict[str, Any] | None = None,
-    cheap: bool = False,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
-    """Replay one movie. `cheap` (what `play --all` sets) uses `tas.replay`: its args and no display capture."""
+    """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
+    every poll as the movie's previous run on this build (`same_twice`)."""
     cfg = settings(profile)
+    if not 0 <= speed <= 1000:
+        raise DecompError("tas.play", f"speed is 0 (turbo) .. 1000, not {speed}")
     began = time.monotonic()
-    if cheap and cfg["replay"]["args"] is not None:
-        cfg = {**cfg, "args": cfg["replay"]["args"]}
     health = tas_health.read(cfg, profile) if health is None else health
     polls = movie_polls(cfg, name)
-    run = cfg["runs"] / "plays" / f"{_stamp(now)}-{name}"
+    run = cfg["runs"] / "plays" / (run_id or new_run_id(cfg, name, now))
     user_dir = run / "user"
     user_dir.mkdir(parents=True)
     (run / "movie.raw").write_text(format_raw(polls))
@@ -375,30 +478,47 @@ def play(
         "N64C_TAS_PLAY": str(run / "movie.raw"),
         "N64C_TAS_RECORD": str(run / "polls.raw"),
         "N64C_TAS_EXIT_AFTER": str(cfg["exit_after"]),
+        "N64C_TAS_HASH": str(run / HASH),
+        "N64C_VIEW": str(run / VIEW),
+        "N64C_SPEED": str(speed),
     }
+    if speed == 1:
+        env["N64C_AUDIO_OUT"] = str(run / AUDIO)
+    build = build_id(cfg["port"])
+    # At real speed a movie takes its own length in wall time; the timeout is the allowance beyond that.
+    timeout = cfg["timeout_seconds"] + ((len(polls) + cfg["exit_after"]) / (60 * speed) if speed else 0)
+    record = {
+        "id": run.name,
+        "movie": name,
+        "speed": speed,
+        "polls": len(polls),
+        "build": build,
+        "status": "running",
+        "started": time.time(),
+        "pid": os.getpid(),
+    }
+    _write_record(run, record)
     argv = supervised(cfg, run, _argv(cfg, user_dir))
-    # Its own display and sound card, so the page can show it and parallel plays never share a screen.
-    view = None if cheap and not cfg["replay"]["view"] else tas_capture.PlayView.open(cfg, run, name, _stamp(now))
-    if view:
-        env.update(view.env())
     try:
         with (run / "output.txt").open("w") as output:
             process = subprocess.Popen(
                 argv, env=env, stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT, start_new_session=True
             )
+            _write_record(run, {**record, "pgid": process.pid})
             # The bridge holds a stopped port until its stdin says "continue"; a closed pipe ends it after the stacks.
             process.stdin.close()
-            code, cpu = _wait(process, cfg["timeout_seconds"])
+            code, cpu = _wait(process, timeout)
     except BaseException:
-        if view:
-            view.finish({"outcome": "died"})
+        _write_record(run, {**record, "status": "done", "outcome": None, "ended": time.time()})
         raise
     text = (run / "output.txt").read_text(errors="replace")
     reached = len(parse_raw((run / "polls.raw").read_text())) if (run / "polls.raw").is_file() else 0
-    result = {"movie": name, "run": str(run), "polls": len(polls), "polls_reached": reached, **classify(code, text)}
+    result = {"movie": name, "run": str(run), "id": run.name, "speed": speed, "polls": len(polls)}
+    result.update(polls_reached=reached, **classify(code, text))
+    stopped = (run / "stopped").exists()
+    if stopped:
+        result["subject"] = "stopped from the page"
     result["wall_seconds"], result["cpu_seconds"] = round(time.monotonic() - began, 1), cpu
-    if view:
-        view.finish(result)
     stacks = [str(p) for p in sorted(run.glob("*-st*.txt")) + sorted(run.glob("*-threads.txt"))]
     if stacks:
         result["stacks"] = stacks
@@ -406,7 +526,23 @@ def play(
     result.update(tas_symbolize.claim(profile, result, stacks, health))
     if health:
         result["build"] = tas_health.header(health)
+    before = previous_run(cfg, name, build, run.name) if build and not stopped else None
+    result["same_twice"] = same_hashes(run, before) if before else None
+    if before:
+        result["compared_with"] = before.name
+    result["fn"] = fn_of(result)
+    keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
+    _write_record(
+        run,
+        {**record, **{k: result.get(k) for k in keep}, "status": "done", "stopped": stopped, "ended": time.time()},
+    )
     return result
+
+
+def play_twice(profile: Profile, name: str, *, speed: int = 0) -> dict[str, Any]:
+    """Two replays back to back; the second's `same_twice` compares it with the first."""
+    play(profile, name, speed=speed)
+    return play(profile, name, speed=speed)
 
 
 def compare(recorded: dict[str, Any] | None, now: dict[str, Any]) -> str:
@@ -421,6 +557,10 @@ def compare(recorded: dict[str, Any] | None, now: dict[str, Any]) -> str:
     return "worse" if after < before else "better" if after > before else "same"
 
 
+def _twice_text(value: Any) -> str:
+    return "-" if value is None else "yes" if value else "NO"
+
+
 def table(result: dict[str, Any]) -> str:
     """The `play --all` result as aligned text: the build header, then one row per movie."""
     build = result.get("build") or {}
@@ -431,21 +571,22 @@ def table(result: dict[str, Any]) -> str:
             f"  stale: {build['stale']}; next: {build.get('rebuild', '')}"
             + (f"; then: {build['then']}" if build.get("then") else "")
         )
-    head = ("movie", "outcome", "polls", "vs recorded", "wall/cpu s", "next")
+    head = ("movie", "outcome", "polls", "vs recorded", "same_twice", "wall/cpu s", "next")
     rows = [
         (
             r["movie"],
             r["outcome"] + (f" {r['subject']}" if r["subject"] else ""),
             f"{r['polls_reached']}/{r['polls']}",
             r["vs_recorded"],
+            _twice_text(r.get("same_twice")),
             f"{r.get('wall_seconds', 0)}/{r.get('cpu_seconds', 0)}",
             r["next"],
         )
         for r in result["movies"]
     ]
-    widths = [max(len(str(x[i])) for x in [head, *rows]) for i in range(5)]
+    widths = [max(len(str(x[i])) for x in [head, *rows]) for i in range(6)]
     for row in [head, *rows]:
-        lines.append("  ".join(str(c).ljust(w) for c, w in zip(row[:5], widths, strict=True)) + "  " + row[5])
+        lines.append("  ".join(str(c).ljust(w) for c, w in zip(row[:6], widths, strict=True)) + "  " + row[6])
     if "wall_seconds" in result:
         lines.append(f"wall {result['wall_seconds']} s, cpu {result['cpu_seconds']} s (children)")
     if "ranked" in result:
@@ -453,12 +594,20 @@ def table(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) -> tuple[dict[str, Any], int]:
-    """Replay every saved movie in parallel, block until done, one row per movie against its recorded standing.
+def play_all(
+    profile: Profile,
+    *,
+    jobs: int = 4,
+    now: datetime | None = None,
+    twice: bool = False,
+    run_ids: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], int]:
+    """Replay every saved movie in parallel at turbo, block until done, one row per movie against its recorded
+    standing. `twice` replays each movie twice (same_twice then compares the two); `run_ids` names the run folders
+    (the page knows them before the runs start).
 
     The recorded standing is the best row so far in `runs/standing.json`, moved only when a movie is not worse, so a
     regression stays `worse` until fixed. Exit status 1 when any movie is worse."""
-    import json
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     cfg = settings(profile)
@@ -468,7 +617,9 @@ def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) ->
 
     def one(name: str) -> dict[str, Any]:
         try:
-            return play(profile, name, now=now, health=health, cheap=True)
+            if twice:
+                play(profile, name, now=now, health=health)
+            return play(profile, name, now=now, health=health, run_id=(run_ids or {}).get(name) if not twice else None)
         except DecompError as error:
             return {"movie": name, "outcome": "refused", "subject": str(error), "polls_reached": 0}
 
@@ -476,7 +627,7 @@ def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) ->
         reached = f"{row.get('polls_reached', 0)}/{row.get('polls', 0)}"
         outcome = row["outcome"] + (f" {row['subject']}" if row.get("subject") else "")
         sys.stderr.write(
-            f"tas: {row['movie']} {outcome} {reached} "
+            f"tas: {row['movie']} {outcome} {reached} same_twice={_twice_text(row.get('same_twice'))} "
             f"{row.get('wall_seconds', 0)}/{row.get('cpu_seconds', 0)} s (wall/cpu)\n"
         )
         sys.stderr.flush()
@@ -514,6 +665,8 @@ def play_all(profile: Profile, *, jobs: int = 4, now: datetime | None = None) ->
                 "next": result.get("next", ""),
                 "owner": result.get("owner", ""),
                 "run": result.get("run", ""),
+                "same_twice": result.get("same_twice"),
+                "fn": result.get("fn"),
                 "wall_seconds": result.get("wall_seconds", 0),
                 "cpu_seconds": result.get("cpu_seconds", 0),
             }
@@ -554,7 +707,6 @@ def ranked_work(
 
 def standing_rows(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     """Movie rows from the recorded standing (no replay), for the ranked list outside `play --all`."""
-    import json
 
     try:
         standing = json.loads((cfg["runs"] / "standing.json").read_text())

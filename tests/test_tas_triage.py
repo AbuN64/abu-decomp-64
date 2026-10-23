@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from unittest import mock
 
 from abu_decomp import tas_triage
-from abu_decomp.tas_watch import Watcher
 
 
 class TriageTests(unittest.TestCase):
@@ -85,12 +84,3 @@ class TriageTests(unittest.TestCase):
         self.assertEqual(tas_triage.claim(self.profile, {"outcome": "ok"}), {})
         hang = tas_triage.claim(self.profile, {"outcome": "hang"})
         self.assertEqual((hang["kind"], hang["blocking"]), ("hang", True))
-
-    def test_stop_event_carries_the_state_claim(self):
-        w = Watcher()
-        base = {"run": "/r/1", "polls": 3, "running": False, "stacks": [], "marks": {}, "exit": None}
-        w.feed({**base, "run": None, "stopped": {}}, 0)
-        (event,) = w.feed(
-            {**base, "stopped": {"outcome": "stop", "subject": "s", "kind": "no C body", "next": "n"}}, 1
-        )[-1:]
-        self.assertEqual((event["event"], event["kind"], event["next"]), ("stop", "no C body", "n"))

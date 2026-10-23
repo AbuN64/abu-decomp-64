@@ -1,6 +1,6 @@
 import unittest
 
-from abu_decomp import tas, tas_rank
+from abu_decomp import tas_rank
 
 HEALTH = {
     "failed": [
@@ -57,13 +57,6 @@ class RankTests(unittest.TestCase):
     def test_rule_order_is_configuration(self):
         cfg = tas_rank.settings({"order": ["owes", "blocks"]})
         self.assertEqual(tas_rank.rank(cfg, HEALTH, MOVIES, OWES)[0]["kind"], "owes a match")
-
-    def test_replay_section_defaults_to_the_watched_args_and_no_view(self):
-        class P:
-            source_file = "p"
-
-        self.assertEqual(tas._replay(P(), None), {"args": None, "view": False})
-        self.assertEqual(tas._replay(P(), {"args": ["--window", "64x48"]})["args"], ["--window", "64x48"])
 
 
 if __name__ == "__main__":
