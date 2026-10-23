@@ -10,6 +10,9 @@ replays `N64C_TAS_PLAY`, appends every poll to `N64C_TAS_RECORD`, and exits 0 `N
 movie. A movie (`NAME.tas`) is the readable form of the same polls: `#` header lines, then one line per run of equal
 polls, `BUTTONS [X,Y] [*COUNT]`, where BUTTONS is `-` or names joined by `+` (`A+START`) and the stick is omitted
 when centred. Replay keys input to the poll index, so a movie is the same run at any host speed.
+The header's `pak` (`on` or `off`) says whether the run had the Expansion Pak (8 MB RDRAM) or not (4 MB); a movie
+without one ran with it. A replay keeps what the movie ran with (`play --pak` overrides, the page's "new run" picks),
+the port gets `--pak off` for a run without it, and the run's record and the page's tile show it.
 
 Every replay is the same one kind of run, and every one is visible: the port writes its latest picture to the run
 folder (`N64C_VIEW`, a BMP at most ~15 times a second), a per-poll RAM hash (`N64C_TAS_HASH`) and, at speed 1 only,
@@ -83,6 +86,7 @@ STOP_FUNCTION = "n64c_boot_stopped"
 STOP_SUBJECT = "*(char**)&n64c_boot_stop_symbol"
 
 Poll = tuple[int, int, int]
+PAKS = ("on", "off")
 
 
 def _build(profile: Profile, table: Any) -> dict[str, Any]:
@@ -212,10 +216,23 @@ def recordings(cfg: dict[str, Any]) -> list[Path]:
     return sorted(folder.glob("*.raw")) if folder.is_dir() else []
 
 
+def check_pak(pak: str | None) -> None:
+    if pak is not None and pak not in PAKS:
+        raise DecompError("tas.pak", f"the Expansion Pak is 'on' or 'off', not {pak!r}")
+
+
 def save(
-    profile: Profile, name: str, *, source: Path | None, note: str, replace: bool, now: datetime | None = None
+    profile: Profile,
+    name: str,
+    *,
+    source: Path | None,
+    note: str,
+    replace: bool,
+    now: datetime | None = None,
+    pak: str = "on",
 ) -> dict[str, Any]:
     cfg = settings(profile)
+    check_pak(pak)
     path = _movie(cfg, name)
     if path.exists() and not replace:
         raise DecompError("tas.save", f"{path.name} exists; pass --replace to overwrite it")
@@ -228,7 +245,7 @@ def save(
     polls = parse_raw(text[: text.rfind("\n") + 1])  # a live recording may end in a half-written line
     if not polls:
         raise DecompError("tas.save", f"{source} holds no polls")
-    header = {"rom-sha1": _sha1(cfg["rom"]), "recorded": _stamp(now), "polls": str(len(polls))}
+    header = {"rom-sha1": _sha1(cfg["rom"]), "recorded": _stamp(now), "polls": str(len(polls)), "pak": pak}
     if note:
         header["note"] = " ".join(note.split())
     cfg["movies"].mkdir(parents=True, exist_ok=True)
@@ -252,6 +269,7 @@ def listing(profile: Profile) -> dict[str, Any]:
                 "seconds": round(len(polls) / 60, 1),
                 "note": header.get("note", ""),
                 "recorded": header.get("recorded", ""),
+                "pak": header.get("pak", "on"),
             }
         )
     live = [{"path": str(p), "polls": len(read_raw(p))} for p in recordings(cfg)[-5:]]
@@ -275,8 +293,9 @@ def delete(profile: Profile, name: str) -> dict[str, Any]:
     return {"deleted": str(path)}
 
 
-def _argv(cfg: dict[str, Any], user_dir: Path) -> list[str]:
-    return [str(cfg["port"])] + [arg.replace("{user_dir}", str(user_dir)) for arg in cfg["args"]]
+def _argv(cfg: dict[str, Any], user_dir: Path, pak: str = "on") -> list[str]:
+    argv = [str(cfg["port"])] + [arg.replace("{user_dir}", str(user_dir)) for arg in cfg["args"]]
+    return [*argv, "--pak", "off"] if pak == "off" else argv
 
 
 def supervised(cfg: dict[str, Any], run_dir: Path, argv: list[str]) -> list[str]:
@@ -312,6 +331,13 @@ def classify(code: int | None, output: str) -> dict[str, Any]:
     if code == 0 and "n64c-tas: done" in output:
         return {"outcome": "ok"}
     return {"outcome": "exit", "subject": f"exit {code}"}
+
+
+def movie_pak(cfg: dict[str, Any], name: str) -> str:
+    """What the saved movie ran with: its header's `pak`, `on` for a movie from before the switch."""
+    pak = decode(_movie(cfg, name).read_text())[0].get("pak", "on")
+    check_pak(pak)
+    return pak
 
 
 def movie_polls(cfg: dict[str, Any], name: str) -> list[Poll]:
@@ -459,10 +485,13 @@ def last_poll(path: Path) -> int:
     return 0
 
 
-def previous_run(cfg: dict[str, Any], name: str, build: str, before: str) -> Path | None:
-    """The newest finished run of `name` on this build (by folder name, older than `before`) with a hash file."""
+def previous_run(cfg: dict[str, Any], name: str, build: str, before: str, pak: str = "on") -> Path | None:
+    """The newest finished run of `name` on this build with the same Expansion Pak setting (by folder name, older
+    than `before`) with a hash file."""
     for run, row in reversed(run_rows(cfg)):
         if run.name >= before or row.get("movie") != name or row.get("build") != build:
+            continue
+        if row.get("pak", "on") != pak:
             continue
         if row.get("taken"):
             continue
@@ -488,7 +517,9 @@ def human_movie_name(now: datetime | None = None) -> str:
     return "play-" + (now or datetime.now(UTC)).strftime("%Y%m%d-%H%M%S")
 
 
-def save_taken(profile: Profile, cfg: dict[str, Any], run: Path, movie: str, human: bool) -> str | None:
+def save_taken(
+    profile: Profile, cfg: dict[str, Any], run: Path, movie: str, human: bool, pak: str = "on"
+) -> str | None:
     """Save a run that live input drove as a movie: the human's run under its own name, a takeover as
     `<movie>-take-STAMP` (the original movie's prefix plus the human's polls). None when it reached no poll."""
     source = run / "polls.raw"
@@ -498,7 +529,7 @@ def save_taken(profile: Profile, cfg: dict[str, Any], run: Path, movie: str, hum
     name = movie if human else f"{movie[:40]}-take-{stamp}"
     note = f"live input from the TAS page, run {run.name}" + ("" if human else f", taken over from {movie}")
     try:
-        return save(profile, name, source=source, note=note, replace=False)["name"]
+        return save(profile, name, source=source, note=note, replace=False, pak=pak)["name"]
     except DecompError:
         return None
 
@@ -557,11 +588,13 @@ def play(
     shots_every: int = 0,
     dump_ram_at: int | None = None,
     trace_draws: int | None = None,
+    pak: str | None = None,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
     lane's own build), `label` tags the run with the lane that started it; both show on the page.
 
+    `pak` ("on"/"off") sets the Expansion Pak: the movie's own by default, `on` for a new run.
     Every run listens for live input (`input_address`, module tas_serve's /api/take and /api/input): once it is taken
     over the recording goes on, and at the end its polls are saved as a new movie (`saved`). `name` None is a new
     human run: a fresh boot at speed 1 driven by live input from the first poll, saved as `play-STAMP`."""
@@ -572,6 +605,7 @@ def play(
     began = time.monotonic()
     health = tas_health.read(cfg, profile) if health is None else health
     check_inspect(shots_every, dump_ram_at, trace_draws)
+    check_pak(pak)
     human = name is None
     if human:
         speed, label = 1, label or HUMAN_LABEL
@@ -579,6 +613,7 @@ def play(
         polls: list[Poll] = []
     else:
         polls = movie_polls(cfg, name)
+    pak = pak or ("on" if human else movie_pak(cfg, name))
     run = cfg["runs"] / "plays" / (run_id or new_run_id(cfg, name, now))
     user_dir = run / "user"
     user_dir.mkdir(parents=True)
@@ -615,9 +650,10 @@ def play(
         "port": str(cfg["port"]),
         "label": label or None,
         "input": "human" if human else "movie",
+        "pak": pak,
     }
     _write_record(run, record)
-    argv = supervised(cfg, run, _argv(cfg, user_dir))
+    argv = supervised(cfg, run, _argv(cfg, user_dir, pak))
     try:
         with (run / "output.txt").open("w") as output:
             process = subprocess.Popen(
@@ -648,14 +684,16 @@ def play(
     result.update(tas_symbolize.claim(profile, result, stacks, health))
     if health:
         result["build"] = tas_health.header(health)
-    before = previous_run(cfg, name, build, run.name) if build and not stopped else None
+    before = previous_run(cfg, name, build, run.name, pak) if build and not stopped else None
     result["same_twice"] = same_hashes(run, before) if before else None
     if before:
         result["compared_with"] = before.name
     result["fn"] = fn_of(result)
     taken = (run / TAKEN).is_file()
     if taken:
-        result.update(taken=True, same_twice=None, compared_with=None, saved=save_taken(profile, cfg, run, name, human))
+        result.update(
+            taken=True, same_twice=None, compared_with=None, saved=save_taken(profile, cfg, run, name, human, pak)
+        )
     keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
     keep += ("taken", "saved")
     _write_record(
@@ -666,11 +704,17 @@ def play(
 
 
 def play_twice(
-    profile: Profile, name: str, *, speed: int = 0, port: Path | str | None = None, label: str | None = None
+    profile: Profile,
+    name: str,
+    *,
+    speed: int = 0,
+    port: Path | str | None = None,
+    label: str | None = None,
+    pak: str | None = None,
 ) -> dict[str, Any]:
     """Two replays back to back; the second's `same_twice` compares it with the first."""
-    play(profile, name, speed=speed, port=port, label=label)
-    return play(profile, name, speed=speed, port=port, label=label)
+    play(profile, name, speed=speed, port=port, label=label, pak=pak)
+    return play(profile, name, speed=speed, port=port, label=label, pak=pak)
 
 
 def compare(recorded: dict[str, Any] | None, now: dict[str, Any]) -> str:

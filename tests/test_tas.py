@@ -273,6 +273,46 @@ class MovieTests(unittest.TestCase):
         with self.assertRaises(DecompError):
             tas.play(self.profile, "m", label="no spaces")
 
+    def test_the_expansion_pak_is_a_header_a_flag_and_a_record(self):
+        self.movie()  # a movie from before the switch: no pak line, so it ran with the pak
+        argvs = []
+
+        class Port:
+            def __init__(self, argv, env, stdout, **kwargs):
+                argvs.append(argv)
+                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n")
+                Path(env["N64C_TAS_HASH"]).write_text("1 aa\n")
+                self.pid = 1
+                self.stdin = io.StringIO()
+
+            def wait(self, timeout=None):
+                return 0
+
+        with mock.patch.object(tas.subprocess, "Popen", Port):
+            old = tas.play(self.profile, "m", now=T0)
+            off = tas.play(self.profile, "m", now=T0, pak="off")
+            again = tas.play(self.profile, "m", now=T0, pak="off")
+            human = tas.play(self.profile, None, now=T0, pak="off")
+            with self.assertRaises(DecompError):
+                tas.play(self.profile, "m", pak="maybe")
+        self.assertNotIn("--pak", argvs[0])
+        self.assertEqual(argvs[1][-2:], ["--pak", "off"])
+        self.assertEqual([tas.read_record(Path(r["run"]))["pak"] for r in (old, off, human)], ["on", "off", "off"])
+        self.assertIsNone(off["same_twice"])  # never compared with the run that had the pak
+        self.assertIs(again["same_twice"], True)
+        self.assertEqual(again["compared_with"], Path(off["run"]).name)
+        self.assertEqual(tas.decode((self.root / "movies" / f"{human['saved']}.tas").read_text())[0]["pak"], "off")
+        self.live.mkdir(parents=True, exist_ok=True)
+        (self.live / "x.raw").write_text("0000 0 0\n")
+        tas.save(self.profile, "short", source=self.live / "x.raw", note="", replace=False, pak="off")
+        self.assertEqual(tas.movie_pak(tas.settings(self.profile), "short"), "off")
+        self.assertEqual(tas.movie_pak(tas.settings(self.profile), "m"), "on")
+        with mock.patch.object(tas.subprocess, "Popen", Port):
+            kept = tas.play(self.profile, "short", now=T0)  # the movie's own setting is kept
+        self.assertEqual(argvs[-1][-2:], ["--pak", "off"])
+        self.assertEqual(tas.read_record(Path(kept["run"]))["pak"], "off")
+        self.assertEqual({m["name"]: m["pak"] for m in tas.listing(self.profile)["movies"]}["short"], "off")
+
     def test_a_human_run_and_a_taken_run_are_saved_as_movies(self):
         self.movie()
         seen = []

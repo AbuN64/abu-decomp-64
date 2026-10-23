@@ -344,6 +344,7 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     save.add_argument("--from", dest="source", type=Path, help="raw recording to save")
     save.add_argument("--note", default="", help="one line: what the movie shows")
     save.add_argument("--replace", action="store_true", help="overwrite a movie of the same name")
+    save.add_argument("--pak", choices=("on", "off"), default="on", help="the recording ran with the pak")
     actions.add_parser("list", help="the saved movies and the newest recordings")
     actions.add_parser("serve", help="serve the TAS page: every replay's picture, sound, log and the cycle state")
     for verb, text in (
@@ -359,6 +360,7 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     play.add_argument("--twice", action="store_true", help="replay twice; same_twice compares the two runs' RAM")
     play.add_argument("--port", type=Path, help="run this build's executable instead of the profile's (a lane's build)")
     play.add_argument("--label", help="tag the run with this lane name on the TAS page")
+    play.add_argument("--pak", choices=("on", "off"), help="Expansion Pak on (8 MB) or off (4 MB), else the movie's")
     play.add_argument("--shots-every", type=int, default=0, metavar="N", help="write a picture every N polls to RUN/shots")
     play.add_argument("--dump-ram-at", type=int, metavar="P", help="write guest RAM at poll P to RUN/ram-P.bin")
     play.add_argument("--trace-draws", type=int, metavar="P", help="write the draws (texture, palette, combiner, colours, "
@@ -370,7 +372,8 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
 
     profile = _profile(args.profile)
     if args.action == "save":
-        return tas.save(profile, args.name, source=args.source, note=args.note, replace=args.replace), 0, []
+        saved = tas.save(profile, args.name, source=args.source, note=args.note, replace=args.replace, pak=args.pak)
+        return saved, 0, []
     if args.action == "list":
         return tas.listing(profile), 0, []
     if args.action == "serve":
@@ -382,8 +385,8 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
     if args.action == "delete":
         return tas.delete(profile, args.name), 0, []
     inspect = {"shots_every": args.shots_every, "dump_ram_at": args.dump_ram_at, "trace_draws": args.trace_draws}
-    if args.all and (args.port or args.label or any(inspect.values())):
-        raise DecompError("tas.play", "--port, --label and the inspection options replay one movie, not --all")
+    if args.all and (args.port or args.label or args.pak or any(inspect.values())):
+        raise DecompError("tas.play", "--port, --label, --pak and the inspection options replay one movie, not --all")
     if args.all:
         result, code = tas.play_all(profile, jobs=args.jobs, twice=args.twice)
         print(tas.table(result), file=sys.stderr)
@@ -393,8 +396,10 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
     if args.twice:
         if any(inspect.values()):
             raise DecompError("tas.play", "--twice compares two plain runs; inspect with a single replay")
-        return tas.play_twice(profile, args.name, speed=args.speed, port=args.port, label=args.label), 0, []
-    return tas.play(profile, args.name, speed=args.speed, port=args.port, label=args.label, **inspect), 0, []
+        twice = tas.play_twice(profile, args.name, speed=args.speed, port=args.port, label=args.label, pak=args.pak)
+        return twice, 0, []
+    played = tas.play(profile, args.name, speed=args.speed, port=args.port, label=args.label, pak=args.pak, **inspect)
+    return played, 0, []
 
 
 def _run_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:

@@ -278,16 +278,18 @@ class HttpTests(Base):
     def test_new_human_run_take_and_input_reach_the_run_socket(self):
         import socket
 
-        started = []
+        started, paks = [], []
 
-        def fake_play(profile, movie, *, speed=0, run_id=None, port=None, label=None, **kwargs):
+        def fake_play(profile, movie, *, speed=0, run_id=None, port=None, label=None, pak=None, **kwargs):
             started.append((movie, speed, run_id, label))
+            paks.append(pak)
             hold.wait(10)
             return {}
 
         hold = threading.Event()
         with mock.patch.object(tas, "play", fake_play):
-            status, reply = self.post("/api/play", {"label": "owner"})
+            self.assertEqual(self.post("/api/play", {"label": "owner", "pak": "maybe"})[0], 400)
+            status, reply = self.post("/api/play", {"label": "owner", "pak": "off"})
             self.assertEqual(status, 200)
             self.assertTrue(reply["movie"].startswith("play-"))
             for _ in range(100):
@@ -296,7 +298,8 @@ class HttpTests(Base):
                 time.sleep(0.01)
             self.assertEqual(started, [(None, 1, reply["id"], "owner")])
             row = {r["id"]: r for r in json.loads(self.get("/api/state")[2])["runs"]}[reply["id"]]
-            self.assertEqual((row["input"], row["label"], row["speed"]), ("human", "owner", 1))
+            self.assertEqual((row["input"], row["label"], row["speed"], row["pak"]), ("human", "owner", 1, "off"))
+            self.assertEqual(paks, ["off"])
             self.assertEqual(self.post("/api/play", {})[0], 400)  # one live-input run at a time
             hold.set()
         for _ in range(100):  # the placeholder goes once its run ends

@@ -126,6 +126,7 @@
   <span class="grow"></span>
   <span id="conn" class="dim"></span>
   <span class="keys dim"><kbd>space</kbd> play 1x · <kbd>a</kbd> all · <kbd>x</kbd> stop · <kbd>↑↓</kbd>/click pick</span>
+  <label id="pakwrap" class="dim" title="The next new run has the Expansion Pak (8 MB RDRAM); off is the 4 MB console"><input type="checkbox" id="pak" checked> Expansion Pak</label>
   <button id="newrun" title="Start your own run: fresh boot, your controller, recorded as a movie">new run</button>
   <button id="all" title="Replay every movie at turbo (a)">play all</button>
   <button id="clear" title="Stop every running replay and close every picture">close all</button>
@@ -278,7 +279,7 @@ function renderTiles() {
     const wasDone = t.run.status === "done";
     t.run = r;
     if (box.children[i] !== t.node) box.insertBefore(t.node, box.children[i] || null);
-    t.mv.textContent = (r.label ? `[${r.label}] ` : "") + r.movie;
+    t.mv.textContent = (r.label ? `[${r.label}] ` : "") + r.movie + ` · pak ${r.pak || "on"}`;
     t.mv.title = `${r.id}\n${r.port || ""}`;
     const out = r.status === "done" ? (r.outcome || "done") : null;
     t.badge.textContent = out || speedText(r.speed);
@@ -623,7 +624,7 @@ function stageOn(id, control) {
 }
 async function newRun() {
   wake();
-  const r = await post("/api/play", { label: "owner" });
+  const r = await post("/api/play", { label: "owner", pak: $("pak").checked ? "on" : "off" });
   if (r.id) stageOn(r.id, true); else alert(r.error || "could not start a run");
 }
 async function takeRun(run) {
@@ -661,7 +662,7 @@ function renderStage() {
   box.classList.toggle("on", !!P.id);
   if (!P.id) return;
   const live = !!(run && run.status === "running");
-  $("stitle").textContent = run ? (run.label ? `[${run.label}] ` : "") + run.movie : P.id;
+  $("stitle").textContent = run ? (run.label ? `[${run.label}] ` : "") + run.movie + ` · pak ${run.pak || "on"}` : P.id;
   $("sinfo").textContent = !run ? "starting…" : live
     ? `poll ${run.poll}` + (run.input === "human" ? " · live input" : ` of ${run.polls} · ${speedText(run.speed)}`)
     : `${run.outcome || "done"}${run.subject ? " · " + run.subject : ""}${run.saved ? " · saved as " + run.saved : ""}`;
