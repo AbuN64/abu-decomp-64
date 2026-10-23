@@ -30,7 +30,7 @@ DEFAULTS: dict[str, Any] = {
     "event_budget": 20000,  # call/stub/store events one case may write; a case over it ends fatal event-budget
     "event_budget_cap": 300000,  # the most the budget is raised to for a function that needs more
     "depth_cap": 3,  # calls deep the original callees may run when no case ran to completion with fewer
-    "capture_poll_seconds": 0.5,  # oracle seconds a movie needs per poll up to the function's first call (time limit)
+    "capture_poll_seconds": 0.1,  # oracle seconds a movie needs per poll up to the function's first call (time limit)
     "learn_cases": 8,
     "learn_rounds": 8,
     "min_compared": compare.MIN_COMPARED,  # cases that must compare before the verdict may be `same`
