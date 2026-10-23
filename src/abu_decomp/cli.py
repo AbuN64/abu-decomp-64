@@ -346,6 +346,11 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     save.add_argument("--replace", action="store_true", help="overwrite a movie of the same name")
     save.add_argument("--pak", choices=("on", "off"), default="on", help="the recording ran with the pak")
     actions.add_parser("list", help="the saved movies and the newest recordings")
+    coverage = actions.add_parser(
+        "coverage", help="union the newest run of every movie into the game-code coverage table"
+    )
+    coverage.add_argument("--no-oracle", action="store_true", help="do not replay runs that lack an oracle trace")
+    coverage.add_argument("--jobs", type=int, default=4, help="parallel oracle replays (default 4)")
     actions.add_parser("serve", help="serve the TAS page: every replay's picture, sound, log and the cycle state")
     for verb, text in (
         ("show", "one movie's header and polls"),
@@ -390,6 +395,14 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         from abu_decomp import tas_serve
 
         return tas_serve.serve(profile), 0, []
+    if args.action == "coverage":
+        from abu_decomp import tas_coverage
+
+        report = tas_coverage.build(profile, tas.settings(profile), oracle=not args.no_oracle, jobs=args.jobs)
+        if report is None:
+            raise DecompError("tas.coverage", "the profile has no tas.coverage section")
+        print(tas_coverage.line(report), file=sys.stderr)
+        return tas_coverage.lists(report, 25), 0, []
     if args.action == "show":
         return tas.show(profile, args.name), 0, []
     if args.action == "delete":

@@ -44,7 +44,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas_health, tas_oracle, tas_rank, tas_symbolize
+from abu_decomp import DecompError, tas_coverage, tas_health, tas_oracle, tas_rank, tas_symbolize
 from abu_decomp.config import Profile, check_keys
 
 SCHEMA = 1
@@ -82,6 +82,7 @@ _KEYS = frozenset(
         "build",
         "rank",
         "oracle",
+        "coverage",
     }
 )
 _REQUIRED = frozenset({"movies", "runs", "port", "args", "rom"})
@@ -637,6 +638,7 @@ def play(
         "N64C_SPEED": str(speed),
         "N64C_INPUT": input_address(run),
         "N64C_AUDIO_OUT": str(run / AUDIO),
+        "GCOV_PREFIX": str(run / "gcov"),  # a coverage build leaves its counters here (tas_coverage)
     }
     if human:
         (run / TAKEN).write_text("new run\n")
@@ -701,6 +703,11 @@ def play(
     found = inspect_files(run, shots_every, dump_ram_at, trace_draws)
     if found:
         result["inspect"] = found
+    try:  # RUN/coverage.json: this run's gcovr report (nothing without a coverage build)
+        if tas_coverage.run_report(profile, cfg, run):
+            result["coverage"] = str(run / tas_coverage.COVERAGE)
+    except DecompError as error:
+        result["coverage_error"] = str(error)
     stopped = (run / "stopped").exists()
     if stopped:
         result["subject"] = "stopped from the page"
@@ -723,7 +730,7 @@ def play(
             taken=True, same_twice=None, compared_with=None, saved=save_taken(profile, cfg, run, name, human, pak)
         )
     keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
-    keep += ("taken", "saved")
+    keep += ("taken", "saved", "coverage")
     if oracle_waiter:
         oracle_waiter.join()
         wall, polls = oracle_end["wall"], tas_oracle.reached(run)
@@ -803,6 +810,8 @@ def table(result: dict[str, Any]) -> str:
         lines.append("  ".join(str(c).ljust(w) for c, w in zip(row[:6], widths, strict=True)) + "  " + row[6])
     if "wall_seconds" in result:
         lines.append(f"wall {result['wall_seconds']} s, cpu {result['cpu_seconds']} s (children)")
+    if result.get("coverage"):
+        lines.append(result["coverage"])
     if "ranked" in result:
         lines.append(tas_rank.render(result["ranked"]))
     return "\n".join(lines)
@@ -893,6 +902,12 @@ def play_all(
     timing = {"wall_seconds": round(time.monotonic() - began, 1), "cpu_seconds": cpu}
     ranked = ranked_work(profile, cfg, health, rows)
     result = {"build": tas_health.header(health), "movies": rows, "worse": worse, **timing, "ranked": ranked}
+    try:  # the unioned coverage never fails a replay
+        report = tas_coverage.build(profile, cfg, jobs=jobs)
+        if report:
+            result["coverage"] = tas_coverage.line(report)
+    except DecompError as error:
+        result["coverage"] = f"coverage: {error}"
     return {**result, "next": ranked[0]["next"] if ranked else "nothing open"}, int(bool(worse))
 
 

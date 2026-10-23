@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, evidence, tas, tas_oracle, tas_triage
+from abu_decomp import DecompError, evidence, tas, tas_coverage, tas_oracle, tas_triage
 from abu_decomp.config import Profile
 
 _SERVE_KEYS = frozenset({"listen", "jobs", "inbox", "states", "pin", "lanes"})
@@ -183,6 +183,20 @@ class Server:
                 return 0
 
         return self._cached(("polls", str(path), path.stat().st_mtime_ns), read)
+
+    def coverage(self) -> dict[str, Any]:
+        """The game-code coverage table (runs/coverage.json, written by `tas play --all` / `tas coverage`): the summary
+        and the two lists that drive work. {} when no table exists yet."""
+        path = self.cfg["runs"] / tas_coverage.TABLE
+
+        def read() -> dict[str, Any]:
+            report = tas_coverage.read_table(self.cfg)
+            return tas_coverage.lists(report) if report else {}
+
+        try:
+            return self._cached(("coverage", path.stat().st_mtime_ns), read)
+        except OSError:
+            return {}
 
     # --- the contract ---
 
@@ -484,6 +498,10 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.reply(PAGE().encode(), "text/html; charset=utf-8")
                 elif path == "/api/state":
                     self.json(server.state())
+                elif path == "/api/coverage":
+                    self.json(server.coverage())
+                elif head == "coverage":
+                    self.static(server.cfg["runs"] / tas_coverage.HTML, run_id or "index.html")
                 elif head == "frame" and run_id:
                     self.frame(server.run_dir(run_id), query)
                 elif head == "oracle" and run_id:
@@ -500,6 +518,14 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.missing()
             except (BrokenPipeError, ConnectionResetError):
                 return
+
+        def static(self, root: Path, name: str) -> None:
+            """A file of the gcovr HTML report (runs/coverage); a name that leaves the folder is a 404."""
+            path = (root / name).resolve()
+            if root.resolve() not in path.parents or not path.is_file():
+                return self.missing()
+            kind = {".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript"}
+            self.reply(path.read_bytes(), kind.get(path.suffix, "application/octet-stream"))
 
         def frame(self, run: Path | None, query: str, name: str = tas.VIEW) -> None:
             after = None

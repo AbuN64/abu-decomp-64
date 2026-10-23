@@ -326,6 +326,35 @@ class HttpTests(Base):
         self.assertEqual(self.post("/api/play", {})[0], 400)  # r5 is driven by live input now
         self.assertEqual(self.post("/api/take", {"id": "nope"})[0], 400)
 
+    def test_coverage_table_and_the_static_gcovr_report(self):
+        self.assertEqual(json.loads(self.get("/api/coverage")[2]), {})  # no table yet
+        runs = self.root / "runs"
+        table = {
+            "generated": 1,
+            "summary": {"version": "us-rev1"},
+            "gcovr": {"line_percent": 1.5},
+            "functions": [
+                {"name": "a", "in_version": True, "scope": "game", "state": "oracle-only", "size": 4},
+                {"name": "b", "in_version": True, "scope": "game", "state": "neither", "size": 9},
+                {"name": "c", "in_version": True, "scope": "sdk", "state": "neither", "size": 99},
+            ],
+        }
+        (runs / "coverage-table.json").write_text(json.dumps(table))
+        (runs / "coverage").mkdir()
+        (runs / "coverage" / "index.html").write_text("<html>report</html>")
+        (runs / "secret.txt").write_text("no")
+        view = json.loads(self.get("/api/coverage")[2])
+        self.assertEqual([r["name"] for r in view["oracle_only"]], ["a"])
+        self.assertEqual([r["name"] for r in view["neither"]], ["b"])  # sdk rows are not the owner's to record
+        self.assertEqual(view["gcovr"], {"line_percent": 1.5})
+        with urllib.request.urlopen(self.base + "/coverage/", timeout=10) as reply:
+            self.assertEqual(
+                (reply.headers["Content-Type"], reply.read()), ("text/html; charset=utf-8", b"<html>report</html>")
+            )
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(self.base + "/coverage/../secret.txt", timeout=10)
+        self.assertEqual(caught.exception.code, 404)
+
     def test_frame_long_poll_names_the_frame_and_the_input_it_shows(self):
         run = self.make_run("r6", movie="boot-idle", status="running", speed=1, started=1.0, pid=os.getpid())
         picture = bytearray(b"BM" + bytes(60))

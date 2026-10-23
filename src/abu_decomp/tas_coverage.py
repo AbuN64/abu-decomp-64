@@ -1,0 +1,499 @@
+"""Which game code the recorded movies reach: gcov line/branch/function coverage per run and unioned, plus the oracle.
+
+Port side: the page's port is a gcov build (cmake RAGE_DECOMP_COVERAGE: the original units compiled with GCC's
+`--coverage`, libgcov linked, counters dumped on every exit path by decomp/coverage.c). Each `tas play` sets
+`GCOV_PREFIX` to RUN/gcov, so a run keeps its own .gcda; `run_report` turns them into RUN/coverage.json with
+`gcovr --json`, and `build` unions every movie's newest run with `gcovr --add-tracefile` into one `--html-details`
+report (runs/coverage/index.html, served by `tas serve` at /coverage/): per file and line, line/branch/function
+percentages, source annotated. Nothing here renders HTML by hand.
+
+Oracle side: the recompiled original (cake-taste host) replays the same movie with `N64R_GOLDEN_DIR`; its
+`trace-final.tsv` (symbol, first VI, thread, count) is the per-function first-entry record the host already writes.
+The join with the port is by function name (the versions share names). Not a gcov build of the recomp: see RESULT.
+
+The universe for percentages by bytes is every function of the version's ELF (`readelf -sW`, MIPS sizes), keyed by
+name with the versions that define it. A row is scope `sdk` when its file is under `src/sdk/` (the port replaces
+those with its shim), other when no source defines it (compiler runtime, asm-only), else game.
+Section `tas.coverage`: {"elf": ".../build/{version}/RageWars.elf", "version":
+"us-rev1", "versions": [...], "source": folder with src/ (default: tas.serve.pin), "oracle": {"argv": [...],
+"env": {...}} with {movie}, {dir}, {trace} in values}.
+"""
+
+from __future__ import annotations
+
+import bisect
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+from abu_decomp import DecompError, tas_symbolize
+from abu_decomp.config import Profile, check_keys
+
+COVERAGE, GCOV, ORACLE_DIR, TABLE, HTML = "coverage.json", "gcov", "oracle", "coverage-table.json", "coverage"
+_KEYS = frozenset({"elf", "version", "versions", "source", "oracle"})
+_SYMBOL = re.compile(r"^\s*\d+:\s+([0-9a-fA-F]+)\s+(\d+)\s+FUNC\s+\w+\s+\w+\s+\S+\s+(\S+)$")
+_DEFINITION = re.compile(r"^(?:[A-Za-z_][\w]*[\s\*]+)+\**([A-Za-z_]\w*)\s*\([^;]*$")
+_INCLUDE_ASM = re.compile(r"INCLUDE_ASM\s*\([^,]*,\s*([A-Za-z_]\w*)")
+_SOURCE_SUFFIXES = {".c", ".cpp", ".h"}
+LISTED = 200  # rows each list of the page carries
+
+
+def settings(profile: Profile, cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """The `tas.coverage` section, or None when the profile has none (coverage is then simply not collected)."""
+    table = profile.section("tas").get("coverage")
+    if not table:
+        return None
+    check_keys(profile.source_file, "tas.coverage", table, frozenset({"elf"}), _KEYS)
+    version = str(table.get("version", "us-rev1"))
+    pin = table.get("source") or profile.section("tas").get("serve", {}).get("pin")
+    oracle = table.get("oracle") or {}
+    return {
+        "elf": str(table["elf"]),
+        "version": version,
+        "versions": [str(v) for v in table.get("versions", [version])],
+        "source": profile.path("tas.coverage.source", pin) if pin else None,
+        "oracle": {
+            "argv": [str(a) for a in oracle.get("argv", [])],
+            "env": {str(k): str(v) for k, v in oracle.get("env", {}).items()},
+        }
+        if oracle
+        else None,
+    }
+
+
+# --- the two sides' hit files ---
+
+
+def read_gcovr(path: Path) -> dict[str, int] | None:
+    """name -> execution count of every function in a gcovr JSON report (same-named statics add up); None when
+    the file is missing or unreadable."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    counts: dict[str, int] = {}
+    for entry in data.get("files", []):
+        for fn in entry.get("functions", []):
+            name = str(fn.get("name", ""))
+            if name:
+                counts[name] = counts.get(name, 0) + int(fn.get("execution_count", 0))
+    return counts
+
+
+def gcovr(args: list[str], cwd: Path, timeout: float = 600) -> None:
+    """Run gcovr (the decomp venv's own pinned copy); a failure is a DecompError carrying its last lines."""
+    try:
+        done = subprocess.run(
+            [sys.executable, "-m", "gcovr", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise DecompError("tas.coverage", f"gcovr did not run: {error}") from error
+    if done.returncode:
+        raise DecompError("tas.coverage", "gcovr failed: " + " | ".join(done.stderr.strip().splitlines()[-3:]))
+
+
+def read_oracle(folder: Path) -> tuple[dict[str, tuple[int, int]], int] | None:
+    """(name -> (first poll, count), polls the oracle ran) from the oracle's trace-final.tsv; None when it left none."""
+    try:
+        rows = (folder / "trace-final.tsv").read_text(errors="replace").splitlines()[1:]
+    except OSError:
+        return None
+    vis: list[int] = []
+    try:
+        for line in (folder / "polls.txt").read_text().splitlines():
+            parts = line.split()
+            if len(parts) == 2:
+                vis.append(int(parts[1]))
+    except (OSError, ValueError):
+        pass
+    hits: dict[str, tuple[int, int]] = {}
+    for line in rows:
+        parts = line.split("\t")
+        if len(parts) < 5 or not (parts[2].isdigit() and parts[4].isdigit()):
+            continue
+        hits[parts[1]] = (bisect.bisect_right(vis, int(parts[2])), int(parts[4]))
+    return hits, len(vis)
+
+
+def run_oracle(cov: dict[str, Any], movie: Path, run: Path, timeout: float) -> bool:
+    """Replay `movie` (a raw movie file) in the oracle into RUN/oracle; True when it left its trace."""
+    oracle = cov["oracle"]
+    if not oracle or not oracle["argv"]:
+        return False
+    folder = run / ORACLE_DIR
+    folder.mkdir(exist_ok=True)
+    sub = {"movie": str(movie), "dir": str(folder), "trace": str(folder / "polls.txt")}
+
+    def fill(text: str) -> str:
+        return text.format(**sub)
+
+    env = {**os.environ, **{k: fill(v) for k, v in oracle["env"].items()}}
+    try:
+        with (folder / "output.txt").open("w") as output:
+            subprocess.run(
+                [fill(a) for a in oracle["argv"]],
+                env=env,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                timeout=timeout,
+                check=False,
+                start_new_session=True,
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return (folder / "trace-final.tsv").is_file()
+
+
+# --- the universe ---
+
+
+def elf_functions(elf: Path) -> dict[str, tuple[int, int]]:
+    """name -> (address, size) of every sized function symbol in an ELF."""
+    try:
+        out = subprocess.run(
+            ["readelf", "-sW", str(elf)], capture_output=True, text=True, timeout=120, check=False
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise DecompError("tas.coverage", f"cannot read {elf}: {error}") from error
+    found: dict[str, tuple[int, int]] = {}
+    for line in out.splitlines():
+        match = _SYMBOL.match(line)
+        if match and int(match[2]):
+            found.setdefault(match[3], (int(match[1], 16), int(match[2])))
+    return found
+
+
+def source_files(source: Path | None, names: set[str]) -> dict[str, str]:
+    """name -> `src/...` file defining it (a C body, or the INCLUDE_ASM that stands in for it); the first wins."""
+    where: dict[str, str] = {}
+    if source is None or not (source / "src").is_dir():
+        return where
+    for path in sorted((source / "src").rglob("*")):
+        if path.suffix.lower() not in _SOURCE_SUFFIXES or not path.is_file():
+            continue
+        rel = str(path.relative_to(source))
+        for line in path.read_text(errors="replace").splitlines():
+            match = _DEFINITION.match(line) if line[:1].isalpha() or line[:1] == "_" else None
+            name = match[1] if match else None
+            if name is None and "INCLUDE_ASM" in line:
+                match = _INCLUDE_ASM.search(line)
+                name = match[1] if match else None
+            if name in names:
+                where.setdefault(name, rel)
+    return where
+
+
+def universe(cov: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """One row per function name over all versions' ELFs, and each version's function count."""
+    rows: dict[str, dict[str, Any]] = {}
+    totals: dict[str, int] = {}
+    for version in cov["versions"]:
+        elf = Path(cov["elf"].format(version=version))
+        funcs = elf_functions(elf)
+        totals[version] = len(funcs)
+        for name, (address, size) in funcs.items():
+            row = rows.setdefault(name, {"name": name, "versions": [], "address": 0, "size": 0})
+            row["versions"].append(version)
+            if version == cov["version"] or not row["size"]:
+                row["address"], row["size"] = address, size
+    files = source_files(cov["source"], set(rows))
+    for name, row in rows.items():
+        row["file"] = files.get(name, "")
+        row["scope"] = "sdk" if row["file"].startswith("src/sdk/") else "game" if row["file"] else "other"
+    return sorted(rows.values(), key=lambda r: r["address"]), totals
+
+
+# --- the union ---
+
+
+def _share(hit: int, total: int) -> float:
+    return round(100.0 * hit / total, 2) if total else 0.0
+
+
+def union(
+    rows: list[dict[str, Any]],
+    totals: dict[str, int],
+    version: str,
+    runs: list[dict[str, Any]],
+    linked: set[str] | None,
+) -> dict[str, Any]:
+    """The function table over the movies' runs. `runs` is one dict per movie: {movie, port, oracle, port_polls,
+    oracle_polls}: port maps name -> execution count (gcovr), oracle maps name -> (first poll, count) or is None when
+    it never ran. `linked` is the set of names the port binary defines (None: unknown).
+
+    A run's two sides are compared over the polls both reached: the port stops `exit_after` polls after the movie (or
+    where it crashed) and the oracle runs its own tail, so a function the oracle enters after the port's run ended is
+    `oracle-late`, not a defect. `port-only` has no such guard (gcov has no poll); the page does not list it."""
+    for run in runs:
+        run["common"] = min(run.get("port_polls") or 0, run.get("oracle_polls") or 0)
+    table = []
+    for row in rows:
+        name = row["name"]
+        out = {k: row[k] for k in ("name", "file", "scope", "size", "versions")}
+        out["in_version"] = version in row["versions"]
+        port = [(r["movie"], r["port"][name]) for r in runs if r["port"].get(name)]
+        oracle = [(r["movie"], r["oracle"][name]) for r in runs if r["oracle"] and name in r["oracle"]]
+        first = min(oracle, key=lambda m: (m[1][0], m[0]), default=None)
+        out["port"] = {
+            "hit": bool(port),
+            "count": sum(c for _, c in port),
+            "movie": port[0][0] if port else None,
+            "poll": None,
+        }
+        out["oracle"] = {
+            "hit": bool(oracle),
+            "count": sum(c[1] for _, c in oracle),
+            "movie": first[0] if first else None,
+            "poll": first[1][0] if first else None,
+        }
+        out["port_linked"] = None if linked is None else name in linked
+        reached = any(r["oracle"] and name in r["oracle"] and r["oracle"][name][0] <= r["common"] for r in runs)
+        if reached and not port:
+            out["state"] = "oracle-only"
+        elif port and runs and any(r["oracle"] is not None for r in runs) and not oracle:
+            out["state"] = "port-only"
+        elif port and oracle:
+            out["state"] = "both"
+        elif oracle:
+            out["state"] = "oracle-late"
+        elif port:
+            out["state"] = "port"
+        else:
+            out["state"] = "neither"
+        table.append(out)
+    scoped = [r for r in table if r["in_version"]]
+    summary: dict[str, Any] = {
+        "version": version,
+        "movies": len(runs),
+        "oracle_movies": sum(1 for r in runs if r["oracle"] is not None),
+    }
+    for scope in ("game", "sdk", "other"):
+        mine = [r for r in scoped if r["scope"] == scope]
+        entry: dict[str, Any] = {"functions": len(mine), "bytes": sum(r["size"] for r in mine)}
+        for label, test in (
+            ("port", lambda r: r["port"]["hit"]),
+            ("oracle", lambda r: r["oracle"]["hit"]),
+            ("either", lambda r: r["port"]["hit"] or r["oracle"]["hit"]),
+        ):
+            hit = [r for r in mine if test(r)]
+            entry[label] = {
+                "functions": len(hit),
+                "functions_pct": _share(len(hit), len(mine)),
+                "bytes": sum(r["size"] for r in hit),
+                "bytes_pct": _share(sum(r["size"] for r in hit), entry["bytes"]),
+            }
+        summary[scope] = entry
+    game = [r for r in scoped if r["scope"] == "game"]
+    summary["states"] = dict(Counter(r["state"] for r in game))
+    by_version = {}
+    seen = {r["name"] for r in table if r["port"]["hit"] or r["oracle"]["hit"]}
+    for v in totals:
+        names = [r for r in table if v in r["versions"]]
+        by_version[v] = {"functions": totals[v], "reached_by_name": sum(1 for r in names if r["name"] in seen)}
+    summary["versions"] = by_version
+    return {"generated": time.time(), "summary": summary, "functions": table}
+
+
+def lists(report: dict[str, Any], limit: int = LISTED) -> dict[str, Any]:
+    """The page's view: the summary plus the two lists that drive work, biggest functions first.
+    `oracle_only`: the original reaches it and the port never does (a defect ticket for a cycle).
+    `neither`: no movie reaches it (the owner records one); asm stand-ins and sdk rows are left out of that list."""
+    game = [r for r in report.get("functions", []) if r["in_version"] and r["scope"] == "game"]
+
+    def pick(state: str) -> list[dict[str, Any]]:
+        mine = sorted((r for r in game if r["state"] == state), key=lambda r: (-r["size"], r["name"]))
+        return mine[:limit]
+
+    return {
+        "generated": report.get("generated"),
+        "summary": report.get("summary"),
+        "gcovr": report.get("gcovr"),
+        "oracle_only": pick("oracle-only"),
+        "neither": pick("neither"),
+        "port_only": pick("port-only"),
+    }
+
+
+# --- driving it ---
+
+FILTER = ".*/src/"  # the original game's sources (not the headers, not the generated stubs)
+
+
+def build_dir(cfg: dict[str, Any]) -> Path:
+    """The CMake build tree of the page's port: where the .gcno files and the `ragewars-decomp` source link are."""
+    return Path(cfg["port"]).parent
+
+
+def _gcovr_base(build: Path) -> list[str]:
+    if not (build / "ragewars-decomp").exists():
+        raise DecompError(
+            "tas.coverage",
+            f"{build} is not a coverage build (no ragewars-decomp link): "
+            "configure the port with -DRAGE_DECOMP_COVERAGE=ON",
+        )
+    return ["--root", str(build), "--gcov-ignore-errors=all", "--filter", FILTER]
+
+
+def run_report(profile: Profile, cfg: dict[str, Any], run: Path) -> Path | None:
+    """RUN/coverage.json from the run's counters (GCOV_PREFIX = RUN/gcov mirrors the build tree's absolute path), or
+    None when the profile has no coverage section or the run left no counters (not a coverage build, or killed hard)."""
+    if settings(profile, cfg) is None:
+        return None
+    build = build_dir(cfg)
+    counters = run / GCOV / str(build).lstrip("/")
+    if not counters.is_dir():
+        return None
+    # gcov pairs a .gcda with the .gcno beside it; the counters live in the run folder, the notes in the build tree.
+    for gcda in counters.rglob("*.gcda"):
+        note = gcda.with_suffix(".gcno")
+        source = build / note.relative_to(counters)
+        if source.is_file() and not note.exists():
+            note.symlink_to(source)
+    out = run / COVERAGE
+    gcovr([*_gcovr_base(build), "--json", str(out), str(counters)], run)
+    return out
+
+
+def baseline(cfg: dict[str, Any]) -> Path:
+    """runs/coverage-baseline-<build>.json: the build's every unit with zero counts (gcovr reads the .gcno notes
+    alone), so files no movie loads still show in the union. One per port build, made once."""
+    from abu_decomp import tas
+
+    build = build_dir(cfg)
+    path = cfg["runs"] / f"coverage-baseline-{tas.build_id(Path(cfg['port']))[:12] or 'unbuilt'}.json"
+    if not path.is_file():
+        for old in cfg["runs"].glob("coverage-baseline-*.json"):
+            old.unlink()
+        cfg["runs"].mkdir(parents=True, exist_ok=True)
+        gcovr([*_gcovr_base(build), "--json", str(path), str(build / "decomp"), str(build / "decomp-image")], build)
+    return path
+
+
+def latest_runs(cfg: dict[str, Any]) -> dict[str, Path]:
+    """movie name -> its newest movie-driven finished run folder that left a coverage report or counters."""
+    from abu_decomp import tas
+
+    newest: dict[str, Path] = {}
+    for run, row in tas.run_rows(cfg):
+        if row.get("status") == "running" or row.get("input") == "human" or (run / tas.TAKEN).exists():
+            continue
+        if not ((run / COVERAGE).is_file() or (run / GCOV).is_dir()):
+            continue
+        name = str(row.get("movie") or "")
+        if name and (name not in newest or run.name > newest[name].name):
+            newest[name] = run
+    return newest
+
+
+def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: int = 4) -> dict[str, Any] | None:
+    """Union the newest run of every movie: runs/coverage/ (gcovr `--html-details` over the baseline and every
+    run's JSON), runs/coverage-table.json (the function table with the oracle). None without a `tas.coverage`
+    section. With `oracle`, a run with no oracle trace yet is replayed in the oracle first."""
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+
+    from abu_decomp import tas
+
+    cov = settings(profile, cfg)
+    if cov is None:
+        return None
+    runs = latest_runs(cfg)
+
+    def one(item: tuple[str, Path]) -> dict[str, Any]:
+        name, run = item
+        if not (run / COVERAGE).is_file():
+            run_report(profile, cfg, run)
+        got = read_oracle(run / ORACLE_DIR)
+        movie = run / "movie.raw"
+        if got is None and oracle and movie.is_file() and run_oracle(cov, movie, run, cfg["timeout_seconds"]):
+            got = read_oracle(run / ORACLE_DIR)
+        record = tas.read_record(run) or {}
+        return {
+            "movie": name,
+            "run": run.name,
+            "port": read_gcovr(run / COVERAGE) or {},
+            "oracle": got[0] if got else None,
+            "port_polls": int(record.get("polls_reached") or 0),
+            "oracle_polls": got[1] if got else 0,
+        }
+
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        collected = list(pool.map(one, sorted(runs.items())))
+    build_tree = build_dir(cfg)
+    tracefiles = [baseline(cfg)] + [p for p in (run / COVERAGE for run in runs.values()) if p.is_file()]
+    page = cfg["runs"] / HTML
+    shutil.rmtree(page, ignore_errors=True)
+    page.mkdir(parents=True)
+    summary_file = cfg["runs"] / "coverage-summary.json"
+    args = [
+        *_gcovr_base(build_tree),
+        "--html-details",
+        str(page / "index.html"),
+        "--html-title",
+        "Rage Wars game code: TAS movies",
+        "--json-summary",
+        str(summary_file),
+    ]
+    for path in tracefiles:
+        args += ["--add-tracefile", str(path)]
+    gcovr(args, build_tree)
+    rows, totals = universe(cov)
+    _, names = tas_symbolize.symbols(cfg["port"])
+    report = union(rows, totals, cov["version"], collected, set(names) if names else None)
+    report["runs"] = [{"movie": r["movie"], "run": r["run"]} for r in collected]
+    try:
+        gsum = json.loads(summary_file.read_text())
+        report["gcovr"] = {
+            k: gsum.get(k)
+            for k in (
+                "line_percent",
+                "line_covered",
+                "line_total",
+                "function_percent",
+                "function_covered",
+                "function_total",
+                "branch_percent",
+                "branch_covered",
+                "branch_total",
+            )
+        }
+    except (OSError, ValueError):
+        report["gcovr"] = None
+    path = cfg["runs"] / TABLE
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(report, sort_keys=True) + "\n")
+    tmp.replace(path)
+    return report
+
+
+def read_table(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        return json.loads((cfg["runs"] / TABLE).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def line(report: dict[str, Any]) -> str:
+    """One line for the console: gcov line/branch/function percentages and the two work lists' sizes."""
+    s = report["summary"]
+    g = report.get("gcovr") or {}
+    states = s["states"]
+    pct = lambda key: f"{g[key]:.1f}%" if g.get(key) is not None else "?"  # noqa: E731
+    return (
+        f"coverage {s['version']} gcov: lines {pct('line_percent')}, branches {pct('branch_percent')}, functions "
+        f"{pct('function_percent')}; port {s['game']['port']['bytes_pct']}% of game bytes; oracle-only "
+        f"{states.get('oracle-only', 0)}, neither {states.get('neither', 0)} "
+        f"({s['movies']} movies, {s['oracle_movies']} with oracle); report runs/{HTML}/index.html"
+    )

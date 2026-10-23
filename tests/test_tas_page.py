@@ -15,6 +15,7 @@ from urllib.request import urlopen
 PAGE = Path(__file__).resolve().parents[1] / "src" / "abu_decomp" / "tas_page.html"
 CONTRACT = {
     "/api/state",
+    "/api/coverage",
     "/frame/",
     "/audio/",
     "/log/",
@@ -28,6 +29,39 @@ CONTRACT = {
     "/diff/",
 }
 NOW = 1_800_000_000
+
+
+def _side(hit):
+    return {"hit": hit, "count": int(hit), "movie": "boot-idle" if hit else None, "poll": 12 if hit else None}
+
+
+def _pct(n):
+    return {"functions": n, "functions_pct": 12.5, "bytes": n * 10, "bytes_pct": 20.0}
+
+
+COVERAGE = {
+    "generated": NOW,
+    "summary": {
+        "version": "us-rev1",
+        "movies": 3,
+        "oracle_movies": 2,
+        "states": {"oracle-only": 1, "neither": 2},
+        "game": {"functions": 8, "bytes": 80, "port": _pct(1), "oracle": _pct(2), "either": _pct(2)},
+    },
+    "gcovr": {"line_percent": 14.9, "branch_percent": 8.1, "function_percent": 17.1},
+    "oracle_only": [
+        {
+            "name": "func_8025_missing_de",
+            "file": "src/game/A.CPP",
+            "size": 40,
+            "port_linked": True,
+            "port": _side(False),
+            "oracle": _side(True),
+        }
+    ],
+    "neither": [],
+    "port_only": [],
+}
 
 
 def mock_state() -> dict:
@@ -183,6 +217,8 @@ class Stub:
                     self.reply(PAGE.read_bytes(), "text/html; charset=utf-8")
                 elif path == "/api/state":
                     self.reply(json.dumps(stub.state).encode(), "application/json")
+                elif path == "/api/coverage":
+                    self.reply(json.dumps(COVERAGE).encode(), "application/json")
                 elif path.startswith(("/frame/", "/oracle/")):
                     self.reply(bmp(), "image/bmp")
                 elif path.startswith("/shot/"):
@@ -300,6 +336,9 @@ class PageTests(unittest.TestCase):
             "Δ44%",
             "worst 44% at poll 150",
             "1.2%",
+            "func_8025_missing_de",
+            "oracle reaches, port never 1",
+            "14.9%",
         ):
             self.assertIn(text, dom, text)
         self.assertRegex(dom, r"id=\"conn\" class=\"dim\"></span>")  # state fetched

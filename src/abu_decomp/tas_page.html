@@ -59,6 +59,12 @@
 
   #movies { flex: 1 1 0; min-height: 90px; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
   #movies .scroll { flex: 1; min-height: 0; overflow: auto; }
+  #coverage { flex: none; max-height: 40%; display: none; flex-direction: column; border-top: 1px solid var(--line); }
+  #coverage .scroll { overflow: auto; min-height: 0; }
+  #coverage .sum { display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 6px 12px; font: 12px var(--mono); color: var(--dim); }
+  #coverage .sum b { color: var(--fg); font-weight: 500; }
+  #coverage .tabs { display: flex; gap: 6px; padding: 2px 12px 6px; }
+  #coverage .tabs button.on { border-color: var(--ok); color: var(--ok); }
   table { width: 100%; border-collapse: collapse; }
   th { position: sticky; top: 0; background: var(--bg); text-align: left; font-weight: 400; color: var(--dim);
        font-size: 11px; padding: 5px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -170,6 +176,15 @@
       <div class="scroll"><table>
         <thead><tr><th>movie</th><th>outcome</th><th>subject</th><th class="num">reached</th><th>twice</th><th>fn</th><th>train</th><th class="num" title="worst share of the picture that differed from the original (last run with the original)">vs orig</th><th class="num">last run</th></tr></thead>
         <tbody id="mbody"></tbody>
+      </table></div>
+    </div>
+    <div id="coverage">
+      <div class="head"><b>coverage</b><span id="cvhead" class="grow mono"></span><a id="cvfull" href="/coverage/" target="_blank" title="gcovr HTML report: every file and line, branch percentages, annotated source">full report</a></div>
+      <div class="sum" id="cvsum"></div>
+      <div class="tabs"><button id="cvt-oracle_only" title="The original reaches it, our port never does: a cycle ticket">oracle reaches, port never</button><button id="cvt-neither" title="No movie reaches it: record one">nobody reaches</button></div>
+      <div class="scroll"><table>
+        <thead><tr><th>function</th><th>file</th><th class="num">bytes</th><th>port</th><th>oracle</th></tr></thead>
+        <tbody id="cvbody"></tbody>
       </table></div>
     </div>
   </section>
@@ -493,6 +508,42 @@ setInterval(() => {
   document.querySelectorAll("#log .t[data-t]").forEach(s => { s.textContent = ago(+s.dataset.t); });
   if (S) { renderMovies(); const b = S.build || {}; if (b.pin) $("build").textContent = `${String(b.pin).slice(0, 9)} · built ${ago(b.built)}`; }
 }, 1000);
+
+/* ---------- coverage: which game functions the movies reach (port, oracle, neither); /api/coverage ---------- */
+const CV = { data: null, tab: "oracle_only" };
+function renderCoverage() {
+  const d = CV.data, box = $("coverage");
+  if (!d || !d.summary) { box.style.display = "none"; return; }
+  box.style.display = "flex";
+  const g = d.summary.game, st = d.summary.states || {};
+  const pct = x => x.functions_pct.toFixed(1) + "%";
+  $("cvhead").textContent = `${d.summary.version} · ${d.summary.movies} movies` + (d.summary.oracle_movies ? ` · ${d.summary.oracle_movies} with oracle` : " · no oracle yet");
+  const part = (label, v) => { const s = el("span"); s.append(label + " ", el("b", "", `${pct(v)} fns · ${v.bytes_pct.toFixed(1)}% bytes`)); return s; };
+  const gc = d.gcovr || {};
+  const gpart = (label, k) => { const s = el("span"); s.append(label + " ", el("b", "", gc[k + "_percent"] == null ? "?" : gc[k + "_percent"].toFixed(1) + "%")); return s; };
+  $("cvsum").replaceChildren(gpart("lines", "line"), gpart("branches", "branch"), gpart("gcov fns", "function"),
+    part("port", g.port), part("oracle", g.oracle), el("span", "", `${g.functions} game fns`));
+  for (const k of ["oracle_only", "neither"]) {
+    const b = $("cvt-" + k);
+    b.textContent = (k === "oracle_only" ? "oracle reaches, port never " : "nobody reaches ") + (st[k.replace("_", "-")] || 0);
+    b.classList.toggle("on", CV.tab === k);
+  }
+  const rows = (d[CV.tab] || []).map(r => {
+    const tr = el("tr");
+    tr.append(cell(r.name, "name", r.name), cell(r.file || "?", "dim", r.file), cell(String(r.size), "num"),
+      r.port.hit ? cell(`${r.port.movie} @${r.port.poll}`, "ok", r.port.movie) : cell(r.port_linked === false ? "not linked" : "never", r.port_linked === false ? "warn" : "dim"),
+      r.oracle.hit ? cell(`${r.oracle.movie} @${r.oracle.poll}`, "ok", r.oracle.movie) : cell("never", "dim"));
+    return tr;
+  });
+  $("cvbody").replaceChildren(...rows);
+}
+async function pollCoverage() {
+  try { const r = await fetch("/api/coverage", { cache: "no-store" }); if (r.ok) CV.data = await r.json(); } catch (e) { /* keep the last table */ }
+  renderCoverage();
+  setTimeout(pollCoverage, 15000);
+}
+for (const k of ["oracle_only", "neither"]) $("cvt-" + k).onclick = () => { CV.tab = k; renderCoverage(); };
+pollCoverage();
 
 /* ---------- audio: per viewer settings (sound on/off, all running runs or the focused one), on by default ---------- */
 const A = { on: true, scope: "all", ctx: null, streams: new Map() };   // id -> {abort, head}
