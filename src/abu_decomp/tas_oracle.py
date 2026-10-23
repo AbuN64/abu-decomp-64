@@ -38,7 +38,7 @@ from typing import Any
 from abu_decomp import DecompError
 from abu_decomp.config import Profile, check_keys
 
-_KEYS = frozenset({"host", "env", "shot_every", "timeout_seconds"})
+_KEYS = frozenset({"host", "env", "shot_every", "timeout_seconds", "rebuild", "pins", "pins_repo"})
 VIEW, LOG, DIFF = "oracle.bmp", "oracle.txt", "diff.json"
 AUDIO = "audio-oracle.pcm"  # the original's sound, as the port's audio.pcm (+ ".rate")
 PORT_TRACE, ORACLE_TRACE = "port-trace.txt", "oracle-trace.txt"
@@ -66,7 +66,10 @@ def settings(profile: Profile) -> dict[str, Any] | None:
     every = int(table.get("shot_every", 25))
     if every < 1:
         raise DecompError("tas.oracle", f"shot_every is a poll count >= 1, not {every}")
+    stamp = {key: profile.path(f"tas.oracle.{key}", table[key]) for key in ("pins", "pins_repo") if key in table}
     return {
+        **stamp,
+        "rebuild": str(table.get("rebuild", "")),
         "host": profile.path("tas.oracle.host", table["host"]),
         "env": {str(k): str(v) for k, v in table.get("env", {}).items()},
         "shot_every": every,
@@ -74,12 +77,27 @@ def settings(profile: Profile) -> dict[str, Any] | None:
     }
 
 
-def required(profile: Profile) -> dict[str, Any]:
+def pins_lag(oracle: dict[str, Any]) -> str:
+    """Why the oracle host is older than its cake-taste-64 tree (section keys `pins` = the stamp the oracle ensure
+    writes, `pins_repo` = the tree), empty when current or no stamp is configured."""
+    from abu_decomp import tas_health
+
+    return tas_health.pins_lag(oracle, "cake_taste", "page oracle", "cake-taste-64")
+
+
+def required(profile: Profile, fresh: bool = True) -> dict[str, Any]:
+    """The configured oracle, refusing a missing host and (unless `fresh` is False, a host named by hand) one built
+    before the tree's last commit: an old oracle lacks the Controller Pak and the call recorder and fails silently."""
     oracle = settings(profile)
     if oracle is None:
         raise DecompError("tas.oracle", "this profile has no tas.oracle section (the original game's host)")
     if not oracle["host"].is_file() or not os.access(oracle["host"], os.X_OK):
         raise DecompError("tas.oracle", f"no oracle host at {oracle['host']}")
+    lag = pins_lag(oracle) if fresh else ""
+    if lag:
+        raise DecompError(
+            "tas.oracle", f"{lag}; rebuild it first: {oracle['rebuild'] or '(no tas.oracle.rebuild set)'}"
+        )
     return oracle
 
 

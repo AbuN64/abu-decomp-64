@@ -74,7 +74,7 @@ class PlanTests(unittest.TestCase):
         self.assertNotIn(
             "a3", case["registers"]
         )  # the double took a2 and a3 (aligned pair), so a, b, c go on the stack
-        self.assertEqual(case["stack"][4:], [1, 1, 1])
+        self.assertEqual(case["stack"], [1, 1, 1])  # the harness writes stack[0] at sp+16, where o32 puts the 5th word
 
 
 class MemoryTests(unittest.TestCase):

@@ -47,12 +47,13 @@ def newest_source(listing: Path) -> tuple[float, str] | None:
     return newest
 
 
-def pins_lag(build: dict[str, Any]) -> str:
-    """Empty when the port binary was built at the port tree's HEAD (or no stamp is configured), else why not."""
+def pins_lag(build: dict[str, Any], key: str = "rage_ports", what: str = "page port", tree: str = "rage-ports") -> str:
+    """Empty when the binary was built at its tree's HEAD (or no stamp is configured), else why not. The stamp holds
+    the built sha under `key`; the page port (rage-ports) and the page oracle (cake_taste) share this check."""
     if not (build.get("pins") and build.get("pins_repo")):
         return ""
     try:
-        built = json.loads(Path(build["pins"]).read_text()).get("rage_ports", "")
+        built = json.loads(Path(build["pins"]).read_text()).get(key, "")
     except (OSError, ValueError, AttributeError):
         built = ""
     done = subprocess.run(
@@ -61,7 +62,7 @@ def pins_lag(build: dict[str, Any]) -> str:
     now = done.stdout.strip()
     if done.returncode or not now or built == now:
         return ""
-    return f"page port older than pins: built at rage-ports {built[:9] or 'unknown'}, pins are at {now[:9]}"
+    return f"{what} older than pins: built at {tree} {built[:9] or 'unknown'}, pins are at {now[:9]}"
 
 
 def read(cfg: dict[str, Any], profile: Any = None) -> dict[str, Any]:

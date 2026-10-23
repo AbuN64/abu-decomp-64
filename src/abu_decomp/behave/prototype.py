@@ -241,7 +241,9 @@ def find(root: Path, name: str, globs: tuple[str, ...], preferred: Path | None =
 @dataclass(frozen=True)
 class Slot:
     param: Param
-    where: tuple[str, ...]  # registers ("a0",), ("a0", "a1") for a 64-bit value, ("f12",), or ("stack:16",)
+    where: tuple[
+        str, ...
+    ]  # registers ("a0",), ("a0", "a1") for a 64-bit value, ("f12",), or ("stack:16",): N is the byte offset from sp
 
 
 def argument_slots(proto: Prototype) -> list[Slot]:
@@ -258,7 +260,7 @@ def argument_slots(proto: Prototype) -> list[Slot]:
         elif word + param.words <= 4:
             where = tuple(f"a{word + i}" for i in range(param.words))
         else:
-            where = tuple(f"stack:{16 + 4 * (word + i)}" for i in range(param.words))
+            where = tuple(f"stack:{4 * (word + i)}" for i in range(param.words))
         leading_floats = leading_floats and floaty
         word += param.words
         slots.append(Slot(param, where))

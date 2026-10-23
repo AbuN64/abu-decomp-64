@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -147,6 +148,28 @@ class PlayTests(unittest.TestCase):
             tas_oracle.settings(self.load(oracle={"host": "n64host", "shot_every": 0}))
         got = tas_oracle.required(self.profile)
         self.assertEqual((got["host"], got["shot_every"], got["timeout_seconds"]), (self.host, 25, 300))
+
+    def test_a_stale_oracle_is_refused_loudly(self):
+        """The oracle ensure stamps the cake-taste-64 sha it built; a host older than the tree's HEAD is refused."""
+        tree = self.root / "tree"
+        tree.mkdir()
+        git = ["git", "-C", str(tree), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git[:3], "init", "-q"], check=True)
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "one"], check=True)
+        head = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        stamp = self.root / "oracle-pins.json"
+        table = {"host": "n64host", "pins": "oracle-pins.json", "pins_repo": "tree", "rebuild": "page-port.py ensure"}
+        stamp.write_text(json.dumps({"cake_taste": head}))
+        self.assertEqual(tas_oracle.required(self.load(oracle=table))["host"], self.host)
+        stamp.write_text(json.dumps({"cake_taste": "0" * 40}))
+        with self.assertRaises(DecompError) as raised:
+            tas_oracle.required(self.load(oracle=table))
+        self.assertIn("older than pins", str(raised.exception))
+        self.assertIn("page-port.py ensure", str(raised.exception))
+        stamp.unlink()  # a build that ended without its stamp is unknown, also refused
+        with self.assertRaises(DecompError):
+            tas_oracle.required(self.load(oracle=table))
+        self.assertEqual(tas_oracle.required(self.load(oracle=table), fresh=False)["host"], self.host)
 
     def test_play_runs_the_original_beside_the_port(self):
         seen = {}

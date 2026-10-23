@@ -76,8 +76,9 @@ class SlotTests(unittest.TestCase):
         return [(s.param.name, s.where) for s in p.argument_slots(p.parse_declaration(text, name, {}))]
 
     def test_integers_fill_a0_to_a3_then_the_stack(self):
+        # o32: the 5th word is read at sp+16 on entry (func_80442D10_de loads its 5th parameter from 0x10 off sp)
         got = self.slots("void f(s32 a, s32 b, s32 c, s32 d, s32 e, s32 g);")
-        self.assertEqual([w for _, w in got], [("a0",), ("a1",), ("a2",), ("a3",), ("stack:32",), ("stack:36",)])
+        self.assertEqual([w for _, w in got], [("a0",), ("a1",), ("a2",), ("a3",), ("stack:16",), ("stack:20",)])
 
     def test_leading_floats_use_f12_and_f14_but_still_use_up_argument_words(self):
         got = self.slots("void f(f32 x, f32 y, s32 n, f32 z);")
@@ -88,7 +89,7 @@ class SlotTests(unittest.TestCase):
 
     def test_64_bit_values_take_an_aligned_pair(self):
         got = self.slots("void f(s32 a, s64 b, s32 c);")
-        self.assertEqual(got, [("a", ("a0",)), ("b", ("a2", "a3")), ("c", ("stack:32",))])
+        self.assertEqual(got, [("a", ("a0",)), ("b", ("a2", "a3")), ("c", ("stack:16",))])
 
 
 if __name__ == "__main__":

@@ -132,7 +132,7 @@ def read_samples(path: Path, movie: str, pak: str) -> tuple[list[Sample], Counte
 
 
 def oracle_host(profile: Profile, options: Options) -> dict[str, Any]:
-    oracle = tas_oracle.required(profile)
+    oracle = tas_oracle.required(profile, fresh=options.oracle is None)
     if options.oracle is not None:
         oracle = {**oracle, "host": options.oracle.resolve()}
         if not os.access(oracle["host"], os.X_OK):
@@ -297,9 +297,7 @@ def native_words(proto: prototype.Prototype, sample: Sample, native_of: dict[int
         values: list[int] = []
         for where in slot.where:
             if where.startswith("stack:"):
-                at = (
-                    int(where[6:]) - 16
-                ) // 4 - 4  # the slots count the four register words; the recorded words start at sp+16
+                at = (int(where[6:]) - 16) // 4  # the recorded words start at sp+16, the 5th argument word
                 values.append(sample.stack[at] if 0 <= at < len(sample.stack) else 0)
             elif where == "f12":
                 values.append(sample.f12 & 0xFFFFFFFF if slot.param.kind == "float" else sample.f12)
