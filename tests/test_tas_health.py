@@ -81,6 +81,12 @@ class HealthTests(unittest.TestCase):
         ):
             tas.play(self.profile, "m", health=health)
 
+    def test_profile_build_section_carries_the_pins_keys(self):
+        profile = mock.MagicMock()
+        profile.path.side_effect = lambda name, value: Path(value)
+        got = tas._build(profile, {"rebuild": "r", "pins": "/p/pins.json", "pins_repo": "/p/ports"})
+        self.assertEqual((got["pins"], got["pins_repo"]), (Path("/p/pins.json"), Path("/p/ports")))
+
     def test_binary_older_than_a_source_is_stale(self):
         self.old_binary()
         got = tas_health.read(self.cfg)

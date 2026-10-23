@@ -132,7 +132,7 @@ def _build(profile: Profile, table: Any) -> dict[str, Any]:
         return {}
     check_keys(profile.source_file, "tas.build", table, frozenset(), tas_health.BUILD_KEYS)
     out = {"rebuild": str(table.get("rebuild", ""))}
-    for key in ("units", "sources"):
+    for key in ("units", "sources", "pins", "pins_repo"):
         if key in table:
             out[key] = profile.path(f"tas.build.{key}", table[key])
     return out
