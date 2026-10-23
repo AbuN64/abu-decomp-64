@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -37,6 +38,28 @@ class RelaunchRuleTests(unittest.TestCase):
             (root / "EMPTY-9").mkdir()
             taken = relaunch.taken_names(root / "TOP-7", ["TOP-9"])
             self.assertEqual(relaunch.next_name("TOP-7", taken), "TOP-10")
+
+    def test_relaunch_and_launch_units_run_python_without_the_cwd_on_the_path(self):
+        with tempfile.TemporaryDirectory() as raw:
+            lane = Path(raw) / "A-1"
+            lane.mkdir()
+            (lane / "inspect.py").write_text("raise SystemExit('shadowed')\n")  # a lane file named like a stdlib module
+            seen = []
+
+            def fake(command, **_):
+                seen.append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with mock.patch.object(relaunch.subprocess, "run", fake):
+                relaunch.spawn(Path("p.json"), lane, "A-2", 1)
+            command = seen[0]
+            self.assertEqual(command[command.index("-m") - 1], "-P")
+            self.assertIn(f"--working-directory={lane}", command)
+            # the same interpreter flags, run for real from the lane dir, must not import the lane's inspect.py
+            ran = subprocess.run([sys.executable, "-P", "-c", "import inspect, dataclasses; print(inspect.__file__)"],
+                                 cwd=lane, capture_output=True, text=True, check=False)  # fmt: skip
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertNotIn(str(lane), ran.stdout)
 
     def test_context_handoff_with_budget_left_continues_even_without_progress(self):
         action, _ = relaunch.plan("result", 3, "", True, True, False, "")

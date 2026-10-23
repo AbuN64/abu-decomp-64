@@ -173,7 +173,7 @@ def launch(
             f"--property=StandardError=append:{directory / 'launch.log'}",
             # The runner imports this same abu_decomp (its ladder), not whichever one the unit's python finds.
             f"--setenv=PYTHONPATH={Path(abu_decomp.__file__).parents[1]}",
-            sys.executable, str(RUNNER),
+            sys.executable, "-P", str(RUNNER),
             "--codex", str(seat.codex), "--model", spec["model"], "--effort", spec["effort"],
             "--fanout", spec["fanout"], "--max-agents", str(spec["max_agents"]), "--cwd", str(cwd),
             "--brief", str(brief), "--dir", str(directory), "--socket", str(socket), "--name", name,
@@ -291,6 +291,15 @@ def close_row(profile: Profile, name: str, directory: Path, reason: str) -> None
         for row in rows:
             if row.get("state") == "live" and row.get("name") == name and row.get("dir") == str(directory):
                 row.update(state="ended", ended=time.time(), reason=reason)
+
+
+def mark_continue_failed(profile: Profile, directory: Path, error: str) -> None:
+    """Record that the lane in DIRECTORY could not be continued: its newest row becomes state `continue_failed` with the
+    error, so lanepeek and the orchestrator see a relaunch that died inside its detached unit."""
+    with registry.locked(settings(profile).registry) as rows:
+        row = next((r for r in reversed(rows) if r.get("dir") == str(directory)), None)
+        if row is not None and row.get("state") in ("live", "ended"):
+            row.update(state="continue_failed", ended=row.get("ended") or time.time(), error=error[-500:])
 
 
 def continue_lane(profile: Profile, old_dir: Path, name: str, given: dict[str, Any], wait: int = 0) -> dict[str, Any]:

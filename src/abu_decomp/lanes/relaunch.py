@@ -169,7 +169,8 @@ def spawn(profile: Path, directory: Path, name: str, continues: int, wait: int =
         f"--property=StandardOutput=append:{directory / 'relaunch.log'}",
         f"--property=StandardError=append:{directory / 'relaunch.log'}",
         f"--setenv=PYTHONPATH={Path(abu_decomp.__file__).parents[1]}",
-        sys.executable, "-m", "abu_decomp", "--profile", str(profile), "lane", "continue",
+        # -P: the unit's cwd is the lane dir; a lane file such as inspect.py must never shadow a stdlib module.
+        sys.executable, "-P", "-m", "abu_decomp", "--profile", str(profile), "lane", "continue",
         "--from", str(directory), "--name", name, "--continues", str(continues), "--wait", str(wait),
     ]  # fmt: skip
     called = subprocess.run(command, capture_output=True, text=True, check=False)

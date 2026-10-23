@@ -252,7 +252,16 @@ def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
             "export": list(args.export or []),
             **{key: getattr(args, key) for key in flags},
         }
-        return control.continue_lane(profile, args.old_dir, args.name, given, args.wait), 0, []
+        try:
+            return control.continue_lane(profile, args.old_dir, args.name, given, args.wait), 0, []
+        except DecompError as error:
+            if (
+                args.wait
+            ):  # the runner's detached relaunch unit: nobody reads its log, so the registry carries the failure
+                control.mark_continue_failed(
+                    profile, args.old_dir.expanduser().resolve(), f"{args.name}: {error.detail}"
+                )
+            raise
     if args.action == "steer":
         return control.steer_lane(profile, args.name, args.dir, args.socket, args.file), 0, []
     return control.end(profile, args.name, args.reason, args.stop), 0, []

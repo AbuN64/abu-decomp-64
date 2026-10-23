@@ -186,6 +186,26 @@ class ContinueTests(unittest.TestCase):
             control.continue_lane(profile, self.root / "A-2", "A-3", {}, 0)
         self.assertEqual(caught.exception.key, "lanes.live")
 
+    def test_failed_relaunch_marks_the_old_row_continue_failed(self):
+        old = self.launch_a()
+        self.units.clear()
+        (self.root / "A-2").mkdir()
+        (self.root / "A-2" / "x").write_text("busy")  # the successor dir is taken: the continue is refused
+        code, _ = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "A-2", "--wait", "1"])
+        self.assertEqual(code, 1)
+        row = json.loads((self.root / "lanes.json").read_text())["lanes"][0]
+        self.assertEqual(row["state"], "continue_failed")
+        self.assertIn("A-2", row["error"])
+
+    def test_failed_relaunch_without_wait_leaves_the_row_alone(self):
+        old = self.launch_a()
+        self.units.clear()
+        (self.root / "A-2").mkdir()
+        (self.root / "A-2" / "x").write_text("busy")
+        code, _ = run([*self.seat, "lane", "continue", "--from", str(old), "--name", "A-2"])
+        self.assertEqual(code, 1)
+        self.assertNotEqual(json.loads((self.root / "lanes.json").read_text())["lanes"][0]["state"], "continue_failed")
+
     def test_inherits_the_registry_row_and_replaces_it_and_the_active_line(self):
         old = self.launch_a()
         self.units.clear()

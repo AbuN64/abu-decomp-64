@@ -1059,6 +1059,7 @@ def continue_lane(terminal):
         return
     row = {"name": a.name, "kind": a.kind, "model": a.model, "track": a.track}
     profile = None
+    successor_name = "successor"
     try:
         profile = load_profile(Path(a.profile))
         if action == "end":
@@ -1068,6 +1069,7 @@ def continue_lane(terminal):
             control.announce(profile, row, "blocked", "%s not continued: %s" % (a.name, why))
             return
         successor = relaunch.next_name(a.name, relaunch.taken_names(directory, control.registered_names(profile)))
+        successor_name = successor
         unit = relaunch.spawn(
             Path(a.profile),
             directory,
@@ -1078,6 +1080,10 @@ def continue_lane(terminal):
     except Exception as error:  # the lane is closing; a failed continuation must not hide how it closed
         print("ContinuationFailed: %s" % error, file=sys.stderr, flush=True)
         if profile is not None:
+            try:
+                control.mark_continue_failed(profile, directory, "%s: %s" % (successor_name, error))
+            except Exception:
+                pass
             try:
                 control.announce(profile, row, "failed", "%s not continued: %s" % (a.name, error))
             except Exception:
