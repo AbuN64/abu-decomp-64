@@ -70,7 +70,7 @@ class PanesTests(unittest.TestCase):
             debug = supervisor._debug_command(argv, run_dir)
             assert "--breakpoint" in debug and debug[debug.index("--breakpoint") + 1] == "Failure"
 
-    def test_a_windowed_role_gets_its_video_and_audio_environment_on_top_of_the_streams_display(self):
+    def test_a_windowed_role_gets_its_video_and_audio_environment_on_top_of_the_seats_display(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Profile(Path(temporary))
             release = profile.runtime_root / "releases/any/commit"
@@ -82,7 +82,7 @@ class PanesTests(unittest.TestCase):
                 "kind": "supervised",
                 "release_current": str(release.parent / "current"),
                 "command": ["{release}/game", "--data-dir", "{release}/data"],
-                "env": {"SDL_VIDEODRIVER": "wayland", "SDL_AUDIODRIVER": "pulse", "PULSE_SINK": "stream_sink"},
+                "env": {"SDL_VIDEODRIVER": "wayland", "SDL_AUDIODRIVER": "pulse", "PULSE_SINK": "seat_sink"},
                 "status_path": "status.json",
                 "runs_root": "runs",
                 "retry_delay_seconds": 30,
@@ -90,15 +90,15 @@ class PanesTests(unittest.TestCase):
             }
             run_dir = profile.root / "runs/one"
             run_dir.mkdir(parents=True)
-            with mock.patch.dict("os.environ", {"WAYLAND_DISPLAY": "wayland-1", "XDG_RUNTIME_DIR": "/run/stream"}):
+            with mock.patch.dict("os.environ", {"WAYLAND_DISPLAY": "wayland-1", "XDG_RUNTIME_DIR": "/run/seat"}):
                 argv, env, _ = Supervisor(profile, "subject", config, Screen())._command(run_dir)
             assert "--headless" not in argv
             assert (env["SDL_VIDEODRIVER"], env["SDL_AUDIODRIVER"], env["PULSE_SINK"]) == (
                 "wayland",
                 "pulse",
-                "stream_sink",
+                "seat_sink",
             )
-            assert (env["WAYLAND_DISPLAY"], env["XDG_RUNTIME_DIR"]) == ("wayland-1", "/run/stream")
+            assert (env["WAYLAND_DISPLAY"], env["XDG_RUNTIME_DIR"]) == ("wayland-1", "/run/seat")
 
     def test_a_pin_change_wakes_a_held_run_but_unrelated_writes_do_not(self):
         with tempfile.TemporaryDirectory() as temporary:

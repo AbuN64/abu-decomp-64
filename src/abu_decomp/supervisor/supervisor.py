@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp.files import atomic_json, sha256_file
-from abu_decomp.stream.inotify import ATTRIB, CREATE, DELETE, MOVED_TO, Watcher
+from abu_decomp.inotify import ATTRIB, CREATE, DELETE, MOVED_TO, Watcher
 
 
 def append_event(profile: Any, actor: str, status: str, message: str, evidence: str, payload: dict[str, Any]) -> None:
@@ -368,14 +368,14 @@ class Supervisor:
 
 
 def pidfile(status_path: Path) -> Path:
-    """Where the headless supervisor publishes its pid, so a console can send it SIGHUP and SIGUSR1."""
+    """Where the headless supervisor publishes its pid, so a tool can send it SIGHUP and SIGUSR1."""
     return status_path.with_name(status_path.name + ".pid")
 
 
 def run_supervisor(profile: Any, role_id: str, config: dict[str, Any]) -> dict[str, Any]:
     """Run the role headless until SIGTERM or SIGINT. SIGHUP restarts the run now; SIGUSR1 toggles the retry pause.
 
-    The console draws the status file (`supervisor_status`); this process draws nothing. Its pid is in
+    This process draws nothing; the status file is `status_path`. Its pid is in
     `pidfile(status_path)` while it runs.
     """
     supervisor = Supervisor(profile, role_id, config)

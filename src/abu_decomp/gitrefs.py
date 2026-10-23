@@ -1,4 +1,4 @@
-"""Generic event source: new commits on configured git refs become narration events.
+"""Generic event source: new commits on configured git refs become LAND events.
 
 Wakes on inotify of each ref's directory; a configured timer only runs `git pull` to move the refs.
 """
@@ -14,9 +14,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from abu_decomp.stream.inotify import CREATE, MODIFY, MOVED_TO, drain, watch
+from abu_decomp import events
+from abu_decomp.inotify import CREATE, MODIFY, MOVED_TO, drain, watch
 
-from .feed import append_event
+
+def append_event(profile: Any, actor: str, status: str, message: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Append through the one Cake Taste writer to the profile's feed."""
+    feed = events._WriterProfile(events.events_path(profile))
+    return events.writer().append_event(feed, actor, status, message, *args, **kwargs)
 
 
 def _git(repo: Path, *args: str) -> str:

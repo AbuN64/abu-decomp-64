@@ -25,16 +25,8 @@ class ProofTests(unittest.TestCase):
         self.profile = load_profile(root / "seat.json")
 
     def build(self, shell, *args):
-        events = []
-
-        def record(profile, actor, status, message, kind, payload):
-            events.append((actor, status, kind, message, payload))
-
-        with (
-            mock.patch.object(proof, "command", return_value=["sh", "-c", shell]),
-            mock.patch("abu_decomp.narrate.append", side_effect=record),
-        ):
-            return proof.run(self.profile, list(args), project=None), events
+        with mock.patch.object(proof, "command", return_value=["sh", "-c", shell]):
+            return proof.run(self.profile, list(args), project=None)
 
     def test_command_adds_the_admit_jobs_unless_the_caller_gave_some(self):
         tree = Path(self.temp.name)
@@ -45,25 +37,21 @@ class ProofTests(unittest.TestCase):
             expected = ["--work", work, "--", "make", "-j{j}", "check"]
             self.assertEqual(proof.command(self.profile, tree, given)[1:], expected)
 
-    def test_a_passing_build_writes_one_match_event_for_the_lane(self):
-        (result, code, findings), events = self.build("echo ok", "check")
-        self.assertEqual((code, findings, result["lane"]), (0, [], "X"))
-        self.assertEqual([(e[0], e[1], e[2]) for e in events], [("X", "passed", "MATCH")])
-        self.assertEqual(events[0][4]["op"], "build")
+    def test_a_passing_build_reports_its_exit_and_command(self):
+        result, code, findings = self.build("echo ok", "check")
+        self.assertEqual((code, findings, result["exit"]), (0, [], 0))
 
     def test_the_build_holds_the_trees_lock_exclusively_and_marks_its_child(self):
-        (_, code, _), _ = self.build('test -n "$UNBAKE_TREE_LOCK"', "check")
+        _, code, _ = self.build('test -n "$UNBAKE_TREE_LOCK"', "check")
         self.assertEqual(code, 0)  # the child ran inside the hold (a ship's write window cannot overlap the build)
         with mock.patch("abu_decomp.proof.treelock.hold", wraps=proof.treelock.hold) as held:
             self.build("true", "check")
         self.assertEqual(held.call_args.kwargs, {"exclusive": True, "who": "make"})
 
-    def test_a_failing_build_writes_run_fail_with_the_tail(self):
-        (result, code, findings), events = self.build("echo boom; exit 2", "check")
+    def test_a_failing_build_reports_its_exit_and_the_last_line(self):
+        result, code, findings = self.build("echo boom; exit 2", "check")
         self.assertEqual((code, result["exit"]), (1, 2))
-        self.assertEqual(findings[0]["key"], "proof.failed")
-        self.assertEqual([(e[1], e[2]) for e in events], [("failed", "RUN-FAIL")])
-        self.assertEqual(events[0][4]["tail"], ["boom"])
+        self.assertEqual((findings[0]["key"], findings[0]["message"]), ("proof.failed", "make exited 2: boom"))
 
     def test_make_is_a_command_and_its_arguments_stay_untouched(self):
         self.assertIn("make", cli.COMMANDS)

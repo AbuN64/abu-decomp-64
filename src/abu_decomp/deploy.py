@@ -257,7 +257,6 @@ def deploy(
     *,
     fetch: Fetch = fetch_file,
     run: Run = run_command,
-    restart: Callable[[Path], tuple[list[dict[str, Any]], list[dict[str, Any]]]] | None = None,
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     check_sha("--sha", decomp)
     wanted = {command: check_sha(f"--{command}", sha) for command, sha in commits.items() if sha}
@@ -329,33 +328,4 @@ def deploy(
             findings.append(
                 {"key": "deploy.readback", "blocking": True, "message": f"{live} does not read back to {venv}"}
             )
-        elif restart is not None:
-            row["restarts"], failed = restart(live)
-            if failed:
-                findings += failed
-                previous = row["swap"].get("previous")
-                # only a unit that did not come back healthy on the new venv rolls back; a restart that waited out a
-                # busy hold lock touched nothing, so the new venv stays and `decomp tools restart` finishes the job
-                came_back = all(f.get("key") != "deploy.restart_failed" for f in failed)
-                if previous and not came_back:
-                    row["rollback"] = point(live, Path(previous))
-                    row["rollback"]["restarts"] = restart(live)[0]
     return result, int(bool(findings)), findings
-
-
-def restart_services(profile: Profile, live: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Restart the stream's units that run code from a venv `live` no longer points to (see stream.services)."""
-    from abu_decomp.stream import services, tiles
-
-    if "stream" not in profile.describe()["sections"]:
-        return [], []  # a seat without a stream runs no stream units: nothing to restart, not a failure
-    up = tiles.up_config(profile)
-    run_dir = profile.resolve_path(up["run_dir"])
-    unit = up.get("restart", {}).get("unit", "m2-stream.service")
-    return services.restart_stale(
-        run_dir,
-        up,
-        live,
-        timeout=float(up.get("restart", {}).get("timeout_seconds", 150)),
-        restart_stream=lambda: services.systemd_restart(unit),
-    )

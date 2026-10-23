@@ -49,7 +49,7 @@ class Kind(unittest.TestCase):
             self.assertEqual(priority.kind(line), "trial", line)
 
     def test_other_commands_keep_their_priority(self) -> None:
-        for line in ([*P, "lane", "end"], [*P, "stream", "tile"], ["--version"], []):
+        for line in ([*P, "lane", "end"], [*P, "cycle"], ["--version"], []):
             self.assertIsNone(priority.kind(line), line)
 
 

@@ -1,6 +1,6 @@
 # abu-decomp-64
 
-Runs the N64 decompilation dev cycle over unbake, Recipe Maker and Cake Taste, driven by AI lanes, and shows it on a streamed seat.
+Runs the N64 decompilation dev cycle over unbake, Recipe Maker and Cake Taste, driven by AI lanes,; the TAS page (`decomp tas serve`) shows the movies it plays.
 
 > This is a personal tool. It is not officially maintained and may change or break without notice.
 

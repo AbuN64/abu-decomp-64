@@ -49,7 +49,7 @@ class Enter(unittest.TestCase):
         self.assertEqual(_enter(IN), (False, [], []))
 
     def test_a_service_is_placed_by_its_unit_and_never_moved(self) -> None:
-        service = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/m2-stream.service\n"
+        service = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/m2-tas.service\n"
         self.assertEqual(_enter(service), (False, [], []))
 
     def test_a_process_outside_the_slice_re_execs_its_own_argv_under_systemd_run(self) -> None:
@@ -170,7 +170,7 @@ class Names(unittest.TestCase):
         self.assertFalse(runslice.in_slice("decomp.slice", "0::/user.slice/notdecomp.slice/x.scope\n"))
 
     def test_in_service_needs_the_last_component_to_be_a_service(self) -> None:
-        self.assertTrue(runslice.in_service("0::/user.slice/user@1000.service/app.slice/m2-stream.service\n"))
+        self.assertTrue(runslice.in_service("0::/user.slice/user@1000.service/app.slice/m2-tas.service\n"))
         self.assertFalse(runslice.in_service(OUT))
         self.assertFalse(runslice.in_service("0::/user.slice/user@1000.service/app.slice/run-r1.scope\n"))
         self.assertFalse(runslice.in_service("1:name=systemd:/x.service\n"))

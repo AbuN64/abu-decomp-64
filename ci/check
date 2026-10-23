@@ -10,17 +10,8 @@ PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" python3 ci/run_tests.py tests
 pytest_files="$(grep -l '^import pytest' tests/*.py || true)"
 # shellcheck disable=SC2086
 [ -z "$pytest_files" ] || PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" python3 -m pytest -q -p no:cacheprovider $pytest_files
-# The Wayland input bridge is C: build it warning-clean from its protocol XML (generated into a scratch dir).
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
-stream=src/abu_decomp/stream
-for name in virtual-keyboard virtual-pointer; do
-  wayland-scanner client-header "$stream/protocols/$name.xml" "$scratch/$name.h"
-  wayland-scanner private-code "$stream/protocols/$name.xml" "$scratch/$name.c"
-done
-# shellcheck disable=SC2046
-cc -Wall -Wextra -Werror -O2 -I"$scratch" "$stream/input_bridge.c" "$scratch/virtual-keyboard.c" \
-  "$scratch/virtual-pointer.c" $(pkg-config --cflags --libs wayland-client xkbcommon) -o "$scratch/input-bridge"
 # The n64 shim (shim/): its standalone 32-bit build with unit tests, and the boot tools' tests that need no port facts
 # (test_link.py and test_closure.py read a port's real files and run in the port's own ctest). Skipped without -m32.
 if echo 'int main(void){return 0;}' | cc -m32 -x c - -o "$scratch/m32probe" 2>/dev/null; then

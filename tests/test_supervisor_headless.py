@@ -105,12 +105,11 @@ class HeadlessSupervisorTests(unittest.TestCase):
             self.fail(f"attempt {attempt} never held: {status.read_text() if status.is_file() else None}")
 
         wait_for(1)
-        # the console's F5 path: the published pidfile, then SIGHUP
-        from abu_decomp.console.app import SupervisorSignals
+        # the published pidfile names the process; SIGHUP restarts the held run
         from abu_decomp.supervisor.supervisor import pidfile
 
         self.assertEqual(int(pidfile(status).read_text()), process.pid)
-        self.assertIn(f"sent to {process.pid}", SupervisorSignals(pidfile(status)).send(signal.SIGHUP, "restart"))
+        process.send_signal(signal.SIGHUP)
         wait_for(2)
         process.send_signal(signal.SIGTERM)
         output, errors = process.communicate(timeout=10)
@@ -118,7 +117,6 @@ class HeadlessSupervisorTests(unittest.TestCase):
         envelope = json.loads(output)
         self.assertEqual(envelope["result"], {"closed": True, "role": "port", "status_path": str(status)})
         self.assertFalse(pidfile(status).exists())
-        self.assertIn("not sent", SupervisorSignals(pidfile(status)).send(signal.SIGUSR1, "pause toggle"))
         # one RUN-FAIL per distinct failure: the same failure twice is announced once
         self.assertEqual(len(self.feed.read_text().splitlines()), 1)
 

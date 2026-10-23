@@ -132,7 +132,7 @@ class Bridge:
             full = self.run_dir / ("failure-stack-full.txt" if label == self.breakpoint else "signal-stack-full.txt")
             full.write_text("\n".join(self.full_stack_lines) + "\n")
             # Every thread: the stop is raised on the frame loop's thread, the game's own C frames are on the
-            # game threads; the console shows those (console/port.py).
+            # game threads.
             await self.cli("set print frame-arguments scalars")
             await self.cli("set filename-display basename")
             self.full_stack_lines = []

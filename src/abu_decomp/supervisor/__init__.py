@@ -1,7 +1,7 @@
 """Supervisor: run a target under gdb with retry and capture, the boot gate, RUN-FAIL events. Headless.
 
 The finite child runner lives in abu_decomp.files.
-It writes `status_path` (the console's `supervisor_status`) and RUN-FAIL through the Cake Taste writer; it draws
+It writes `status_path` and RUN-FAIL through the Cake Taste writer; it draws
 nothing. Section `supervisor`: {"runtime_root": path, "roles": {ROLE: {...}}}; a role is `supervised` or `artifact`
 with the keys the moved code reads (status_path, runs_root, release_current, command, ...).
 """

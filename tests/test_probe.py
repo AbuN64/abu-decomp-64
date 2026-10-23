@@ -9,7 +9,6 @@ from pathlib import Path
 from abu_decomp import DecompError, events, probe
 from abu_decomp.cli import main
 from abu_decomp.config import load_profile
-from abu_decomp.console.dashboard_sources import Sources
 
 T0 = datetime(2026, 10, 18, 18, 0, tzinfo=UTC)
 
@@ -118,21 +117,3 @@ class ProbeTests(unittest.TestCase):
             with contextlib.redirect_stdout(output):
                 self.assertEqual(main(["--profile", str(self.seat), "probe", *action]), 0)
             self.assertIn(request_id, output.getvalue())
-
-    def test_experiments_pane_shows_open_requests_and_the_last_probe_per_address(self):
-        answered = self.request(0)["request"]
-        waiting = self.request(1, address="0x80253838", function="g", question="Does teardown free the scene?")
-        self.oracle_probe(probe.story(answered), "info")
-        sources = Sources(
-            self.feed,
-            title="EXPERIMENTS",
-            config={"panes": {"experiments": {"queue": str(self.root / "oracle-queue")}}},
-        )
-        model = sources.read()
-        self.assertEqual(model.heading, "EXPERIMENTS · 1 open probe requests")
-        rows = {row.key: row for row in model.rows}
-        self.assertIn(f"req-{waiting['request']['id']}", rows)
-        self.assertNotIn(f"req-{answered['id']}", rows)
-        self.assertTrue(rows[f"req-{waiting['request']['id']}"].title.startswith("open "))
-        self.assertIn("[stand-in] info", rows["probe-0x8025e1ec"].title)
-        self.assertIn(self.queue / ".console-watch", sources.watched)

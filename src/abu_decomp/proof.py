@@ -1,10 +1,9 @@
-"""`decomp make`: a proof build of a tree, through the shared build pool, written to the event feed.
+"""`decomp make`: a proof build of a tree, through the shared build pool.
 
 A lane that needs the project's own make (a proof build of a patch, one target of the Makefile) runs it here instead of
-raw, so the stream shows it: the build runs in the project tree under the unbake slot pool (`unbake-run`, the pinned
+raw: the build runs in the project tree under the unbake slot pool (`unbake-run`, the pinned
 unbake's own wrapper), capped by the seat's `land.jobs` admit command, and its output streams to stderr.
-One MATCH event (op "build", status passed) or RUN-FAIL event (op "build") says how it came out. Emitting never fails
-the command; project, host and lane come the same way as for `decomp unbake`."""
+The result carries the exit code and wall time; project and host come the same way as for `decomp unbake`."""
 
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ from typing import Any
 
 from unbake import treelock
 
-from abu_decomp import DecompError, land, narrate, tools
+from abu_decomp import DecompError, land, tools
 from abu_decomp.config import Profile
 
 TAIL_LINES = 12
@@ -49,7 +48,6 @@ def run(
     chosen = tools.settings(profile, project, host)
     argv = command(profile, chosen.project, list(args))
     started, tail = time.monotonic(), deque(maxlen=TAIL_LINES)
-    lane = narrate.lane_of(project or chosen.project)
     try:
         # make rewrites build/ and the extraction a ship's check reads: it holds the tree lock as the ship does
         with treelock.hold(chosen.project, exclusive=True, who="make"):
@@ -71,17 +69,7 @@ def run(
     except OSError as exc:
         raise DecompError("proof.process", f"cannot execute {argv[0]}: {exc}") from exc
     wall = round(time.monotonic() - started, 1)
-    target = " ".join(args)[:80] or "default target"
-    payload = {"op": "build", "args": list(args), "exit": code, "wall_seconds": wall, "lane": lane}
-    try:
-        if code == 0:
-            narrate.append(profile, lane, "passed", f"Built {target} in {wall:g}s", "MATCH", payload)
-        else:
-            payload["tail"] = list(tail)[-5:]
-            narrate.append(profile, lane, "failed", f"Build of {target} failed (exit {code})", "RUN-FAIL", payload)
-    except (DecompError, OSError) as error:
-        print(f"decomp: no build event written: {error}", file=sys.stderr)
-    result = {"exit": code, "wall_seconds": wall, "command": argv[1:], "lane": lane}
+    result = {"exit": code, "wall_seconds": wall, "command": argv[1:]}
     if code == 0:
         return result, 0, []
     return (

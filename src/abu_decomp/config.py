@@ -18,9 +18,6 @@ SECTIONS = frozenset(
     {
         "tools",
         "events",
-        "tiles",
-        "stream",
-        "console",
         "lanes",
         "supervisor",
         "build",
@@ -56,7 +53,7 @@ class Profile:
         return copy.deepcopy(dict(self._sections[name]))
 
     def resolve_path(self, value: str) -> Path:
-        """Resolve a path value as the moved stream and console code spells it."""
+        """Resolve a path value against the profile file."""
         return resolve(self.source_file, "path", value)
 
     def path(self, key: str, value: Any) -> Path:

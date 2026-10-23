@@ -212,11 +212,8 @@ class RunTests(unittest.TestCase):
         result = envelope["result"]
         self.assertEqual(result["verdict"], "differs")
         self.assertEqual(result["first_difference"]["kind"], "store")
-        event = json.loads((self.root / "events.jsonl").read_text().splitlines()[-1])
-        self.assertEqual(
-            (event["kind"], event["payload"]["op"], event["payload"]["verdict"]), ("PROBE", "behave", "differs")
-        )
-        self.assertEqual(event["payload"]["function"], "f")
+        self.assertEqual(result["function"], "f")
+        self.assertFalse((self.root / "events.jsonl").exists())  # decomp behave writes no event
         self.assertIn("store 0x", result["reason"])
         self.assertIn("n=", result["reason"])  # the case inputs are in the reason
         self.assertLessEqual(len(result["cases_detail"]), 12)

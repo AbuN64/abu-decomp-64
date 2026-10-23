@@ -1,7 +1,7 @@
 """`decomp cycle`: one long-running process that rebuilds the decomp's evidence when its sources settle.
 
 It blocks on inotify only: one watch per directory under the configured source roots (new directories are added as
-they appear) and the landed refs' directories (RefSource, moved from the old console follower). A matching change
+they appear) and the landed refs' directories (RefSource). A matching change
 opens a burst; the burst ends after `settle_seconds` with no further matching change, and then the steps run once:
 the configured Recipe Maker command (`decomp recipe ...`), the `propose` steps, then `unbake report`. MATCH carries
 the per-version numbers of the previous and the new report when they differ; LAND is appended per new landed
@@ -49,7 +49,7 @@ from typing import Any
 
 from abu_decomp import DecompError, events, proposals, tools
 from abu_decomp.config import Profile
-from abu_decomp.stream.inotify import ATTRIB, CLOSE_WRITE, CREATE, DELETE, ISDIR, MOVED_TO, Watcher, drain
+from abu_decomp.inotify import ATTRIB, CLOSE_WRITE, CREATE, DELETE, ISDIR, MOVED_TO, Watcher, drain
 
 KEYS = frozenset(
     {
@@ -142,7 +142,7 @@ class Cycle:
             self.add_tree(root)
         self.refs = self.land_refs = None
         if self.config["refs"] or self.config["land_refs"]:
-            from abu_decomp.console.gitrefs import RefSource
+            from abu_decomp.gitrefs import RefSource
 
             factory = ref_source or RefSource
             if self.config["refs"]:

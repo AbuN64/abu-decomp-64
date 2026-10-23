@@ -6,7 +6,6 @@ import fcntl
 import hashlib
 import json
 import os
-import sys
 import time
 import tomllib
 from collections.abc import Iterator
@@ -15,7 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, arity, narrate
+from abu_decomp import DecompError, arity
 from abu_decomp.behave import abi, classify, compare, describe, inputs, prototype
 from abu_decomp.behave import candidate as build_candidate
 from abu_decomp.config import Profile
@@ -108,7 +107,7 @@ def _project_version(project: Path) -> str | None:
 
 def probe(profile: Profile, work: Path, name: str, request: dict[str, Any], function: str) -> dict[str, Any]:
     """One `taste repro probe --kind cases` call; the record plus the per-case results it froze."""
-    request["story"]["narrate"] = False  # decomp writes the one verdict event itself (narrate.behave_event)
+    request["story"]["narrate"] = False  # no Taste narration event: decomp reports the verdict itself
     # one file per process: behave runs in parallel share the work dir, and a name alone let one run's request be
     # replaced by another's between the write and taste reading it
     path = work / f"{name}-{os.getpid()}.json"
@@ -632,7 +631,6 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         "timing": timing(stages, started, cache),
         "cache": cache,
     }
-    announce(profile, result)
     return result, 0, findings
 
 
@@ -648,30 +646,6 @@ def _function_sha256(image: Any, function: str) -> str | None:
     return hashlib.sha256(blob).hexdigest()
 
 
-def announce(profile: Profile, result: dict[str, Any]) -> None:
-    """The verdict as one PROBE event for the stream; never fails the command (no events section, unwritable feed)."""
-    first = result.get("first_difference") or {}
-    counts = result.get("counts") or {}
-    verdict = {"same": "same", "differs": "differs", "untestable": "untestable"}.get(result["verdict"], "error")
-    try:
-        narrate.behave_event(
-            profile,
-            function=result["function"],
-            verdict=verdict,
-            checks=counts.get("same", 0) + counts.get("differs", 0),
-            differences=counts.get("differs", 0),
-            total=result.get("total", sum(counts.values())),
-            untestable=counts.get("untestable", 0),
-            untestable_reasons=result.get("untestable_reasons"),
-            inputs=first.get("inputs"),
-            expected=first.get("expected"),
-            actual=first.get("got"),
-            reason=result.get("reason"),
-        )
-    except DecompError as exc:
-        sys.stderr.write(f"behave: no event written: {exc.detail}\n")
-
-
 def _refused(
     profile: Profile,
     options: Options,
@@ -684,7 +658,6 @@ def _refused(
     findings: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     done = _untestable(options, version, address, proto, str(exc), stages, started, findings, exc.key)
-    announce(profile, done[0])
     return done
 
 

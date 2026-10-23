@@ -80,12 +80,7 @@ def _run_tool(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
         sys.stdout.buffer.write(called.text)
         sys.stdout.buffer.flush()
         raise _Text(called.returncode)
-    from abu_decomp import narrate
-
     print(f"decomp: {args.command} used {called.cpu:.1f} CPU s in {called.seconds:.1f} s", file=sys.stderr)
-    narrate.emit(
-        _profile(args.profile), args.command, args.args, called.document, args.project, called.seconds, called.cpu
-    )
     if called.ok:
         return called.describe(), 0, []
     findings = called.document.get("findings") or [
@@ -269,16 +264,9 @@ def _tools_arguments(parser: argparse.ArgumentParser) -> None:
         "deploy", help="install a decomp commit and its tools into venvs from git commits, after the pins agree"
     )
     deploy.add_argument("--sha", required=True, help="the decomp commit (40 hex)")
-    deploy.add_argument(
-        "--no-restart", dest="restart", action="store_false", help="leave running stream units on the old venv"
-    )
     for tool in ("unbake", "recipe", "taste"):
         deploy.add_argument(f"--{tool}", help=f"the {tool} commit to deploy (default: the one decomp pins)")
     deploy.add_argument("--venv", type=Path, required=True, nargs="+", help="live venv paths (symlinks) to deploy to")
-    again = actions.add_parser(
-        "restart", help="restart the stream units still running code from an older venv than the live one"
-    )
-    again.add_argument("--venv", type=Path, required=True, nargs=1, help="the live venv path (symlink)")
 
 
 def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -286,17 +274,8 @@ def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
 
     profile = _profile(args.profile)
     live = [Path(os.path.abspath(path)) for path in args.venv]  # never resolve: the live path is the symlink
-    if args.action == "restart":
-        done, findings = deploy.restart_services(profile, live[0])
-        return {"restarts": done}, int(bool(findings)), findings
     commits = {tool: getattr(args, tool) for tool in ("unbake", "recipe", "taste")}
-    return deploy.deploy(
-        profile,
-        args.sha,
-        live,
-        commits,
-        restart=(lambda path: deploy.restart_services(profile, path)) if args.restart else None,
-    )
+    return deploy.deploy(profile, args.sha, live, commits)
 
 
 def _probe_arguments(parser: argparse.ArgumentParser) -> None:
@@ -452,37 +431,6 @@ def _run_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
     from abu_decomp.cycle import serve
 
     return serve(_profile(args.profile)), 0, []
-
-
-def _run_stream(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    from abu_decomp.stream.cli import run
-
-    return run(_profile(args.profile), tuple(args.args)), 0, []
-
-
-def _console_arguments(parser: argparse.ArgumentParser) -> None:
-    actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
-    tile = actions.add_parser("tile", help="run the console for one tile of the profile's tiles table")
-    tile.add_argument("tile", help="tile id")
-    hud = actions.add_parser("hud", help="print the one-line overlay text of a video tile (its `hud` object)")
-    hud.add_argument("tile", help="tile id")
-    actions.add_parser("refs", help="follow the configured git refs and append LAND events")
-    actions.add_parser("status-line", help="print the newest event for the compositor bar")
-
-
-def _run_console(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    profile = _profile(args.profile)
-    if args.action == "tile":
-        from abu_decomp.console.tiles import run_tile
-
-        return run_tile(profile, args.tile), 0, []
-    if args.action == "hud":
-        from abu_decomp.console.hud import run_hud
-
-        return run_hud(profile, args.tile), 0, []
-    from abu_decomp.console.tiles import run_follower
-
-    return run_follower(profile, args.action), 0, []
 
 
 def _supervisor_arguments(parser: argparse.ArgumentParser) -> None:
@@ -792,12 +740,8 @@ COMMANDS: dict[str, Command] = {
     "lane": Command("launch, register, steer and end AI lanes", _lane_arguments, _run_lane),
     "supervisor": Command("supervise a role headless, or stage an artifact", _supervisor_arguments, _run_supervisor),
     "build": Command("build committed sources and promote verified releases", _build_arguments, _run_build),
-    "console": Command(
-        "run a tile console, the git ref follower or the bar status line", _console_arguments, _run_console
-    ),
     "probe": Command("queue oracle probe requests and join them to PROBE events", _probe_arguments, _run_probe),
     "cycle": Command("rerun Recipe and unbake report whenever the decomp sources settle", _none, _run_cycle),
-    "stream": Command("serve, supervise, control and capture the headless tile stream", _passthrough, _run_stream),
     "port": Command("generate a port repository skeleton on the n64 shim", _port_arguments, _run_port),
     "standalone": Command(
         "list the lines of a game repo (or those it adds over --against) that name one of our tools",
