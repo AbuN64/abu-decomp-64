@@ -298,6 +298,18 @@ def _probe_arguments(parser: argparse.ArgumentParser) -> None:
     request.add_argument("--match-state", help="match state of that source")
     request.add_argument("--evidence", type=Path, action="append", default=[], help="file the request rests on")
     request.add_argument("--supersedes", help="id of the request this one replaces")
+    monkey = actions.add_parser(
+        "monkey", help="seeded random controller input on the sanitizer port; keeps the movies that find something"
+    )
+    monkey.add_argument("--seeds", required=True, help="3, 1-8 or 1,4,9-11")
+    monkey.add_argument("--polls", type=int, default=3000, help="random polls per movie (default 3000)")
+    monkey.add_argument("--hold", type=int, default=24, help="longest run of equal polls (default 24)")
+    monkey.add_argument("--prefix", help="a saved movie that reaches the start point; the random input follows it")
+    monkey.add_argument("--port", type=Path, help="the sanitizer build's executable (default tas.sanitizer.port)")
+    monkey.add_argument("--jobs", type=int, default=2, help="parallel runs (default 2)")
+    monkey.add_argument("--keep", choices=("findings", "all"), default="findings", help="which movies stay saved")
+    findings = actions.add_parser("findings", help="the sanitizer findings, grouped by file:line")
+    findings.add_argument("--limit", type=int, default=50, help="groups to list (default 50)")
     actions.add_parser("serve", help="the open requests, oldest first, each with its Taste repro story")
     status = actions.add_parser("status", help="every request joined to its PROBE events")
     status.add_argument("--id", help="one request")
@@ -431,6 +443,11 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     play.add_argument("--twice", action="store_true", help="replay twice; same_twice compares the two runs' RAM")
     play.add_argument("--port", type=Path, help="run this build's executable instead of the profile's (a lane's build)")
     play.add_argument("--label", help="tag the run with this lane name on the TAS page")
+    play.add_argument(
+        "--sanitize",
+        action="store_true",
+        help="run the sanitizer port (tas.sanitizer.port, or --port): ASan + UBSan reports become findings.jsonl lines",
+    )
     play.add_argument("--pak", choices=("on", "off"), help="Expansion Pak on (8 MB) or off (4 MB), else the movie's")
     play.add_argument(
         "--cpak",
@@ -509,6 +526,25 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         listed = tas_points.listing(profile)
         print(tas_points.render(listed), file=sys.stderr)
         return listed, 0, []
+    if args.action == "monkey":
+        from abu_decomp import tas_sanitize
+
+        done = tas_sanitize.monkey(
+            profile,
+            tas_sanitize.seeds_of(args.seeds),
+            polls=args.polls,
+            hold=args.hold,
+            prefix=args.prefix,
+            port=args.port or tas.settings(profile)["sanitizer_port"],
+            jobs=args.jobs,
+            keep=args.keep,
+        )
+        return done, 0, []
+    if args.action == "findings":
+        from abu_decomp import tas_sanitize
+
+        rows = tas_sanitize.read(tas.settings(profile))
+        return {"total": len(rows), "groups": tas_sanitize.grouped(rows)[: args.limit]}, 0, []
     if args.action == "serve":
         from abu_decomp import tas_serve
 
@@ -546,6 +582,7 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         "start": args.start,
         "take": args.take,
         "state_diff": not args.no_state_diff,
+        "sanitize": args.sanitize,
     }
     if args.all:  # every play option applies to every movie
         result, code = tas.play_all(profile, jobs=args.jobs, twice=args.twice, **options, **inspect)

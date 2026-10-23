@@ -72,6 +72,7 @@ from abu_decomp import (
     tas_oracle,
     tas_points,
     tas_rank,
+    tas_sanitize,
     tas_statediff,
     tas_symbolize,
 )
@@ -115,6 +116,7 @@ _KEYS = frozenset(
         "rank",
         "oracle",
         "coverage",
+        "sanitizer",
     }
 )
 _REQUIRED = frozenset({"movies", "runs", "port", "args", "rom"})
@@ -179,6 +181,9 @@ def settings(profile: Profile) -> dict[str, Any]:
         "gdb": str(table.get("gdb", "gdb")),
         "build": _build(profile, table.get("build")),
         "rank": tas_rank.settings(table.get("rank")),
+        "sanitizer_port": profile.path("tas.sanitizer.port", table["sanitizer"]["port"])
+        if isinstance(table.get("sanitizer"), dict) and "port" in table["sanitizer"]
+        else None,
     }
 
 
@@ -944,6 +949,7 @@ def play(
     start: str | None = None,
     take: bool = False,
     state_diff: bool = True,
+    sanitize: bool = False,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
@@ -968,8 +974,16 @@ def play(
     saved as `play-STAMP` with the header `start`, without the point's polls.
     A movie run also compares the game state with the original's, region by region (module tas_statediff): the result's
     `state_diff` counts the divergent regions, RUN/state-diff.json names each one's first differing field, and the
-    findings go to `<tas.runs>/findings.jsonl`; `state_diff=False` skips it."""
-    cfg = with_port(settings(profile), port)
+    findings go to `<tas.runs>/findings.jsonl`; `state_diff=False` skips it.
+    `sanitize` runs the sanitizer port (profile tas.sanitizer.port, or `port`): reports become findings.jsonl lines
+    (module tas_sanitize) and the result's `sanitizer` counts them; the run is tagged `sanitizer` on the page."""
+    cfg = settings(profile)
+    if sanitize and port is None:
+        if not cfg.get("sanitizer_port"):
+            raise DecompError("tas.sanitize", "no sanitizer port: set tas.sanitizer.port in the profile or pass --port")
+        port = cfg["sanitizer_port"]
+    cfg = with_port(cfg, port)
+    label = label or ("sanitizer" if sanitize else None)
     check_label(label)
     if not 0 <= speed <= 1000:
         raise DecompError("tas.play", f"speed is 0 (turbo) .. 1000, not {speed}")
@@ -1089,9 +1103,12 @@ def play(
         env.update(N64C_TAS_TAKE_AT=str(take_at), N64C_VIEW_FPS="60")
     inspect = inspect_env(run, shots_every, dump_ram_at, trace_draws)
     env.update(inspect)
+    if sanitize:  # recoverable reports: one run lists many (tas_sanitize)
+        env.update({k: v for k, v in tas_sanitize.options_env().items() if k not in os.environ})
     build = build_id(cfg["port"])
     # At real speed a movie takes its own length in wall time; the timeout is the allowance beyond that.
     timeout = cfg["timeout_seconds"] + ((len(polls) + cfg["exit_after"]) / (60 * speed) if speed else 0)
+    timeout *= tas_sanitize.TIMEOUT_FACTOR if sanitize else 1
     record = {
         "id": run.name,
         "movie": name,
@@ -1107,6 +1124,7 @@ def play(
         "pak": pak,
         "cpak": mode,
         "fps_unlock": bool(fps_unlock),
+        "sanitizer": sanitize or None,
     }
     if pads > 1:
         record["pads"] = pads
@@ -1115,7 +1133,7 @@ def play(
     if retry and source is not None:
         record.update({"from": source, "at": take_at})
     state = None
-    if state_diff and not human and not retry:
+    if state_diff and not sanitize and not human and not retry:
         try:
             state = tas_statediff.begin(profile, cfg, run, pak, card, polls)
         except (DecompError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
@@ -1161,6 +1179,8 @@ def play(
     found = inspect_files(run, shots_every, dump_ram_at, trace_draws)
     if found:
         result["inspect"] = found
+    if sanitize or tas_sanitize.present(text):
+        result["sanitizer"] = tas_sanitize.collect(cfg, run, text, movie=name, port=cfg["port"], build=build)
     try:  # RUN/coverage.json: this run's gcovr report (nothing without a coverage build)
         if tas_coverage.run_report(profile, cfg, run):
             result["coverage"] = str(run / tas_coverage.COVERAGE)
@@ -1196,7 +1216,7 @@ def play(
             saved=save_taken(profile, cfg, run, name, human or bool(retry and retry.get("fresh")), pak, mode, *started),
         )
     keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
-    keep += ("taken", "saved", "coverage", "frame", "fault", "shown", "state_diff")
+    keep += ("taken", "saved", "coverage", "frame", "fault", "shown", "state_diff", "sanitizer")
     if state:
         try:
             result["state_diff"] = tas_statediff.finish(state, profile, name, {**record, "batch": batch})
@@ -1219,9 +1239,9 @@ def play(
         result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
     final = {**record, **{k: result.get(k) for k in keep}, "status": "done", "stopped": stopped, "ended": time.time()}
     _write_record(run, final)
-    if not human:  # a crash, stop, hang or exit is a finding (module tas_findings); a clean replay clears its movie's
+    if not human and not sanitize:  # a crash, stop, hang or exit is a finding (tas_findings); a clean replay clears
         tas_findings.record_run(profile, cfg, {**final, "id": run.name}, run, batch)
-    if not human and not retry:  # a run reaching code no corpus movie reaches keeps its movie (tas_corpus)
+    if not human and not retry and not sanitize:  # a run reaching new code keeps its movie (tas_corpus)
         from abu_decomp import tas_corpus
 
         try:
@@ -1247,6 +1267,7 @@ def play_twice(
     fps_unlock: bool = False,
     start: str | None = None,
     take: bool = False,
+    sanitize: bool = False,
 ) -> dict[str, Any]:
     """Two replays back to back; the second's `same_twice` compares it with the first."""
     if take:
@@ -1263,6 +1284,7 @@ def play_twice(
         "cpak": cpak,
         "fps_unlock": fps_unlock,
         "start": start,
+        "sanitize": sanitize,
     }
     play(profile, name, **options)
     return play(profile, name, **options)
@@ -1368,6 +1390,7 @@ def play_all(
             progress(row)  # one row per movie as each finishes; the table and JSON below are unchanged
             done[row["movie"]] = row
     results = [done[name] for name in names]
+    sanitize = bool(options.get("sanitize"))
     path = cfg["runs"] / "standing.json"
     try:
         standing = json.loads(path.read_text())
@@ -1377,7 +1400,7 @@ def play_all(
     for result in results:
         recorded = standing.get(result["movie"])
         verdict = compare(recorded, result)
-        if verdict != "worse":
+        if verdict != "worse" and not sanitize:  # the standing is the page port's
             standing[result["movie"]] = {
                 k: result.get(k) for k in ("outcome", "subject", "polls_reached", "kind", "next", "owner")
             }
@@ -1399,18 +1422,20 @@ def play_all(
                 "frame": result.get("frame", ""),
                 "wall_seconds": result.get("wall_seconds", 0),
                 "cpu_seconds": result.get("cpu_seconds", 0),
+                "sanitizer": result.get("sanitizer"),
             }
         )
     cpu1 = resource.getrusage(resource.RUSAGE_CHILDREN)
     cpu = round(cpu1.ru_utime + cpu1.ru_stime - cpu0.ru_utime - cpu0.ru_stime, 1)
     cfg["runs"].mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(standing, indent=1, sort_keys=True) + "\n")
+    if not sanitize:
+        path.write_text(json.dumps(standing, indent=1, sort_keys=True) + "\n")
     worse = [r["movie"] for r in rows if r["vs_recorded"] == "worse"]
     timing = {"wall_seconds": round(time.monotonic() - began, 1), "cpu_seconds": cpu}
     ranked = ranked_work(profile, cfg, health, rows)
     result = {"build": tas_health.header(health), "movies": rows, "worse": worse, **timing, "ranked": ranked}
     try:  # the unioned coverage never fails a replay
-        report = tas_coverage.build(profile, cfg, jobs=jobs)
+        report = None if sanitize else tas_coverage.build(profile, cfg, jobs=jobs)
         if report:
             result["coverage"] = tas_coverage.line(report)
     except DecompError as error:

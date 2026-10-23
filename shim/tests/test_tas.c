@@ -244,6 +244,7 @@ static void two_pads(void)
     close(go[0]); close(go[1]); close(ready[0]); close(ready[1]);
 }
 
+void __sanitizer_report_error_summary(const char *summary);
 int main(void)
 {
     const unsigned char a[11] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, b[11] = {2, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11};
@@ -267,6 +268,16 @@ int main(void)
         for (int i = 0; i < 10; i++) {
             osContStartReadData(NULL);
             osContGetReadData(pads);
+            if (i == 1) {
+                /* A sanitizer report is tagged with the poll it happened in: two polls are done. */
+                if (n64c_tas_poll_count() != 2) _Exit(6);
+                int saved = dup(2);
+                FILE *tag = freopen("n64c_test_tas.san", "w", stderr);
+                if (!tag) _Exit(7);
+                __sanitizer_report_error_summary("SUMMARY: UndefinedBehaviorSanitizer: undefined-behavior a.c:1:2 in");
+                fflush(stderr);
+                dup2(saved, 2);
+            }
             if (i == 1 && !(pads[0].button == 0x1000 && pads[0].stick_x == -80 && pads[0].stick_y == 80)) _Exit(4);
             if (i == 3 && pads[0].button != 0x0020) _Exit(5); /* the live pad takes over after the movie */
         }
@@ -286,6 +297,12 @@ int main(void)
     for (int c; f && (c = fgetc(f)) != EOF;) lines += c == '\n';
     if (f) fclose(f);
     CHECK(lines == 5); /* one RAM hash per poll the game made (no RAM here: hash 0) */
+    char tagged[256] = {0};
+    f = fopen("n64c_test_tas.san", "r");
+    CHECK(f != NULL);
+    if (f) { CHECK(fread(tagged, 1, sizeof tagged - 1, f) > 0); fclose(f); }
+    CHECK(strcmp(tagged, "SUMMARY: UndefinedBehaviorSanitizer: undefined-behavior a.c:1:2 in\nn64c-san: poll=2\n") == 0);
+    remove("n64c_test_tas.san");
     take_over(movie);
     take_at(movie);
     remove(movie);

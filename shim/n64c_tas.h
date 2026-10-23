@@ -26,6 +26,9 @@ unsigned long n64c_tas_live_seq(void);
 /* 1 once live input (N64C_INPUT) drives the pads: from the start without a movie, else after a "take" or at poll
  * N64C_TAS_TAKE_AT. */
 int n64c_tas_live_taken(void);
+/* How many controller polls the guest has made so far (the number of the newest hash line): the poll a sanitizer
+ * report belongs to. */
+long n64c_tas_poll_count(void);
 /* The hash N64C_TAS_HASH writes per poll, over any bytes (exposed for tests and tools). */
 uint64_t n64c_tas_hash_bytes(const void *data, size_t bytes);
 #ifdef __cplusplus

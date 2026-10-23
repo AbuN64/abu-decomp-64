@@ -344,6 +344,21 @@ void n64c_tas_poll(OSContPad *pad)
     }
 }
 
+long n64c_tas_poll_count(void)
+{
+    return polls;
+}
+
+/* The sanitizer runtime (a RAGE_DECOMP_SANITIZE build; nothing else calls this) calls this once per finished report
+ * (ASan, UBSan) with its "SUMMARY: ..." line, in place of its own printing. The line goes to stderr as the runtime
+ * would print it, followed by the controller poll the report belongs to, so tas play can file the report under its
+ * movie and poll (decomp tas_sanitize). */
+void __sanitizer_report_error_summary(const char *summary)
+{
+    fprintf(stderr, "%s\nn64c-san: poll=%ld\n", summary, polls);
+    fflush(stderr);
+}
+
 FILE *n64c_tas_draw_trace(void)
 {
     if (draws_at < 0 || polls < draws_at)
