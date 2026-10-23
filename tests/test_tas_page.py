@@ -15,7 +15,11 @@ from urllib.request import urlopen
 PAGE = Path(__file__).resolve().parents[1] / "src" / "abu_decomp" / "tas_page.html"
 CONTRACT = {
     "/api/state",
+    "/api/board",
+    "/api/runs",
+    "/api/pin",
     "/api/coverage",
+    "/coverage/",
     "/frame/",
     "/audio/",
     "/log/",
@@ -77,6 +81,10 @@ def mock_state() -> dict:
         "last_run": NOW - 75,
         "label": None,
         "oracle_max": 0.012,
+        "root": name,
+        "from": None,
+        "at": None,
+        "kind": None,
         **kw,
     }
     run = lambda rid, name, **kw: {  # noqa: E731
@@ -91,7 +99,15 @@ def mock_state() -> dict:
         "outcome": None,
         "subject": None,
         "started": NOW - 5,
-        "frame": f"/frame/{rid}",
+        "ended": None,
+        "input": "movie",
+        "took_at": None,
+        "from": None,
+        "at": None,
+        "saved": None,
+        "pinned": False,
+        "pak": "on",
+        "cpak": "none",
         "oracle": {
             "frame": f"/oracle/{rid}",
             "status": "done",
@@ -133,6 +149,12 @@ def mock_state() -> dict:
                 polls=1200,
                 subject="func_80256C90_de+0x10",
                 started=NOW - 30,
+                ended=NOW - 20,
+                input="human",
+                took_at=400,
+                saved="title-to-player-select-take-20261023-010101",
+                pinned=True,
+                oracle=None,
             ),
         ],
         "movies": [
@@ -157,32 +179,85 @@ def mock_state() -> dict:
                 train={"line": "final-80256C90.diff", "mark": "LANDED"},
             ),
             movie("boot-missing", outcome="hang", reached=328, same_twice=None, last_run=None),
+            movie(
+                "title-to-player-select-take-20261023-010101",
+                root="title-to-player-select",
+                **{"from": "title-to-player-select", "at": 400},
+            ),
         ],
-        "cycle": {
-            "lanes": [
-                {
-                    "name": "TAS-CYCLE-1",
-                    "title": "copyright splash off center",
-                    "status": "17:47 start",
-                    "status_at": NOW - 40,
-                    "result": None,
-                    "runs": 1,
-                },
-                {
-                    "name": "TAS-CYCLE-0",
-                    "title": "old cycle",
-                    "status": "17:00 done",
-                    "status_at": NOW - 4000,
-                    "result": "DONE: splash centred",
-                    "runs": 0,
-                },
-            ],
-            "inbox": [
-                {"line": "final-80256C90.diff  func_80256C90_de", "mark": "LANDED"},
-                {"line": "final-80209CD8.diff  func_80209CD8_de", "mark": None},
-            ],
-        },
+        "lanes": [
+            {
+                "name": "TAS-CYCLE-1",
+                "title": "copyright splash off center",
+                "kind": "cycle",
+                "status": "17:47 start",
+                "status_at": NOW - 40,
+                "result": None,
+                "runs": 1,
+            },
+            {
+                "name": "TAS-CYCLE-0",
+                "title": "old cycle",
+                "kind": "cycle",
+                "status": "17:00 done",
+                "status_at": NOW - 4000,
+                "result": "DONE: splash centred",
+                "runs": 0,
+            },
+        ],
+        "inbox": [
+            {"line": "final-80256C90.diff  func_80256C90_de", "mark": "LANDED"},
+            {"line": "final-80209CD8.diff  func_80209CD8_de", "mark": None},
+        ],
     }
+
+
+BOARD = {
+    "decomp": {
+        "generated": NOW - 100,
+        "head": "ba2d6977ff76",
+        "head_subject": "Update progress",
+        "head_time": NOW - 120,
+        "versions": [
+            {
+                "name": "us-rev1",
+                "exact_pct": 90.72,
+                "fuzzy_pct": 100.0,
+                "bytes": 1370404,
+                "code": {"exact": 1002424, "fuzzy": 127100, "handwritten": 0, "none": 0},
+                "functions": {"exact": 4183, "fuzzy": 162, "none": 0},
+                "none_fns": [],
+                "bridge": {"linked": True, "booted": True, "units_in": 71, "units_out": 73},
+                "spark": [[NOW - 900, 90.1, 100.0], [NOW - 100, 90.72, 100.0]],
+            }
+        ],
+    },
+    "landed": [{"sha": "718492a18aa", "time": NOW - 300, "subject": "Match func_802013E0_de"}],
+    "work": {
+        "generated": NOW - 30,
+        "error": None,
+        "rows": [
+            {
+                "rank": 1,
+                "kind": "host fault",
+                "where": "host-fault-00000010",
+                "blocks": ["model-preview"],
+                "layer": "game source",
+                "error": "crash host-fault-00000010",
+                "next": "recipe work func_80297310_de",
+                "owner": "func_80256C90_de at src/game/TEXTURE/80256220_13.CPP:48",
+            },
+            {
+                "rank": 2,
+                "kind": "owes a match",
+                "where": "func_80209CD8_de at src/a.CPP",
+                "layer": "game source",
+                "error": "C unproven, reached by 3 runs",
+                "next": "recipe work func_80209CD8_de",
+            },
+        ],
+    },
+}
 
 
 def bmp(width: int = 320, height: int = 240, rgb: tuple = (40, 90, 140)) -> bytes:
@@ -219,6 +294,11 @@ class Stub:
                     self.reply(json.dumps(stub.state).encode(), "application/json")
                 elif path == "/api/coverage":
                     self.reply(json.dumps(COVERAGE).encode(), "application/json")
+                elif path == "/api/board":
+                    self.reply(json.dumps(BOARD).encode(), "application/json")
+                elif path == "/api/runs":
+                    done = [r for r in stub.state["runs"] if r["status"] == "done"]
+                    self.reply(json.dumps({"runs": done, "more": False}).encode(), "application/json")
                 elif path.startswith(("/frame/", "/oracle/")):
                     self.reply(bmp(), "image/bmp")
                 elif path.startswith("/shot/"):
@@ -269,11 +349,13 @@ class PageTests(unittest.TestCase):
     def test_page_renders_every_contract_field(self):
         js = script()
         state = mock_state()
-        fields = set(state["runs"][0]) | set(state["movies"][0]) | set(state["cycle"]) | set(state["build"])
-        fields |= set(state["cycle"]["lanes"][0])
-        fields |= set(state["runs"][0]["oracle"])
-        fields -= {"frame"}  # the page builds /frame/<id> and /oracle/<id> from the id
-        for name in sorted(fields | {"state", "mark", "line"}):
+        fields = set(state["runs"][0]) | set(state["movies"][0]) | set(state["build"]) | set(state["lanes"][0])
+        fields |= set(state["runs"][0]["oracle"]) | set(state["inbox"][0])
+        version = BOARD["decomp"]["versions"][0]
+        fields |= set(BOARD) | set(BOARD["decomp"]) - {"head_subject", "head_time"} | set(version) - {"bytes"}
+        fields |= set(BOARD["work"]) | set(BOARD["work"]["rows"][0]) | set(BOARD["landed"][0])
+        fields -= {"frame", "vi_drift_note"}
+        for name in sorted(fields | {"state", "more"}):
             self.assertRegex(js, rf"\.{name}\b", name)
 
     def test_script_parses(self):
@@ -291,7 +373,7 @@ class PageTests(unittest.TestCase):
         self.assertIn(b"<title>TAS</title>", urlopen(stub.url, timeout=5).read())
         self.assertEqual(json.load(urlopen(stub.url + "api/state", timeout=5))["now"], NOW)
 
-    def test_headless_render_shows_tiles_movies_inbox_and_log(self):
+    def test_headless_render_shows_the_stage_strip_and_rail(self):
         chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
         if not chrome:
             self.skipTest("no chromium")
@@ -315,33 +397,45 @@ class PageTests(unittest.TestCase):
                 text=True,
                 timeout=60,
             ).stdout
-        self.assertEqual(dom.count('class="tile'), 3)  # two running + the crash still fresh
+        self.assertEqual(
+            dom.count('class="tile'), 1
+        )  # the stage follows the newest live run; the other is in the strip
         for text in (
+            "model-preview",  # on the stage (newest live run)
+            "following live",
+            "Take over",
             "boot-idle",
-            "boot-missing",
-            "func_80256C90_de",
-            "LANDED",
-            "DIFF",
-            "fuzzy",
-            "turbo",
-            "1x",
             "TAS-CYCLE-1",
-            "copyright splash off center",
-            "DONE: splash centred",
-            "step 3 start",
-            "crash",
-            "611/1200",
+            "Next up",
+            "host-fault-00000010",
+            "recipe work func_80297310_de",
+            "1 take",
+            "func_80256C90_de",
             "2574d74ed",
-            "port | original",
-            "Δ44%",
-            "worst 44% at poll 150",
-            "1.2%",
-            "func_8025_missing_de",
-            "oracle reaches, port never 1",
-            "14.9%",
         ):
             self.assertIn(text, dom, text)
-        self.assertRegex(dom, r"id=\"conn\" class=\"dim\"></span>")  # state fetched
+        self.assertRegex(dom, r'id="conn" class="dot ok"')  # state fetched
+
+    def test_headless_render_of_each_rail_tab(self):
+        chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("no chromium")
+        stub = Stub(mock_state())
+        self.addCleanup(stub.close)
+        expect = {
+            "decomp": ("us-rev1", "90.72%", "Match func_802013E0_de", "LANDED", "units in"),
+            "lanes": ("copyright splash off center", "17:47 start", "watch 1"),
+            "runs": ("title-to-player-select", "taken @400", "★"),
+        }
+        for tab, texts in expect.items():
+            with tempfile.TemporaryDirectory() as profile:
+                argv = [chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run"]
+                argv += [f"--user-data-dir={profile}", "--window-size=1600,1000", "--virtual-time-budget=4000"]
+                dom = subprocess.run(
+                    [*argv, "--dump-dom", stub.url + f"#{tab}"], capture_output=True, text=True, timeout=60
+                ).stdout
+            for text in texts:
+                self.assertIn(text, dom, f"{tab}: {text}")
 
 
 if __name__ == "__main__":

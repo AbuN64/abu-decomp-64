@@ -427,6 +427,58 @@ class MovieTests(unittest.TestCase):
         self.assertEqual(again["compared_with"], Path(first["run"]).name)  # ... and never their reference
         self.assertIs(again["same_twice"], True)
 
+    def test_a_retry_replays_the_runs_own_polls_then_hands_over_at_the_poll(self):
+        self.movie()
+        with self.port("1 aa\n2 bb\n", []):
+            first = tas.play(self.profile, "m", now=T0)
+        source = Path(first["run"]).name
+        with self.assertRaises(DecompError):
+            tas.play(self.profile, None, source=source, take_at=3)  # its recording has 2 polls
+        with self.assertRaises(DecompError):
+            tas.play(self.profile, None, source=source, take_at=1, oracle=True)
+        seen = []
+        port = self.port("1 aa\n2 cc\n", seen)
+        with port as Port:
+            init = Port.__init__
+
+            def took(self_, argv, env, stdout, **kwargs):
+                init(self_, argv, env, stdout, **kwargs)
+                stdout.write("n64c-tas: live input took over at poll 2 (N64C_TAS_TAKE_AT)\n")
+
+            Port.__init__ = took
+            retry = tas.play(self.profile, None, source=source, take_at=1)
+        env, during = seen
+        run = Path(retry["run"])
+        self.assertEqual((env["N64C_TAS_TAKE_AT"], env["N64C_SPEED"], env["N64C_VIEW_FPS"]), ("1", "0", "60"))
+        self.assertEqual((run / "movie.raw").read_text(), "8000 0 0\n")  # the run's own polls up to the poll
+        self.assertEqual((during["movie"], during["input"], during["from"], during["at"]), ("m", "human", source, 1))
+        self.assertTrue((run / "taken").is_file())
+        self.assertTrue(retry["saved"].startswith("m-take-"))
+        header, _ = tas.decode((self.root / "movies" / f"{retry['saved']}.tas").read_text())
+        self.assertEqual((header["from"], header["at"]), ("m", "1"))
+        self.assertEqual(tas.took_over_at(run), 1)
+
+    def test_take_root_strips_every_take_suffix(self):
+        self.assertEqual(
+            tas.take_root("weird-20261022-032052-take-20261023-0118-take-20261023-031651"), "weird-20261022-032052"
+        )
+        self.assertEqual(tas.take_root("boot-idle"), "boot-idle")
+
+    def test_archive_keeps_pinned_running_recent_and_each_movies_newest_run(self):
+        plays = self.root / "runs" / "plays"
+        old = 1000.0
+        for name, movie, ended in (("a", "m", old), ("b", "m", old + 1), ("c", "n", old), ("d", "m", 10**10)):
+            (plays / name).mkdir(parents=True)
+            tas._write_record(
+                plays / name, {"movie": movie, "status": "done", "outcome": "ok", "started": ended, "ended": ended}
+            )
+        (plays / "p").mkdir()
+        tas._write_record(plays / "p", {"movie": "m", "status": "done", "outcome": "ok", "started": old, "ended": old})
+        tas.pin(tas.settings(self.profile), "p", True)
+        gone = tas.archive(tas.settings(self.profile), 3, now=old + 10 * 86400)
+        self.assertEqual(sorted(gone), ["a", "b"])  # c is n's newest, d is recent and m's newest, p is pinned
+        self.assertEqual(sorted(x.name for x in plays.iterdir()), ["c", "d", "p"])
+
     def test_speed_one_plays_sound_and_waits_for_the_movie_in_real_time(self):
         self.movie("A *600\n")
         seen, waited = [], []

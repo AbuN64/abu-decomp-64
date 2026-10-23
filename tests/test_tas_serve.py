@@ -87,14 +87,14 @@ class ServeTests(Base):
         )  # fmt: skip
         self.make_run("20261022T150000Z-boot-idle", movie="boot-idle", status="running", pid=2**22 + 7, started=1.0)
         state = server.state()
-        self.assertEqual(set(state), {"now", "build", "runs", "movies", "cycle"})
+        self.assertEqual(set(state), {"now", "build", "runs", "movies", "lanes", "inbox"})
         self.assertEqual(state["build"]["port"], str(self.root / "port"))
         self.assertGreater(state["build"]["built"], 0)
         runs = {r["id"]: r for r in state["runs"]}
         self.assertEqual([r["started"] for r in state["runs"]], [1.0, 5.0, 10.0])
         now = runs["20261022T170000Z-boot-idle"]
         self.assertEqual((now["status"], now["poll"], now["polls"], now["outcome"]), ("running", 2, 900, None))
-        self.assertEqual(now["frame"], "/frame/20261022T170000Z-boot-idle")
+        self.assertEqual((now["pinned"], now["took_at"], now["from"], now["ended"]), (False, None, None, None))
         self.assertEqual(runs["20261022T150000Z-boot-idle"]["status"], "done")  # its process is gone
         done = runs["20261022T160000Z-model-preview"]
         self.assertEqual((done["outcome"], done["poll"], done["subject"]), ("crash", 611, "host-fault-10"))
@@ -106,12 +106,74 @@ class ServeTests(Base):
         self.assertEqual(preview["fn"], {"name": "func_80256C90_de", "state": "fuzzy"})
         self.assertEqual(preview["train"], {"line": "L1 /x/final-func_80256C90_de.diff exact", "mark": "LANDED"})
         self.assertEqual(preview["last_run"], 6.0)
-        cycle = state["cycle"]
-        self.assertEqual(cycle["lanes"], [])  # no lanes folder configured
-        self.assertEqual([row["mark"] for row in cycle["inbox"]], ["LANDED", "DROPPED", None])
-        self.assertEqual(cycle["inbox"][1]["line"], "DEPLOY: decomp 1e51919")
+        self.assertEqual((preview["root"], preview["from"], preview["at"]), ("model-preview", None, None))
+        self.assertEqual(state["lanes"], [])  # no lanes folder configured
+        self.assertEqual([row["mark"] for row in state["inbox"]], ["LANDED", "DROPPED", None])
+        self.assertEqual(state["inbox"][1]["line"], "DEPLOY: decomp 1e51919")
 
-    def test_cycle_lanes_and_labelled_runs(self):
+    def test_takes_fold_under_their_root_movie(self):
+        sha = hashlib.sha1(b"rom").hexdigest()
+        movies = self.root / "movies"
+        (movies / "boot-idle-take-20261023-010101.tas").write_text(
+            f"# tas 1\n# rom-sha1 {sha}\n# from boot-idle\n# at 400\n- *500\n"
+        )
+        (movies / "boot-idle-take-20261023-010101-take-20261023-020202.tas").write_text(
+            f"# tas 1\n# rom-sha1 {sha}\n- *9\n"
+        )
+        rows = {m["name"]: m for m in tas_serve.Server(self.profile()).state()["movies"]}
+        take = rows["boot-idle-take-20261023-010101"]
+        self.assertEqual((take["root"], take["from"], take["at"], take["polls"]), ("boot-idle", "boot-idle", 400, 500))
+        self.assertEqual(rows["boot-idle-take-20261023-010101-take-20261023-020202"]["root"], "boot-idle")
+
+    def test_history_pages_finished_runs_newest_first_and_pins(self):
+        server = tas_serve.Server(self.profile())
+        for n in range(5):
+            self.make_run(f"r{n}", movie="boot-idle", status="done", started=float(n), outcome="ok", ended=n + 0.5)
+        self.make_run("live", movie="boot-idle", status="running", started=9.0, pid=os.getpid())
+        page = server.history(None, 2)
+        self.assertEqual(([r["id"] for r in page["runs"]], page["more"]), (["r4", "r3"], True))
+        page = server.history(3.0, 60)
+        self.assertEqual(([r["id"] for r in page["runs"]], page["more"]), (["r2", "r1", "r0"], False))
+        self.assertEqual(server.keep("r1", True), {"id": "r1", "pinned": True})
+        self.assertTrue(server.history(2.0, 1)["runs"][0]["pinned"])
+        self.assertEqual(server.keep("r1", False)["pinned"], False)
+        with self.assertRaises(DecompError):
+            server.keep("nope", True)
+
+    def test_board_reads_progress_history_landed_and_the_ranked_list(self):
+        states = self.root / "states.json"
+        states.write_text(json.dumps({
+            "generated": 5, "head": "abc", "head_subject": "s",
+            "bridge": {"versions": {"us-rev1": {"linked": True, "booted": True, "units_in": 3, "units_out": 1}}},
+            "versions": {"us-rev1": {"exact_percent": 90.5, "fuzzy_percent": 100.0, "bytes_total": 10,
+                                     "code": {"exact": 9, "fuzzy": 1, "none": 0}, "functions": {"exact": 4},
+                                     "none_fns": [["func_8000_de", 4, "src/a.c"]]}},
+        }))  # fmt: skip
+        (self.root / "history.jsonl").write_text('{"generated": 1, "pct": {"us-rev1": [89.0, 99.0]}}\nbad\n'
+                                                 '{"generated": 2, "pct": {"us-rev1": [90.5, 100.0]}}\n')  # fmt: skip
+        ranked = mock.patch.object(tas_serve.Server, "ranked", return_value=[{"rank": 1, "kind": "owes a match"}])
+        landed = mock.patch.object(
+            tas_serve.tas_board, "landed", return_value=[{"sha": "f", "time": 1, "subject": "Match x"}]
+        )
+        with ranked, landed:
+            server = tas_serve.Server(self.profile())
+            board = server.board()
+            for _ in range(200):
+                if server.work.view()["rows"] is not None:
+                    break
+                time.sleep(0.01)
+            work = server.work.view()
+        version = board["decomp"]["versions"][0]
+        self.assertEqual(
+            (version["name"], version["exact_pct"], version["none_fns"]), ("us-rev1", 90.5, ["func_8000_de"])
+        )
+        self.assertEqual(version["spark"], [[1, 89.0, 99.0], [2, 90.5, 100.0]])
+        self.assertEqual(version["bridge"]["units_in"], 3)
+        self.assertEqual(board["landed"][0]["subject"], "Match x")
+        self.assertEqual(work["rows"], [{"rank": 1, "kind": "owes a match"}])
+        self.assertIsNone(work["error"])
+
+    def test_lanes_and_labelled_runs(self):
         lanes = self.root / "lanes"
         for name, brief in (("TAS-CYCLE-1", "KIND: cycle\nOWNER\n# TAS-CYCLE-1 (Sonnet): splash off center.\n"),
                             ("TAS-CYCLE-2", "KIND: cycle\n# TAS-CYCLE-2: texturing\n"),
@@ -126,9 +188,12 @@ class ServeTests(Base):
         self.make_run("r1", movie="boot-idle", status="running", speed=1, started=1.0, pid=os.getpid(),
                       label="TAS-CYCLE-1", port="/x/ragewars")  # fmt: skip
         state = server.state()
-        rows = {r["name"]: r for r in state["cycle"]["lanes"]}
-        self.assertEqual(set(rows), {"TAS-CYCLE-1", "TAS-CYCLE-2", "OTHER"})
-        self.assertEqual([r["name"] for r in state["cycle"]["lanes"]][-1], "TAS-CYCLE-2")  # done goes last
+        rows = {r["name"]: r for r in state["lanes"]}
+        self.assertEqual(set(rows), {"TAS-CYCLE-1", "TAS-CYCLE-2", "FUZZY-A", "OTHER"})  # every lane with a brief
+        self.assertEqual(
+            (rows["FUZZY-A"]["kind"], rows["TAS-CYCLE-1"]["kind"], rows["OTHER"]["kind"]), ("impl", "cycle", "cycle")
+        )
+        self.assertEqual([r["name"] for r in state["lanes"]][-1], "TAS-CYCLE-2")  # done goes last
         one = rows["TAS-CYCLE-1"]
         self.assertEqual((one["title"], one["status"], one["result"], one["runs"]),
                          ("TAS-CYCLE-1 (Sonnet): splash off center.", "17:55 found it", None, 1))  # fmt: skip
@@ -273,7 +338,7 @@ class HttpTests(Base):
             self.assertEqual(len(reply["ids"]), 2)
             state = json.loads(self.get("/api/state")[2])
             queued = {r["id"]: r for r in state["runs"]}
-            self.assertEqual({queued[i]["status"] for i in reply["ids"]}, {"running"})
+            self.assertEqual({queued[i]["status"] for i in reply["ids"]}, {"queued"})
             for _ in range(100):
                 if play_all.called:
                     break
@@ -342,6 +407,38 @@ class HttpTests(Base):
         self.assertEqual(state["r5"]["input"], "human")
         self.assertEqual(self.post("/api/play", {})[0], 400)  # r5 is driven by live input now
         self.assertEqual(self.post("/api/take", {"id": "nope"})[0], 400)
+
+    def test_retry_from_a_poll_and_pin(self):
+        source = self.make_run("src", movie="boot-idle", status="done", started=1.0, outcome="crash", polls_reached=3)
+        (source / "polls.raw").write_text("8000 0 0\n0000 0 0\n1000 0 0\n")
+        started = []
+        hold = threading.Event()
+
+        def fake_play(profile, movie, *, run_id=None, source=None, take_at=None, **kwargs):
+            started.append((movie, run_id, source, take_at))
+            hold.wait(10)
+            return {}
+
+        with mock.patch.object(tas, "play", fake_play):
+            self.assertEqual(self.post("/api/play", {"from": "src", "at": 9})[0], 400)  # beyond its recording
+            self.assertEqual(self.post("/api/play", {"from": "nope", "at": 1})[0], 400)
+            status, reply = self.post("/api/play", {"from": "src", "at": 2, "label": "owner"})
+            self.assertEqual((status, reply["movie"]), (200, "boot-idle"))
+            row = {r["id"]: r for r in json.loads(self.get("/api/state")[2])["runs"]}[reply["id"]]
+            self.assertEqual(
+                (row["input"], row["from"], row["at"], row["took_at"], row["polls"]), ("human", "src", 2, 2, 2)
+            )
+            for _ in range(100):
+                if started:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(started, [(None, reply["id"], "src", 2)])
+            self.assertEqual(self.post("/api/play", {"from": "src", "at": 1})[0], 400)  # one live-input run at a time
+            hold.set()
+        self.assertEqual(self.post("/api/pin", {"id": "src", "pinned": True}), (200, {"id": "src", "pinned": True}))
+        self.assertTrue((source / "pinned").is_file())
+        page = json.loads(self.get("/api/runs?limit=5")[2])
+        self.assertEqual(([r["id"] for r in page["runs"]], page["runs"][0]["pinned"]), (["src"], True))
 
     def test_coverage_table_and_the_static_gcovr_report(self):
         self.assertEqual(json.loads(self.get("/api/coverage")[2]), {})  # no table yet

@@ -41,6 +41,7 @@ import json
 import os
 import re
 import resource
+import shutil
 import signal
 import subprocess
 import sys
@@ -270,7 +271,11 @@ def save(
     pak: str = "on",
     cpak: str = "none",
     cpak_image: Path | None = None,
+    parent: str | None = None,
+    at: int | None = None,
 ) -> dict[str, Any]:
+    """Save polls as movie `name`; `parent`/`at` name the movie a take branched from and the poll it left it at
+    (header lines `from` / `at`; module tas_serve folds takes under their root movie)."""
     cfg = settings(profile)
     check_pak(pak)
     if not _CARD_MODE.fullmatch(cpak):
@@ -296,6 +301,9 @@ def save(
     }
     if note:
         header["note"] = " ".join(note.split())
+    if parent:
+        header["from"] = parent
+        header["at"] = str(at or 0)
     cfg["movies"].mkdir(parents=True, exist_ok=True)
     if len(cpak) == 64:
         card = cfg["movies"] / f"{cpak}.mpk"
@@ -432,6 +440,74 @@ def movie_polls(cfg: dict[str, Any], name: str) -> list[Poll]:
     if header.get("rom-sha1") != rom:
         raise DecompError("tas.play", f"{path.name} was recorded on ROM {header.get('rom-sha1')}, not {rom}")
     return polls
+
+
+def retry_source(cfg: dict[str, Any], source: str, take_at: int | None) -> dict[str, Any]:
+    """What a retry of run `source` from poll `take_at` replays: that run's movie name, its recorded polls up to the
+    poll, its Expansion Pak and the card it started with (a run keeps `cpak-start.mpk`), so the prefix is the run."""
+    run = run_folder(cfg, source)
+    row = read_record(run) if run else None
+    if not run or not row:
+        raise DecompError("tas.retry", f"no run {source}")
+    try:
+        polls = read_raw(run / "polls.raw")
+    except OSError:
+        polls = []
+    if take_at is None or not 0 <= take_at <= len(polls):
+        raise DecompError("tas.retry", f"retry from a poll 0..{len(polls)} of {source}, not {take_at}")
+    kept = run / CARD_START
+    return {
+        "movie": str(row.get("movie") or source),
+        "polls": polls[:take_at],
+        "pak": str(row.get("pak") or "on"),
+        "cpak": str(row.get("cpak") or "none"),
+        "card": kept.read_bytes() if kept.is_file() else None,
+    }
+
+
+def run_folder(cfg: dict[str, Any], run_id: str) -> Path | None:
+    """The folder of run `run_id` under runs/plays, None for a name that is not one."""
+    if not re.fullmatch(r"[\w.-]+", run_id or "") or run_id.startswith("."):
+        return None
+    run = cfg["runs"] / "plays" / run_id
+    return run if run.is_dir() else None
+
+
+PINNED = "pinned"  # present in a run folder the owner keeps: never archived
+
+
+def pin(cfg: dict[str, Any], run_id: str, keep: bool) -> dict[str, Any]:
+    run = run_folder(cfg, run_id)
+    if not run or read_record(run) is None:
+        raise DecompError("tas.pin", f"no run {run_id}")
+    if keep:
+        (run / PINNED).write_text("kept from the TAS page\n")
+    else:
+        (run / PINNED).unlink(missing_ok=True)
+    return {"id": run_id, "pinned": keep}
+
+
+def archive(cfg: dict[str, Any], keep_days: float, now: float | None = None) -> list[str]:
+    """Delete finished runs older than `keep_days` (by their end) unless pinned or the newest finished run of their
+    movie (the movie's standing, coverage and same_twice source). Runs are replays of kept movies, so what goes is
+    reproducible; returns the deleted run ids."""
+    cutoff = (now or time.time()) - keep_days * 86400
+    rows = run_rows(cfg)
+    newest = {}
+    for run, row in rows:  # oldest first: the last one seen per movie is its newest
+        if row.get("status") == "done" and row.get("outcome") and not row.get("taken"):
+            newest[row.get("movie")] = run.name
+    gone = []
+    for run, row in rows:
+        if row.get("status") != "done" or running(run) or (run / PINNED).exists():
+            continue
+        if newest.get(row.get("movie")) == run.name:
+            continue
+        if float(row.get("ended") or row.get("started") or 0) >= cutoff:
+            continue
+        shutil.rmtree(run, ignore_errors=True)
+        gone.append(run.name)
+    return gone
 
 
 def _wait(process: subprocess.Popen, timeout: float, run: Path | None = None) -> tuple[int | None, float]:
@@ -601,16 +677,35 @@ def human_movie_name(now: datetime | None = None) -> str:
     return "play-" + (now or datetime.now(UTC)).strftime("%Y%m%d-%H%M%S")
 
 
+_TAKE_SUFFIX = re.compile(r"(?:-take-\d{8}-\d+)+$")
+_TOOK_OVER = re.compile(r"live input took over at poll (\d+)")
+
+
+def take_root(name: str) -> str:
+    """The movie a chain of takes started from: `boot-take-20261023-010101` and its takes all root at `boot`."""
+    return _TAKE_SUFFIX.sub("", name) or name
+
+
+def took_over_at(run: Path) -> int:
+    """Polls the run's movie played before live input took over (the port says so in the run's output), 0 if never."""
+    try:
+        match = _TOOK_OVER.search((run / "output.txt").read_text(errors="replace"))
+    except OSError:
+        return 0
+    return int(match[1]) - 1 if match else 0
+
+
 def save_taken(
     profile: Profile, cfg: dict[str, Any], run: Path, movie: str, human: bool, pak: str = "on", cpak: str = "none"
 ) -> str | None:
-    """Save a run that live input drove as a movie: the human's run under its own name, a takeover as
-    `<movie>-take-STAMP` (the original movie's prefix plus the human's polls). None when it reached no poll."""
+    """Save a run that live input drove as a movie: the human's run under its own name, a takeover (or a retry) as a
+    branch `<root>-take-STAMP` of its movie's root, with `from` = the movie it left and `at` = the poll it left it at.
+    None when it reached no poll."""
     source = run / "polls.raw"
     if not source.is_file() or not read_raw(source):
         return None
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    name = movie if human else f"{movie[:40]}-take-{stamp}"
+    name = movie if human else f"{take_root(movie)[:40]}-take-{stamp}"
     note = f"live input from the TAS page, run {run.name}" + ("" if human else f", taken over from {movie}")
     try:
         kept = run / CARD_START
@@ -623,6 +718,8 @@ def save_taken(
             pak=pak,
             cpak=cpak,
             cpak_image=kept if kept.is_file() else None,
+            parent=None if human else movie,
+            at=None if human else took_over_at(run),
         )["name"]
     except DecompError:
         return None
@@ -685,6 +782,8 @@ def play(
     pak: str | None = None,
     oracle: bool = False,
     cpak: str | None = None,
+    source: str | None = None,
+    take_at: int | None = None,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
@@ -697,7 +796,10 @@ def play(
     without one: a fresh card), a new run uses the profile's own card file.
     Every run listens for live input (`input_address`, module tas_serve's /api/take and /api/input): once it is taken
     over the recording goes on, and at the end its polls are saved as a new movie (`saved`). `name` None is a new
-    human run: a fresh boot at speed 1 driven by live input from the first poll, saved as `play-STAMP`."""
+    human run: a fresh boot at speed 1 driven by live input from the first poll, saved as `play-STAMP`.
+    `source` (a run id) with `take_at` P retries that run from poll P: its own recorded polls up to P replay at turbo
+    with its Expansion Pak and starting card, then live input drives the run from poll P on (port N64C_TAS_TAKE_AT),
+    so the retry is exact; it is saved as a branch of the run's movie like any takeover."""
     cfg = with_port(settings(profile), port)
     check_label(label)
     if not 0 <= speed <= 1000:
@@ -710,16 +812,22 @@ def play(
     check_inspect(shots_every, dump_ram_at, trace_draws)
     check_pak(pak)
     check_cpak(cpak)
-    human = name is None
+    retry = retry_source(cfg, source, take_at) if source is not None else None
+    human = name is None and retry is None
+    if retry and (oracle or shots_every):
+        raise DecompError("tas.retry", "a retry is driven by live input from its poll on: no oracle, no shots")
     if oracle and human:
         raise DecompError("tas.oracle", "the oracle replays a movie; a human run has none")
     if oracle and shots_every:
         raise DecompError("tas.oracle", "--oracle pictures the port every tas.oracle.shot_every polls (shots/port)")
     original = tas_oracle.required(profile) if oracle else None
-    if human:
+    if retry:
+        name, polls = retry["movie"], retry["polls"]
+        speed, label, pak = 0, label or HUMAN_LABEL, retry["pak"]
+    elif human:
         speed, label = 1, label or HUMAN_LABEL
         name = human_movie_name(now)
-        polls: list[Poll] = []
+        polls = []
     else:
         polls = movie_polls(cfg, name)
     pak = pak or ("on" if human else movie_pak(cfg, name))
@@ -727,7 +835,13 @@ def play(
     user_dir = run / "user"
     user_dir.mkdir(parents=True)
     card, mode, oracle_card = None, "none", None
-    if human:
+    if retry:
+        mode = retry["cpak"]
+        if retry["card"] is not None:
+            card = run / CARD
+            card.write_bytes(retry["card"])
+            (run / CARD_START).write_bytes(retry["card"])
+    elif human:
         if cpak != "off":
             card = cfg["runs"] / PROFILE_CARD  # the owner's own card: the game's saves stay in it
             if card.exists():
@@ -767,6 +881,9 @@ def play(
     else:
         (run / "movie.raw").write_text(format_raw(polls))
         env.update(N64C_TAS_PLAY=str(run / "movie.raw"), N64C_TAS_EXIT_AFTER=str(cfg["exit_after"]))
+    if retry:
+        (run / TAKEN).write_text(f"retry of {source} from poll {take_at}\n")
+        env.update(N64C_TAS_TAKE_AT=str(take_at), N64C_VIEW_FPS="60")
     inspect = inspect_env(run, shots_every, dump_ram_at, trace_draws)
     env.update(inspect)
     build = build_id(cfg["port"])
@@ -783,10 +900,12 @@ def play(
         "pid": os.getpid(),
         "port": str(cfg["port"]),
         "label": label or None,
-        "input": "human" if human else "movie",
+        "input": "human" if human or retry else "movie",
         "pak": pak,
         "cpak": mode,
     }
+    if retry:
+        record.update({"from": source, "at": take_at})
     oracle_process, oracle_end, oracle_waiter = None, {}, None
     if original:
         env.update(tas_oracle.port_env(original, run))
