@@ -110,6 +110,12 @@ int main(int argc,char **argv)
     CHECK(n64c_parse_speed("0",&speed) && speed==0);
     CHECK(n64c_parse_speed("8",&speed) && speed==8);
     CHECK(!n64c_parse_speed("x",&speed) && !n64c_parse_speed("2x",&speed) && !n64c_parse_speed("1001",&speed));
+    u32 pak_ram=7;
+    CHECK(n64c_parse_pak(NULL,0x800000u,&pak_ram) && pak_ram==0x800000u);
+    CHECK(n64c_parse_pak("",0x400000u,&pak_ram) && pak_ram==0x400000u);
+    CHECK(n64c_parse_pak("off",0x800000u,&pak_ram) && pak_ram==0x400000u);
+    CHECK(n64c_parse_pak("on",0x400000u,&pak_ram) && pak_ram==0x800000u);
+    CHECK(!n64c_parse_pak("ON",0x800000u,&pak_ram) && !n64c_parse_pak("4",0x800000u,&pak_ram));
     struct timespec t0={5,999999999},due;
     CHECK(!n64c_retrace_due(&t0,60,0,&due)); /* uncapped: no wait */
     CHECK(n64c_retrace_due(&t0,60000,1,&due) && due.tv_sec==1006 && due.tv_nsec==999999999); /* 60000 retraces = 1001 s */

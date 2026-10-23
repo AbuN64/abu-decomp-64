@@ -22,6 +22,9 @@ int n64c_boot_frame_live(void);
 struct timespec;
 int n64c_retrace_due(const struct timespec *start,u32 n,u32 speed,struct timespec *due);
 int n64c_parse_speed(const char *text,u32 *speed);
+/* The Expansion Pak switch (--pak on|off): RDRAM is 8 MB with the pak and 4 MB without; no text keeps the profile's
+ * size. Returns 0 for any other text. */
+int n64c_parse_pak(const char *text,u32 profile_bytes,u32 *ram);
 /* 24-bit BMP of width x height pixels (0x00BBGGRR, top row first), the format N64C_VIEW writes; the tagged form
  * puts tag in the header's reserved word (bytes 6..9, little-endian). n64c_parse_view_fps reads N64C_VIEW_FPS
  * (1..120, default 15), 0 for anything else. */

@@ -27,7 +27,7 @@
 enum { EXIT_RUNTIME = 1, EXIT_USAGE = 2, EXIT_PROGRAM_TREE = 4 };
 
 typedef struct {
-    const char *rom, *user_dir, *capture;
+    const char *rom, *user_dir, *capture, *pak;
     int no_dialog, verify_assets, extract_only, offscreen, version, help;
     u32 retrace, fb_w, fb_h, out_w, out_h;
 } Options;
@@ -36,7 +36,7 @@ static void usage(FILE *out, const char *name)
 {
     fprintf(out,
             "usage: %s [--rom PATH] [--user-dir PATH] [--no-dialog] [--verify-assets] [--extract-only]\n"
-            "          [--window WxH] [--fb WxH] [--capture FRAME.ppm --retrace N] [--offscreen] [--version]\n"
+            "          [--window WxH] [--fb WxH] [--capture FRAME.ppm --retrace N] [--offscreen] [--pak on|off] [--version]\n"
             "  --rom PATH        your ROM of the game; extracted into the user folder when it is new\n"
             "  --user-dir PATH   user folder (assets, saves, config, logs) instead of the default one\n"
             "  --no-dialog       never open a window to ask for the ROM; explain on stderr and exit 3\n"
@@ -46,6 +46,7 @@ static void usage(FILE *out, const char *name)
             "  --fb WxH          the game's framebuffer size (default 284x222)\n"
             "  --capture F --retrace N   run offscreen to retrace N and write the presented frame to F\n"
             "  --offscreen       run without a visible window\n"
+            "  --pak on|off      Expansion Pak: 8 MB RDRAM (on) or the 4 MB console (off); default is the version's own\n"
             "exit: 0 ok, 1 runtime failure, 2 usage, 3 game data missing or ROM refused, 4 broken install\n",
             name);
 }
@@ -94,6 +95,7 @@ static int parse(int argc,char **argv,Options *o)
         else if (!strcmp(arg,"--help") || !strcmp(arg,"-h")) o->help=1;
         else if (!strcmp(arg,"--rom") && value) { o->rom=value;i++; }
         else if (!strcmp(arg,"--user-dir") && value) { o->user_dir=value;i++; }
+        else if (!strcmp(arg,"--pak") && value) { o->pak=value;i++; }
         else if (!strcmp(arg,"--capture") && value) { o->capture=value;i++; }
         else if (!strcmp(arg,"--retrace") && value) {
             if (!count(value,&o->retrace)) {
@@ -115,6 +117,11 @@ static int parse(int argc,char **argv,Options *o)
             fprintf(stderr,"%s: unknown or incomplete option %s (see --help)\n",argv[0],arg);
             return 0;
         }
+    }
+    u32 ram;
+    if (!n64c_parse_pak(o->pak,0,&ram)) {
+        fprintf(stderr,"%s: --pak takes on or off\n",argv[0]);
+        return 0;
     }
     if (!o->capture!=!o->retrace) {
         fprintf(stderr,"%s: --capture and --retrace go together\n",argv[0]);
@@ -242,7 +249,9 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
             return EXIT_RUNTIME;
         }
     }
-    N64cMemoryConfig memory={n64c_boot_ram_bytes,(u32)bytes,n64c_boot_video_clock};
+    u32 ram_bytes;
+    n64c_parse_pak(o->pak,n64c_boot_ram_bytes,&ram_bytes);  /* parse() already refused any other text */
+    N64cMemoryConfig memory={ram_bytes,(u32)bytes,n64c_boot_video_clock};
     if (!n64c_memory_open(&memory)) {
         fprintf(stderr,"boot-input: native address windows unavailable\n");
         n64c_shutdown();
@@ -268,14 +277,14 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
         }
     }
     if (n64c_boot_system.initialized &&
-        !n64c_system_bind(&n64c_boot_system,n64c_boot_tv_type,n64c_boot_reset_type,n64c_boot_ram_bytes)) {
+        !n64c_system_bind(&n64c_boot_system,n64c_boot_tv_type,n64c_boot_reset_type,ram_bytes)) {
         fprintf(stderr,"boot-input: invalid system globals\n");
         n64c_shutdown();
         return EXIT_RUNTIME;
     }
     const int live=!o->capture;
     n64c_boot_frame_host(shaders,settings,o->offscreen);
-    if (!n64c_boot_frame_start(o->fb_w,o->fb_h,n64c_boot_ram_bytes,n64c_boot_audio_abi,
+    if (!n64c_boot_frame_start(o->fb_w,o->fb_h,ram_bytes,n64c_boot_audio_abi,
                                live ? o->out_w : 0,live ? o->out_h : 0)) {
         fprintf(stderr,"boot-input: cannot configure native frame capture\n");
         n64c_shutdown();

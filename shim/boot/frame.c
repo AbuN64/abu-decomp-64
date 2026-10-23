@@ -356,6 +356,14 @@ int n64c_parse_speed(const char *text,u32 *speed)
     *speed=(u32)v;
     return 1;
 }
+int n64c_parse_pak(const char *text,u32 profile_bytes,u32 *ram)
+{
+    if (!text || !*text) *ram=profile_bytes;
+    else if (!strcmp(text,"on")) *ram=0x800000u;
+    else if (!strcmp(text,"off")) *ram=0x400000u;
+    else return 0;
+    return 1;
+}
 static void wait_retrace(const struct timespec *start,u32 n,u32 speed)
 {
     struct timespec due;
