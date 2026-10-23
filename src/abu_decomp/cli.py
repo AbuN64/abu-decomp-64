@@ -359,6 +359,10 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     play.add_argument("--twice", action="store_true", help="replay twice; same_twice compares the two runs' RAM")
     play.add_argument("--port", type=Path, help="run this build's executable instead of the profile's (a lane's build)")
     play.add_argument("--label", help="tag the run with this lane name on the TAS page")
+    play.add_argument("--shots-every", type=int, default=0, metavar="N", help="write a picture every N polls to RUN/shots")
+    play.add_argument("--dump-ram-at", type=int, metavar="P", help="write guest RAM at poll P to RUN/ram-P.bin")
+    play.add_argument("--trace-draws", type=int, metavar="P", help="write the draws (texture, palette, combiner, colours, "
+                      "geometry) of the first graphics task from poll P to RUN/draws-P.txt")
 
 
 def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -377,8 +381,9 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         return tas.show(profile, args.name), 0, []
     if args.action == "delete":
         return tas.delete(profile, args.name), 0, []
-    if args.all and (args.port or args.label):
-        raise DecompError("tas.play", "--port and --label replay one movie, not --all")
+    inspect = {"shots_every": args.shots_every, "dump_ram_at": args.dump_ram_at, "trace_draws": args.trace_draws}
+    if args.all and (args.port or args.label or any(inspect.values())):
+        raise DecompError("tas.play", "--port, --label and the inspection options replay one movie, not --all")
     if args.all:
         result, code = tas.play_all(profile, jobs=args.jobs, twice=args.twice)
         print(tas.table(result), file=sys.stderr)
@@ -386,8 +391,10 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
     if not args.name:
         raise DecompError("tas.play", "give a movie name or --all")
     if args.twice:
+        if any(inspect.values()):
+            raise DecompError("tas.play", "--twice compares two plain runs; inspect with a single replay")
         return tas.play_twice(profile, args.name, speed=args.speed, port=args.port, label=args.label), 0, []
-    return tas.play(profile, args.name, speed=args.speed, port=args.port, label=args.label), 0, []
+    return tas.play(profile, args.name, speed=args.speed, port=args.port, label=args.label, **inspect), 0, []
 
 
 def _run_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -579,12 +586,13 @@ def _run_worktree(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[d
 def _repin_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tree", type=Path, required=True, help="the tree whose pin places are set (land.trees pin)")
     parser.add_argument("--to", help="the source commit or ref to pin (default: the pin config's ref, HEAD)")
+    parser.add_argument("--no-rebuild", action="store_true", help="leave the page port (tas.build.rebuild) unbuilt")
 
 
 def _run_repin(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp.repin import repin
 
-    return repin(_profile(args.profile), args.tree, args.to)
+    return repin(_profile(args.profile), args.tree, args.to, rebuild=not args.no_rebuild)
 
 
 def _standalone_arguments(parser: argparse.ArgumentParser) -> None:

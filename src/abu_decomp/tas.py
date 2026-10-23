@@ -512,6 +512,38 @@ def fn_of(result: dict[str, Any]) -> str | None:
     return None
 
 
+SHOTS, RAM_DUMP, DRAW_TRACE = "shots", "ram-{}.bin", "draws-{}.txt"
+
+
+def check_inspect(shots_every: int, dump_ram_at: int | None, trace_draws: int | None) -> None:
+    if shots_every < 0 or any(v is not None and v < 0 for v in (dump_ram_at, trace_draws)):
+        raise DecompError("tas.play", "--shots-every, --dump-ram-at and --trace-draws take poll numbers >= 0")
+
+
+def inspect_env(run: Path, shots_every: int, dump_ram_at: int | None, trace_draws: int | None) -> dict[str, str]:
+    """The port's inspection variables for one run: pictures every N polls, guest RAM at poll P and the draw trace of
+    the first graphics task from poll P (n64compat n64c_tas.h). Everything lands in the run folder the page serves."""
+    env: dict[str, str] = {}
+    if shots_every:
+        (run / SHOTS).mkdir(exist_ok=True)
+        env.update(N64C_TAS_SHOT_EVERY=str(shots_every), N64C_TAS_SHOT_DIR=str(run / SHOTS))
+    if dump_ram_at is not None:
+        env.update(N64C_TAS_DUMP_AT=str(dump_ram_at), N64C_TAS_DUMP_PATH=str(run / RAM_DUMP.format(dump_ram_at)))
+    if trace_draws is not None:
+        env["N64C_TAS_TRACE_DRAWS"] = f"{trace_draws}:{run / DRAW_TRACE.format(trace_draws)}"
+    return env
+
+
+def inspect_files(run: Path, shots_every: int, dump_ram_at: int | None, trace_draws: int | None) -> list[str]:
+    """The inspection files a finished run holds, by path (a run that ended before its poll holds none of that kind)."""
+    found = sorted(str(p) for p in (run / SHOTS).glob("poll-*.ppm")) if shots_every else []
+    if dump_ram_at is not None:
+        found += [str(run / RAM_DUMP.format(dump_ram_at))] * (run / RAM_DUMP.format(dump_ram_at)).is_file()
+    if trace_draws is not None:
+        found += [str(run / DRAW_TRACE.format(trace_draws))] * (run / DRAW_TRACE.format(trace_draws)).is_file()
+    return found
+
+
 def play(
     profile: Profile,
     name: str | None,
@@ -522,6 +554,9 @@ def play(
     run_id: str | None = None,
     port: Path | str | None = None,
     label: str | None = None,
+    shots_every: int = 0,
+    dump_ram_at: int | None = None,
+    trace_draws: int | None = None,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
@@ -536,6 +571,7 @@ def play(
         raise DecompError("tas.play", f"speed is 0 (turbo) .. 1000, not {speed}")
     began = time.monotonic()
     health = tas_health.read(cfg, profile) if health is None else health
+    check_inspect(shots_every, dump_ram_at, trace_draws)
     human = name is None
     if human:
         speed, label = 1, label or HUMAN_LABEL
@@ -562,6 +598,8 @@ def play(
     else:
         (run / "movie.raw").write_text(format_raw(polls))
         env.update(N64C_TAS_PLAY=str(run / "movie.raw"), N64C_TAS_EXIT_AFTER=str(cfg["exit_after"]))
+    inspect = inspect_env(run, shots_every, dump_ram_at, trace_draws)
+    env.update(inspect)
     build = build_id(cfg["port"])
     # At real speed a movie takes its own length in wall time; the timeout is the allowance beyond that.
     timeout = cfg["timeout_seconds"] + ((len(polls) + cfg["exit_after"]) / (60 * speed) if speed else 0)
@@ -596,6 +634,9 @@ def play(
     reached = len(parse_raw((run / "polls.raw").read_text())) if (run / "polls.raw").is_file() else 0
     result = {"movie": name, "run": str(run), "id": run.name, "speed": speed, "polls": len(polls)}
     result.update(polls_reached=reached, **classify(code, text))
+    found = inspect_files(run, shots_every, dump_ram_at, trace_draws)
+    if found:
+        result["inspect"] = found
     stopped = (run / "stopped").exists()
     if stopped:
         result["subject"] = "stopped from the page"

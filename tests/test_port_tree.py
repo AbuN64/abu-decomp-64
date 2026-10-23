@@ -178,6 +178,51 @@ class PortTreeTests(unittest.TestCase):
         again, _, _ = repin.repin(self.profile, self.tree, self.pin2)
         self.assertEqual(again["changed"], [])
 
+    def page_profile(self) -> Any:
+        """The seat profile with a separate fetched clone (at pin1) and a tas section with a rebuild command."""
+        fetched = self.root / "fetch"
+        git(self.root, "clone", "-q", str(self.source), str(fetched))
+        git(fetched, "checkout", "-q", "--detach", self.pin1)
+        data = json.loads((self.root / "seat.json").read_text())
+        data["land"]["trees"]["port"]["pin"]["fetched"] = "fetch"
+        (self.root / "runs" / "plays").mkdir(parents=True, exist_ok=True)
+        data["tas"] = {
+            "movies": "movies", "runs": "runs", "port": "ragewars", "args": [], "rom": "rom.z64",
+            "build": {"rebuild": "cmake --build page --target ragewars"},
+        }  # fmt: skip
+        (self.root / "page.json").write_text(json.dumps(data))
+        return load_profile(self.root / "page.json"), fetched
+
+    def test_repin_checks_out_the_fetched_clone_and_rebuilds_the_page_port(self) -> None:
+        profile, fetched = self.page_profile()
+        result, code, findings = repin.repin(profile, self.tree, None, self.runner)
+        self.assertEqual((code, findings), (0, []))
+        self.assertEqual(git(fetched, "rev-parse", "HEAD").strip(), self.pin2)
+        self.assertEqual(result["fetched"], str(fetched))
+        self.assertEqual(self.commands, [["nice", "-n", "10", "cmake", "--build", "page", "--target", "ragewars"]])
+        self.assertEqual(result["page_build"]["exit"], 0)
+
+    def test_repin_leaves_the_page_port_alone_while_a_replay_is_live(self) -> None:
+        profile, fetched = self.page_profile()
+        live = self.root / "runs" / "plays" / "r1"
+        live.mkdir()
+        (live / "run.json").write_text(json.dumps({"id": "r1", "status": "running", "pid": os.getpid()}))
+        with mock.patch.object(tas, "read_record", return_value={"id": "r1", "status": "running", "pid": os.getpid()}):
+            result, code, _ = repin.repin(profile, self.tree, None, self.runner)
+        self.assertEqual(code, 0)
+        self.assertIn("replay live", result["page_build"]["skipped"])
+        self.assertEqual(self.commands, [])
+        self.assertEqual(git(fetched, "rev-parse", "HEAD").strip(), self.pin2)
+
+    def test_repin_reports_a_failed_page_rebuild_and_no_rebuild_skips_it(self) -> None:
+        profile, _ = self.page_profile()
+        self.exits["nice"] = 2
+        _, code, findings = repin.repin(profile, self.tree, None, self.runner)
+        self.assertEqual((code, findings[0]["key"]), (1, "repin.build"))
+        self.commands.clear()
+        repin.repin(profile, self.tree, self.pin1, self.runner, rebuild=False)
+        self.assertEqual(self.commands, [])
+
     def test_repin_to_a_commit_the_source_lacks_is_refused_and_writes_nothing(self) -> None:
         with self.assertRaises(repin.RepinError):
             repin.repin(self.profile, self.tree, SHA_B)
