@@ -97,6 +97,29 @@ int main(int argc, char **argv)
     n64c_clock_advance_to(150000);
     CHECK(osAiGetStatus() == 0);
     n64c_shutdown();
+    /* The tap (N64C_AUDIO_OUT): every frame the sink gets is appended, the rate kept beside it; reset closes it. */
+    n64c_init(NULL);
+    n64c_set_audio_sink(drop, NULL);
+    const char *tap_path = "n64c_test_audio.pcm", *rate_path = "n64c_test_audio.pcm.rate";
+    (void)remove(tap_path);
+    (void)remove(rate_path);
+    CHECK(n64c_audio_tap(tap_path));
+    CHECK(osAiSetFrequency(22050) == 22050);
+    CHECK(osAiSetNextBuffer(ram, sizeof ram) == 0);
+    n64c_shutdown();
+    FILE *pcm = fopen(tap_path, "rb");
+    int16_t got[601] = {0};
+    size_t words = pcm ? fread(got, sizeof *got, 601, pcm) : 0;
+    if (pcm) fclose(pcm);
+    CHECK(words == 600);
+    for (size_t i = 0; i < 300 && words == 600; i++)
+        CHECK(got[2*i] == (int16_t)(i - 150) && got[2*i+1] == (int16_t)(30000 - i));
+    FILE *rate = fopen(rate_path, "r");
+    char line[16] = {0};
+    CHECK(rate && fgets(line, sizeof line, rate) && !strcmp(line, "22050\n"));
+    if (rate) fclose(rate);
+    CHECK(!n64c_audio_tap("/nonexistent-dir/x.pcm"));
+    CHECK(remove(tap_path) == 0 && remove(rate_path) == 0);
     printf("n64c_audio: %s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;
 }

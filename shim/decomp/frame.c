@@ -9,6 +9,7 @@
 #include "n64c_memory.h"
 #include "n64c_diag.h"
 #include "n64c_tas.h"
+#include "n64c_audio.h"
 #include "audio_abi/n64a_abi.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -140,6 +141,7 @@ static void present(void *fb,void *user)
         fprintf(stderr,"boot-step: first presentation retrace=%u surface=0x%08x tasks=%u\n",
                 osViGetRetraceCount(),physical,frame.tasks);
 }
+static void view_write(int force);
 /* What the window shows once the run has stopped: the VI's last image under the stop's own status text,
  * in both buffers of the double-buffered window, so it stays on screen while a debugger holds the process. */
 static void show_stop(const char *symbol)
@@ -147,6 +149,7 @@ static void show_stop(const char *symbol)
     char text[256];
     snprintf(text,sizeof text,"BOOT STOP\n%s\nRETRACE %u TASKS %u",symbol ? symbol : "?",
              osViGetRetraceCount(),frame.tasks);
+    view_write(1);
     u32 physical=frame.presented ? n64c_memory_physical(frame.presented) : 0;
     for (int i=0;i<2;i++) (void)n64c_f3d_present_text(frame.f3d,physical,text);
     fprintf(stderr,"boot-step: stop shown: %s\n",symbol ? symbol : "?");
@@ -191,17 +194,24 @@ int n64c_boot_frame_start(u32 width,u32 height,u32 ram_bytes,int audio_abi,u32 w
     return 1;
 }
 /* The VI shows whichever color image it was given; double buffering presents an earlier rendered surface,
- * never the last one by assumption. Writes it scaled to width x height as a binary PPM. */
-static int write_presented(const char *path,u32 width,u32 height)
+ * never the last one by assumption. Reads it back scaled to width x height (caller frees), NULL when never rendered. */
+static uint32_t *read_presented(u32 width,u32 height,int quiet)
 {
     u32 physical=n64c_memory_physical(frame.presented);
-    u32 *pixels=malloc((size_t)width*height*sizeof *pixels);
-    if (!pixels) return 0;
+    uint32_t *pixels=malloc((size_t)width*height*sizeof *pixels);
+    if (!pixels) return NULL;
     if (!n64c_f3d_read(frame.f3d,physical,pixels,width,height)) {
-        fprintf(stderr,"boot-frame: presented surface 0x%08x was never rendered\n",physical);
+        if (!quiet) fprintf(stderr,"boot-frame: presented surface 0x%08x was never rendered\n",physical);
         free(pixels);
-        return 0;
+        return NULL;
     }
+    return pixels;
+}
+/* Writes the presented image as a binary PPM; never replaces an existing file. */
+static int write_presented(const char *path,u32 width,u32 height)
+{
+    uint32_t *pixels=read_presented(width,height,0);
+    if (!pixels) return 0;
     FILE *out=fopen(path,"wbx");
     if (!out) { free(pixels);perror("boot-frame output");return 0; }
     int ok=fprintf(out,"P6\n%u %u\n255\n",width,height)>0;
@@ -213,6 +223,72 @@ static int write_presented(const char *path,u32 width,u32 height)
     if (fclose(out)) ok=0;
     if (!ok) (void)remove(path);
     return ok;
+}
+static void put_le(unsigned char *p,uint32_t v,int bytes)
+{
+    for (int i=0;i<bytes;i++) p[i]=(unsigned char)(v>>(8*i));
+}
+int n64c_write_bmp(const char *path,const uint32_t *pixels,u32 width,u32 height)
+{
+    if (!path || !pixels || !width || !height || width>4096 || height>4096) return 0;
+    const u32 row=(width*3+3)&~3u,size=54+row*height;
+    unsigned char head[54]={'B','M'};
+    put_le(head+2,size,4);put_le(head+10,54,4);put_le(head+14,40,4);
+    put_le(head+18,width,4);put_le(head+22,height,4);put_le(head+26,1,2);put_le(head+28,24,2);
+    put_le(head+34,row*height,4);
+    unsigned char *line=calloc(1,row);
+    FILE *out=line ? fopen(path,"wb") : NULL;
+    int ok=out && fwrite(head,1,sizeof head,out)==sizeof head;
+    for (u32 y=height;ok && y-->0;) { /* bottom-up rows, BGR */
+        const uint32_t *src=pixels+(size_t)y*width;
+        for (u32 x=0;x<width;x++) {
+            line[3*x]=(unsigned char)(src[x]>>16);line[3*x+1]=(unsigned char)(src[x]>>8);line[3*x+2]=(unsigned char)src[x];
+        }
+        ok=fwrite(line,1,row,out)==row;
+    }
+    free(line);
+    if (out && fclose(out)) ok=0;
+    if (!ok && out) (void)remove(path);
+    return ok;
+}
+/* N64C_VIEW: the latest presented picture for a live viewer, replaced whole (written beside it, then renamed) at
+ * most every VIEW_INTERVAL_NS of wall time, so a turbo replay pays for ~15 pictures a second, not one per retrace.
+ * Host-only: guest RAM and the virtual clock are untouched, so the per-poll RAM hashes are the same with it on. */
+#define VIEW_INTERVAL_NS 66000000ll
+static struct {
+    const char *path;
+    char tmp[1024];
+    struct timespec last;
+    int written,failed;
+} view;
+static void view_open(void)
+{
+    const char *path=getenv("N64C_VIEW");
+    view=(typeof(view)){0};
+    if (!path || !*path) return;
+    if (snprintf(view.tmp,sizeof view.tmp,"%s.tmp",path)>=(int)sizeof view.tmp) {
+        fprintf(stderr,"boot-frame: N64C_VIEW path too long\n");
+        return;
+    }
+    view.path=path;
+}
+static void view_write(int force)
+{
+    if (!view.path || view.failed || !frame.presented || !frame.tasks) return;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC,&now);
+    if (!force && view.written &&
+        (long long)(now.tv_sec-view.last.tv_sec)*1000000000ll+(now.tv_nsec-view.last.tv_nsec)<VIEW_INTERVAL_NS) return;
+    /* Early on the VI can show a surface not drawn yet: no picture this time, try again next interval. */
+    uint32_t *pixels=read_presented(TAS_SHOT_WIDTH,TAS_SHOT_HEIGHT,1);
+    if (!pixels) return;
+    view.last=now;view.written=1;
+    int ok=n64c_write_bmp(view.tmp,pixels,TAS_SHOT_WIDTH,TAS_SHOT_HEIGHT) && !rename(view.tmp,view.path);
+    free(pixels);
+    if (!ok) {
+        view.failed=1; /* one warning, never a stop: the viewer is not the run */
+        fprintf(stderr,"n64c-view: cannot write %s; view off\n",view.path);
+    }
 }
 int n64c_boot_frame_capture(const char *path,u32 retrace,u32 width,u32 height)
 {
@@ -263,6 +339,12 @@ int n64c_boot_frame_live(void)
         fprintf(stderr,"boot-frame: N64C_SPEED must be 0..1000, got %s\n",getenv("N64C_SPEED"));
         return 0;
     }
+    view_open();
+    const char *audio_out=getenv("N64C_AUDIO_OUT");
+    if (audio_out && *audio_out) {
+        if (speed!=1) fprintf(stderr,"boot-frame: N64C_AUDIO_OUT ignored at N64C_SPEED=%u (sound only at 1x)\n",speed);
+        else if (!n64c_audio_tap(audio_out)) fprintf(stderr,"boot-frame: cannot write N64C_AUDIO_OUT %s\n",audio_out);
+    }
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC,&start);
     for (u32 n=1;!frame.closed;n++) {
@@ -281,6 +363,7 @@ int n64c_boot_frame_live(void)
             snprintf(path,sizeof path,"%s/poll-%06ld.ppm",n64c_tas_shot_dir(),shot);
             if (!write_presented(path,TAS_SHOT_WIDTH,TAS_SHOT_HEIGHT)) fprintf(stderr,"n64c-tas: shot %ld failed\n",shot);
         }
+        view_write(0);
         if (n%600==0)
             fprintf(stderr,"boot-step: retrace=%u tasks=%u audio=%u commands=%llu\n",osViGetRetraceCount(),
                     frame.tasks,frame.audio_tasks,(unsigned long long)frame.commands);

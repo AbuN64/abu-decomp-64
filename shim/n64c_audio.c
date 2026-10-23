@@ -4,6 +4,7 @@
  * The two-entry DMA FIFO is modeled on the virtual clock (osAiGetStatus); interrupt timing is not. */
 #include "n64c_audio.h"
 #include "n64c_internal.h"
+#include <stdio.h>
 #ifdef N64C_AUDIO_SDL3
 #include <SDL3/SDL.h>
 #endif
@@ -71,6 +72,45 @@ static void default_sink(void *user, const int16_t *frames, size_t count, uint32
 #endif
 }
 
+/* The tap (N64C_AUDIO_OUT): what the sink gets, appended as raw s16 stereo; <path>.rate holds "<rate>\n", replaced
+ * whole whenever the rate changes, so a reader can wrap the growing file as WAV while it plays. */
+static FILE *tap;
+static u32 tap_rate;
+static char tap_rate_path[1024];
+static void tap_close(void)
+{
+    if (tap) fclose(tap);
+    tap = NULL;
+    tap_rate = 0;
+}
+int n64c_audio_tap(const char *path)
+{
+    tap_close();
+    if (!path) return 1;
+    if (snprintf(tap_rate_path, sizeof tap_rate_path, "%s.rate", path) >= (int)sizeof tap_rate_path) return 0;
+    tap = fopen(path, "ab");
+    return tap != NULL;
+}
+static int tap_note_rate(u32 rate)
+{
+    char tmp[sizeof tap_rate_path + 4];
+    snprintf(tmp, sizeof tmp, "%s.tmp", tap_rate_path);
+    FILE *f = fopen(tmp, "w");
+    int ok = f && fprintf(f, "%u\n", (unsigned)rate) > 0;
+    if (f && fclose(f)) ok = 0;
+    return ok && !rename(tmp, tap_rate_path);
+}
+static void tap_sink(void *user, const int16_t *frames, size_t count, uint32_t rate)
+{
+    (void)user;
+    if (tap && rate != tap_rate) {
+        if (tap_note_rate(rate)) tap_rate = rate;
+        else tap_close();
+    }
+    if (tap && (fwrite(frames, 2 * sizeof *frames, count, tap) != count || fflush(tap))) tap_close();
+    (pcm_sink ? pcm_sink : default_sink)(pcm_user, frames, count, rate);
+}
+
 void n64c_set_audio_sink(N64aPcmSink sink, void *user)
 {
 #ifdef N64C_AUDIO_SDL3
@@ -83,6 +123,7 @@ void n64c_set_audio_sink(N64aPcmSink sink, void *user)
 void n64c_audio_reset(void)
 {
     n64c_set_audio_sink(NULL, NULL);
+    tap_close();
     sample_rate = 32000;
     sink_failed = 0;
     fifo_count = 0;
@@ -102,7 +143,7 @@ s32 osAiSetNextBuffer(void *buffer, u32 bytes)
     fifo_drain();
     if (fifo_count == 2) return -1; /* both FIFO entries held */
     sink_failed = 0;
-    n64a_ai_submit(buffer, 0, bytes, sample_rate, pcm_sink ? pcm_sink : default_sink, pcm_user);
+    n64a_ai_submit(buffer, 0, bytes, sample_rate, tap ? tap_sink : pcm_sink ? pcm_sink : default_sink, pcm_user);
     if (sink_failed) return -1;
     /* Plays after the buffer ahead of it, at the rate in force now; frames * counter / rate in exact integers. */
     OSTime start = fifo_count ? fifo_end[fifo_count - 1] : osGetTime();

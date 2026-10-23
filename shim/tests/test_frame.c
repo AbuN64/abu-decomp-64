@@ -22,6 +22,9 @@ void n64c_set_present(N64cPresentFn fn,void *user) { (void)user;presenter=fn; }
 void *n64c_memory_ram(u32 address,u32 size) { return ((!address && size==sizeof ram) || (address && address<=sizeof ram && size<=sizeof ram-address)) ? ram+address : NULL; }
 u32 n64c_memory_ram_size(void) { return sizeof ram; }
 u32 n64c_memory_physical(const void *p) { return (u32)(uintptr_t)p & 0x1fffffffu; }
+/* Audio tap stand-in: records what the live loop asked for (only at N64C_SPEED=1). */
+static const char *tapped;
+int n64c_audio_tap(const char *path) { tapped=path;return 1; }
 /* Renderer stand-in: one handle, tasks counted, the presented colour image (physical 0x300) was
  * rendered unless scenario 4. */
 static int renderer,window_mode;
@@ -149,6 +152,29 @@ int main(int argc,char **argv)
     }
     window_mode=1;
     start(0);CHECK(n64c_boot_frame_live()==1 && presents==3 && retraces==3 && shown==0x300);
+    /* N64C_VIEW: the live loop leaves the presented picture as a 320x240 BMP (bottom-up BGR), renamed into place. */
+    char viewpath[1024],viewtmp[1100];snprintf(viewpath,sizeof viewpath,"%s/view-%ld.bmp",argv[1],(long)getpid());
+    snprintf(viewtmp,sizeof viewtmp,"%s.tmp",viewpath);
+    CHECK(setenv("N64C_VIEW",viewpath,1)==0);
+    start(0);CHECK(n64c_boot_frame_live()==1 && presents==3);
+    CHECK(unsetenv("N64C_VIEW")==0);
+    CHECK(!tapped);
+    CHECK(setenv("N64C_AUDIO_OUT","pcm-path",1)==0 && setenv("N64C_SPEED","0",1)==0);
+    start(0);CHECK(n64c_boot_frame_live()==1 && !tapped); /* turbo: no sound */
+    CHECK(unsetenv("N64C_SPEED")==0);
+    start(0);CHECK(n64c_boot_frame_live()==1 && tapped && !strcmp(tapped,"pcm-path"));
+    CHECK(unsetenv("N64C_AUDIO_OUT")==0);
+    FILE *bmp=fopen(viewpath,"rb");CHECK(bmp!=NULL);
+    static unsigned char image[54+960*240+1];size_t got=fread(image,1,sizeof image,bmp);fclose(bmp);
+    CHECK(got==54+960*240 && image[0]=='B' && image[1]=='M' && image[18]==0x40 && image[19]==1 && image[22]==240 && image[28]==24);
+    for (size_t i=54;i<got;i+=3) CHECK(image[i]==0 && image[i+1]==0 && image[i+2]==0xff);
+    CHECK(access(viewtmp,F_OK)!=0 && unlink(viewpath)==0);
+    uint32_t odd[3]={0x00010203,0x00040506,0x00070809};
+    CHECK(!n64c_write_bmp(viewpath,odd,0,1));
+    CHECK(n64c_write_bmp(viewpath,odd,1,3)); /* rows padded to 4 bytes, last row first */
+    bmp=fopen(viewpath,"rb");CHECK(bmp!=NULL);got=fread(image,1,sizeof image,bmp);fclose(bmp);
+    CHECK(got==54+12 && image[2]==66 && !memcmp(image+54,"\x07\x08\x09\0\x04\x05\x06\0\x01\x02\x03\0",12));
+    CHECK(unlink(viewpath)==0);
     start(1);CHECK(n64c_boot_frame_live()==0 && retraces==1);
     n64c_boot_frame_close();
     CHECK(!n64c_boot_stop_hook);

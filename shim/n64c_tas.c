@@ -92,19 +92,27 @@ static int next(OSContPad *pad)
     return 0;
 }
 
-/* 64-bit words folded with a multiply-xorshift: order sensitive and fast enough for every poll of 8 MB. */
+/* Eight independent 32-bit lanes (multiply-xorshift), folded into 64 bits at the end: order sensitive, and the lanes
+ * run in parallel (SIMD where the CPU has a 32-bit vector multiply), so hashing 8 MB every poll stays cheap. */
+#if (defined(__i386__) || defined(__x86_64__)) && defined(__GNUC__)
+__attribute__((target_clones("avx2", "sse4.1", "default")))
+#endif
 uint64_t n64c_tas_hash_bytes(const void *data, size_t bytes)
 {
     const unsigned char *p = data;
+    uint32_t lane[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    size_t i = 0;
+    for (; i + 32 <= bytes; i += 32)
+        for (int k = 0; k < 8; k++) {
+            uint32_t w;
+            memcpy(&w, p + i + 4 * k, 4);
+            lane[k] = (lane[k] ^ w) * 0x9E3779B1u;
+            lane[k] ^= lane[k] >> 15;
+        }
     uint64_t h = 0x9E3779B97F4A7C15ull ^ bytes;
-    for (size_t i = 0; i + 8 <= bytes; i += 8) {
-        uint64_t w;
-        memcpy(&w, p + i, 8);
-        h = (h ^ w) * 0xFF51AFD7ED558CCDull;
-        h ^= h >> 32;
-    }
-    for (size_t i = bytes & ~(size_t)7; i < bytes; i++) h = (h ^ p[i]) * 0x100000001B3ull;
-    return h;
+    for (int k = 0; k < 8; k++) h = (h ^ lane[k]) * 0xFF51AFD7ED558CCDull;
+    for (; i < bytes; i++) h = (h ^ p[i]) * 0x100000001B3ull;
+    return h ^ (h >> 32);
 }
 
 static void ram_state(void)
