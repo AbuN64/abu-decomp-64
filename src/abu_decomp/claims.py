@@ -12,6 +12,7 @@ No `claims` key means no claim is checked; the records are written regardless.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -47,6 +48,35 @@ def state_dir(profile: Profile | None) -> Path | None:
         return None
 
 
+DETAIL_BYTES = 6000  # most the per-case differences add to one record
+SOURCE_BYTES = 60000  # most of a candidate's source one record keeps
+
+
+def behave_detail(document: dict[str, Any]) -> dict[str, Any]:
+    """What the TAS page's per-function view shows about one behave run: mode, case counts, the first difference and
+    the differing cases (recomp = original vs decomp = candidate values), the candidate file and a copy of its text."""
+    found: dict[str, Any] = {"mode": document.get("mode")}
+    for key in ("counts", "compared", "total", "reason", "version", "first_difference"):
+        if document.get(key) is not None:
+            found[key] = document[key]
+    detail: list[Any] = []
+    size = 0
+    for case in document.get("cases_detail") or []:
+        size += len(json.dumps(case, default=str))
+        if size > DETAIL_BYTES:
+            break
+        detail.append(case)
+    if detail:
+        found["cases_detail"] = detail
+    candidate = document.get("candidate")
+    if isinstance(candidate, dict) and candidate.get("file"):
+        found["candidate_file"] = str(candidate["file"])
+        found["candidate_sha"] = candidate.get("function_sha256")
+        with contextlib.suppress(OSError):
+            found["candidate_source"] = Path(candidate["file"]).read_text(errors="replace")[:SOURCE_BYTES]
+    return json.loads(json.dumps(found, default=str))
+
+
 def outcome(command: str, ok: bool, result: Any) -> dict[str, Any]:
     """What a later claim may rest on: `passed` (the run's check held), `benign` (behave: only benign differences)."""
     document = result if isinstance(result, dict) else {}
@@ -58,6 +88,7 @@ def outcome(command: str, ok: bool, result: Any) -> dict[str, Any]:
             "benign": ok and verdict == "differs" and found.get("real") is False,
             "verdict": verdict,
             "function": document.get("function"),
+            **behave_detail(document),
         }
     return {"passed": ok, "benign": False}
 
@@ -69,7 +100,14 @@ def record(profile: Profile | None, invocation: str, command: str, ok: bool, res
         return
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        row = {"invocation": invocation, "command": command, "ok": ok, "time": time.time(), "argv": argv[:12]}
+        row = {
+            "invocation": invocation,
+            "command": command,
+            "ok": ok,
+            "time": time.time(),
+            "argv": argv[:24],
+            "cwd": os.getcwd(),
+        }
         (folder / f"{invocation}.json").write_text(json.dumps({**row, **outcome(command, ok, result)}))
     except OSError:
         return

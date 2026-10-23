@@ -133,6 +133,8 @@ class UnionTests(unittest.TestCase):
         self.assertEqual(game["either"]["functions"], 4)
         self.assertEqual(table["summary"]["sdk"]["functions"], 1)
         self.assertEqual(table["summary"]["states"]["oracle-only"], 1)
+        names = [r["name"] for r in table["functions"]]
+        self.assertEqual([names[i] for i in table["covered"][0]], ["both", "orc", "late", "port"])  # per-movie sets
         orc = next(r for r in table["functions"] if r["name"] == "orc")
         self.assertEqual((orc["oracle"]["movie"], orc["oracle"]["poll"], orc["port_linked"]), ("m1", 40, False))
 

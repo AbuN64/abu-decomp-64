@@ -368,7 +368,15 @@ def union(
         names = [r for r in table if v in r["versions"]]
         by_version[v] = {"functions": totals[v], "reached_by_name": sum(1 for r in names if r["name"] in seen)}
     summary["versions"] = by_version
-    return {"generated": time.time(), "summary": summary, "functions": table}
+    covered = [
+        [
+            i
+            for i, row in enumerate(table)
+            if run["port"].get(row["name"]) or (run["oracle"] and row["name"] in run["oracle"])
+        ]
+        for run in runs
+    ]
+    return {"generated": time.time(), "summary": summary, "functions": table, "covered": covered}
 
 
 def lists(report: dict[str, Any], limit: int = LISTED) -> dict[str, Any]:
@@ -518,7 +526,10 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
     rows, totals = universe(cov)
     _, names = tas_symbolize.symbols(cfg["port"])
     report = union(rows, totals, cov["version"], collected, set(names) if names else None)
-    report["runs"] = [{"movie": r["movie"], "run": r["run"]} for r in collected]
+    report["runs"] = [
+        {"movie": r["movie"], "run": r["run"], "polls": r["port_polls"], "covered": cov}
+        for r, cov in zip(collected, report.pop("covered"), strict=True)
+    ]
     try:
         gsum = json.loads(summary_file.read_text())
         report["gcovr"] = {

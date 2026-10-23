@@ -69,6 +69,7 @@
     body { height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
     .app { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(380px, 31vw, 540px); }
     #watch { overflow: auto; }
+    #mazeview { flex: 1; min-height: 0; overflow: auto; }
     .rail { border-top: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
     .tabs { position: static; }
     .panes { flex: 1; min-height: 0; overflow: auto; }
@@ -76,6 +77,7 @@
   @media (max-width: 699px) {
     .top { padding-left: 10px; padding-right: 10px; }
     .top .wide { display: none; }
+    .top input { width: 120px; }
     #watch { padding: 8px 10px 12px; }
     .tabs { display: none; }
     .rail { border-top: 0; }
@@ -189,6 +191,43 @@
   dialog td, dialog th { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--soft); }
   dialog th { color: var(--dim); font-weight: 400; }
   dialog h3 { font-size: 12px; color: var(--dim); font-weight: 500; margin: 14px 0 4px; }
+
+  /* coverage maze (top-level view beside the watch page) and the function search */
+  #mazeview { display: none; padding: 12px 14px 80px; min-width: 0; }
+  body[data-top="maze"] #mazeview { display: block; }
+  body[data-top="maze"] main.app { display: none; }
+  body[data-top="maze"] .bottom button.keep { }
+  .top form { display: flex; gap: 4px; }
+  .top input { font: inherit; color: var(--fg); background: var(--raise); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; min-height: 32px; width: 170px; }
+  .top .toplink { background: none; border-color: transparent; color: var(--dim); }
+  .top .toplink.on { color: var(--fg); border-color: var(--line); }
+  .mz-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  @media (min-width: 900px) { .mz-grid { grid-template-columns: minmax(240px, 330px) minmax(0, 1fr); align-items: start; } }
+  @media (max-width: 899px) { .mz-left { order: 2; } .mz-tiles { max-height: 320px; } }
+  .mz-actions { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+  .mz-tiles { display: grid; gap: 6px; overflow: auto; max-height: calc(100vh - 220px); }
+  .mz-tile { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; min-width: 0; }
+  .mz-tile:hover { background: var(--hover); border-color: var(--faint); }
+  .mz-tile.on { border-color: var(--ok); background: var(--sel); }
+  .mz-tile.red .n { color: var(--dim); }
+  .mz-tile .n { font-size: 13px; font-weight: 600; }
+  .mz-big { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .mz-bar { height: 6px; background: var(--soft); border-radius: 3px; margin: 8px 0; overflow: hidden; }
+  .mz-bar i { display: block; height: 100%; background: var(--ok); }
+  .mz-wrap { position: relative; width: 100%; overflow: hidden; }
+  .mz-wrap canvas { display: block; }
+  .mz-tip { position: absolute; z-index: 4; pointer-events: none; background: #000d; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px;
+            font: 12px var(--mono); white-space: pre; max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
+  .mz-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0; font: 12px var(--mono); color: var(--dim); }
+  .mz-legend i, .cd { display: inline-block; width: 9px; height: 9px; border-radius: 2px; flex: none; }
+  .mz-panel { border-top: 1px solid var(--line); padding-top: 10px; }
+  .mz-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 6px 0; }
+  .mz-row { display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; }
+  .mz-row a { min-width: 0; }
+  .mz-row .sm { min-height: 28px; min-width: 32px; padding: 0 6px; }
+  .mz-h { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin: 6px 0 2px; }
+  .mz-self { padding: 6px 8px; margin: 6px 0; border: 1px solid var(--ok); border-radius: 6px; background: var(--sel); overflow-wrap: anywhere; }
+  .mz-path { margin: 6px 0; color: var(--dim); overflow-wrap: anywhere; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 </head>
@@ -196,6 +235,8 @@
 <header class="top">
   <span class="brand">TAS</span>
   <span id="build" class="mono dim ell wide"></span>
+  <button id="mazebtn" class="toplink wide" title="Game code coverage maze">Maze</button>
+  <form id="fnfind" title="Open the per-function page"><input id="fnq" placeholder="function name" autocomplete="off" spellcheck="false" aria-label="function name"></form>
   <span class="grow"></span>
   <span id="conn" class="dot" title="connected"></span>
   <span class="acts">
@@ -250,6 +291,7 @@
     </div>
   </aside>
 </main>
+<section id="mazeview"></section>
 <nav class="bottom" id="bottom"></nav>
 <dialog id="settings">
   <div class="dh"><b>Settings</b><button class="ghost" data-close>✕</button></div>
@@ -683,9 +725,9 @@ function renderNav() {
   const activeLanes = (S.lanes || []).filter(l => !l.result).length;
   const counts = { work: nfail, lanes: activeLanes };
   const tab = (k, label) => {
-    const b = el("button", ui.tab === k ? "on" : "", label);
+    const b = el("button", ui.tab === k && document.body.dataset.top !== "maze" ? "on" : "", label);
     if (counts[k]) b.append(el("span", "n" + (k === "lanes" ? " ok" : ""), counts[k]));
-    b.onclick = () => { ui.tab = k; store.set("tas.tab", k); render(); };
+    b.onclick = () => { setTop(""); ui.tab = k; store.set("tas.tab", k); render(); };
     return b;
   };
   $("tabs").replaceChildren(...TABS.map(([k, l]) => tab(k, l)));
@@ -696,9 +738,13 @@ function renderNav() {
     b.onclick = () => showView(k);
     return b;
   };
-  $("bottom").replaceChildren(bottom("watch", "Watch"), ...TABS.map(([k, l]) => bottom(k, l)));
+  const mz = el("button", document.body.dataset.top === "maze" ? "on" : "", "Maze");
+  mz.onclick = () => setTop("maze");
+  $("bottom").replaceChildren(bottom("watch", "Watch"), ...TABS.map(([k, l]) => bottom(k, l)), mz);
+  $("mazebtn").classList.toggle("on", document.body.dataset.top === "maze");
 }
 function showView(v) {
+  setTop("");
   ui.view = v; document.body.dataset.view = v;
   if (v !== "watch") { ui.tab = v; store.set("tas.tab", v); }
   render();
@@ -1264,6 +1310,265 @@ setInterval(() => { if (S) { renderStage(); const b = S.build || {}; if (b.pin) 
 (function fromHash() {  // #work, #decomp, #lanes, #runs or #watch: open that view (links from elsewhere, bookmarks)
   const h = location.hash.slice(1);
   if (TABS.some(([k]) => k === h)) { ui.tab = h; if (isPhone()) { ui.view = h; document.body.dataset.view = h; } }
+})();
+/* ---------- coverage maze: replays (left) + one cell per game function (right), call tree on click ---------- */
+const MZ = { data: null, sel: new Set(), hover: -1, cell: -1, player: null, layout: null, tree: new Map(), pending: null, timer: 0 };
+const STATE_RGB = { exact: [111, 179, 159], fuzzy: [208, 169, 79], none: [224, 116, 95] };
+const MAZE_UNIQUE = [122, 167, 224];
+function setTop(t) { document.body.dataset.top = t || ""; if (t === "maze") { pollMaze(); } else stopPlay(); if (S) renderNav(); }
+async function pollMaze() {
+  if (document.body.dataset.top !== "maze") return;
+  try {
+    const r = await fetch("/api/maze", { cache: "no-store" });
+    const d = await r.json();
+    if (d && d.modules && (!MZ.data || MZ.data.generated !== d.generated)) { MZ.data = d; prepMaze(); }
+  } catch (e) {}
+  renderMaze();
+  clearTimeout(MZ.timer);
+  MZ.timer = setTimeout(pollMaze, 60000);
+}
+function prepMaze() {
+  const d = MZ.data;
+  d.flat = d.modules.flatMap(m => m.cells.map(c => ({ name: c[0], size: c[1], state: c[2], hit: c[3], first: c[4], mod: m.name })));
+  d.byName = new Map(d.flat.map((c, i) => [c.name, i]));
+  const count = new Uint16Array(d.flat.length);
+  d.replays.forEach(r => r.cells.forEach(i => count[i]++));
+  d.count = count;
+  d.replays.forEach(r => { r.unique = r.cells.filter(i => count[i] === 1).length; });
+  d.cellMovies = d.flat.map(() => []);
+  d.replays.forEach((r, m) => r.cells.forEach(i => d.cellMovies[i].push(m)));
+  // greedy order: biggest new contribution first
+  const have = new Set(), left = d.replays.map((_, i) => i), order = [];
+  while (left.length) {
+    let best = 0, gain = -1;
+    left.forEach((m, k) => { let g = 0; for (const i of d.replays[m].cells) if (!have.has(i)) g++; if (g > gain) { gain = g; best = k; } });
+    const m = left.splice(best, 1)[0];
+    d.replays[m].cells.forEach(i => have.add(i));
+    order.push({ m, gain, total: have.size });
+  }
+  d.greedy = order;
+  d.replays.forEach(r => { r.redundant = false; });
+  order.forEach(o => { if (o.gain === 0) d.replays[o.m].redundant = true; });
+  MZ.layout = null;
+}
+function selected() {  // replay indexes: the hovered one, else the selection, else every replay (the union)
+  const d = MZ.data;
+  if (MZ.hover >= 0) return [MZ.hover];
+  const picked = [...MZ.sel].filter(m => m >= 0);
+  if (MZ.sel.size) return picked;
+  return d.replays.map((_, i) => i);
+}
+function litSet() {
+  const d = MZ.data, ms = selected(), lit = new Uint8Array(d.flat.length);
+  if (!d.exact && MZ.sel.size === 0 && MZ.hover < 0) d.flat.forEach((c, i) => { lit[i] = c.hit; });
+  else for (const m of ms) for (const i of d.replays[m].cells) lit[i] = 1;
+  return { lit, ms };
+}
+function mazeLayout(width) {
+  const d = MZ.data, cs = width < 520 ? 5 : 7, gap = 8;
+  const blocks = d.modules.map((m, mi) => {
+    const n = m.cells.length, cols = Math.max(1, Math.ceil(Math.sqrt(n * 1.5)));
+    return { mi, n, cols, w: cols * cs, h: Math.ceil(n / cols) * cs };
+  });
+  let x = 0, y = 0, rowH = 0, base = 0;
+  const pos = new Array(d.flat.length);
+  for (const b of blocks) {
+    if (x && x + b.w > width) { x = 0; y += rowH + gap; rowH = 0; }
+    b.x = x; b.y = y; b.base = base;
+    for (let k = 0; k < b.n; k++) pos[base + k] = [x + (k % b.cols) * cs, y + Math.floor(k / b.cols) * cs];
+    base += b.n; x += b.w + gap; rowH = Math.max(rowH, b.h);
+  }
+  return { cs, blocks, pos, height: y + rowH + 2, width };
+}
+function drawMaze() {
+  const cv = $("mzc"), d = MZ.data;
+  if (!cv || !d) return;
+  const w = Math.max(240, Math.floor(cv.parentElement.clientWidth));
+  if (!MZ.layout || MZ.layout.width !== w) MZ.layout = mazeLayout(w);
+  const L = MZ.layout, dpr = window.devicePixelRatio || 1;
+  cv.style.width = w + "px"; cv.style.height = L.height + "px";
+  cv.width = Math.round(w * dpr); cv.height = Math.round(L.height * dpr);
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const { lit } = litSet();
+  const one = d.exact && (MZ.hover >= 0 || (MZ.sel.size === 1 && !MZ.sel.has(-1)));
+  const s = L.cs - 1;
+  d.flat.forEach((c, i) => {
+    const [x, y] = L.pos[i];
+    const rgb = one && lit[i] && d.count[i] === 1 ? MAZE_UNIQUE : STATE_RGB[c.state] || STATE_RGB.none;
+    g.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${lit[i] ? 1 : 0.16})`;
+    g.fillRect(x, y, s, s);
+  });
+  if (MZ.cell >= 0) { const [x, y] = L.pos[MZ.cell]; g.strokeStyle = "#fff"; g.lineWidth = 1.5; g.strokeRect(x - 1, y - 1, s + 2, s + 2); }
+  g.strokeStyle = "rgba(255,255,255,.07)"; g.lineWidth = 1;
+  L.blocks.forEach(b => g.strokeRect(b.x - 1.5, b.y - 1.5, b.w + 2, b.h + 2));
+}
+function cellAt(ev) {
+  const cv = $("mzc"), L = MZ.layout;
+  if (!L) return -1;
+  const r = cv.getBoundingClientRect(), x = ev.clientX - r.left, y = ev.clientY - r.top;
+  for (const b of L.blocks) {
+    if (x < b.x || y < b.y || x >= b.x + b.w || y >= b.y + b.h) continue;
+    const k = Math.floor((y - b.y) / L.cs) * b.cols + Math.floor((x - b.x) / L.cs);
+    return k < b.n ? b.base + k : -1;
+  }
+  return -1;
+}
+function mazeTip(i, ev) {
+  const tip = $("mztip"), d = MZ.data;
+  if (i < 0) { tip.hidden = true; return; }
+  const c = d.flat[i], ms = d.cellMovies[i].map(m => d.replays[m].name);
+  let by = "no replay";
+  if (c.hit) by = ms.length ? ms.slice(0, 6).join(", ") + (ms.length > 6 ? ` +${ms.length - 6}` : "") : `first seen in ${d.movies[c.first] || "a replay"}`;
+  tip.textContent = `${c.name} · ${c.size} B · ${c.state === "none" ? "no C" : c.state}\n${c.mod}\ncovered by: ${by}`;
+  tip.hidden = false;
+  const r = $("mzwrap").getBoundingClientRect();
+  tip.style.left = Math.max(0, Math.min(r.width - 230, ev.clientX - r.left + 12)) + "px";
+  tip.style.top = (ev.clientY - r.top + 14) + "px";
+}
+function mazeStats() {
+  const d = MZ.data, { lit, ms } = litSet();
+  let n = 0;
+  for (let i = 0; i < lit.length; i++) n += lit[i];
+  const pctv = (100 * n / d.total).toFixed(1);
+  return { n, pct: pctv, text: `${pctv}% covered · ${n} of ${d.total} fns` + (ms.length < d.replays.length ? ` · ${ms.length} replay${ms.length === 1 ? "" : "s"}` : "") };
+}
+function renderMaze() {
+  const root = $("mazeview"), d = MZ.data;
+  if (document.body.dataset.top !== "maze") return;
+  if (!d) { root.replaceChildren(el("div", "sec", el("div", "empty", "no coverage table yet (tas play --all writes it)"))); return; }
+  if (!$("mzc")) buildMaze(root);
+  renderTiles(); renderMazeHead(); drawMaze();
+  if (MZ.pending) { const i = d.byName.get(MZ.pending); MZ.pending = null; if (i != null) openCell(i); }
+}
+function buildMaze(root) {
+  const count = el("span", "mono dim"); count.id = "mzcount";
+  const play = btn("▶ Play", () => togglePlay(), "primary"); play.id = "mzplay";
+  const tiles = el("div", "mz-tiles"); tiles.id = "mztiles";
+  const left = el("div", "mz-left", el("div", "row", el("h2", "", "Replays"), el("span", "grow"), count),
+    el("div", "mz-actions", btn("All", () => { MZ.sel.clear(); stopPlay(); renderMaze(); }, "", null, "light the union of every replay"),
+      btn("None", () => { MZ.sel = new Set([-1]); stopPlay(); renderMaze(); }), play), tiles);
+  const head = el("div", "mz-head"); head.id = "mzhead";
+  const cv = el("canvas"); cv.id = "mzc";
+  const tip = el("div", "mz-tip"); tip.id = "mztip"; tip.hidden = true;
+  const wrap = el("div", "mz-wrap", cv, tip); wrap.id = "mzwrap";
+  const lg = (rgb, text) => { const s = el("span", "lg", el("i")); s.firstChild.style.background = `rgb(${rgb})`; s.append(" " + text); return s; };
+  const legend = el("div", "mz-legend", lg(STATE_RGB.exact, "exact C"), lg(STATE_RGB.fuzzy, "fuzzy C"), lg(STATE_RGB.none, "no C"),
+    lg(MAZE_UNIQUE, "only this replay"), el("span", "lg dim", "faint = not covered"));
+  const panel = el("div", "mz-panel"); panel.id = "mzpanel";
+  root.replaceChildren(el("div", "mz-grid", left, el("div", "mz-right", head, wrap, legend, panel)));
+  cv.onmousemove = ev => { const i = cellAt(ev); cv.style.cursor = i >= 0 ? "pointer" : "default"; mazeTip(i, ev); };
+  cv.onmouseleave = () => mazeTip(-1);
+  cv.onclick = ev => { const i = cellAt(ev); if (i >= 0) openCell(i); };
+}
+window.addEventListener("resize", () => { if (document.body.dataset.top === "maze" && MZ.data) drawMaze(); });
+function renderMazeHead() {
+  const d = MZ.data, st = mazeStats();
+  const bar = el("div", "mz-bar", el("i"));
+  bar.firstChild.style.width = st.pct + "%";
+  $("mzhead").replaceChildren(el("div", "mz-big", st.text),
+    el("div", "mono dim", `real C ${d.real_pct}% of ${d.total} game fns · every replay together ${d.covered_pct}% · ${(100 - st.pct).toFixed(1)}% to 100% from here · ${d.version || ""}` +
+      (d.exact ? "" : " · per-replay sets are first-hit only until the next tas play --all")), bar);
+}
+function renderTiles() {
+  const d = MZ.data;
+  $("mzcount").textContent = `${d.replays.length} movies`;
+  const order = d.replays.map((_, i) => i).sort((a, b) => d.replays[b].cells.length - d.replays[a].cells.length);
+  $("mztiles").replaceChildren(...order.map(m => {
+    const r = d.replays[m];
+    const t = el("div", "mz-tile" + (MZ.sel.has(m) ? " on" : "") + (r.redundant && d.exact ? " red" : ""),
+      el("div", "n ell", r.name), el("div", "mono dim ell", `${r.start} · ${r.status}`),
+      el("div", "mono", `${r.cells.length} fns`, el("span", "dim", ` · ${r.unique} only here `), r.redundant && d.exact ? el("span", "badge warn", "redundant") : null));
+    t.title = r.name;
+    t.onmouseenter = () => { MZ.hover = m; drawMaze(); renderMazeHead(); };
+    t.onmouseleave = () => { MZ.hover = -1; drawMaze(); renderMazeHead(); };
+    t.onclick = () => {
+      stopPlay(); MZ.sel.delete(-1);
+      if (MZ.sel.has(m)) MZ.sel.delete(m); else MZ.sel.add(m);
+      MZ.hover = -1; renderTiles(); renderMazeHead(); drawMaze();
+    };
+    return t;
+  }));
+}
+function stopPlay() { if (MZ.player) { clearInterval(MZ.player); MZ.player = null; } const b = document.getElementById("mzplay"); if (b) b.firstChild.textContent = "▶ Play"; }
+function togglePlay() {
+  if (MZ.player) { stopPlay(); return; }
+  const d = MZ.data;
+  let k = 0;
+  MZ.sel = new Set([-1]);
+  $("mzplay").firstChild.textContent = "■ Stop";
+  const step = () => {
+    if (k >= d.greedy.length) { stopPlay(); return; }
+    const o = d.greedy[k++];
+    MZ.sel.delete(-1); MZ.sel.add(o.m); MZ.hover = -1;
+    renderTiles(); renderMazeHead(); drawMaze();
+    $("mzhead").firstChild.textContent += `  +${o.gain} from ${d.replays[o.m].name}${o.gain === 0 ? " (redundant)" : ""}`;
+  };
+  step();
+  MZ.player = setInterval(step, 700);
+}
+/* the call tree of one function: callers above, callees below, one level per click */
+function currentMovie() {
+  const picked = [...MZ.sel].filter(m => m >= 0);
+  return picked.length === 1 ? MZ.data.replays[picked[0]].name : "";
+}
+function callsOf(name) {
+  const key = name + "|" + currentMovie();
+  if (!MZ.tree.has(key)) MZ.tree.set(key, fetch(`/api/calls/${encodeURIComponent(name)}?movie=${encodeURIComponent(currentMovie())}`, { cache: "no-store" }).then(r => r.json()).catch(() => null));
+  return MZ.tree.get(key);
+}
+function nodeRow(n, dir, depth) {
+  const wrap = el("div", "mz-node"), by = n.by_movie;
+  const row = el("div", "mz-row");
+  row.style.paddingLeft = (depth * 14) + "px";
+  const dot = el("i", "cd");
+  dot.style.background = `rgb(${STATE_RGB[n.state] || STATE_RGB.none})`;
+  dot.style.opacity = n.covered ? 1 : 0.25;
+  dot.title = `${n.state === "none" ? "no C" : n.state || "?"} · ${n.covered ? "covered" : "not covered"}` + (by == null ? "" : by ? " · the selected replay reached it" : " · the selected replay did not");
+  const a = el("a", "mono ell", n.name);
+  a.href = "/fn/" + encodeURIComponent(n.name);
+  const open = el("button", "ghost sm", dir === "up" ? "▴" : "▾");
+  open.title = dir === "up" ? "its callers" : "its callees";
+  let kids = null;
+  open.onclick = async () => {
+    if (kids) { kids.remove(); kids = null; return; }
+    const c = await callsOf(n.name);
+    if (!c) return;
+    const list = dir === "up" ? c.callers : c.callees;
+    kids = el("div", "mz-kids", ...(list.length ? list.slice(0, 60).map(x => nodeRow(x, dir, depth + 1)) : [el("div", "mono dim", "  none")]));
+    wrap.append(kids);
+  };
+  const jump = el("button", "ghost sm", "◎");
+  jump.title = "show in the maze";
+  jump.onclick = () => { const i = MZ.data.byName.get(n.name); if (i != null) openCell(i); };
+  row.append(dot, a, el("span", "mono dim", n.size != null ? `${n.size} B` : ""), el("span", "grow"), by === false ? el("span", "badge", "not in replay") : null, jump, open);
+  wrap.append(row);
+  return wrap;
+}
+async function openCell(i) {
+  const d = MZ.data, c = d.flat[i];
+  MZ.cell = i; drawMaze();
+  const p = $("mzpanel");
+  p.replaceChildren(el("div", "mono dim", "loading " + c.name));
+  const k = await callsOf(c.name);
+  if (MZ.cell !== i) return;
+  const link = el("a", "mono", c.name);
+  link.href = "/fn/" + encodeURIComponent(c.name);
+  const title = el("div", "mz-title", link, badge(c.state === "none" ? "no C" : c.state, c.state === "exact" ? "ok" : c.state === "fuzzy" ? "warn" : "bad"),
+    badge(`${c.size} B`), badge(c.hit ? "covered" : "never covered", c.hit ? "ok" : "bad"), el("span", "mono dim", c.mod));
+  p.replaceChildren(el("h2", "", "Call tree"), title);
+  if (!k || !k.graph) { p.append(el("div", "empty", "no static call graph for this function (the coverage ELF is not readable here)")); return; }
+  p.append(el("div", "mono dim", `${k.callers.length} callers above, ${k.callees.length} callees below · ${k.path_kind} · per-run call stacks are not kept`));
+  if (k.path.length > 1) p.append(el("div", "mz-path mono", "static path: " + k.path.slice().reverse().join(" → ")));
+  const list = (items, dir, none) => items.length ? items.slice(0, 80).map(n => nodeRow(n, dir, 0)) : [el("div", "mono dim", none)];
+  p.append(el("div", "mz-side", el("div", "mz-h", "callers"), ...list(k.callers, "up", "none (a root, or reached only through a pointer)")),
+    el("div", "mz-self mono", c.name), el("div", "mz-side", el("div", "mz-h", "callees"), ...list(k.callees, "down", "none")));
+}
+
+$("mazebtn").onclick = () => setTop(document.body.dataset.top === "maze" ? "" : "maze");
+$("fnfind").onsubmit = e => { e.preventDefault(); const v = $("fnq").value.trim(); if (v) location.href = "/fn/" + encodeURIComponent(v); };
+(function mazeHash() {  // #maze or #maze:<function>
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (h === "maze" || h.startsWith("maze:")) { MZ.pending = h.slice(5) || null; document.body.dataset.top = "maze"; pollMaze(); }
 })();
 poll(); pollBoard(); pollCoverage(); pollCorpus();
 </script>

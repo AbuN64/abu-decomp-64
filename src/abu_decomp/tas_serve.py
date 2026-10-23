@@ -30,6 +30,7 @@ import struct
 import subprocess
 import threading
 import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -45,6 +46,7 @@ from abu_decomp import (
     tas_corpus,
     tas_coverage,
     tas_findings,
+    tas_fn,
     tas_health,
     tas_oracle,
     tas_points,
@@ -52,7 +54,7 @@ from abu_decomp import (
 )
 from abu_decomp.config import Profile
 
-_SERVE_KEYS = frozenset({"listen", "jobs", "inbox", "states", "pin", "lanes", "keep_days"})
+_SERVE_KEYS = frozenset({"listen", "jobs", "inbox", "states", "pin", "lanes", "keep_days", "invocations", "claims"})
 RECENT_SHOWN = 12  # newest finished runs in /api/state (all running and queued ones are always there)
 HISTORY_PAGE = 60  # runs per /api/runs page
 INBOX_SHOWN = 12
@@ -63,6 +65,7 @@ GATE_CHECK_SECONDS = 60.0  # how often serve looks for a port build the regressi
 STOP_GRACE = 3.0  # seconds a stopped run gets before its process group is killed
 AUDIO_LEAD_SECONDS = 0.25  # a listener joins this far behind the live end of the sound
 PAGE = Path(__file__).with_name("tas_page.html").read_text
+FN_PAGE = Path(__file__).with_name("tas_fn.html").read_text
 
 
 def wav_header(rate: int) -> bytes:
@@ -95,6 +98,11 @@ class Server:
         self.pin_dir = profile.path("tas.serve.pin", serve["pin"]) if "pin" in serve else None
         self.lanes_dir = profile.path("tas.serve.lanes", serve["lanes"]) if "lanes" in serve else None
         self.keep_days = float(serve.get("keep_days", 3))
+        given = serve.get("invocations", [])
+        self.invocations = [
+            str(profile.path("tas.serve.invocations", item)) for item in ([given] if isinstance(given, str) else given)
+        ]
+        self.claims = profile.path("tas.serve.claims", serve["claims"]) if "claims" in serve else None
         self.work = tas_board.Work(self.ranked, self.cfg["runs"] / "standing.json")
         self.triage = tas_board.Work(self.buckets, tas_findings.path(self.cfg["runs"]))
         self.oracles: dict[str, tuple[int, Any]] = {}  # run id -> (record mtime, summary) of finished runs
@@ -199,6 +207,118 @@ class Server:
             return self._cached(("coverage", path.stat().st_mtime_ns), read)
         except OSError:
             return {}
+
+    def table(self) -> dict[str, Any]:
+        """The raw coverage table ({} before the first one), cached by its mtime."""
+        path = self.cfg["runs"] / tas_coverage.TABLE
+        try:
+            return self._cached(("table", path.stat().st_mtime_ns), lambda: tas_coverage.read_table(self.cfg) or {})
+        except OSError:
+            return {}
+
+    def version(self) -> str:
+        cov = tas_coverage.settings(self.profile, self.cfg)
+        return cov["version"] if cov else "us-rev1"
+
+    def mapped(self) -> dict[str, dict[str, Any]]:
+        project = tas_triage._project(self.profile)
+        return self._cached(("map", self.version()), lambda: tas_fn.map_rows(project, self.version()))
+
+    def calls(self) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        """(callers, callees) of the static call graph of the coverage ELF; ({}, {}) without one."""
+
+        def read() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+            cov = tas_coverage.settings(self.profile, self.cfg)
+            if not cov:
+                return {}, {}
+            elf = Path(cov["elf"].format(version=cov["version"]))
+            funcs = tas_coverage.elf_functions(elf)
+            out = tas_fn.elf_calls(elf, funcs)
+            return tas_fn.invert(out), out
+
+        return self._cached(("calls", self.version()), read)
+
+    def tiles(self, table: dict[str, Any]) -> list[dict[str, Any]]:
+        """The replay tiles of the maze: movie, how its newest run started and ended."""
+        out = []
+        for run in table.get("runs") or []:
+            record = tas.read_record(self.cfg["runs"] / "plays" / str(run.get("run"))) or {}
+            out.append(
+                {
+                    "name": run["movie"],
+                    "start": record.get("from") or "power-on",
+                    "status": "stopped"
+                    if record.get("stopped")
+                    else record.get("outcome") or record.get("status") or "?",
+                    "polls": int(run.get("polls") or record.get("polls_reached") or 0),
+                }
+            )
+        return out
+
+    def maze(self) -> dict[str, Any]:
+        table = self.table()
+        if not table.get("functions"):
+            return {}
+        return self._cached(
+            ("maze", table.get("generated")), lambda: tas_fn.maze_view(table, self.mapped(), self.tiles(table))
+        )
+
+    def fn_calls(self, name: str, movie: str | None) -> dict[str, Any]:
+        table = self.table()
+        callers, callees = self.calls()
+        index = tas_fn.fn_index(table)
+        mapped = self.mapped()
+        funcs = table.get("functions") or []
+        sets, _ = tas_fn.movie_covered(table)
+        chosen = None
+        for m, run in enumerate(table.get("runs") or []):
+            if run["movie"] == movie:
+                chosen = set(sets[m])
+
+        def node(other: str) -> dict[str, Any]:
+            i = index.get(other)
+            row = funcs[i] if i is not None else None
+            hit = bool(row and (row["port"]["hit"] or row["oracle"]["hit"]))
+            return {
+                "name": other,
+                "size": row["size"] if row else None,
+                "state": (mapped.get(other) or {}).get("state"),
+                "covered": hit,
+                "by_movie": None if chosen is None or i is None else i in chosen,
+            }
+
+        live = None if chosen is None else {funcs[i]["name"] for i in chosen}
+        return {
+            "name": name,
+            "self": node(name),
+            "callers": [node(c) for c in sorted(callers.get(name, []))],
+            "callees": [node(c) for c in callees.get(name, [])],
+            "path": tas_fn.static_path(callers, name, live),
+            "path_kind": "static (jal targets of the ELF"
+            + (", through functions the replay covered)" if live is not None else ")"),
+            "graph": bool(callers or callees),
+        }
+
+    def fn_page(self, name: str) -> dict[str, Any]:
+        project = tas_triage._project(self.profile)
+        site = tas_triage.definition_site(project, name) if project else None
+        main = tas_fn.main_source(project, name, site)
+        index = self._cached(("behave", len(self.invocations)), lambda: tas_fn.behave_index(self.invocations))
+        runs = [tas_fn.run_view(r, name, main.get("text")) for r in index.get(name, [])[: tas_fn.RUNS_SHOWN]]
+        row = (self.mapped() or {}).get(name)
+        table = self.table()
+        i = tas_fn.fn_index(table).get(name)
+        cov = (table.get("functions") or [])[i] if i is not None else None
+        return {
+            "name": name,
+            "version": self.version(),
+            "map": row,
+            "main": main,
+            "coverage": cov and {k: cov.get(k) for k in ("size", "file", "state", "port", "oracle", "behaviour")},
+            "claims": tas_fn.claim_lines(self.claims, name),
+            "runs": runs,
+            "runs_total": len(index.get(name, [])),
+        }
 
     def corpus(self) -> dict[str, Any]:
         """The regression corpus, its problem spots and the last gate (module tas_corpus); {} before the first one."""
@@ -733,6 +853,15 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     args = dict(part.partition("=")[::2] for part in query.split("&") if part)
                     before = float(args["before"]) if args.get("before") else None
                     self.json(server.history(before, int(args.get("limit") or HISTORY_PAGE)))
+                elif path == "/api/maze":
+                    self.json(server.maze())
+                elif head == "fn" and run_id and tas_fn.NAME.match(run_id):
+                    self.reply(FN_PAGE().encode(), "text/html; charset=utf-8")
+                elif path.startswith("/api/fn/") and tas_fn.NAME.match(path[8:]):
+                    self.json(server.fn_page(path[8:]))
+                elif path.startswith("/api/calls/") and tas_fn.NAME.match(path[11:]):
+                    args = dict(part.partition("=")[::2] for part in query.split("&") if part)
+                    self.json(server.fn_calls(path[11:], urllib.parse.unquote(args.get("movie", "")) or None))
                 elif head == "coverage":
                     self.static(server.cfg["runs"] / tas_coverage.HTML, run_id or "index.html")
                 elif head == "frame" and run_id:

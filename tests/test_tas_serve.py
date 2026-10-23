@@ -494,6 +494,64 @@ class HttpTests(Base):
             urllib.request.urlopen(self.base + "/coverage/../secret.txt", timeout=10)
         self.assertEqual(caught.exception.code, 404)
 
+    def test_function_page_maze_and_call_tree_are_served_read_only(self):
+        runs = self.root / "runs"
+        invocations = self.root / "inv" / "LANE-A" / "invocations"
+        invocations.mkdir(parents=True)
+        record = {
+            "invocation": "x1",
+            "command": "behave",
+            "ok": True,
+            "time": 50.0,
+            "function": "func_80256C90_de",
+            "argv": ["behave"],
+            "verdict": "differs",
+            "mode": "compare",
+            "counts": {"same": 3, "differs": 1, "untestable": 0},
+            "compared": 4,
+            "total": 4,
+            "candidate_source": "void func_80256C90_de(int a)\n{\n    a = 1;\n}\n",
+            "first_difference": {"case": "c1", "kind": "return", "expected": "0x0", "got": "0x1"},
+        }
+        (invocations / "x1.json").write_text(json.dumps(record))
+        (self.root / "claims.md").write_text("func_80256C90_de LANE-A 12:00\nother LANE-B\n")
+        (self.project / "docs").mkdir()
+        rows = [["func_80256C90_de", 1, 12, 91.5, "src/t.CPP", 0], ["b", 1, 8, 100.0, "src/t.CPP", 0]]
+        (self.project / "docs" / "map-us-rev1.json").write_text(json.dumps({"fns": rows}))
+        hit = {"hit": True, "movie": "boot-idle", "count": 1, "poll": 1}
+        miss = {"hit": False, "movie": None, "count": 0, "poll": None}
+
+        def row(name, size, port):
+            fields = {"in_version": True, "scope": "game", "versions": ["us-rev1"], "behaviour": None}
+            return {**fields, "name": name, "size": size, "file": "src/t.CPP", "port": port, "oracle": miss}
+
+        table = {
+            "generated": 2,
+            "summary": {"version": "us-rev1"},
+            "functions": [row("func_80256C90_de", 12, hit), row("b", 8, miss)],
+            "runs": [{"movie": "boot-idle", "run": "r1", "covered": [0]}],
+        }
+        (runs / "coverage-table.json").write_text(json.dumps(table))
+        server = tas_serve.Server(self.profile(invocations=["inv/*/invocations"], claims="claims.md"))
+        fn = server.fn_page("func_80256C90_de")
+        self.assertEqual((fn["map"]["state"], fn["map"]["score"], fn["runs_total"]), ("fuzzy", 91.5, 1))
+        self.assertEqual(fn["claims"], ["func_80256C90_de LANE-A 12:00"])
+        run = fn["runs"][0]
+        self.assertEqual(
+            (run["lane"], run["mode"], run["verdict"], run["same"], run["differs"]),
+            ("LANE-A", "candidate", "differs", 3, 1),
+        )
+        self.assertEqual(run["source"]["state"], "diff")
+        maze = server.maze()
+        self.assertEqual((maze["total"], maze["covered"], maze["replays"][0]["cells"]), (2, 1, [0]))
+        for_calls = server.fn_calls("func_80256C90_de", "boot-idle")
+        self.assertEqual(
+            (for_calls["self"]["covered"], for_calls["self"]["by_movie"], for_calls["graph"]), (True, True, False)
+        )
+        with urllib.request.urlopen(self.base + "/fn/func_80256C90_de", timeout=10) as reply:
+            self.assertIn(b"/api/fn/", reply.read())
+        self.assertEqual(self.status("/fn/bad%20name"), 404)
+
     def test_frame_long_poll_names_the_frame_and_the_input_it_shows(self):
         run = self.make_run("r6", movie="boot-idle", status="running", speed=1, started=1.0, pid=os.getpid())
         picture = bytearray(b"BM" + bytes(60))
