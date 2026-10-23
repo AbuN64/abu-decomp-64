@@ -393,6 +393,7 @@ int n64c_boot_frame_live(void)
         const int alive=n64c_frame();
         if (n64c_sched_halted()) {
             show_stop(n64c_boot_stop_symbol);
+            if (n64c_coverage_dump) n64c_coverage_dump();
             n64c_boot_stopped();
         }
         if (!alive) {

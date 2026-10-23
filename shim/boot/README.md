@@ -12,3 +12,9 @@ facts (`N64C_PORT_DIR`, see ../README.md) and by `--source` (the fetched origina
 - C side: `game_main.c` (reset entry and shutdown), `frame.c` (frame capture), `runon.c`, `missing.c`, `trace.c`, `stop.h`, `boot.h`, `native.h`.
 - Tests: `test_*.py` (`python3 -I test_X.py --compiler gcc --m32 --work DIR`). Those that read a port's real facts
   (`test_link.py`, `test_closure.py`) need `N64C_PORT_DIR`; the others run on `fixtures/` alone.
+
+## Coverage flavour
+A port built with `-DRAGE_DECOMP_COVERAGE=ON` compiles the original units with GCC `--coverage` and links libgcov;
+`coverage.c` then writes the gcov counters on every way the process ends (the linker wraps `_Exit`, `_exit` and
+`abort`; fatal signals are armed; `n64c_coverage_dump` is called before the boot stop, where a debugger holds and
+kills the process). `GCOV_PREFIX` sends the counters to a per-run folder; the tas tooling turns them into gcovr reports.

@@ -26,5 +26,6 @@ long long n64c_boot_missing(const char *symbol)
     void (*hook)(const char *) = n64c_boot_stop_hook;
     if (hook)
         hook(symbol);
+    if (n64c_coverage_dump) n64c_coverage_dump();
     n64c_boot_stopped();
 }
