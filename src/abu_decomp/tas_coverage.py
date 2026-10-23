@@ -10,6 +10,9 @@ percentages, source annotated. Nothing here renders HTML by hand.
 Oracle side: the recompiled original (cake-taste host) replays the same movie with `N64R_GOLDEN_DIR`; its
 `trace-final.tsv` (symbol, first VI, thread, count) is the per-function first-entry record the host already writes.
 The join with the port is by function name (the versions share names). Not a gcov build of the recomp: see RESULT.
+Behaviour: the host also writes cumulative entry counts every shot_every polls (`trace-poll-N.tsv`); `behaviour`
+judges each function by the port's gcov count against the original's counts around the port's last poll, so the
+table says "executed and behaves like the original", not only "executed" (granularity: TAS-CORPUS-OPUS-1 DESIGN.md).
 
 The universe for percentages by bytes is every function of the version's ELF (`readelf -sW`, MIPS sizes), keyed by
 name with the versions that define it. A row is scope `sdk` when its file is under `src/sdk/` (the port replaces
@@ -121,6 +124,61 @@ def read_oracle(run: Path) -> tuple[dict[str, tuple[int, int]], int] | None:
     return hits, len(vis)
 
 
+_SNAPSHOT = re.compile(r"trace-poll-(\d+)\.tsv")
+
+
+def _entry_counts(path: Path) -> dict[str, int]:
+    """name -> entry count of one oracle trace table (symbol in column 2, count in column 5)."""
+    counts: dict[str, int] = {}
+    try:
+        rows = path.read_text(errors="replace").splitlines()[1:]
+    except OSError:
+        return counts
+    for line in rows:
+        parts = line.split("\t")
+        if len(parts) >= 5 and parts[4].isdigit():
+            counts[parts[1]] = int(parts[4])
+    return counts
+
+
+def oracle_bracket(run: Path, poll: int) -> tuple[dict[str, int], dict[str, int] | None] | None:
+    """The oracle's cumulative entry counts at the snapshots around `poll` (RUN/oracle-golden/trace-poll-N.tsv, one
+    every shot_every polls): (counts at the last snapshot <= poll, counts at the first snapshot >= poll, None when the
+    oracle ended before `poll`). None when the run holds no snapshots."""
+    folder = run / ORACLE_DIR
+    polls = sorted(int(m[1]) for p in folder.glob("trace-poll-*.tsv") if (m := _SNAPSHOT.fullmatch(p.name)))
+    if not polls:
+        return None
+    below = [p for p in polls if p <= poll]
+    above = [p for p in polls if p >= poll]
+    low = _entry_counts(folder / f"trace-poll-{below[-1]}.tsv") if below else {}
+    high = _entry_counts(folder / f"trace-poll-{above[0]}.tsv") if above else None
+    return low, high
+
+
+def behaviour(port: dict[str, int], bracket: tuple[dict[str, int], dict[str, int] | None]) -> dict[str, str]:
+    """Per function the port's build defines and either side entered: `behaves` when the port's entry count at its last
+    poll lies between the oracle's counts at the snapshots around that poll (at least the lower one when the oracle
+    ended earlier), `missing` when the port never entered what the original had by then, `port-only` when the
+    original never entered it by the next snapshot, else `differs`. Count granularity: lanes/TAS-CORPUS-OPUS-1."""
+    low, high = bracket
+    out: dict[str, str] = {}
+    for name, count in port.items():
+        lo = low.get(name, 0)
+        hi = high.get(name, 0) if high is not None else None
+        if count == 0 and lo == 0 and not hi:
+            continue
+        if lo <= count and (hi is None or count <= hi):
+            out[name] = "behaves"
+        elif count == 0:
+            out[name] = "missing"
+        elif hi == 0:
+            out[name] = "port-only"
+        else:
+            out[name] = "differs"
+    return out
+
+
 def run_oracle(profile: Profile, cfg: dict[str, Any], run: Path, record: dict[str, Any]) -> bool:
     """Replay the run's movie in the original game (the `tas.oracle` host, as `tas play --oracle` does) with the host's
     golden dir on, so it writes RUN/oracle-golden/trace-final.tsv: every function it entered, first VI and count.
@@ -223,8 +281,10 @@ def union(
     linked: set[str] | None,
 ) -> dict[str, Any]:
     """The function table over the movies' runs. `runs` is one dict per movie: {movie, port, oracle, port_polls,
-    oracle_polls}: port maps name -> execution count (gcovr), oracle maps name -> (first poll, count) or is None when
-    it never ran. `linked` is the set of names the port binary defines (None: unknown).
+    oracle_polls, behaviour?}: port maps name -> execution count (gcovr), oracle maps name -> (first poll, count) or is
+    None when it never ran, behaviour maps name -> `behaviour()` state. `linked` is the set of names the port binary
+    defines (None: unknown). A function's `behaviour` over the runs: differs or missing when any run says so, else
+    behaves, else port-only (None when no run judged it): coverage that says "executed and behaves like the original".
 
     A run's two sides are compared over the polls both reached: the port stops `exit_after` polls after the movie (or
     where it crashed) and the oracle runs its own tail, so a function the oracle enters after the port's run ended is
@@ -265,6 +325,8 @@ def union(
             out["state"] = "port"
         else:
             out["state"] = "neither"
+        judged = [r["behaviour"][name] for r in runs if name in (r.get("behaviour") or {})]
+        out["behaviour"] = next((s for s in ("differs", "missing", "behaves", "port-only") if s in judged), None)
         table.append(out)
     scoped = [r for r in table if r["in_version"]]
     summary: dict[str, Any] = {
@@ -290,6 +352,7 @@ def union(
         summary[scope] = entry
     game = [r for r in scoped if r["scope"] == "game"]
     summary["states"] = dict(Counter(r["state"] for r in game))
+    summary["behaviour"] = dict(Counter(r["behaviour"] for r in game if r.get("behaviour")))
     by_version = {}
     seen = {r["name"] for r in table if r["port"]["hit"] or r["oracle"]["hit"]}
     for v in totals:
@@ -412,10 +475,13 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
         got = read_oracle(run)
         if got is None and oracle and run_oracle(profile, cfg, run, record):
             got = read_oracle(run)
+        port = read_gcovr(run / COVERAGE) or {}
+        bracket = oracle_bracket(run, int(record.get("polls_reached") or 0))
         return {
             "movie": name,
             "run": run.name,
-            "port": read_gcovr(run / COVERAGE) or {},
+            "port": port,
+            "behaviour": behaviour(port, bracket) if bracket else None,
             "oracle": got[0] if got else None,
             "port_polls": int(record.get("polls_reached") or 0),
             "oracle_polls": got[1] if got else 0,
@@ -486,6 +552,7 @@ def line(report: dict[str, Any]) -> str:
     return (
         f"coverage {s['version']} gcov: lines {pct('line_percent')}, branches {pct('branch_percent')}, functions "
         f"{pct('function_percent')}; port {s['game']['port']['bytes_pct']}% of game bytes; oracle-only "
-        f"{states.get('oracle-only', 0)}, neither {states.get('neither', 0)} "
+        f"{states.get('oracle-only', 0)}, neither {states.get('neither', 0)}; behaves "
+        f"{s.get('behaviour', {}).get('behaves', 0)}, differs {s.get('behaviour', {}).get('differs', 0)} "
         f"({s['movies']} movies, {s['oracle_movies']} with oracle); report runs/{HTML}/index.html"
     )

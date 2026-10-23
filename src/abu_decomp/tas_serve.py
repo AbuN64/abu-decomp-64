@@ -11,7 +11,9 @@ tas.input_address), `/api/play` without a movie starts a human run, and `/api/pl
 from a poll (tas.play `source`/`take_at`); one run is driven by live input at a time. `/api/pin` keeps a run; every
 hour runs older than `keep_days` (default 3) that are neither pinned nor their movie's newest are deleted
 (tas.archive). `inbox` is the integration train's inbox, `states` the decomp progress states, `pin` the git folder of
-the decomp source the port was built from, `lanes` the folder of lane dirs mirrored from the orchestrator. Function
+the decomp source the port was built from, `lanes` the folder of lane dirs mirrored from the orchestrator. `/api/corpus`
+is the regression corpus and its last gate (module tas_corpus); serve gates the corpus itself whenever the port binary
+is a build it has not been gated on and nothing runs. Function
 state (exact / fuzzy / none) is read from the decomp source, as the progress states define it: a NON_MATCHING body is
 fuzzy, INCLUDE_ASM alone is none. A run played with the oracle (module tas_oracle) also shows the original game: its
 latest picture (/oracle/<id>), both sides' pictures at each compared poll (/shot/<id>) and the scores (/diff/<id>).
@@ -34,7 +36,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, evidence, tas, tas_board, tas_coverage, tas_oracle, tas_triage
+from abu_decomp import (
+    DecompError,
+    evidence,
+    tas,
+    tas_board,
+    tas_corpus,
+    tas_coverage,
+    tas_health,
+    tas_oracle,
+    tas_triage,
+)
 from abu_decomp.config import Profile
 
 _SERVE_KEYS = frozenset({"listen", "jobs", "inbox", "states", "pin", "lanes", "keep_days"})
@@ -43,6 +55,7 @@ HISTORY_PAGE = 60  # runs per /api/runs page
 INBOX_SHOWN = 12
 CACHE_SECONDS = 30.0
 ARCHIVE_SECONDS = 3600.0  # how often old runs are archived
+GATE_CHECK_SECONDS = 60.0  # how often serve looks for a port build the regression corpus has not been gated on
 STOP_GRACE = 3.0  # seconds a stopped run gets before its process group is killed
 AUDIO_LEAD_SECONDS = 0.25  # a listener joins this far behind the live end of the sound
 PAGE = Path(__file__).with_name("tas_page.html").read_text
@@ -84,6 +97,7 @@ class Server:
         self.lock = threading.Lock()
         self.queued: dict[str, dict[str, Any]] = {}  # id -> placeholder row until the run writes its record
         self.cache: dict[Any, tuple[float, Any]] = {}
+        self.gating = False
 
     # --- cached facts ---
 
@@ -173,6 +187,45 @@ class Server:
             return self._cached(("coverage", path.stat().st_mtime_ns), read)
         except OSError:
             return {}
+
+    def corpus(self) -> dict[str, Any]:
+        """The regression corpus, its problem spots and the last gate (module tas_corpus); {} before the first one."""
+
+        def stamp(path: Path) -> int:
+            try:
+                return path.stat().st_mtime_ns
+            except OSError:
+                return 0
+
+        key = ("corpus", stamp(tas_corpus.corpus_path(self.cfg)), stamp(tas_corpus.gate_path(self.cfg)))
+        try:
+            return {**self._cached(key, lambda: tas_corpus.view(self.cfg)), "gating": self.gating}
+        except DecompError as error:
+            return {"error": str(error), "gating": self.gating}
+
+    def gatekeeper(self) -> None:
+        """Gate the corpus whenever the port binary is a build it was not gated on (page-port.py rebuilds it after each
+        train round, a repin, a hand build): only with no run live and the build not older than its pins."""
+        while True:
+            time.sleep(GATE_CHECK_SECONDS)
+            try:
+                if not tas_corpus.gate_due(self.cfg):
+                    continue
+                if any(row.get("status") == "running" for _, row in tas.run_rows(self.cfg)) or self.queued:
+                    continue
+                if tas_health.read(self.cfg, self.profile).get("pins_stale"):
+                    continue
+                self.gating = True
+                result, _ = tas_corpus.gate(self.profile, jobs=self.jobs)
+                print(
+                    f"tas page: corpus gate {result['verdict']} {result['counts']} "
+                    f"{result['wall_seconds']}/{result['cpu_seconds']} s (wall/cpu)",
+                    flush=True,
+                )
+            except Exception as error:  # the next check tries again; the page shows the last gate file
+                print(f"tas page: corpus gate failed to run: {error}", flush=True)
+            finally:
+                self.gating = False
 
     # --- the contract ---
 
@@ -582,6 +635,8 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.json(server.state())
                 elif path == "/api/coverage":
                     self.json(server.coverage())
+                elif path == "/api/corpus":
+                    self.json(server.corpus())
                 elif path == "/api/board":
                     self.json(server.board())
                 elif path == "/api/runs":
@@ -789,6 +844,7 @@ def serve(profile: Profile) -> dict[str, Any]:
     http = ThreadingHTTPServer((host, int(port)), handler(server))
     http.daemon_threads = True
     threading.Thread(target=server.archive, daemon=True).start()
+    threading.Thread(target=server.gatekeeper, daemon=True).start()
     print(f"tas page: http://{server.listen}/", flush=True)
     try:
         http.serve_forever()

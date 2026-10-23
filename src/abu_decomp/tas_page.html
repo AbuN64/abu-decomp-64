@@ -294,7 +294,7 @@ const reach = r => r.polls && r.poll <= r.polls ? `${r.poll}/${r.polls}` : `${r.
 const TABS = [["work", "Work"], ["decomp", "Decomp"], ["lanes", "Lanes"], ["runs", "Runs"]];
 const STRIP_MS = 220, MAX_LOG = 3000;
 
-let S = null, BD = null, CV = null, skew = 0;
+let S = null, BD = null, CV = null, CP = null, skew = 0;
 const H = { rows: [], more: false, at: 0, busy: false, filter: store.get("tas.filter", "all") };
 const F = { id: null, run: null, follow: true, cursor: null, cursorFor: null };
 const ui = { view: "watch", tab: store.get("tas.tab", "work"), open: new Set(), covTab: "oracle_only" };
@@ -339,6 +339,10 @@ async function pollBoard() {
   try { const r = await fetch("/api/board", { cache: "no-store" }); if (r.ok) BD = await r.json(); } catch (e) {}
   if (S) renderPanes();
   setTimeout(pollBoard, BD && BD.work && BD.work.rows == null ? 4000 : 15000);
+}
+async function pollCorpus() {
+  try { const r = await fetch("/api/corpus", { cache: "no-store" }); if (r.ok) CP = await r.json(); } catch (e) {}
+  setTimeout(pollCorpus, CP && CP.gating ? 5000 : 30000);
 }
 async function pollCoverage() {
   try { const r = await fetch("/api/coverage", { cache: "no-store" }); if (r.ok) CV = await r.json(); } catch (e) {}
@@ -727,7 +731,7 @@ function renderWork() {
     list.push(it);
   });
   const genAt = w && w.generated ? el("span", "dim mono", ago(w.generated)) : null;
-  $("p-work").replaceChildren(section("Next up", genAt, ...list), section("Movies", el("span", "dim mono", `${S.movies.length}`), ...movieRows()), coverageSection());
+  $("p-work").replaceChildren(section("Next up", genAt, ...list), section("Movies", el("span", "dim mono", `${S.movies.length}`), ...movieRows()), corpusSection(), coverageSection());
 }
 function movieRows() {
   const names = new Set(S.movies.map(m => m.name));
@@ -767,6 +771,45 @@ function movieItem(m, kid) {
   it.title = m.train ? m.train.line : m.name;
   it.onclick = () => { const r = (S.runs.concat(H.rows)).filter(x => x.movie === m.name).sort((a, b) => b.started - a.started)[0]; if (r) focusRun(r.id); };
   return it;
+}
+/* Regression corpus (tas_corpus): kept movies, problem spots, the last speedrun gate over them */
+const VERDICT = { pass: "ok", improved: "ok", changed: "", new: "", accepted: "warn", fail: "bad" };
+function corpusSection() {
+  const d = CP;
+  if (!d || !d.entries) return section("Regression corpus", null, el("div", "empty", d && d.error ? d.error : "no corpus yet (decomp tas corpus seed)"));
+  const g = d.gate, f = d.features || {};
+  const head = [badge(`${d.entries.length} movies`), badge(`${f.functions} fns · ${f.branches} br`, "", "coverage the corpus reaches (union of baselines)")];
+  if (d.gating) head.push(badge("gating…", "warn"));
+  const top = el("div", "chips", ...head);
+  const kids = [top];
+  if (g) {
+    const counts = Object.entries(g.counts || {}).map(([k, v]) => `${k} ${v}`).join(" · ");
+    kids.push(el("div", "item", el("div", "l1", badge(`gate ${g.verdict}`, VERDICT[g.verdict]), el("span", "grow ell mono dim", counts), el("span", "mono dim", ago(g.at))),
+      el("div", "l2", `${g.wall_seconds}/${g.cpu_seconds} s wall/cpu · build ${String(g.build || "").slice(0, 9)}${g.pins && g.pins.rw ? ` · RW ${g.pins.rw.slice(0, 9)}` : ""}${g.dropped && g.dropped.length ? ` · minimised away ${g.dropped.join(", ")}` : ""}`)));
+    for (const r of g.failed || []) {
+      const it = el("div", "item click", el("div", "l1", badge("fail", "bad"), el("span", "grow ell", r.movie)), el("div", "l2 bad", (r.reasons || []).join(" · ")));
+      it.onclick = () => r.run && focusRun(r.run);
+      kids.push(it);
+    }
+    if ((g.failed || []).length) kids.push(copyable("decomp tas corpus accept " + g.failed.map(r => r.movie).join(" ")));
+  } else kids.push(el("div", "empty", "no gate yet: it runs when the page port is rebuilt (or decomp tas corpus gate)"));
+  for (const e of d.entries) {
+    const it = el("div", "item click", el("div", "l1", el("span", "dot " + (OUT[e.outcome] || "")), el("span", "grow ell", e.movie), e.verdict ? badge(e.verdict, VERDICT[e.verdict]) : el("span", "")),
+      el("div", "l2", [e.why.join(", "), `${e.polls} polls`, e.first_change != null ? `RDRAM differs @${e.first_change}` : null, e.oracle ? "oracle ref" : null].filter(Boolean).join(" · ")));
+    it.onclick = () => e.baseline && focusRun(e.baseline);
+    kids.push(it);
+  }
+  if (d.spots.length) {
+    kids.push(el("div", "dim", "problem spots"));
+    for (const sp of d.spots) {
+      const states = d.entries.filter(e => e.spots && sp.id in e.spots).map(e => e.spots[sp.id]);
+      const now = states[0] || sp.first;
+      const what = sp.kind === "ram" ? `${sp.expr} @${sp.at}` : `${sp.function} ${sp.expect}`;
+      kids.push(el("div", "item", el("div", "l1", badge(now, now === "pass" ? "ok" : now === "fail" ? "bad" : "warn"), el("span", "grow ell mono", sp.id), el("span", "dim ell", sp.movie || "every movie")),
+        el("div", "l2", [what, sp.note].filter(Boolean).join(" · "))));
+    }
+  }
+  return section("Regression corpus", null, ...kids);
 }
 function coverageSection() {
   const d = CV;
@@ -1167,7 +1210,7 @@ setInterval(() => { if (S) { renderStage(); const b = S.build || {}; if (b.pin) 
   const h = location.hash.slice(1);
   if (TABS.some(([k]) => k === h)) { ui.tab = h; if (isPhone()) { ui.view = h; document.body.dataset.view = h; } }
 })();
-poll(); pollBoard(); pollCoverage();
+poll(); pollBoard(); pollCoverage(); pollCorpus();
 </script>
 </body>
 </html>

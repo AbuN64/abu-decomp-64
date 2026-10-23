@@ -488,10 +488,14 @@ def pin(cfg: dict[str, Any], run_id: str, keep: bool) -> dict[str, Any]:
 
 
 def archive(cfg: dict[str, Any], keep_days: float, now: float | None = None) -> list[str]:
-    """Delete finished runs older than `keep_days` (by their end) unless pinned or the newest finished run of their
-    movie (the movie's standing, coverage and same_twice source). Runs are replays of kept movies, so what goes is
-    reproducible; returns the deleted run ids."""
+    """Delete finished runs older than `keep_days` (by their end) unless pinned, the newest finished run of their
+    movie (the movie's standing, coverage and same_twice source) or named by the regression corpus (its baselines,
+    oracle references and last gate). Runs are replays of kept movies, so what goes is reproducible; returns the
+    deleted run ids."""
+    from abu_decomp import tas_corpus
+
     cutoff = (now or time.time()) - keep_days * 86400
+    corpus = tas_corpus.kept_runs(cfg)
     rows = run_rows(cfg)
     newest = {}
     for run, row in rows:  # oldest first: the last one seen per movie is its newest
@@ -501,7 +505,7 @@ def archive(cfg: dict[str, Any], keep_days: float, now: float | None = None) -> 
     for run, row in rows:
         if row.get("status") != "done" or running(run) or (run / PINNED).exists():
             continue
-        if newest.get(row.get("movie")) == run.name:
+        if newest.get(row.get("movie")) == run.name or run.name in corpus:
             continue
         if float(row.get("ended") or row.get("started") or 0) >= cutoff:
             continue
@@ -990,10 +994,17 @@ def play(
             "fps": round(polls / wall, 1) if wall else None,
         }
         result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
-    _write_record(
-        run,
-        {**record, **{k: result.get(k) for k in keep}, "status": "done", "stopped": stopped, "ended": time.time()},
-    )
+    final = {**record, **{k: result.get(k) for k in keep}, "status": "done", "stopped": stopped, "ended": time.time()}
+    _write_record(run, final)
+    if not human and not retry:  # a run reaching code no corpus movie reaches keeps its movie (tas_corpus)
+        from abu_decomp import tas_corpus
+
+        try:
+            kept = tas_corpus.offer(profile, settings(profile), run, final)
+        except (DecompError, OSError) as error:
+            kept = {"error": str(error)}
+        if kept:
+            result["corpus"] = kept
     return result
 
 

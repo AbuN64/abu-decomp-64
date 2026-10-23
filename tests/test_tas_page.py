@@ -19,6 +19,7 @@ CONTRACT = {
     "/api/runs",
     "/api/pin",
     "/api/coverage",
+    "/api/corpus",
     "/coverage/",
     "/frame/",
     "/audio/",
@@ -65,6 +66,48 @@ COVERAGE = {
     ],
     "neither": [],
     "port_only": [],
+}
+
+
+CORPUS = {
+    "entries": [
+        {
+            "movie": "boot-idle",
+            "why": ["seed +300 fn +900 br"],
+            "polls": 900,
+            "outcome": "ok",
+            "baseline": "r1",
+            "oracle": "r0",
+            "spots": {"rng-seeded": "pass"},
+            "verdict": "fail",
+            "reasons": ["spot rng-seeded: pass -> fail (value 0)"],
+            "first_change": 412,
+        }
+    ],
+    "spots": [
+        {
+            "id": "rng-seeded",
+            "movie": "boot-idle",
+            "kind": "ram",
+            "expr": "u32@0x80111D24 != 0",
+            "at": 600,
+            "note": "the RNG is seeded",
+            "first": "pass",
+        }
+    ],
+    "features": {"functions": 300, "branches": 900, "ends": 0},
+    "gate": {
+        "at": NOW - 30,
+        "verdict": "fail",
+        "counts": {"fail": 1},
+        "wall_seconds": 7.1,
+        "cpu_seconds": 9.4,
+        "build": "abcdef0123",
+        "pins": {"rw": "6446a267306585b0"},
+        "dropped": [],
+        "failed": [{"movie": "boot-idle", "run": "r1", "reasons": ["spot rng-seeded: pass -> fail (value 0)"]}],
+    },
+    "gating": False,
 }
 
 
@@ -295,6 +338,8 @@ class Stub:
                     self.reply(json.dumps(stub.state).encode(), "application/json")
                 elif path == "/api/coverage":
                     self.reply(json.dumps(COVERAGE).encode(), "application/json")
+                elif path == "/api/corpus":
+                    self.reply(json.dumps(CORPUS).encode(), "application/json")
                 elif path == "/api/board":
                     self.reply(json.dumps(BOARD).encode(), "application/json")
                 elif path == "/api/runs":
@@ -355,7 +400,9 @@ class PageTests(unittest.TestCase):
         version = BOARD["decomp"]["versions"][0]
         fields |= set(BOARD) | set(BOARD["decomp"]) - {"head_subject", "head_time"} | set(version) - {"bytes"}
         fields |= set(BOARD["work"]) | set(BOARD["work"]["rows"][0]) | set(BOARD["landed"][0])
-        fields -= {"frame", "vi_drift_note"}
+        fields |= set(CORPUS) | set(CORPUS["entries"][0]) - {"reasons"} | set(CORPUS["spots"][0])
+        fields |= set(CORPUS["gate"]) | set(CORPUS["gate"]["failed"][0])
+        fields -= {"frame", "vi_drift_note", "ends"}
         for name in sorted(fields | {"state", "more"}):
             self.assertRegex(js, rf"\.{name}\b", name)
 
@@ -413,6 +460,10 @@ class PageTests(unittest.TestCase):
             "1 take",
             "func_80256C90_de",
             "RW 2574d74ed",
+            "Regression corpus",  # Work tab: the corpus, its last gate and problem spots
+            "gate fail",
+            "rng-seeded",
+            "decomp tas corpus accept boot-idle",
         ):
             self.assertIn(text, dom, text)
         self.assertRegex(dom, r'id="conn" class="dot ok"')  # state fetched

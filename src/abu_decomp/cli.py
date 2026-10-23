@@ -337,6 +337,39 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     coverage.add_argument("--no-oracle", action="store_true", help="do not replay runs that lack an oracle trace")
     coverage.add_argument("--jobs", type=int, default=4, help="parallel oracle replays (default 4)")
     actions.add_parser("serve", help="serve the TAS page: every replay's picture, sound, log and the cycle state")
+    corpus = actions.add_parser("corpus", help="the regression corpus of movies, problem spots and the speedrun gate")
+    verbs = corpus.add_subparsers(dest="verb", required=True, parser_class=_Parser)
+    verbs.add_parser("list", help="corpus entries, problem spots, coverage features and the last gate")
+    verbs.add_parser("seed", help="offer every movie's newest run (replaying those without one), then minimise")
+    verbs.add_parser("minimise", help="drop automatic entries whose coverage the others already reach")
+    keep = verbs.add_parser("add", help="keep a movie by hand (never minimised away)")
+    keep.add_argument("movie")
+    keep.add_argument("--why", default="", help="one line: what the movie guards")
+    verbs.add_parser("drop", help="remove a movie from the corpus").add_argument("movie")
+    gate = verbs.add_parser(
+        "gate", help="replay every entry at turbo and judge it against its baseline; exit 1 on a fail"
+    )
+    gate.add_argument("--port", type=Path, help="gate this build's executable (a lane's own; baselines never move)")
+    gate.add_argument("--jobs", type=int, default=4, help="parallel replays (default 4)")
+    gate.add_argument(
+        "--no-oracle", action="store_true", help="do not replay the original for entries without a reference"
+    )
+    accept = verbs.add_parser(
+        "accept", help="take the last gate's runs as baselines of failed entries (a meant change)"
+    )
+    accept.add_argument("movies", nargs="*", help="failed entries to accept (default: every failed one)")
+    spot = verbs.add_parser("spot", help="define or drop a problem spot (a check for a non-crash bug)")
+    spots = spot.add_subparsers(dest="spot_verb", required=True, parser_class=_Parser)
+    define = spots.add_parser("add", help="define a spot on a movie, replay it once and keep the movie")
+    define.add_argument("id", help="lower-case words joined by '-'")
+    define.add_argument("--movie", required=True, help="the movie that shows the spot")
+    define.add_argument("--ram", help="a RAM check at --at, like 'u32@0x80111D24 == 0xE3F635E3' (host byte order)")
+    define.add_argument("--at", type=int, help="the poll the RAM check reads")
+    define.add_argument("--function", help="a function check: reached, unreached or a minimum count (--expect)")
+    define.add_argument("--expect", help="reached (default), unreached or a minimum entry count")
+    define.add_argument("--note", default="", help="one line: the bug the spot guards")
+    define.add_argument("--replace", action="store_true", help="redefine an existing spot")
+    spots.add_parser("drop", help="drop a spot").add_argument("id")
     for verb, text in (
         ("show", "one movie's header and polls"),
         ("delete", "remove one movie"),
@@ -399,6 +432,8 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
             raise DecompError("tas.coverage", "the profile has no tas.coverage section")
         print(tas_coverage.line(report), file=sys.stderr)
         return tas_coverage.lists(report, 25), 0, []
+    if args.action == "corpus":
+        return _run_corpus(profile, args)
     if args.action == "show":
         return tas.show(profile, args.name), 0, []
     if args.action == "delete":
@@ -425,6 +460,47 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         return twice, 0, []
     played = tas.play(profile, args.name, **options, **inspect)
     return played, 0, []
+
+
+def _run_corpus(profile: Any, args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import tas, tas_corpus
+
+    verb = args.verb
+    if verb == "list":
+        return tas_corpus.view(tas.settings(profile)), 0, []
+    if verb == "seed":
+        return tas_corpus.seed(profile), 0, []
+    if verb == "minimise":
+        cfg = tas.settings(profile)
+        with tas_corpus.locked(cfg):
+            data = tas_corpus.load(cfg)
+            dropped = tas_corpus.minimise(cfg, data["entries"])
+            tas_corpus.store(cfg, data)
+        return {"dropped": dropped, "kept": sorted(data["entries"])}, 0, []
+    if verb == "add":
+        return tas_corpus.add(profile, args.movie, args.why), 0, []
+    if verb == "drop":
+        return tas_corpus.drop(profile, args.movie), 0, []
+    if verb == "gate":
+        result, code = tas_corpus.gate(profile, port=args.port, jobs=args.jobs, oracle=not args.no_oracle)
+        print(tas_corpus.render(result), file=sys.stderr)
+        return result, code, []
+    if verb == "accept":
+        return tas_corpus.accept(profile, args.movies), 0, []
+    if args.spot_verb == "drop":
+        return tas_corpus.drop_spot(profile, args.id), 0, []
+    spot = tas_corpus.add_spot(
+        profile,
+        args.id,
+        args.movie,
+        ram=args.ram,
+        at=args.at,
+        function=args.function,
+        expect=args.expect,
+        note=args.note,
+        replace=args.replace,
+    )
+    return spot, 0, []
 
 
 def _run_cycle(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
