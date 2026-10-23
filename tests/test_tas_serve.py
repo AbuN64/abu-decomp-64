@@ -220,9 +220,12 @@ class HttpTests(Base):
             self.assertEqual(set(play_all.call_args.kwargs["run_ids"].values()), set(reply["ids"]))
             release.set()
         run = self.make_run("r3", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid(), pgid=4242)
-        with mock.patch.object(tas_serve.os, "killpg") as kill:
+        with mock.patch.object(tas_serve.os, "killpg") as kill, mock.patch.object(tas_serve, "STOP_GRACE", 0.05):
             self.assertEqual(self.post("/api/stop", {"id": "r3"}), (200, {"id": "r3", "stopped": True}))
-        kill.assert_called_once_with(4242, tas_serve.signal.SIGTERM)
+            time.sleep(0.3)
+        self.assertEqual(
+            kill.call_args_list, [mock.call(4242, tas_serve.signal.SIGTERM), mock.call(4242, tas_serve.signal.SIGKILL)]
+        )
         self.assertTrue((run / "stopped").is_file())
         self.assertEqual(self.post("/api/stop", {"id": "missing"})[0], 400)
 

@@ -34,6 +34,7 @@ RUNS_SHOWN = 24  # newest runs in `runs` (every running one is always there)
 INBOX_SHOWN = 12
 CACHE_SECONDS = 30.0
 MARK = re.compile(r"\|\s*(LANDED|DROPPED|DRYRUN-OK)\b")
+STOP_GRACE = 3.0  # seconds a stopped run gets before its process group is killed
 AUDIO_LEAD_SECONDS = 0.25  # a listener joins this far behind the live end of the sound
 PAGE = Path(__file__).with_name("tas_page.html").read_text
 
@@ -299,11 +300,20 @@ class Server:
         if row.get("status") != "running" or not row.get("pgid"):
             return {"id": run_id, "stopped": False}
         (run / "stopped").write_text("page\n")
+        group = int(row["pgid"])
         try:
-            os.killpg(int(row["pgid"]), signal.SIGTERM)
+            os.killpg(group, signal.SIGTERM)
         except (OSError, ValueError):
             return {"id": run_id, "stopped": False}
+        # The gdb bridge can outlive a TERM while it writes stacks; the run's whole group goes after STOP_GRACE.
+        threading.Timer(STOP_GRACE, self._kill, (run, group)).start()
         return {"id": run_id, "stopped": True}
+
+    @staticmethod
+    def _kill(run: Path, group: int) -> None:
+        if tas.running(run):
+            with contextlib.suppress(OSError):
+                os.killpg(group, signal.SIGKILL)
 
 
 def handler(server: Server) -> type[BaseHTTPRequestHandler]:
@@ -378,7 +388,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             pcm, rate_file = run / tas.AUDIO, run / (tas.AUDIO + ".rate")
             deadline = time.monotonic() + 10
             while not rate_file.is_file():  # the first sound has not been played yet
-                if (tas.read_record(run) or {}).get("status") != "running" or time.monotonic() > deadline:
+                if not tas.running(run) or time.monotonic() > deadline:
                     return self.missing()
                 time.sleep(0.1)
             rate = int(rate_file.read_text().strip() or 32000)
@@ -400,7 +410,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                         self.wfile.flush()
                         offset += len(chunk)
                         continue
-                    if (tas.read_record(run) or {}).get("status") != "running":
+                    if not tas.running(run):
                         return
                     time.sleep(0.05)
 

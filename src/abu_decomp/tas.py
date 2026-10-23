@@ -393,6 +393,12 @@ def alive(pid: Any) -> bool:
     return True
 
 
+def running(run: Path) -> bool:
+    """The run's record says running and the process that writes it is still there."""
+    row = read_record(run) or {}
+    return row.get("status") == "running" and alive(row.get("pid"))
+
+
 def run_rows(cfg: dict[str, Any]) -> list[tuple[Path, dict[str, Any]]]:
     """Every replay folder with its record, oldest first. A record left `running` by a process that is gone (killed
     server, reboot) reads as done with no outcome."""
