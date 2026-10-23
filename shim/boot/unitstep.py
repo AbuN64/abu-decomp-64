@@ -8,8 +8,8 @@ Object cache (--objcache DIR): a unit whose steps, tools and every file the prep
 from DIR without running a single step, so a fresh build tree costs one small read per unit (no compiler cache spawns,
 no preprocessing, no .i written into the tree). Entries sit under a key of the normalised steps (--root and --map
 paths rewritten, so every tree shares them), the compiler and the scripts the steps run, and list each header with its
-content hash; a header's hash is remembered per tree (ROOT/unitstep-digests.json) by size and mtime, so a header
-shared by thousands of units is read once per tree, not once per unit.
+content hash; a header's hash is remembered by size and mtime in OBJCACHE/digests.memo (digests.py), so a header
+shared by thousands of units is read once per machine, not once per unit or tree.
   --root BUILD  --map OLD=NEW (repeatable)  --compiler PATH  --out FILE (repeatable: the files restored)
   --drop FILE (repeatable: removed on a restore, e.g. a stale .i)  --depfile FILE  --dep-target FILE
 Only --out files, the depfile and --drop are touched: an entry holds each --out file's bytes or its absence."""
@@ -19,53 +19,11 @@ import json
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from digests import Digests  # noqa: E402
+
 VERSION = 1
 LIMIT = 2 << 30  # bytes of cached entries; past it the least recently used go
-
-
-def digest_file(path):
-    with open(path, "rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-class Digests:
-    """Content hash of each file by (path, size, mtime): one hash per file per tree instead of one per unit."""
-
-    def __init__(self, memo):
-        self.memo, self.fresh = memo, False
-        try:
-            with open(memo) as stream:
-                self.known = json.load(stream)
-        except (OSError, ValueError):
-            self.known = {}
-        self.added = {}
-
-    def of(self, path):
-        stat = os.stat(path)
-        sig = [stat.st_size, stat.st_mtime_ns]
-        entry = self.known.get(path)
-        if entry and entry[:2] == sig:
-            return entry[2]
-        value = digest_file(path)
-        self.added[path] = [*sig, value]
-        return value
-
-    def save(self):
-        if not self.added:
-            return
-        try:
-            with open(self.memo) as stream:
-                merged = json.load(stream)
-        except (OSError, ValueError):
-            merged = {}
-        merged.update(self.added)
-        temporary = f"{self.memo}.{os.getpid()}.tmp"
-        try:
-            with open(temporary, "w") as stream:
-                json.dump(merged, stream)
-            os.replace(temporary, self.memo)
-        except OSError:
-            pass
 
 
 def mapped(text, maps):
@@ -94,7 +52,7 @@ class ObjectCache:
         root = opts["root"]
         words = [mapped(word.replace(root, "@B") if root else word, self.maps) for command in commands for word in command]
         scripts = [word for command in commands for word in command if word.endswith(".py") and os.path.isfile(word)]
-        self.digests = Digests(os.path.join(root, "unitstep-digests.json") if root else os.devnull)
+        self.digests = Digests(os.path.join(opts["objcache"], "digests.memo"))
         tool = opts.get("compiler")
         stat = os.stat(os.path.realpath(tool)) if tool else None
         key = json.dumps([VERSION, words, [self.digests.of(path) for path in sorted(set(scripts))],

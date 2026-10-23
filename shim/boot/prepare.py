@@ -18,6 +18,7 @@ import sys
 import zlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import portdir  # noqa: E402
+from digests import Digests  # noqa: E402
 
 IDENT = r"[A-Za-z_][A-Za-z_0-9]*"
 
@@ -68,9 +69,6 @@ def dependencies(depfile):
     # gcc -MD: `TARGET: DEP DEP \` continued over lines; the first dependency is the source itself.
     text = depfile.read_text().replace("\\\n", " ")
     return text.split(":", 1)[1].split()
-def file_hash(path):
-    with open(path, "rb") as stream:  # file_digest reads in large blocks: about half the cost of read_bytes + sha256
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 def write_atomic(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
@@ -82,10 +80,11 @@ class Cache:
     LIMIT = 4 << 30  # bytes; past it the least recently used results go
     def __init__(self, root, compiler, source, flags, maps):
         self.root, self.maps = pathlib.Path(root), maps
+        self.digests = Digests(str(self.root / "digests.memo"))
         real = pathlib.Path(shutil.which(compiler) or compiler).resolve()
         stat = real.stat()
-        key = json.dumps([file_hash(__file__), str(real), stat.st_size, stat.st_mtime_ns,
-                          [mapped(f, maps) for f in flags], mapped(str(source), maps), file_hash(source)])
+        key = json.dumps([self.digests.of(__file__), str(real), stat.st_size, stat.st_mtime_ns,
+                          [mapped(f, maps) for f in flags], mapped(str(source), maps), self.digests.of(source)])
         self.key = hashlib.sha256(key.encode()).hexdigest()
         self.manifest = self.root / self.key[:2] / (self.key + ".json")
     def unmap(self, path):
@@ -100,17 +99,18 @@ class Cache:
             return None
         for entry in entries:
             try:
-                if all(file_hash(self.unmap(path)) == digest for path, digest in entry["deps"]):
+                if all(self.digests.of(self.unmap(path)) == digest for path, digest in entry["deps"]):
                     blob = self.root / entry["result"][:2] / (entry["result"] + ".z")
                     result = json.loads(zlib.decompress(blob.read_bytes()))
                     os.utime(blob)
                     os.utime(self.manifest)
+                    self.digests.save()
                     return result
             except (OSError, ValueError, zlib.error):
                 continue
         return None
     def store(self, result, deps):
-        entry = {"deps": [[mapped(path, self.maps), file_hash(path)] for path in deps]}
+        entry = {"deps": [[mapped(path, self.maps), self.digests.of(path)] for path in deps]}
         name = hashlib.sha256(json.dumps([self.key, entry["deps"]]).encode()).hexdigest()
         entry["result"] = name
         write_atomic(self.root / name[:2] / (name + ".z"), zlib.compress(json.dumps(result).encode(), 1))
@@ -122,6 +122,7 @@ class Cache:
         write_atomic(self.manifest, json.dumps(entries).encode())
         if int(name[:4], 16) % 64 == 0:
             self.trim()
+        self.digests.save()
     def trim(self):
         files = sorted((f.stat().st_mtime, f.stat().st_size, f) for f in self.root.glob("*/*") if f.is_file())
         total = sum(size for _, size, _ in files)
