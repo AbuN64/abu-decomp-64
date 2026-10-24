@@ -609,6 +609,17 @@ static void test_zero_dxt_cache(void)
         CHECK(op(list) == 0xF5 && (const uint8_t *)list[3] == first);
         CHECK(!memcmp(first, zero_dxt_golden, sizeof zero_dxt_golden));
     }
+    /* Identical raw bytes interpreted as replay have a different byte order. */
+    mem.replay = 1;
+    root = n64c_dl_translate(&mem, 0x1000, &arena, &stats, NULL);
+    CHECK(root && !stats.bad);
+    if (root) {
+        list = (const uintptr_t *)root[9];
+        CHECK(op(list) == 0x34);
+        const uint8_t *pixels = (const uint8_t *)list[5];
+        CHECK(pixels[0] == 3 && pixels[3] == 0 && first[0] == 0);
+    }
+    mem.replay = 0;
     /* A source write within a task allocates a distinct immutable view. */
     put8(0x4000, 99);
     root = n64c_dl_translate(&mem, 0x1000, &arena, &stats, NULL);

@@ -55,7 +55,8 @@
  * generated load restores SETTIMG and the load tile, and invalidates only its
  * private texture cache address when its content changes. Unchanged views keep
  * stable addresses across arena resets, preserving renderer cache hits. A bounded
- * pool retains at most 256 views (1 MiB of pixels); overflow lives until reset.
+ * pool retains at most 256 views (2 MiB of source/linear pixels); overflow lives
+ * until reset. Cache hits compare source bytes without converting them again.
  * Views referenced in the current task are immutable. Game pixels never change. */
 #include <stddef.h>
 #include <stdint.h>

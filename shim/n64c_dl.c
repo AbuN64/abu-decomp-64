@@ -64,13 +64,13 @@ struct N64cDlBlock {
 /* Keep stable renderer cache addresses for unchanged converted pixels. A task may
  * reference every view it creates, so only entries unused since reset can be
  * recycled. Overflow uses the ordinary task arena. The retained pool is bounded
- * to 1 MiB of pixels, independent of the number of frames or source addresses. */
+ * to 2 MiB of source and converted pixels, independent of frame count. */
 enum { TEXTURE_VIEWS = 256, TMEM_BYTES = 4096 };
 struct N64cDlTexture {
     N64cDlTexture *next;
     uint32_t physical, bytes, line;
-    int used;
-    _Alignas(8) uint8_t pixels[TMEM_BYTES];
+    int used, replay;
+    _Alignas(8) uint8_t pixels[TMEM_BYTES], source[TMEM_BYTES];
 };
 
 /* LOADBLOCK with zero DXT leaves the RDP's odd-row word layout in TMEM. Fast3D
@@ -266,22 +266,17 @@ static void texture_load(Ctx *c, uint32_t w0, uint32_t w1)
 
 /* Return an immutable view for this task. Content equality, rather than a guest
  * pointer alone, detects writes between draws and tasks. Comparing complete
- * converted bytes also handles replay memory and changed source mappings. */
+ * source bytes and their byte order handles replay and changed source mappings
+ * without converting unchanged images on every draw. */
 static uint8_t *texture_view(Ctx *c, const TextureBlock *block, uint32_t line, int *changed)
 {
-    uint8_t pixels[TMEM_BYTES];
-    for (uint32_t byte = 0; byte < block->bytes; byte++) {
-        uint32_t source = block->physical + (byte ^ ((byte / line & 1) ? 4u : 0u));
-        if (c->mem->replay)
-            source ^= 3;
-        pixels[byte] = *host(c, source);
-    }
+    const uint8_t *source = host(c, block->physical);
     N64cDlTexture *spare = NULL;
     uint32_t count = 0;
     for (N64cDlTexture *t = c->arena->textures; t; t = t->next) {
         count++;
         if (t->physical == block->physical && t->bytes == block->bytes && t->line == line &&
-            !memcmp(t->pixels, pixels, block->bytes)) {
+            t->replay == c->mem->replay && !memcmp(t->source, source, block->bytes)) {
             t->used = 1;
             *changed = 0;
             return t->pixels;
@@ -302,12 +297,20 @@ static uint8_t *texture_view(Ctx *c, const TextureBlock *block, uint32_t line, i
         spare->bytes = block->bytes;
         spare->line = line;
         spare->used = 1;
+        spare->replay = c->mem->replay;
+        memcpy(spare->source, source, block->bytes);
+        source = spare->source;
         linear = spare->pixels;
     } else {
         linear = arena_alloc(c->arena, block->bytes);
     }
-    if (linear)
-        memcpy(linear, pixels, block->bytes);
+    if (linear) {
+        for (uint32_t word = 0; word < block->bytes; word += 8) {
+            const uint32_t swap = ((word / line & 1) ? 4u : 0u) | (c->mem->replay ? 3u : 0u);
+            for (uint32_t byte = 0; byte < 8; byte++)
+                linear[word + byte] = source[word + (byte ^ swap)];
+        }
+    }
     *changed = 1; /* new/recycled addresses may still be cached by the renderer */
     return linear;
 }
