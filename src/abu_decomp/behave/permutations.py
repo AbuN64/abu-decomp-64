@@ -28,9 +28,19 @@ MEMORY_INPUTS = 12  # most-read memory words varied
 SEED = 0x5EED
 _ARG_REGISTER = {"a0": "r4", "a1": "r5", "a2": "r6", "a3": "r7"}
 _ENUM = re.compile(r"enum\s*(\w*)\s*\{([^}]*)\}\s*(\w*)\s*;", re.S)
-_FLOATS = {32: (0x00000000, 0x80000000, 0x00000001, 0x7F800000, 0xFF800000, 0x7FC00000, 0x3F800000, 0xBF800000),
-           64: (0, 1 << 63, 1, 0x7FF0000000000000, 0xFFF0000000000000, 0x7FF8000000000000,
-                0x3FF0000000000000, 0xBFF0000000000000)}
+_FLOATS = {
+    32: (0x00000000, 0x80000000, 0x00000001, 0x7F800000, 0xFF800000, 0x7FC00000, 0x3F800000, 0xBF800000),
+    64: (
+        0,
+        1 << 63,
+        1,
+        0x7FF0000000000000,
+        0xFFF0000000000000,
+        0x7FF8000000000000,
+        0x3FF0000000000000,
+        0xBFF0000000000000,
+    ),
+}
 
 
 def is_real(case: dict[str, Any]) -> bool:
@@ -167,8 +177,14 @@ def _pointerish(seen: list[int]) -> bool:
     return bool(seen) and all(v == 0 or RAM_BASE <= v < RAM_BASE + (64 << 20) for v in seen)
 
 
-def _factors(real: list[dict[str, Any]], results: list[dict[str, Any]], image: _Image, proto: Any,
-             project: Path, headers: tuple[str, ...]) -> list[dict[str, Any]]:
+def _factors(
+    real: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+    image: _Image,
+    proto: Any,
+    project: Path,
+    headers: tuple[str, ...],
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     registers = [c.get("registers", {}) for c in real]
     for slot in prototype.argument_slots(proto):
@@ -189,16 +205,36 @@ def _factors(real: list[dict[str, Any]], results: list[dict[str, Any]], image: _
         else:
             bits = {"int8": 8, "uint8": 8, "int16": 16, "uint16": 16}.get(kind, 32)
             signed = kind.startswith("int")
-            domain = _mix(seen, [_extend(v, bits, signed) for v in _integer([v & ((1 << bits) - 1) for v in seen], bits, signed,
-                                                          _enum_members(project, headers, slot.param.ctype))])
-        out.append({"kind": "arg", "name": slot.param.name, "register": key, "domain": domain,
-                    "bits": 64 if kind == "double" else 32})
+            domain = _mix(
+                seen,
+                [
+                    _extend(v, bits, signed)
+                    for v in _integer(
+                        [v & ((1 << bits) - 1) for v in seen],
+                        bits,
+                        signed,
+                        _enum_members(project, headers, slot.param.ctype),
+                    )
+                ],
+            )
+        out.append(
+            {
+                "kind": "arg",
+                "name": slot.param.name,
+                "register": key,
+                "domain": domain,
+                "bits": 64 if kind == "double" else 32,
+            }
+        )
     count: dict[tuple[int, int], int] = {}
     for case, result in zip(real, results, strict=True):
         low = int(str(case.get("registers", {}).get("r29", "0")), 0) & 0xFFFFFFFF
         for address, width in result.get("reads", []):
-            if width in (1, 2, 4) and address >= RAM_BASE and address % width == 0 and not (
-                low >= RAM_BASE and low - 0x4000 <= address < low + 0x10
+            if (
+                width in (1, 2, 4)
+                and address >= RAM_BASE
+                and address % width == 0
+                and not (low >= RAM_BASE and low - 0x4000 <= address < low + 0x10)
             ):
                 count[(address, width)] = count.get((address, width), 0) + 1
     ranked = sorted(count, key=lambda k: (-count[k], k))[:MEMORY_INPUTS]
@@ -208,8 +244,16 @@ def _factors(real: list[dict[str, Any]], results: list[dict[str, Any]], image: _
             continue
         bits = 8 * width
         domain = _mix(seen, [0]) if _pointerish(seen) and width == 4 else _integer(seen, bits, False, [])
-        out.append({"kind": "memory", "name": f"{address:#010x}/{width}", "address": address, "width": width,
-                    "domain": domain, "bits": bits})
+        out.append(
+            {
+                "kind": "memory",
+                "name": f"{address:#010x}/{width}",
+                "address": address,
+                "width": width,
+                "domain": domain,
+                "bits": bits,
+            }
+        )
     return [f for f in out if len(f["domain"]) > 1]
 
 
@@ -227,8 +271,12 @@ def _apply(base: dict[str, Any], factors: list[dict[str, Any]], row: tuple[Any, 
             blob = value.to_bytes(factor["width"], "big")
             memory.append({"addr": f"{factor['address']:#x}", "hex": blob.hex()})
             parts.append(f"@{factor['name']}={value:#x}")
-    case = {**base, "name": f"gen{n}-{base['name']}"[:96], "registers": registers,
-            "labels": {"generated": ",".join(parts)[:160], "base": str(base["name"])}}
+    case = {
+        **base,
+        "name": f"gen{n}-{base['name']}"[:96],
+        "registers": registers,
+        "labels": {"generated": ",".join(parts)[:160], "base": str(base["name"])},
+    }
     if memory:
         case["memory"] = memory
     return case

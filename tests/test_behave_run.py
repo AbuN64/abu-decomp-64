@@ -362,8 +362,19 @@ class RunTests(unittest.TestCase):
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             contextlib.redirect_stdout(stdout),
         ):
-            main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "4",
-                  "--lenient-reason", "boot state is not capturable"])
+            main(
+                [
+                    "--profile",
+                    str(self.seat),
+                    "behave",
+                    "--function",
+                    "f",
+                    "--cases",
+                    "4",
+                    "--lenient-reason",
+                    "boot state is not capturable",
+                ]
+            )
         result = json.loads(stdout.getvalue())["result"]
         self.assertEqual(result["memory"], {"policy": "lenient", "reason": "boot state is not capturable"})
         self.assertTrue(all(r.get("lenient_reason") for _, r in self.probes if r.get("lenient")))

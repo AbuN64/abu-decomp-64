@@ -216,10 +216,14 @@ def capture_states(
     if len(numbers) == 1:
         return capture_seed(profile, version, function, hit, stubs, own)
     plan = work_dir(config) / f"capture-{os.getpid()}.json"
-    plan.write_text(json.dumps([
-        {"function": function, "hit": n, "stubs": stubs, "env": own["env"], "seconds": own["seconds"]}
-        for n in numbers
-    ]))
+    plan.write_text(
+        json.dumps(
+            [
+                {"function": function, "hit": n, "stubs": stubs, "env": own["env"], "seconds": own["seconds"]}
+                for n in numbers
+            ]
+        )
+    )
     called = invoke("taste", profile, ["repro", "capture-batch", "--version", version, "--plan", str(plan)])
     if not called.ok:
         why = "; ".join(str(f.get("message") or f) for f in called.document.get("findings", []))
@@ -232,8 +236,9 @@ def capture_states(
             notes.append(f"entry {number}: {row.get('message', row['status'])}")
             continue
         record = row["capture"]
-        if stubs and (not record.get("calls_complete") or record.get("calls_unresolved")
-                      or record.get("calls_dropped_writes")):
+        if stubs and (
+            not record.get("calls_complete") or record.get("calls_unresolved") or record.get("calls_dropped_writes")
+        ):
             notes.append(f"entry {number}: incomplete callee effects; cannot replay strictly")
             continue
         seeds[number] = {**row["seed"], "capture": record}
@@ -541,14 +546,27 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
     generation = None
     if options.seeded:
         generated, generation = permutations.generate(
-            cases, original["cases"], options.seeded, proto, chosen.project,
-            tuple(config["headers"]), int(config["generated_cases"]),
+            cases,
+            original["cases"],
+            options.seeded,
+            proto,
+            chosen.project,
+            tuple(config["headers"]),
+            int(config["generated_cases"]),
         )
         if generated:
-            more = ask("original-generated", _request(
-                version=version, address=address, cases=generated, config=config, depth=depth,
-                memory_end=memory_end, question=question + " (generated from real inputs)",
-            ))
+            more = ask(
+                "original-generated",
+                _request(
+                    version=version,
+                    address=address,
+                    cases=generated,
+                    config=config,
+                    depth=depth,
+                    memory_end=memory_end,
+                    question=question + " (generated from real inputs)",
+                ),
+            )
             cases = [*cases, *generated]
             original = {**original, "cases": [*original["cases"], *more["cases"]]}
     record = original["record"]
@@ -715,8 +733,9 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         if callee:
             callees[name] = callee
     rows = [
-        compare.compare_case(a, b, proto, callees,
-                             permutations.stack_of(case, stack, int(record["stack_window"])), own, opaque)
+        compare.compare_case(
+            a, b, proto, callees, permutations.stack_of(case, stack, int(record["stack_window"])), own, opaque
+        )
         for case, a, b in zip(cases, original["cases"], changed["cases"], strict=True)
     ]
     labels = [c["labels"] for c in cases]
@@ -726,13 +745,20 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         int(config["min_compared"]),
         testable=sum(c["status"] == "ok" or out_of_budget(c) for c in original["cases"]),
     )
-    real_compared = sum(row["verdict"] != compare.UNTESTABLE and permutations.is_real(case)
-                        for case, row in zip(cases, rows, strict=True))
+    real_compared = sum(
+        row["verdict"] != compare.UNTESTABLE and permutations.is_real(case)
+        for case, row in zip(cases, rows, strict=True)
+    )
     common["sources"]["real_compared"] = real_compared
-    common["sources"]["generated_compared"] = sum(row["verdict"] != compare.UNTESTABLE and "generated" in case["labels"]
-                                                  for case, row in zip(cases, rows, strict=True))
-    common["generated_differences"] = [dict(row, inputs=case["labels"]) for case, row in zip(cases, rows, strict=True)
-                                       if "generated" in case["labels"] and row["verdict"] == compare.DIFFERS]
+    common["sources"]["generated_compared"] = sum(
+        row["verdict"] != compare.UNTESTABLE and "generated" in case["labels"]
+        for case, row in zip(cases, rows, strict=True)
+    )
+    common["generated_differences"] = [
+        dict(row, inputs=case["labels"])
+        for case, row in zip(cases, rows, strict=True)
+        if "generated" in case["labels"] and row["verdict"] == compare.DIFFERS
+    ]
     if summary["verdict"] == compare.SAME and options.reach and not real_compared:
         summary.update(verdict=compare.UNTESTABLE, reason="coverage reach exists but zero real cases compared")
         findings.append({"key": "behave.real_required", "blocking": False, "message": summary["reason"]})
@@ -781,13 +807,24 @@ def sources(cases: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[
     the first entry with one argument moved), synthetic ones (generated), and how many of each did not run."""
     groups = {"real": [], "generated": [], "synthetic": [], "crash": []}
     for case, result in zip(cases, results, strict=True):
-        kind = ("real" if permutations.is_real(case) else "crash" if "crash" in case["labels"]
-                else "generated" if "generated" in case["labels"] else "synthetic")
+        kind = (
+            "real"
+            if permutations.is_real(case)
+            else "crash"
+            if "crash" in case["labels"]
+            else "generated"
+            if "generated" in case["labels"]
+            else "synthetic"
+        )
         groups[kind].append(result)
     return {
         "real_entries": len(groups["real"]),
-        **{f"{kind}_{field}": len(rows) if field == "cases" else sum(r["status"] != "ok" for r in rows)
-           for kind, rows in groups.items() for field in ("cases", "untestable") if rows or kind != "crash"},
+        **{
+            f"{kind}_{field}": len(rows) if field == "cases" else sum(r["status"] != "ok" for r in rows)
+            for kind, rows in groups.items()
+            for field in ("cases", "untestable")
+            if rows or kind != "crash"
+        },
         "untestable": sum(r["status"] != "ok" for r in results),
     }
 
