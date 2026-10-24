@@ -427,6 +427,42 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(result["findings"], None)
         self.assertFalse((self.root / "runs" / "findings.jsonl").exists())
 
+    def test_same_requires_every_requested_function_to_replay(self):
+        result, _, _ = self.run_batch(functions=["fa", "fg", "unreached"])
+        self.assertEqual(result["verdict"], "untestable")
+        self.assertEqual(result["functions"]["same"], 1)
+        self.assertEqual(result["functions"]["unsampled"], 2)
+        self.assertEqual(
+            result["unsampled"],
+            {"fg": "no replayable recording", "unreached": "not reached by the oracle"},
+        )
+
+    def test_a_complete_requested_comparison_can_be_same(self):
+        result, _, _ = self.run_batch(functions=["fa"])
+        self.assertEqual(result["verdict"], "same")
+        self.assertEqual(result["unsampled"], {})
+
+    def test_a_function_missing_from_the_port_is_untestable(self):
+        result, _, _ = self.run_batch(functions=["fe"])
+        self.assertEqual(result["verdict"], "untestable")
+        self.assertEqual(result["not_in_port"], ["fe"])
+
+    def test_a_port_standin_cannot_prove_same(self):
+        result, _, _ = self.run_batch(functions=["ff"])
+        self.assertEqual(result["verdict"], "untestable")
+
+    def test_an_aborted_oracle_with_no_samples_cannot_prove_same(self):
+        with mock.patch.object(replay, "record_movie", side_effect=replay.OracleAborted("m", -11, "driver fault")):
+            result, _, _ = self.run_batch()
+        self.assertEqual(result["verdict"], "untestable")
+        self.assertEqual(result["functions"]["replayed"], 0)
+        self.assertEqual(result["oracle_aborts"], {"m": "driver fault"})
+
+    def test_a_real_difference_remains_visible_with_incomplete_coverage(self):
+        result, _, _ = self.run_batch(functions=["fb", "fg"])
+        self.assertEqual(result["verdict"], "differs")
+        self.assertEqual(result["differing"], {"fb": ["return"]})
+
     def test_a_movie_whose_oracle_aborts_is_skipped_and_reported(self):
         (self.root / "movies" / "bad.tas").write_text((self.root / "movies" / "m.tas").read_text())
         real = replay.record_movie

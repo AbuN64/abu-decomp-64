@@ -684,6 +684,10 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         wanted = set(options.functions)
         samples = [s for s in samples if s.function in wanted]
     chosen = pick(samples, options.calls)
+    unsampled = {
+        fn: "no replayable recording" if fn in seen else "not reached by the oracle"
+        for fn in sorted(set(options.functions) - chosen.keys())
+    }
     source = _source(profile, options)
     config = _config(profile)
     version = options.version or _names_from(source)
@@ -738,7 +742,10 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
     }
     own = round(time.process_time() - own_began, 1)
     cpu = round(spent + own, 1)
+    incomplete = bool(aborts or unsampled or missing or per_function["untestable"] or not verdicts)
+    verdict = "differs" if differing else "untestable" if incomplete else "same"
     result = {
+        "verdict": verdict,
         "batch": str(batch),
         "movies": recorded,
         "oracle": str(oracle["host"]),
@@ -751,6 +758,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
             "differs": len(per_function["differs"]),
             "untestable": len(per_function["untestable"]),
             "not_in_port": len(missing),
+            "unsampled": len(unsampled),
         },
         "samples": {"recorded": len(samples), "replayed": sum(len(g) for g in cases.values())},
         "written_off": dict(skipped),
@@ -758,6 +766,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         "untestable_reasons": dict(why.most_common()),
         "differing": {f: sorted(set(v)) for f, v in sorted(differing.items())},
         "not_in_port": missing[:50],
+        "unsampled": unsampled,
         "findings": {"file": str(cfg["runs"] / FINDINGS), "written": len(rows)} if options.findings else None,
         "timing": {
             "wall_seconds": round(time.monotonic() - began, 1),
