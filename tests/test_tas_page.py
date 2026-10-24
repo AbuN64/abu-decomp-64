@@ -24,6 +24,8 @@ CONTRACT = {
     "/api/calls/",
     "/fn/",
     "/api/corpus",
+    "/api/phase",
+    "/api/phase/map",
     "/coverage/",
     "/frame/",
     "/audio/",
@@ -113,6 +115,57 @@ CORPUS = {
     },
     "gating": False,
 }
+
+
+def _phase_fixture() -> tuple[dict, dict]:
+    import base64
+
+    cells = bytearray(256)  # order 4: 16 x 16 cells of 8 B over one 2 KB segment
+    for i in range(256):
+        cells[i] = (2, 3, 4, 6, 7)[i * 5 // 256] | ((i % 11) << 4 if i * 5 // 256 == 4 else 0)
+    cells[250:] = b"\x00" * 6
+    fns = [
+        ["fnA", 0x1000, 400, 3, None, "src/a.c", True],
+        ["fnB", 0x1190, 800, 4, None, "src/b.c", False],
+        ["fnC", 0x14B0, 600, 7, 62.5, "src/c.c", False],
+    ]
+    mp = {
+        "version": "us-rev1",
+        "segments": [[0x1000, 0x1800]],
+        "cell_bytes": 8,
+        "order": 4,
+        "ref": "abc123",
+        "blobs": {"mapped": 600, "bytes": 1000},
+        "cells": base64.b64encode(bytes(cells)).decode(),
+        "fns": fns,
+        "files": [["src/a.c", 0, 49]],
+    }
+    row = lambda ph, key, value, thr, met: {  # noqa: E731
+        "phase": ph,
+        "game": "RageWars",
+        "version": "us-rev1",
+        "key": key,
+        "value": value,
+        "threshold": thr,
+        "met": met,
+        "source": "board",
+        "age_s": 30,
+    }
+    phase = {
+        "generated": NOW,
+        "focus": {"game": "RageWars", "version": "us-rev1"},
+        "rows": [
+            row(1, "p1.mapped_pct", 100.0, 100, True),
+            row(1, "p1.foundations_named_pct", 41.5, 100, False),
+            row(2, "p2.RageWars.port", True, True, True),
+            row(3, "p3.fn_reachable_pct", 31.9, 100, False),
+            row(4, "p4.byte_reach_pct", 42.5, 50, False),
+        ],
+        "stage": None,
+        "next_stage": {"stage": "R1", "failing": [{"key": "byte_reach", "value": 42.5, "threshold": 50}]},
+        "next": [{"phase": 1, "fn": "fnA", "why": "not named", "next": "decomp name fnA"}],
+    }
+    return phase, mp
 
 
 def mock_state() -> dict:
@@ -375,8 +428,9 @@ CALLS = {
 class Stub:
     """Serves the page and the contract endpoints from mock data; records POSTs."""
 
-    def __init__(self, state: dict, logs: dict | None = None) -> None:
+    def __init__(self, state: dict, logs: dict | None = None, phase: bool = True) -> None:
         self.state, self.logs, self.posts = state, logs or {}, []
+        self.phase, self.map = _phase_fixture() if phase else (None, None)
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -398,6 +452,10 @@ class Stub:
                     self.reply(json.dumps(stub.state).encode(), "application/json")
                 elif path == "/api/coverage":
                     self.reply(json.dumps(COVERAGE).encode(), "application/json")
+                elif path == "/api/phase" and stub.phase:
+                    self.reply(json.dumps(stub.phase).encode(), "application/json")
+                elif path == "/api/phase/map" and stub.map:
+                    self.reply(json.dumps(stub.map).encode(), "application/json")
                 elif path == "/api/maze":
                     self.reply(json.dumps(MAZE).encode(), "application/json")
                 elif path.startswith("/api/calls/"):
@@ -504,15 +562,15 @@ class PageTests(unittest.TestCase):
                     "--window-size=1920,1080",
                     "--virtual-time-budget=3000",
                     "--dump-dom",
-                    stub.url,
+                    stub.url + "#work",
                 ],
                 capture_output=True,
                 text=True,
                 timeout=60,
             ).stdout
         self.assertEqual(
-            dom.count('class="tile'), 1
-        )  # the stage follows the newest live run; the other is in the strip
+            dom.count('class="tile'), 2
+        )  # the wall shows every running run (the stage's too), one tile each
         for text in (
             "model-preview",  # on the stage (newest live run)
             "following live",
@@ -554,6 +612,79 @@ class PageTests(unittest.TestCase):
                 ).stdout
             for text in texts:
                 self.assertIn(text, dom, f"{tab}: {text}")
+
+    def _dom(self, stub, hash_, size="1600,1000"):
+        chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("no chromium")
+        with tempfile.TemporaryDirectory() as profile:
+            argv = [chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run"]
+            argv += [f"--user-data-dir={profile}", f"--window-size={size}", "--virtual-time-budget=4000"]
+            return subprocess.run(
+                [*argv, "--dump-dom", stub.url + hash_], capture_output=True, text=True, timeout=60
+            ).stdout
+
+    def test_page_has_the_wall_map_and_film_hooks(self):
+        html = PAGE.read_text()
+        for needle in (
+            'id="strip" class="wall"',
+            'id="p-map"',
+            '"map", "Map"',
+            "WALL_MAX = 12",
+            "WALL_MS = 500",
+            "/api/phase/map",
+            "phase data not deployed yet",
+            'dataset.top = "film"',
+            'data-top="film"',
+        ):
+            self.assertIn(needle, html, needle)
+        self.assertLess(html.index('["map", "Map"]'), html.index('["work", "Work"]'))  # Map is the first tab
+
+    def test_hilbert_mapping_is_the_standard_curve(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        js = script()
+        a, b = js.index("function d2xy"), js.index("async function pollPhase")
+        check = (
+            js[a:b]
+            + "const n = 16; const seen = new Set(); let prev = null;\n"
+            + "for (let d = 0; d < n * n; d++) { const [x, y] = d2xy(n, d); seen.add(x + ',' + y);\n"
+            + "  if (xy2d(n, x, y) !== d) throw new Error('inverse ' + d);\n"
+            + "  if (prev && Math.abs(prev[0] - x) + Math.abs(prev[1] - y) !== 1) throw new Error('gap ' + d);\n"
+            + "  prev = [x, y]; }\n"
+            + "if (seen.size !== n * n) throw new Error('not a bijection');\n"
+            + "const q = [0, 1, 2, 3].map(d => d2xy(2, d).join());\n"
+            + "if (q.join('|') !== '0,0|0,1|1,1|1,0') throw new Error('order-1 curve ' + q);\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "hilbert.js"
+            path.write_text(check)
+            subprocess.run([node, str(path)], check=True, timeout=30)
+
+    def test_headless_map_tab_shows_gates_ladder_and_canvas(self):
+        stub = Stub(mock_state())
+        self.addCleanup(stub.close)
+        dom = self._dom(stub, "#map")
+        shown = ('id="mapc"', "Phase 1", "p1.foundations_named_pct", "41.5 / 100")
+        for text in (*shown, "R1 needs", "byte_reach 42.5 / 50", "below R1"):
+            self.assertIn(text, dom, text)
+        self.assertNotIn('class="empty">phase data not deployed yet', dom)
+
+    def test_headless_map_tab_degrades_when_phase_routes_are_missing(self):
+        stub = Stub(mock_state(), phase=False)
+        self.addCleanup(stub.close)
+        dom = self._dom(stub, "#map")
+        self.assertIn('class="empty">phase data not deployed yet', dom)
+        self.assertIn("boot-idle", dom)  # the rest of the page still works
+
+    def test_headless_film_hides_the_chrome(self):
+        stub = Stub(mock_state())
+        self.addCleanup(stub.close)
+        dom = self._dom(stub, "#film", "1920,1080")
+        self.assertIn('data-top="film"', dom)
+        self.assertIn('id="mapc"', dom)
+        self.assertIn('class="tile', dom)
 
     def test_headless_render_of_the_maze_and_its_call_tree(self):
         chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")

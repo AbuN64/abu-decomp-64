@@ -67,7 +67,7 @@
   .bottom { display: none; }
   @media (min-width: 1100px) {
     body { height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
-    .app { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(380px, 31vw, 540px); }
+    .app { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(380px, 40vw, 760px); }
     #watch { overflow: auto; }
     #mazeview { flex: 1; min-height: 0; overflow: auto; }
     .rail { border-top: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
@@ -228,6 +228,44 @@
   .mz-h { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin: 6px 0 2px; }
   .mz-self { padding: 6px 8px; margin: 6px 0; border: 1px solid var(--ok); border-radius: 6px; background: var(--sel); overflow-wrap: anywhere; }
   .mz-path { margin: 6px 0; color: var(--dim); overflow-wrap: anywhere; }
+  /* video wall (under the stage) and phase map (rail tab) */
+  .live-wrap { width: 100%; max-width: none; }
+  .wall-head { display: flex; align-items: center; gap: 8px; margin: 16px 0 8px; }
+  .wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+  @media (max-width: 699px) { .wall { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } }
+  .tile.sel { border-color: var(--ok); }
+  .tile.grey canvas { filter: grayscale(1) brightness(.7); }
+  .tile .pics { display: grid; gap: 2px; }
+  .tile .pics canvas.orig { border-top: 1px solid var(--line); }
+  .tile .sub { font: 11px var(--mono); color: var(--warn); }
+  .slot { aspect-ratio: 4 / 3; border: 1px dashed var(--soft); border-radius: 6px; }
+  .mp { padding: 12px 14px; min-width: 0; }
+  .mp .gate { display: flex; align-items: center; gap: 8px; font: 12px var(--mono); padding: 2px 0; }
+  .mp .gate .tick { width: 14px; flex: none; text-align: center; }
+  .mp .ladder { margin: 8px 0; }
+  .mp .wrapc { position: relative; width: 100%; margin-top: 8px; }
+  #mapc { display: block; width: 100%; aspect-ratio: 1 / 1; background: #222; image-rendering: pixelated; border: 1px solid var(--line); }
+  .mp .bar1 { height: 6px; border-radius: 3px; background: var(--line); margin-top: 8px; overflow: hidden; }
+  .mp .bar1 i { display: block; height: 100%; background: #6b7280; }
+  .mp .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 8px 0; font: 11px var(--mono); color: var(--dim); }
+  .mp .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  #maptip { position: absolute; z-index: 4; pointer-events: none; background: #000d; border: 1px solid var(--line); border-radius: 4px;
+            padding: 4px 8px; font: 12px var(--mono); white-space: pre; max-width: 300px; overflow: hidden; text-overflow: ellipsis; display: none; }
+  /* #film: wall + map full screen, no chrome, no settings */
+  body[data-top="film"] { overflow: hidden; }
+  body[data-top="film"] .top, body[data-top="film"] .bottom, body[data-top="film"] .tabs,
+  body[data-top="film"] .stage-head, body[data-top="film"] .screen, body[data-top="film"] .tl, body[data-top="film"] .acts-row,
+  body[data-top="film"] .pad-wrap, body[data-top="film"] .compare, body[data-top="film"] .logbox, body[data-top="film"] .wall-head,
+  body[data-top="film"] .mp .gates, body[data-top="film"] .mp .legend, body[data-top="film"] .mp .bar1 { display: none !important; }
+  body[data-top="film"] { height: 100vh; height: 100dvh; display: block; }
+  body[data-top="film"] .app { display: grid; grid-template-columns: 60fr 40fr; height: 100vh; height: 100dvh; padding: 0; }
+  body[data-top="film"] #watch { padding: 6px; overflow: hidden; }
+  body[data-top="film"] .live-wrap { width: 100%; margin: 0; }
+  body[data-top="film"] .wall { margin: 0; gap: 6px; }
+  body[data-top="film"] .rail { border: 0; }
+  body[data-top="film"] .panes { overflow: hidden; }
+  body[data-top="film"] .mp { padding: 6px; }
+  body[data-top="film"] .mp .wrapc { margin: 0; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 </head>
@@ -267,8 +305,8 @@
       <div id="acts" class="acts-row"></div>
       <div id="pad" class="pad-wrap"></div>
       <div class="live-wrap">
-        <div class="strip-head"><h2 id="striph">Live</h2><span id="livecount" class="dim mono"></span></div>
-        <div id="strip" class="strip"></div>
+        <div class="wall-head"><h2 id="striph">Wall</h2><span id="livecount" class="dim mono"></span></div>
+        <div id="strip" class="wall"></div>
       </div>
       <div id="compare" class="compare">
         <div class="row" style="margin-bottom:6px"><h2>port | original</h2><span id="cinfo" class="grow mono dim ell"></span></div>
@@ -284,6 +322,7 @@
   <aside class="rail">
     <nav class="tabs" id="tabs"></nav>
     <div class="panes">
+      <section id="p-map" class="pane"></section>
       <section id="p-work" class="pane"></section>
       <section id="p-decomp" class="pane"></section>
       <section id="p-lanes" class="pane"></section>
@@ -335,13 +374,13 @@ const failed = r => r.status === "done" && !r.stopped && BAD.has(r.outcome);  //
 const endText = r => r.stopped ? "stopped" : r.outcome || "ended";
 const endClass = r => r.stopped ? "" : OUT[r.outcome] || "";
 const reach = r => r.polls && r.poll <= r.polls ? `${r.poll}/${r.polls}` : `${r.poll} polls`;
-const TABS = [["work", "Work"], ["decomp", "Decomp"], ["lanes", "Lanes"], ["runs", "Runs"]];
+const TABS = [["map", "Map"], ["work", "Work"], ["decomp", "Decomp"], ["lanes", "Lanes"], ["runs", "Runs"]];
 const STRIP_MS = 220, MAX_LOG = 3000;
 
 let S = null, BD = null, CV = null, CP = null, skew = 0;
 const H = { rows: [], more: false, at: 0, busy: false, filter: store.get("tas.filter", "all") };
 const F = { id: null, run: null, follow: true, cursor: null, cursorFor: null };
-const ui = { view: "watch", tab: store.get("tas.tab", "work"), open: new Set(), covTab: "oracle_only" };
+const ui = { view: "watch", tab: store.get("tas.tab", "map"), open: new Set(), covTab: "oracle_only" };
 const now = () => Date.now() / 1000 + skew;
 const isPhone = () => matchMedia("(max-width: 699px)").matches;
 function ago(t) {
@@ -672,52 +711,228 @@ async function showPoll() {
   pd.putImageData(out, 0, 0);
 }
 
-/* ---------- live strip: running runs other than the stage's; when none, the newest finished ones ---------- */
-const tiles = new Map();
+/* ---------- video wall: every running run (cap 12, stable slots); when none, the 12 newest finished runs greyed ---------- */
+const WALL_MAX = 12, WALL_MS = 500;
+const tiles = new Map(), slots = new Array(WALL_MAX).fill(null);
+let wallRecent = null;
 function renderStrip() {
-  const live = liveRuns().filter(r => r.id !== F.id).sort((a, b) => a.started - b.started);
+  const live = liveRuns().sort((a, b) => (b.input === "human") - (a.input === "human") || b.started - a.started);
   const queued = S.runs.filter(r => r.status === "queued").length;
   const recent = !live.length;
-  const want = recent ? S.runs.filter(r => r.status === "done" && r.id !== F.id).sort((a, b) => b.started - a.started).slice(0, 8) : live;
-  $("striph").textContent = recent ? "Recent" : "Live";
-  $("livecount").textContent = (recent ? "" : `${live.length + (F.run && F.run.status === "running" ? 1 : 0)} running`) + (queued ? ` · ${queued} queued` : "");
-  const box = $("strip"), ids = new Set(want.map(r => r.id + (recent ? ":r" : "")));
+  if (recent !== wallRecent) { slots.fill(null); wallRecent = recent; }
+  const want = recent ? S.runs.filter(r => r.status === "done").sort((a, b) => b.started - a.started).slice(0, WALL_MAX) : live;
+  const byId = new Map(want.map(r => [r.id, r]));
+  for (let i = 0; i < WALL_MAX; i++) if (slots[i] && !byId.has(slots[i])) slots[i] = null;  // ended: the slot frees, nothing else moves
+  for (const r of want) {
+    if (slots.includes(r.id)) continue;
+    const free = slots.indexOf(null);
+    if (free >= 0) slots[free] = r.id;
+  }
+  const shown = want.filter(r => slots.includes(r.id)), extra = want.length - shown.length;
+  $("striph").textContent = recent ? "Recent" : "Wall";
+  $("livecount").textContent = (recent ? "" : `${live.length} running`) + (extra > 0 ? ` · +${extra} running` : "") + (queued ? ` · ${queued} queued` : "");
+  const box = $("strip"), ids = new Set(shown.map(r => r.id + (recent ? ":r" : "")));
   for (const [k, t] of tiles) if (!ids.has(k)) { clearTimeout(t.timer); t.node.remove(); tiles.delete(k); }
-  want.forEach((r, i) => {
+  let last = -1;
+  slots.forEach((id, i) => { if (id) last = i; });
+  const kids = [];
+  for (let i = 0; i <= last; i++) {
+    const r = byId.get(slots[i]);
+    if (!r) { kids.push(el("div", "slot")); continue; }
     const k = r.id + (recent ? ":r" : "");
     let t = tiles.get(k);
     if (!t) { t = makeTile(r, recent); tiles.set(k, t); }
     t.run = r;
-    if (box.children[i] !== t.node) box.insertBefore(t.node, box.children[i] || null);
+    t.node.classList.toggle("sel", r.id === F.id);
     t.name.textContent = runTitle(r);
-    t.meta.replaceChildren(...runBadges(r).slice(0, 2), el("span", "grow"), el("span", "", recent ? ago(r.ended || r.started) : reach(r)));
+    t.meta.replaceChildren(...runBadges(r).slice(0, 3), el("span", "grow"), el("span", "", recent ? ago(r.ended || r.started) : `${reach(r)}${r.status === "running" ? " · " + speedText(r.speed) : ""}`));
+    t.sub.textContent = r.subject ? `first issue: ${r.subject}` : "";
     t.fill.style.width = r.polls ? `${Math.min(100, 100 * r.poll / r.polls)}%` : "100%";
     t.node.title = `${r.movie}${r.subject ? ": " + r.subject : ""}\n${r.id}`;
-  });
-  const empty = box.querySelector(".empty");
-  if (!want.length && !empty) box.append(el("div", "empty", "nothing else is running"));
-  if (want.length && empty) empty.remove();
+    if (r.oracle && !t.orig) { t.orig = el("canvas", "orig"); t.orig.width = 320; t.orig.height = 240; t.og = t.orig.getContext("2d"); t.pics.append(t.orig); setTimeout(() => thumb(t), 0); }
+    kids.push(t.node);
+  }
+  const old = [...box.children];
+  if (old.length !== kids.length || old.some((n, i) => !(n === kids[i] || (n.className === "slot" && kids[i].className === "slot")))) box.replaceChildren(...kids);
+  if (!want.length && !box.querySelector(".empty")) box.replaceChildren(el("div", "empty", "nothing has run yet"));
 }
 function makeTile(r, still) {
-  const node = el("div", "tile"), canvas = el("canvas");
+  const node = el("div", "tile" + (still ? " grey" : "")), canvas = el("canvas"), pics = el("div", "pics", canvas);
   canvas.width = 320; canvas.height = 240;
-  const name = el("span", "grow ell"), meta = el("div", "meta"), bar = el("div", "bar"), fill = el("i");
+  const name = el("span", "grow ell"), meta = el("div", "meta"), sub = el("div", "sub ell"), bar = el("div", "bar"), fill = el("i");
   bar.append(fill);
-  node.append(canvas, el("div", "cap", name), meta, bar);
-  const t = { node, canvas, g: canvas.getContext("2d"), name, meta, fill, run: r, timer: 0, still };
+  node.append(pics, el("div", "cap", name), meta, sub, bar);
+  const t = { node, canvas, g: canvas.getContext("2d"), pics, name, meta, sub, fill, run: r, timer: 0, still, orig: null, og: null };
   node.onclick = () => focusRun(t.run.id);
   setTimeout(() => thumb(t), 0);
   return t;
 }
 async function thumb(t) {
   if (![...tiles.values()].includes(t)) return;
-  try {
-    const r = await fetch(`/frame/${encodeURIComponent(t.run.id)}?n=${Date.now()}`, { cache: "no-store" });
-    if (r.ok) t.g.drawImage(await createImageBitmap(await r.blob()), 0, 0, 320, 240);
-  } catch (e) {}
-  if (!t.still && t.run.status === "running" && !document.hidden) t.timer = setTimeout(() => { if ([...tiles.values()].includes(t)) thumb(t); }, STRIP_MS);
+  const pull = async (url, g) => {
+    try { const r = await fetch(`${url}?n=${Date.now()}`, { cache: "no-store" }); if (r.ok) g.drawImage(await createImageBitmap(await r.blob()), 0, 0, 320, 240); } catch (e) {}
+  };
+  await Promise.all([pull(`/frame/${encodeURIComponent(t.run.id)}`, t.g), t.og ? pull(`/oracle/${encodeURIComponent(t.run.id)}`, t.og) : null]);
+  if (!t.still && t.run.status === "running" && !document.hidden) t.timer = setTimeout(() => { if ([...tiles.values()].includes(t)) thumb(t); }, WALL_MS);
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) tiles.forEach(t => { if (!t.still) thumb(t); }); });
+
+/* ---------- phase map (rail tab Map, #map) and #film: /api/phase gate rows, /api/phase/map Hilbert cells ---------- */
+const PH = { phase: null, map: null, etag: null, gone: false, version: null, hover: -1 };
+const MAP_RGB = { 0: "#222222", 1: "#6b7280", 2: "#555555", 3: "#d9a400", 4: "#3b7ddd", 5: "#3b7ddd", 6: "#1aa7a1", 7: "#3fc35a" };
+const MAP_NAMES = { 0: "unassigned", 1: "data / blob / fill", 2: "unmapped (no C)", 3: "fuzzy", 4: "exact", 5: "fakematch", 6: "clean-named", 7: "covered" };
+const hex2 = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+/* standard Hilbert curve (d -> x,y and back) on an n x n grid, n = 2^order */
+function d2xy(n, d) {
+  let x = 0, y = 0, t = d;
+  for (let s = 1; s < n; s *= 2) {
+    const rx = 1 & (t >> 1), ry = 1 & (t ^ rx);
+    if (ry === 0) { if (rx === 1) { x = s - 1 - x; y = s - 1 - y; } const q = x; x = y; y = q; }
+    x += s * rx; y += s * ry; t = Math.floor(t / 4);
+  }
+  return [x, y];
+}
+function xy2d(n, x, y) {
+  let d = 0;
+  for (let s = n >> 1; s > 0; s >>= 1) {
+    const rx = (x & s) > 0 ? 1 : 0, ry = (y & s) > 0 ? 1 : 0;
+    d += s * s * ((3 * rx) ^ ry);
+    if (ry === 0) { if (rx === 1) { x = s - 1 - x; y = s - 1 - y; } const q = x; x = y; y = q; }
+  }
+  return d;
+}
+async function pollPhase() {
+  let rows = PH.phase;
+  try {
+    const r = await fetch("/api/phase", { cache: "no-store" });
+    if (r.ok) { PH.phase = await r.json(); PH.gone = false; PH.version = PH.phase.focus && PH.phase.focus.version || PH.version; }
+    else { PH.gone = true; PH.phase = null; }
+  } catch (e) { PH.gone = true; }
+  if (!PH.gone) {
+    try {
+      const h = PH.etag ? { "If-None-Match": PH.etag } : {};
+      const r = await fetch("/api/phase/map" + (PH.version ? `?version=${encodeURIComponent(PH.version)}` : ""), { cache: "no-store", headers: h });
+      if (r.status === 200) { PH.etag = r.headers.get("ETag"); PH.map = await r.json(); prepMap(); }
+      else if (r.status === 404) PH.gone = true;
+    } catch (e) {}
+  }
+  drawMap(); renderMapGates();
+  setTimeout(pollPhase, 30000);
+}
+function prepMap() {
+  const m = PH.map;
+  if (!m || !m.cells) return;
+  const bin = atob(m.cells);
+  m.n = 1 << m.order;
+  m.raw = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) m.raw[i] = bin.charCodeAt(i);
+  let acc = 0;
+  m.starts = (m.segments || []).map(([a, b]) => { const o = acc; acc += b - a; return o; });
+  m.fnlin = (m.fns || []).map(f => linearOf(m, f[1]));
+  m.fnd = new Uint8Array(m.raw.length);  // foundation cells
+  (m.fns || []).forEach((f, i) => {
+    if (!f[6] || m.fnlin[i] < 0) return;
+    const c0 = Math.floor(m.fnlin[i] / m.cell_bytes), c1 = Math.floor((m.fnlin[i] + Math.max(1, f[2]) - 1) / m.cell_bytes);
+    for (let c = c0; c <= c1 && c < m.fnd.length; c++) m.fnd[c] = 1;
+  });
+}
+function linearOf(m, rom) {
+  for (let i = 0; i < m.segments.length; i++) if (rom >= m.segments[i][0] && rom < m.segments[i][1]) return m.starts[i] + rom - m.segments[i][0];
+  return -1;
+}
+function drawMap() {
+  const c = $("mapc"), m = PH.map;
+  if (!c || !m || !m.raw) return;
+  const n = m.n;
+  if (c.width !== n) { c.width = n; c.height = n; }
+  const g = c.getContext("2d"), img = g.createImageData(n, n), px = img.data;
+  const rgb = Object.fromEntries(Object.entries(MAP_RGB).map(([k, v]) => [k, hex2(v)]));
+  const grid = new Int32Array(n * n).fill(-1);
+  for (let d = 0; d < m.raw.length; d++) { const [x, y] = d2xy(n, d); grid[y * n + x] = d; }
+  for (let i = 0; i < n * n; i++) {
+    const d = grid[i], o = i * 4;
+    let col = rgb[0];
+    if (d >= 0) {
+      const v = m.raw[d], st = v & 15, lp = v >> 4;
+      col = rgb[st] || rgb[0];
+      if (st === 7) { const f = 0.55 + 0.045 * Math.min(10, lp); col = col.map(x => Math.round(x * f)); }
+      if (m.fnd[d]) {
+        const x = i % n, y = (i / n) | 0, nb = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
+        if (nb.some(([a, b]) => a < 0 || b < 0 || a >= n || b >= n || grid[b * n + a] < 0 || !m.fnd[grid[b * n + a]])) col = [255, 255, 255];
+      }
+    }
+    px[o] = col[0]; px[o + 1] = col[1]; px[o + 2] = col[2]; px[o + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  m.grid = grid;
+  const bl = m.blobs;
+  const bar = $("mapblobs");
+  if (bar && bl) { bar.firstChild.style.width = bl.bytes ? `${Math.min(100, 100 * bl.mapped / bl.bytes)}%` : "0%"; bar.title = `blobs and fill: ${bl.mapped} of ${bl.bytes} B mapped`; }
+}
+function mapHover(e) {
+  const m = PH.map, c = $("mapc"), tip = $("maptip");
+  if (!m || !m.grid) return;
+  const r = c.getBoundingClientRect();
+  const x = Math.floor((e.clientX - r.left) / r.width * m.n), y = Math.floor((e.clientY - r.top) / r.height * m.n);
+  const d = x >= 0 && y >= 0 && x < m.n && y < m.n ? m.grid[y * m.n + x] : -1;
+  if (d < 0) { tip.style.display = "none"; return; }
+  const lin = d * m.cell_bytes + (m.cell_bytes >> 1);
+  let lo = 0, hi = m.fns.length - 1, hit = -1;  // fns are in ROM order: binary search by linear offset
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1, a = m.fnlin[mid];
+    if (a < 0) { lo = mid + 1; continue; }
+    if (lin < a) hi = mid - 1; else if (lin >= a + m.fns[mid][2]) lo = mid + 1; else { hit = mid; break; }
+  }
+  const st = m.raw[d] & 15;
+  let txt;
+  if (hit >= 0) {
+    const f = m.fns[hit];
+    txt = `${f[0]}\n${f[5] || "?"}\n${f[2]} B · ${MAP_NAMES[f[3]] || f[3]}${f[4] != null ? ` · lines ${Math.round(f[4])}%` : ""}${f[6] ? " · foundation" : ""}`;
+  } else txt = `${MAP_NAMES[st] || "?"}\nROM cell ${d}`;
+  tip.textContent = txt;
+  tip.style.display = "block";
+  const w = c.parentNode.getBoundingClientRect();
+  tip.style.left = Math.min(e.clientX - w.left + 12, w.width - 200) + "px";
+  tip.style.top = Math.max(0, e.clientY - w.top + 12) + "px";
+}
+function renderMapGates() {
+  const box = $("mapgates");
+  if (!box) return;
+  if (PH.gone || !PH.phase) { box.replaceChildren(el("div", "empty", "phase data not deployed yet")); return; }
+  const p = PH.phase, kids = [];
+  const stage = el("div", "ladder row", el("h2", "", "Ladder"), el("span", "grow"), badge(p.stage || "below R1", p.stage ? "ok" : ""));
+  kids.push(stage);
+  if (p.next_stage) kids.push(el("div", "l2", `${p.next_stage.stage} needs: ` + (p.next_stage.failing || []).map(f => `${f.key} ${f.value} / ${f.threshold}`).join(" · ")));
+  for (const ph of [1, 2, 3, 4]) {
+    const rows = (p.rows || []).filter(r => r.phase === ph);
+    if (!rows.length) continue;
+    kids.push(el("h2", "", `Phase ${ph}`));
+    for (const r of rows) {
+      const v = x => x == null ? "—" : typeof x === "number" ? (Number.isInteger(x) ? x : x.toFixed(1)) : String(x);
+      const g = el("div", "gate", el("span", "tick " + (r.met ? "ok" : "bad"), r.met ? "✓" : "✗"), el("span", "grow ell", `${r.version ? r.version + " " : ""}${r.key}`), el("span", r.met ? "ok" : "", `${v(r.value)} / ${v(r.threshold)}`));
+      g.title = `${r.source || ""}${r.age_s != null ? " · " + Math.round(r.age_s) + " s old" : ""}`;
+      kids.push(g);
+    }
+  }
+  box.replaceChildren(...kids);
+}
+let mapBuilt = null;
+function renderMapPane() {
+  const pane = $("p-map");
+  if (!mapBuilt) {
+    const canvas = el("canvas"), tip = el("div"), wrap = el("div", "wrapc", canvas, tip);
+    canvas.id = "mapc"; canvas.width = 512; canvas.height = 512; tip.id = "maptip";
+    canvas.onmousemove = mapHover; canvas.onmouseleave = () => { tip.style.display = "none"; };
+    const blobs = el("div", "bar1", el("i")); blobs.id = "mapblobs"; blobs.title = "blobs and fill";
+    const gates = el("div", "gates"); gates.id = "mapgates";
+    const legend = el("div", "legend");
+    for (const k of [2, 3, 4, 6, 7, 1]) { const i = el("i"); i.style.background = MAP_RGB[k]; legend.append(el("span", "", i, MAP_NAMES[k])); }
+    mapBuilt = el("div", "mp", gates, blobs, wrap, legend);
+    mapBuilt.id = "mapbox";
+    pane.replaceChildren(mapBuilt);
+    renderMapGates(); drawMap();
+  }
+}
 
 /* ---------- rail: Work / Decomp / Lanes / Runs (phone: one view at a time from the bottom bar) ---------- */
 function renderNav() {
@@ -752,7 +967,7 @@ function showView(v) {
 function renderPanes() {
   if (!S) return;
   for (const [k] of TABS) $("p-" + k).classList.toggle("on", ui.tab === k);
-  ({ work: renderWork, decomp: renderDecomp, lanes: renderLanes, runs: renderRuns })[ui.tab]();
+  ({ map: renderMapPane, work: renderWork, decomp: renderDecomp, lanes: renderLanes, runs: renderRuns })[ui.tab]();
 }
 function section(title, extra, ...kids) {
   const head = el("div", "row", el("h2", "", title), el("span", "grow"));
@@ -1570,7 +1785,14 @@ $("fnfind").onsubmit = e => { e.preventDefault(); const v = $("fnq").value.trim(
   const h = decodeURIComponent(location.hash.slice(1));
   if (h === "maze" || h.startsWith("maze:")) { MZ.pending = h.slice(5) || null; document.body.dataset.top = "maze"; pollMaze(); }
 })();
-poll(); pollBoard(); pollCoverage(); pollCorpus();
+function filmHash() { // #film: wall + map full screen, no chrome, no settings
+  if (location.hash.slice(1) === "film") { document.body.dataset.top = "film"; ui.tab = "map"; if (S) render(); }
+  else if (document.body.dataset.top === "film") { document.body.dataset.top = ""; if (S) render(); }
+}
+window.addEventListener("hashchange", filmHash);
+filmHash();
+renderMapPane();
+poll(); pollBoard(); pollCoverage(); pollCorpus(); pollPhase();
 </script>
 </body>
 </html>
