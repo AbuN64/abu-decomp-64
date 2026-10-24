@@ -4,7 +4,7 @@
  *   1 an N64 name outside the shim and the port's --ledger directory that is not an open ledger row
  *   2 more open ledger rows than OPEN_COUNT
  *   3 a removed ledger row is used
- *   4 any N64 name in src/{common,platform,renderer,sound,input,assets,engine} or tools/
+ *   4 any N64 name in src/{common,platform,renderer,sound,input,install,assets,engine,game,native} or tools/
  *   5 more VERSION_ preprocessor conditionals than VERSION_DEBT
  * Include guards ending in _H are not names. Compile with N64LINT_NO_MAIN to reuse the core. */
 #include <ctype.h>
@@ -177,7 +177,7 @@ static bool path_exempt(const char *path)
 static bool path_banned(const char *path)
 {
     static const char *const prefixes[] = {"tools/", "src/common/", "src/platform/", "src/renderer/",
-                                           "src/sound/", "src/input/", "src/assets/", "src/engine/"};
+                                           "src/sound/", "src/input/", "src/assets/", "src/engine/", "src/game/", "src/install/", "src/native/"};
     for (size_t i = 0; i < sizeof prefixes / sizeof prefixes[0]; i++)
         if (starts(path, prefixes[i]))
             return true;

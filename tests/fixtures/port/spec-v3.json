@@ -1,0 +1,21 @@
+{
+  "schema_version": 3,
+  "format": 1,
+  "name": "example-port",
+  "title": "Example",
+  "license": "GPL-3.0-or-later",
+  "shim": {"repo": "https://example.invalid/abu-decomp-64.git", "pin": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "decomp": {"repo": "https://example.invalid/example-decomp.git", "version": "us", "pin": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "boot": {"entry": "func_80001000_de", "rdram_bytes": "0x800000", "video_clock_hz": 48681812},
+  "install": {
+    "game": "example",
+    "title": "Example",
+    "product": "Example Port",
+    "package": "example-port",
+    "dumps": [
+      {"id": "us", "label": "USA", "cart": "NEXE", "revision": 0,
+       "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+       "sha1": "2222222222222222222222222222222222222222", "size": 8388608, "supported": true}
+    ]
+  }
+}

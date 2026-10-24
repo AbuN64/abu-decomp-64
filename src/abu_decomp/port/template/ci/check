@@ -1,7 +1,8 @@
 #!/bin/sh
-# Debug build of the port on the shim, its tests and the n64lint ledger.
+# Local gate (port format 1): format check, debug build, ctest. Builds on the rig only (W memory guard).
 set -eu
 cd "$(dirname "$0")/.."
+ci/format-check
 cmake --preset debug >/dev/null
-cmake --build --preset debug
+nice cmake --build --preset debug -j4
 ctest --preset debug

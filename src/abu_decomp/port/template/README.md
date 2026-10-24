@@ -15,12 +15,13 @@ The configure fetches the shim and builds `n64compat` 32-bit (`N64C_M32`); it ne
 ## Layout
 
 - `platform/port/`: the port's facts, read by the shim's boot tools through `N64C_PORT_DIR`: `manifest.json`, `shim-bindings.txt`, `boot-trace.tsv`, `lockstep-accept.tsv`, `known-fallback-units.txt`, and the ENTRY_POINTS ledger (`ENTRY_POINTS.tsv`, `OPEN_COUNT`, `VERSION_DEBT`). See the shim's README and `boot/README.md`.
-- `src/`: the port's own code. N64 names are allowed only in `platform/port`.
-- `cmake/`: `deps.cmake` (shared dependency sources under `N64C_DEPS_DIR`) and `shim.cmake` (the shim pin).
+- `src/`: the engine dirs (`common`, `platform`, `renderer`, `sound`, `input`, `install`) and `src/game/g_public.h`, the game module API. N64 names are allowed only in `platform/port`.
+- `packaging/`, `tests/{unit,iface,install}`, `tools/`, `ci/`: see `docs/FORMAT.md`, the contract `ci/format-check` enforces.
+- `cmake/`: `deps.cmake` (shared dependency sources under `N64C_DEPS_DIR`), `shim.cmake` and `decomp.cmake` (the pins).
 
 ## Development
 
-Run `ci/check`.
+Run `ci/check` (format check, build, tests).
 
 ## License
 
