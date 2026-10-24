@@ -1,6 +1,6 @@
 # Phase playbooks
 
-How a decompilation and its native port are worked with this tool, in four phases plus one track that runs beside all
+How a decompilation and its native port are worked with this tool, in five phases plus one track that runs beside all
 of them. Each playbook says what the phase is for, the measurement that ends it, the order of attack and the rules that
 hold throughout. They are generic: every game fact (version names, addresses, sizes, constants, figures) lives in the
 project's profile and config, and the current numbers come from `decomp phase` and the project's progress block, never
@@ -12,6 +12,7 @@ from these pages.
 | [2-port-shell-and-oracle](2-port-shell-and-oracle.md) | A native build and a reference replay the same movie and show the game's first picture |
 | [3-coverage-by-play](3-coverage-by-play.md) | One version: every reachable function is executed by play and behaves like the original |
 | [4-staged-releases](4-staged-releases.md) | Releases in stages, each gated by measured coverage |
+| [5-native-port](5-native-port.md) | The port runs 64-bit and above the original frame rate as toggles, proven against the 32-bit reference |
 | [track-names-and-real-c](track-names-and-real-c.md) | Parallel track: clean names, file structure, and 100% real C with no cheating |
 
 ## Tool-side playbooks

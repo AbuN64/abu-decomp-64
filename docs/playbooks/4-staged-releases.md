@@ -23,4 +23,4 @@ never takes.
 - Each stage freezes the movie set that proved it; no later build may make one of those movies worse.
 - No ROM content is ever packaged: the player supplies their own cartridge dump at first start.
 - Enhancements (frame rate, resolution, widescreen, language options) start only after R4, behind options in the game's
-  own menu.
+  own menu. The 64-bit and frame-rate toggles follow [5-native-port](5-native-port.md).
