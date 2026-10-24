@@ -18,7 +18,8 @@ enum {
     OP_MOVEMEM = 0xDC, OP_LOAD_UCODE = 0xDD, OP_DL = 0xDE, OP_ENDDL = 0xDF, OP_RDPHALF_1 = 0xE1,
     OP_SETOTHERMODE_H = 0xE3, OP_TEXRECT = 0xE4, OP_TEXRECTFLIP = 0xE5, OP_SETSCISSOR = 0xED, OP_RDPSETOTHERMODE = 0xEF,
     OP_LOADTLUT = 0xF0, OP_LOADBLOCK = 0xF3, OP_LOADTILE = 0xF4, OP_SETTIMG = 0xFD, OP_SETZIMG = 0xFE,
-    OP_SETCIMG = 0xFF,
+    OP_SETCIMG = 0xFF, OP_SETTILE = 0xF5, OP_TEXTURE = 0xD7,
+    OP_INVALIDATE_TEXTURE = 0x34, /* Fast3D extension, generated here only */
 };
 enum { MW_SEGMENT = 0x06 };
 enum { MV_MMTX = 2, MV_PMTX = 6, MV_VIEWPORT = 8, MV_MATRIX = 14 };
@@ -60,6 +61,30 @@ struct N64cDlBlock {
     _Alignas(8) unsigned char data[];
 };
 
+/* Keep stable renderer cache addresses for unchanged converted pixels. A task may
+ * reference every view it creates, so only entries unused since reset can be
+ * recycled. Overflow uses the ordinary task arena. The retained pool is bounded
+ * to 1 MiB of pixels, independent of the number of frames or source addresses. */
+enum { TEXTURE_VIEWS = 256, TMEM_BYTES = 4096 };
+struct N64cDlTexture {
+    N64cDlTexture *next;
+    uint32_t physical, bytes, line;
+    int used;
+    _Alignas(8) uint8_t pixels[TMEM_BYTES];
+};
+
+/* LOADBLOCK with zero DXT leaves the RDP's odd-row word layout in TMEM. Fast3D
+ * skips TMEM and imports linear images, so resolve that layout against the tile
+ * used by the draw (which may be set before or after the load). */
+typedef struct {
+    uint32_t image, load[2], tile[2], physical, bytes;
+} TextureBlock;
+typedef struct {
+    uint32_t tile[8][2];
+    TextureBlock block[512]; /* one possible starting address per 64-bit TMEM word */
+    uint32_t draw_tile, enabled;
+} TextureState;
+
 typedef struct {
     const N64cGfxMem *mem;
     N64cDlArena *arena;
@@ -71,6 +96,7 @@ typedef struct {
     int failed;
     const N64cDlHooks *hooks;
     Geo geo;
+    TextureState textures;
 } Ctx;
 
 static void *arena_alloc(N64cDlArena *a, size_t bytes)
@@ -110,6 +136,8 @@ void n64c_dl_arena_reset(N64cDlArena *a)
     if (a->cur)
         a->cur->used = 0;
     a->used = 0;
+    for (N64cDlTexture *t = a->textures; t; t = t->next)
+        t->used = 0;
 }
 
 void n64c_dl_arena_free(N64cDlArena *a)
@@ -117,6 +145,10 @@ void n64c_dl_arena_free(N64cDlArena *a)
     for (N64cDlBlock *b = a->blocks, *n; b; b = n) {
         n = b->next;
         free(b);
+    }
+    for (N64cDlTexture *t = a->textures, *n; t; t = n) {
+        n = t->next;
+        free(t);
     }
     *a = (N64cDlArena){0};
 }
@@ -206,6 +238,131 @@ static void texture_reach(Ctx *c, uint32_t texels, uint32_t siz)
         return;
     c->timg_cmd[1] = (uintptr_t)copy;
     c->timg_bytes = bytes;
+}
+
+/* Record every texture load so a later linear load cannot reuse a zero-DXT
+ * descriptor. Only the zero-DXT layout needs an adapter: nonzero DXT performs
+ * the odd-row word swap on load, cancelling the swap during sampling. */
+static void texture_load(Ctx *c, uint32_t w0, uint32_t w1)
+{
+    const uint32_t tile = w1 >> 24 & 7;
+    const uint32_t *descriptor = c->textures.tile[tile];
+    const uint32_t tmem = descriptor[0] & 511;
+    TextureBlock *block = &c->textures.block[tmem];
+    *block = (TextureBlock){0};
+    if (w0 >> 24 != OP_LOADBLOCK || (w1 & 4095) || (w0 & 0xFFFFFF) ||
+        !c->timg_cmd || c->timg_siz == 3)
+        return;
+    const uint32_t texels = (w1 >> 12 & 4095) + 1;
+    uint32_t bytes = c->timg_siz ? texels << (c->timg_siz - 1) : (texels + 1) / 2;
+    bytes = (bytes + 7) & ~7u; /* RDP transfers complete 64-bit words */
+    if (bytes > 4096 || !in_memory(c, c->timg_phys, bytes)) {
+        c->stats->bad++;
+        return;
+    }
+    *block = (TextureBlock){(uint32_t)c->timg_cmd[0], {w0, w1},
+                           {descriptor[0], descriptor[1]}, c->timg_phys, bytes};
+}
+
+/* Return an immutable view for this task. Content equality, rather than a guest
+ * pointer alone, detects writes between draws and tasks. Comparing complete
+ * converted bytes also handles replay memory and changed source mappings. */
+static uint8_t *texture_view(Ctx *c, const TextureBlock *block, uint32_t line, int *changed)
+{
+    uint8_t pixels[TMEM_BYTES];
+    for (uint32_t byte = 0; byte < block->bytes; byte++) {
+        uint32_t source = block->physical + (byte ^ ((byte / line & 1) ? 4u : 0u));
+        if (c->mem->replay)
+            source ^= 3;
+        pixels[byte] = *host(c, source);
+    }
+    N64cDlTexture *spare = NULL;
+    uint32_t count = 0;
+    for (N64cDlTexture *t = c->arena->textures; t; t = t->next) {
+        count++;
+        if (t->physical == block->physical && t->bytes == block->bytes && t->line == line &&
+            !memcmp(t->pixels, pixels, block->bytes)) {
+            t->used = 1;
+            *changed = 0;
+            return t->pixels;
+        }
+        if (!t->used)
+            spare = t;
+    }
+    if (!spare && count < TEXTURE_VIEWS) {
+        spare = malloc(sizeof *spare);
+        if (spare) {
+            spare->next = c->arena->textures;
+            c->arena->textures = spare;
+        }
+    }
+    uint8_t *linear;
+    if (spare) {
+        spare->physical = block->physical;
+        spare->bytes = block->bytes;
+        spare->line = line;
+        spare->used = 1;
+        linear = spare->pixels;
+    } else {
+        linear = arena_alloc(c->arena, block->bytes);
+    }
+    if (linear)
+        memcpy(linear, pixels, block->bytes);
+    *changed = 1; /* new/recycled addresses may still be cached by the renderer */
+    return linear;
+}
+
+/* Prefix the draw with linear views of any zero-DXT blocks it samples. Never
+ * rewrite game RAM or the original SETTIMG: one source can feed several loads,
+ * palettes and differently sized tiles. Restoring the load tile and image keeps
+ * later commands independent of the adapter. Unchanged views retain their cache
+ * keys; only new or recycled private addresses need invalidation. */
+static int texture_draw(Ctx *c, uintptr_t *draw, uint32_t count, uint32_t tile, int second)
+{
+    uintptr_t prefix[24];
+    uint32_t words = 0;
+    for (uint32_t unit = 0; unit < (second ? 2u : 1u); unit++) {
+        const uint32_t *descriptor = c->textures.tile[(tile + unit) & 7];
+        const uint32_t line = (descriptor[0] >> 9 & 511) * 8;
+        const TextureBlock *block = &c->textures.block[descriptor[0] & 511];
+        if (!block->bytes || !line || line >= block->bytes || (descriptor[0] >> 19 & 3) == 3)
+            continue;
+        int changed;
+        uint8_t *linear = texture_view(c, block, line, &changed);
+        if (!linear) {
+            c->failed = 1;
+            return 0;
+        }
+        const uint32_t load_tile = block->load[1] >> 24 & 7;
+        if (changed) {
+            prefix[words++] = (uintptr_t)OP_INVALIDATE_TEXTURE << 24;
+            prefix[words++] = (uintptr_t)linear;
+        }
+        prefix[words++] = block->tile[0];
+        prefix[words++] = block->tile[1];
+        prefix[words++] = block->image;
+        prefix[words++] = (uintptr_t)linear;
+        prefix[words++] = block->load[0];
+        prefix[words++] = block->load[1];
+        prefix[words++] = c->textures.tile[load_tile][0];
+        prefix[words++] = c->textures.tile[load_tile][1];
+        prefix[words++] = c->timg_cmd ? c->timg_cmd[0] : block->image;
+        prefix[words++] = c->timg_cmd ? c->timg_cmd[1] : (uintptr_t)host(c, block->physical);
+    }
+    if (!words)
+        return 0;
+    uintptr_t *list = arena_alloc(c->arena, (words + count * 2 + 2) * sizeof *list);
+    if (!list) {
+        c->failed = 1;
+        return 0;
+    }
+    memcpy(list, prefix, words * sizeof *list);
+    memcpy(list + words, draw, count * 2 * sizeof *list);
+    list[words + count * 2] = (uintptr_t)OP_ENDDL << 24;
+    list[words + count * 2 + 1] = 0;
+    draw[0] = (uintptr_t)OP_DL << 24;
+    draw[1] = (uintptr_t)list;
+    return 1;
 }
 
 static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth);
@@ -751,25 +908,24 @@ static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth)
         }
         case OP_RDPHALF_1:
             if (i + 1 < n && word_at(c, phys + (i + 1) * 8) >> 24 == OP_BRANCH_Z) {
-                uint32_t saved[16];
-                Geo *geo = malloc(sizeof *geo); /* the fall-through path runs with the current state */
-                if (!geo) {
+                Ctx *saved = malloc(sizeof *saved); /* the fall-through path keeps its state */
+                if (!saved) {
                     c->failed = 1;
                     break;
                 }
-                memcpy(saved, c->seg, sizeof saved);
-                *geo = c->geo;
+                *saved = *c;
                 const uint32_t omh = c->arena->other_mode_h, omh_known = c->arena->other_mode_h_known,
                                scissor = c->arena->scissor_lry;
                 n64c_dltrace_pause(1); /* the other path of a conditional branch is not what this frame draws */
                 const uintptr_t *target = translate(c, w1, depth + 1);
                 n64c_dltrace_pause(-1);
-                memcpy(c->seg, saved, sizeof saved);
-                c->geo = *geo;
+                const int branch_failed = c->failed;
+                *c = *saved;
+                c->failed |= branch_failed;
                 c->arena->other_mode_h = omh;
                 c->arena->other_mode_h_known = omh_known;
                 c->arena->scissor_lry = scissor;
-                free(geo);
+                free(saved);
                 if (target)
                     cmd[1] = (uintptr_t)target;
             }
@@ -782,13 +938,24 @@ static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth)
             c->timg_siz = w0 >> 19 & 3;
             c->timg_bytes = 0;
             break;
+        case OP_SETTILE:
+            c->textures.tile[w1 >> 24 & 7][0] = w0;
+            c->textures.tile[w1 >> 24 & 7][1] = w1;
+            break;
+        case OP_TEXTURE:
+            c->textures.draw_tile = w0 >> 8 & 7;
+            c->textures.enabled = w0 & 255;
+            break;
         case OP_LOADBLOCK:
+            texture_load(c, w0, w1);
             texture_reach(c, (w0 & 0xFFF) * c->timg_width + (w1 >> 12 & 0xFFF) + 1, c->timg_siz);
             break;
         case OP_LOADTILE:
+            texture_load(c, w0, w1);
             texture_reach(c, ((w1 & 0xFFF) >> 2) * c->timg_width + ((w1 >> 12 & 0xFFF) >> 2) + 1, c->timg_siz);
             break;
         case OP_LOADTLUT:
+            texture_load(c, w0, w1);
             texture_reach(c, ((w1 >> 12 & 0xFFF) >> 2) + 1, SIZ_16B);
             break;
         case OP_SETSCISSOR:
@@ -812,6 +979,17 @@ static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth)
                 c->stats->commands += taken - 1;
                 c->stats->texrects_point++;
                 i += taken - 1;
+                texture_draw(c, cmd, 1, w1 >> 24 & 7, 0);
+            } else if (i + 2 < n) {
+                for (uint32_t half = 1; half < 3; half++) {
+                    cmd[half * 2] = word_at(c, phys + (i + half) * 8);
+                    cmd[half * 2 + 1] = word_at(c, phys + (i + half) * 8 + 4);
+                }
+                if (texture_draw(c, cmd, 3, w1 >> 24 & 7, 0)) {
+                    memset(cmd + 2, 0, 4 * sizeof *cmd);
+                    c->stats->commands += 2;
+                    i += 2;
+                }
             }
             break;
         }
@@ -842,6 +1020,9 @@ static const uintptr_t *translate(Ctx *c, uint32_t dl, int depth)
             }
             break;
         }
+        if ((w0 >> 24 == OP_TRI1 || w0 >> 24 == 0x06 || w0 >> 24 == 0x07 || w0 >> 24 == OP_LINE3D) &&
+            c->textures.enabled)
+            texture_draw(c, cmd, 1, c->textures.draw_tile, (c->arena->other_mode_h >> 20 & 3) == 1);
         if (cmd[1] == 0 && w1 != 0 && addressed(w0 >> 24)) { /* never hand the renderer a raw address */
             cmd[0] = (uintptr_t)OP_NOOP << 24;
             cmd[1] = 0;

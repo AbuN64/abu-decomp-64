@@ -46,7 +46,17 @@
  * pixel from a whole texel samples exactly one texel per pixel on the RDP; a renderer drawing above
  * the native size would sample between texels and blend in those past the rectangle's edges
  * (texture memory the game never meant to show). Such a rectangle becomes a call to a list that
- * switches the filter to point, draws it, and switches back, and is counted in texrects_point. */
+ * switches the filter to point, draws it, and switches back, and is counted in texrects_point.
+ *
+ * Zero-DXT G_LOADBLOCK leaves pre-swapped odd rows in TMEM. Before a draw samples
+ * such a block, a private linear image exchanges the 32-bit halves of each odd-row
+ * 64-bit word using the render tile's line stride. This applies to 4/8/16-bit
+ * formats, native and replay memory, rectangles and textured triangles. The
+ * generated load restores SETTIMG and the load tile, and invalidates only its
+ * private texture cache address when its content changes. Unchanged views keep
+ * stable addresses across arena resets, preserving renderer cache hits. A bounded
+ * pool retains at most 256 views (1 MiB of pixels); overflow lives until reset.
+ * Views referenced in the current task are immutable. Game pixels never change. */
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -58,10 +68,12 @@ typedef struct N64cGfxMem {
     int replay;
 } N64cGfxMem;
 typedef struct N64cDlBlock N64cDlBlock;
+typedef struct N64cDlTexture N64cDlTexture;
 typedef struct N64cDlArena {
     N64cDlBlock *blocks; /* blocks never move, so pointers into the arena stay valid */
     N64cDlBlock *cur;    /* block being filled */
     size_t used;         /* bytes handed out since the last reset */
+    N64cDlTexture *textures; /* bounded immutable pixel views retained across resets */
     /* RDP other-mode high word as the lists translated so far left it, and which of its bits are
      * known: the RDP keeps it between lists and frames, so a reset keeps it too. */
     uint32_t other_mode_h, other_mode_h_known;

@@ -480,6 +480,171 @@ static void test_draw_trace(void)
     CHECK(strstr(text, "img=0x00002000 imgfmt=CI/4b imgwidth=32") && strstr(text, "pal=3") && strstr(text, "texels=32x32"));
     CHECK(strstr(text, "prim=11223344") && strstr(text, "cc=127e24:fffffe38"));
 }
+/* Pixel-byte golden: four rows of distinct texels, including a partial final
+ * row. Odd rows in the input are already in TMEM's exchanged-word layout. This
+ * is the title's CI16-load/CI8-render contract, also exercised as CI4 and RGBA16. */
+static const uint8_t zero_dxt_tmem[56] = {
+     0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,
+    20,21,22,23,16,17,18,19,28,29,30,31,24,25,26,27,
+    32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,
+    52,53,54,55,48,49,50,51
+};
+static const uint8_t zero_dxt_golden[56] = {
+     0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,
+    16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+    32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,
+    48,49,50,51,52,53,54,55
+};
+static void test_zero_dxt_golden(void)
+{
+    for (int word_order = 0; word_order < 2; word_order++)
+    for (int render_size = 0; render_size < 3; render_size++)
+    for (int tile_after = 0; tile_after < 2; tile_after++)
+    for (int linear_load = 0; linear_load < 2; linear_load++) {
+        N64cGfxMem mem = begin(word_order);
+        for (unsigned byte = 0; byte < sizeof zero_dxt_tmem; byte++)
+            put8(0x4000 + byte, zero_dxt_tmem[byte]);
+        uint8_t original[sizeof zero_dxt_tmem];
+        memcpy(original, ram + 0x4000, sizeof original);
+        const uint32_t render_tile = 0xF5000000u | (render_size < 2 ? 2u << 21 : 0) |
+                                     (uint32_t)render_size << 19 | 2u << 9;
+        at = 0x1000;
+        cmd(0xFD500000u, 0x4000);                 /* CI16 load (CI4/CI8 aliases use it too) */
+        cmd(0xF5500000u, 7u << 24);              /* load tile */
+        if (!tile_after) cmd(render_tile, 0);   /* line = 16 bytes */
+        cmd(0xF3000000u, 7u << 24 | 27u << 12 | (linear_load ? 1024u : 0));
+        if (tile_after) cmd(render_tile, 0);
+        cmd(0xE4000000u | 32u << 12 | 16u, 0);
+        cmd(0xE1000000u, 0);
+        cmd(0xF1000000u, 0x04000400u);
+        cmd(0xDF000000u, 0);
+        N64cDlArena arena = {0};
+        N64cDlStats stats;
+        const uintptr_t *root = n64c_dl_translate(&mem, 0x1000, &arena, &stats, NULL);
+        CHECK(root && stats.bad == 0);
+        if (!root) { n64c_dl_arena_free(&arena); continue; }
+        CHECK(!memcmp(original, ram + 0x4000, sizeof original));
+        const uintptr_t *draw = root + 8;
+        if (linear_load) {
+            CHECK(op(draw) == 0xE4); /* ordinary DXT must not be unswapped twice */
+        } else {
+            CHECK(op(draw) == 0xDE);
+            if (op(draw) == 0xDE) {
+                const uintptr_t *list = (const uintptr_t *)draw[1];
+                CHECK(op(list) == 0x34); /* invalidate this private copy only */
+                CHECK(list[1] == list[5] && list[1] != root[1]);
+                CHECK(!memcmp((const void *)list[5], zero_dxt_golden, sizeof zero_dxt_golden));
+                CHECK(list[2] == 0xF5500000u && list[3] == 7u << 24);
+                CHECK(list[6] == 0xF3000000u && list[7] == (7u << 24 | 27u << 12));
+                CHECK(list[8] == list[2] && list[9] == list[3]);
+                CHECK(list[10] == root[0] && list[11] == root[1]);
+                CHECK(op(list + 12) == 0xE4 && op(list + 14) == 0xE1 && op(list + 16) == 0xF1);
+                CHECK(op(list + 18) == 0xDF && root[10] == 0 && root[12] == 0);
+            }
+        }
+        n64c_dl_arena_free(&arena);
+    }
+}
+
+static void test_zero_dxt_draw_state(void)
+{
+    N64cGfxMem mem = begin(0);
+    memcpy(ram + 0x4000, zero_dxt_tmem, sizeof zero_dxt_tmem);
+    at = 0x1000;
+    cmd(0xFD500000u, 0x4000);
+    cmd(0xF5500000u, 7u << 24);
+    cmd(0xF3000000u, 7u << 24 | 27u << 12);
+    cmd(0xF5480400u, 0); /* CI8 render tile, line 16 */
+    cmd(0xD7000002u, 0xFFFFFFFFu);
+    cmd(0x05000204u, 0); /* textured triangle */
+    cmd(0xF5480200u, 0); /* same block reinterpreted with line 8 */
+    cmd(0x05000204u, 0);
+    cmd(0xF4000000u, 7u << 24 | 12u << 12 | 4u); /* tile load replaces zero-DXT block */
+    cmd(0x05000204u, 0);
+    cmd(0xDF000000u, 0);
+    N64cDlArena arena = {0};
+    N64cDlStats stats;
+    const uintptr_t *root = n64c_dl_translate(&mem, 0x1000, &arena, &stats, NULL);
+    CHECK(root && stats.bad == 0);
+    if (root && op(root + 10) == 0xDE && op(root + 14) == 0xDE) {
+        const uintptr_t *first = (const uintptr_t *)root[11], *second = (const uintptr_t *)root[15];
+        CHECK(!memcmp((const void *)first[5], zero_dxt_golden, sizeof zero_dxt_golden));
+        const uint8_t *pixels = (const uint8_t *)second[5];
+        CHECK(pixels[8] == 12 && pixels[12] == 8 && pixels[16] == 20 && pixels[24] == 24);
+        CHECK(first[5] != second[5] && op(first + 12) == 0x05);
+        CHECK(op(root + 18) == 0x05);
+    } else CHECK(0);
+    n64c_dl_arena_free(&arena);
+}
+
+/* Stable views avoid re-uploading a static title each frame. Changed pixels must
+ * invalidate only a private address, and cannot overwrite an earlier draw. */
+static void test_zero_dxt_cache(void)
+{
+    N64cGfxMem mem = begin(0);
+    memcpy(ram + 0x4000, zero_dxt_tmem, sizeof zero_dxt_tmem);
+    at = 0x1000;
+    cmd(0xFD500000u, 0x4000);
+    cmd(0xF5500000u, 7u << 24);
+    cmd(0xF3000000u, 7u << 24 | 27u << 12);
+    cmd(0xF5480400u, 0);
+    cmd(0xE4000000u | 32u << 12 | 16u, 0);
+    cmd(0xE1000000u, 0);
+    cmd(0xF1000000u, 0x04000400u);
+    cmd(0xDF000000u, 0);
+    N64cDlArena arena = {0};
+    N64cDlStats stats;
+    const uintptr_t *root = n64c_dl_translate(&mem, 0x1000, &arena, &stats, NULL);
+    CHECK(root && !stats.bad);
+    if (!root) { n64c_dl_arena_free(&arena); return; }
+    const uintptr_t *list = (const uintptr_t *)root[9];
+    CHECK(op(list) == 0x34);
+    const uint8_t *first = (const uint8_t *)list[5];
+    for (int frame = 0; frame < 3; frame++) {
+        n64c_dl_arena_reset(&arena);
+        root = n64c_dl_translate(&mem, 0x1000, &arena, &stats, NULL);
+        CHECK(root && !stats.bad);
+        if (!root) break;
+        list = (const uintptr_t *)root[9];
+        CHECK(op(list) == 0xF5 && (const uint8_t *)list[3] == first);
+        CHECK(!memcmp(first, zero_dxt_golden, sizeof zero_dxt_golden));
+    }
+    /* A source write within a task allocates a distinct immutable view. */
+    put8(0x4000, 99);
+    root = n64c_dl_translate(&mem, 0x1000, &arena, &stats, NULL);
+    CHECK(root && !stats.bad);
+    if (root) {
+        list = (const uintptr_t *)root[9];
+        CHECK(op(list) == 0x34 && (const uint8_t *)list[5] != first);
+        CHECK(*(const uint8_t *)list[5] == 99 && first[0] == 0);
+    }
+    /* More distinct draws than retained slots use safe arena overflow. */
+    for (unsigned draw = 0; draw < 260; draw++) {
+        put8(0x4000, draw & 255);
+        put8(0x4001, draw >> 8);
+        root = n64c_dl_translate(&mem, 0x1000, &arena, &stats, NULL);
+        CHECK(root && !stats.bad);
+        if (!root) break;
+        list = (const uintptr_t *)root[9];
+        const uint8_t *pixels = (const uint8_t *)list[op(list) == 0x34 ? 5 : 3];
+        CHECK(pixels[0] == (draw & 255) && pixels[1] == draw >> 8);
+        CHECK(!memcmp(first, zero_dxt_golden, sizeof zero_dxt_golden));
+    }
+    n64c_dl_arena_reset(&arena);
+    put8(0x4000, 77);
+    put8(0x4001, 88);
+    root = n64c_dl_translate(&mem, 0x1000, &arena, &stats, NULL);
+    CHECK(root && !stats.bad);
+    if (root) {
+        list = (const uintptr_t *)root[9];
+        CHECK(op(list) == 0x34);
+        const uint8_t *pixels = (const uint8_t *)list[5];
+        CHECK(pixels[0] == 77 && pixels[1] == 88);
+    }
+    n64c_dl_arena_free(&arena);
+    CHECK(!arena.textures && !arena.blocks);
+}
+
 int main(void)
 {
     test_host_extension_boundary();
@@ -489,6 +654,9 @@ int main(void)
     test_modify_vertex();
     test_color_image_hook();
     test_matrix_hook();
+    test_zero_dxt_golden();
+    test_zero_dxt_draw_state();
+    test_zero_dxt_cache();
     test_replay_records();
     test_native_branch_z();
     test_cut_list();
