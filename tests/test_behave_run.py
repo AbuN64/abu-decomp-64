@@ -226,6 +226,25 @@ class RunTests(unittest.TestCase):
         self.assertEqual({c["stub_v0"]["get"] for c in asked} - {0}, {0x80A00000 + 0x1000 * 8})  # one region of its own
         self.assertNotIn("osX", asked[0]["stub_v0"])  # stubs with no body are not tagged
 
+    def test_a_changed_argument_to_a_runtime_replaced_library_call_differs(self):
+        plain = self.fake_probe
+
+        def probe(profile, work, name, request, function):
+            done = plain(profile, work, name, request, function)
+            done["record"]["replaced"] = {"g_recomp": "0x80002000"}  # the recompiler's name for g
+            for case in done["cases"]:
+                for event in case["events"]:
+                    if event.get("name") == "g":
+                        event["name"] = "g_recomp"
+                        event["args"][0] += 1 if request.get("candidate") else 0
+            return done
+
+        self.fake_probe = probe
+        _, envelope = self.invoke("--candidate", str(self.candidate), "--cases", "8")
+        result = envelope["result"]
+        self.assertEqual(result["verdict"], "differs")
+        self.assertEqual(result["first_difference"]["kind"], "call-args")
+
     def test_a_candidate_that_stores_a_different_value_differs_with_the_first_difference_named(self):
         self.delta = 1
         _, envelope = self.invoke("--candidate", str(self.candidate), "--cases", "8")

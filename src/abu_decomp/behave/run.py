@@ -729,13 +729,12 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
     helpers = {f["name"] for f in image.functions if f["name"] != options.function}
     opaque = frozenset(abi.opaque(chosen.project, version, {n.removeprefix(compare.PREFIX) for n in called}) | helpers)
     for name in called:
-        # a library routine the recompiler replaces (osRecvMesg_recomp) is the project's function at the same address
-        # under another name: its prototype gives the arguments
-        base = name.removesuffix("_recomp")
-        row = symbols.get(base) or symbols.get(name)
-        same = [n for n, r in symbols.items() if row and r[0] is not None and r[0] == row[0]]
+        # a library routine the recompiler replaces (osRecvMesg_recomp) is the project's function at the same vram
+        # under another name (the probe record says which vram): its prototype gives the arguments
+        vram = record.get("replaced", {}).get(name)
+        same = [n for n, r in symbols.items() if vram and r[0] is not None and r[0] == int(vram, 0)]
         callee = next(
-            (c for n in (name, base, *same) if (c := prototype.find(chosen.project, n, tuple(config["headers"]), None))),
+            (c for n in (name, *same) if (c := prototype.find(chosen.project, n, tuple(config["headers"]), None))),
             None,
         )
         if callee:
