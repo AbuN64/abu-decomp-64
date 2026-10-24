@@ -212,6 +212,23 @@ class CompareTests(Fixture):
         )
         self.assertEqual(open_bug["verdict"], "pass")  # a spot for a still open bug never blocks
 
+    def test_non_ok_end_fails_even_when_unchanged_improved_or_without_a_baseline(self):
+        for outcome in ("crash", "hang", "vi-stall", "build", None):
+            for reached in (6, 10):
+                with self.subTest(outcome=outcome, reached=reached):
+                    base = self.make_run("m", outcome=outcome, reached=6)
+                    now = self.make_run("m", outcome=outcome, reached=reached)
+                    for baseline in (base, None):
+                        row = tas_corpus.compare(self.cfg, self.entry(base), baseline, now, {})
+                        self.assertEqual(row["verdict"], "fail")
+                        self.assertIn(f"outcome must be ok: {outcome} at poll {reached}", row["reasons"])
+
+    def test_recovered_crash_improves_and_a_clean_first_run_is_new(self):
+        base = self.make_run("m", outcome="crash", reached=6)
+        now = self.make_run("m")
+        self.assertEqual(tas_corpus.compare(self.cfg, self.entry(base), base, now, {})["verdict"], "improved")
+        self.assertEqual(tas_corpus.compare(self.cfg, {}, None, now, {})["verdict"], "new")
+
     def test_a_function_that_stops_behaving_like_the_original_fails(self):
         reference = self.make_run("m")
         golden = reference / tas_coverage.ORACLE_DIR
@@ -313,6 +330,26 @@ class GateTests(Fixture):
         again, code = tas_corpus.gate(self.profile, jobs=2, oracle=False)
         self.assertEqual(code, 0)
         self.assertEqual(next(r for r in again["rows"] if r["movie"] == "boot")["spots"], {"rng-seeded": "fail"})
+
+    def test_unchanged_crash_or_hang_fails_gate_and_cannot_be_accepted(self):
+        for outcome in ("crash", "hang"):
+            with self.subTest(outcome=outcome):
+                base = self.make_run("boot", outcome=outcome)
+                now = self.make_run("boot", outcome=outcome)
+                entry = {"why": ["hand"], "baseline": base.name}
+                tas_corpus.store(self.cfg, {"entries": {"boot": entry}, "spots": {}})
+                with mock.patch.object(tas_corpus.tas, "play", return_value={"run": str(now)}):
+                    result, code = tas_corpus.gate(self.profile, jobs=1, oracle=False)
+                self.assertEqual((result["verdict"], code, result["failed"]), ("fail", 1, ["boot"]))
+                self.assertEqual(result["moved"], [])
+                before = tas_corpus.load(self.cfg)
+                self.assertEqual(before["entries"]["boot"]["baseline"], base.name)
+                self.assertNotIn("corpus accept", tas_corpus.render(result))
+                for movies in ([], ["boot"]):
+                    with self.assertRaisesRegex(DecompError, "cannot accept non-ok outcomes"):
+                        tas_corpus.accept(self.profile, movies)
+                self.assertEqual(tas_corpus.load(self.cfg), before)
+                self.assertEqual(tas_corpus.read_gate(self.cfg)["verdict"], "fail")
 
     def test_a_lane_port_gate_moves_nothing_and_writes_no_gate_file(self):
         tas_corpus.seed(self.profile, jobs=1)

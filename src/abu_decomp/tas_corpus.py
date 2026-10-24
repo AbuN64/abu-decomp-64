@@ -22,7 +22,8 @@ every run the corpus names (`kept_runs`).
   times (gcov count). Status pass / fail / unreached (the run ended before P); a spot written for an open bug fails
   until it is fixed.
 - Gate (`gate`): every entry replayed at turbo (`tas.play`, label `corpus-gate`, so every gate run is on the page),
-  in parallel, each compared with its baseline: worse outcome, a spot that passed and no longer does, or a function
+  in parallel: any non-ok outcome fails, even with an identical or missing baseline. Compared with its baseline,
+  a worse outcome, a spot that passed and no longer does, or a function
   that behaved like the original (tas_coverage.behaviour) and no longer does is `fail`; better outcome, a spot or
   function that now passes is `improved`; another RDRAM hash at some poll or other functions entered is `changed`
   (shown, not judged); else `pass`. Exit 1 on a fail. A gate on the profile's port moves every non-failed entry's
@@ -561,6 +562,13 @@ def behaviour_of(cfg: dict[str, Any], run: Path, oracle: str | None) -> dict[str
     return tas_coverage.behaviour(counts, bracket) if bracket and counts is not None else None
 
 
+def outcome_failure(record: dict[str, Any]) -> str | None:
+    """A gate requires a clean end; a baseline cannot excuse a crash, hang or missing result."""
+    if record.get("outcome") != "ok":
+        return f"outcome must be ok: {record.get('outcome')} at poll {record.get('polls_reached') or 0}"
+    return None
+
+
 def compare(
     cfg: dict[str, Any],
     entry: dict[str, Any],
@@ -579,9 +587,15 @@ def compare(
         "spot_values": {sid: v.get("value") for sid, v in judged.items() if "value" in v},
     }
     fail, better, changed = [], [], []
+    failure = outcome_failure(record)
     before = tas.read_record(base) if base else None
     if before is None:
-        row.update(verdict="new", reasons=["no baseline run: this run becomes it"], baseline=None, first_change=None)
+        row.update(
+            verdict="fail" if failure else "new",
+            reasons=[failure] if failure else ["no baseline run: this run becomes it"],
+            baseline=None,
+            first_change=None,
+        )
         return row
     row["baseline"] = base.name
     standing = tas.compare(before, record)
@@ -590,6 +604,8 @@ def compare(
         fail.append(f"outcome worse: {was} -> {record.get('outcome')} {row['polls_reached']}")
     elif standing == "better":
         better.append(f"outcome better: {was} -> {record.get('outcome')} {row['polls_reached']}")
+    if failure:
+        fail.append(failure)
     for sid, verdict in judged.items():
         old = entry.get("spots", {}).get(sid)
         if old == "pass" and verdict["status"] != "pass":
@@ -750,6 +766,9 @@ def accept(profile: Profile, movies: list[str]) -> dict[str, Any]:
     unknown = [m for m in wanted if m not in rows]
     if unknown:
         raise DecompError("tas.corpus", f"not failed in the last gate: {', '.join(unknown)}")
+    unhealthy = [m for m in wanted if outcome_failure(rows[m])]
+    if unhealthy:
+        raise DecompError("tas.corpus", f"cannot accept non-ok outcomes: {', '.join(unhealthy)}")
     with locked(cfg):
         data = load(cfg)
         for movie in wanted:
@@ -787,6 +806,7 @@ def render(result: dict[str, Any]) -> str:
     for row in result["rows"]:
         end = f"{row.get('outcome')} {row.get('polls_reached', 0)}"
         lines.append(f"  {row['movie'].ljust(width)}  {row['verdict']:<8}  {end:<14}  {'; '.join(row['reasons'])}")
-    if result["failed"] and result["main"]:
-        lines.append("a meant change: decomp tas corpus accept " + " ".join(result["failed"]))
+    acceptable = [r["movie"] for r in result["rows"] if r["verdict"] == "fail" and not outcome_failure(r)]
+    if acceptable and result["main"]:
+        lines.append("a meant change: decomp tas corpus accept " + " ".join(acceptable))
     return "\n".join(lines)
