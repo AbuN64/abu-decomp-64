@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError, arity
-from abu_decomp.behave import abi, classify, compare, describe, hits, inputs, movie, prototype
+from abu_decomp.behave import abi, classify, compare, describe, hits, inputs, movie, permutations, prototype
 from abu_decomp.behave import candidate as build_candidate
 from abu_decomp.config import Profile
 from abu_decomp.tools import drain_cache, invoke, settings
@@ -30,6 +30,7 @@ DEFAULTS: dict[str, Any] = {
     "event_budget": 20000,  # call/stub/store events one case may write; a case over it ends fatal event-budget
     "event_budget_cap": 300000,  # the most the budget is raised to for a function that needs more
     "depth_cap": 3,  # calls deep the original callees may run when no case ran to completion with fewer
+    "generated_cases": 256,  # strict permutations of observed inputs, separate from synthetic fallback
     "real_hits": hits.WANTED,  # entries of the function (first included) captured from the movie; 1 = first only
     "capture_poll_seconds": 0.1,  # oracle seconds a movie needs per poll up to the function's first call (time limit)
     "learn_cases": 8,
@@ -73,6 +74,8 @@ class Options:
     host: Path | None
     depth: int | None = None
     cache: bool = True
+    lenient_reason: str | None = None
+    reach: dict[str, Any] | None = None
     lenient: bool = False  # unmapped reads answer zero and calls outside the closure are stubs (set when no case ran)
     deepened: bool = False  # depth was raised by this command (not given), so it may be raised again
     capture: bool = True  # seed every comparison with the oracle's real entry state (profile repro.capture)
@@ -208,22 +211,37 @@ def capture_states(
     """`capture_seed` for the first entry, plus (seed["real"]) the cases of further entries of the covering movie:
     real call states, each over the first entry's memory as bounded patches. Only with a movie that enters the
     function more than once; an entry that cannot be captured is left out with a note (seed["real_notes"])."""
-    seed, why, key = capture_seed(profile, version, function, hit, stubs, own)
-    wanted = int(config["real_hits"])
-    if seed is None or own is None or hit != 1 or wanted < 2:
-        return seed, why, key
-    later = hits.choose(int(own.get("count") or 0), wanted)
-    limit = hits.seconds(movie.MIN_SECONDS, own["poll"], float(config["capture_poll_seconds"]))
-
-    def capture(number: int) -> dict[str, Any] | str:
-        try:
-            got, reason, _ = capture_seed(profile, version, function, number, stubs, {**own, "seconds": limit})
-        except BehaveError as exc:
-            return str(exc)
-        return got or reason
-
-    cases, notes = hits.real_cases(seed, later, capture)
-    return {**seed, "real": cases, "real_notes": notes, "real_asked": [1, *later]}, why, key
+    wanted = max(1, int(config["real_hits"]))
+    numbers = [1, *hits.choose(int(own.get("count") or 1), wanted)] if own is not None and hit == 1 else [1]
+    if len(numbers) == 1:
+        return capture_seed(profile, version, function, hit, stubs, own)
+    plan = work_dir(config) / f"capture-{os.getpid()}.json"
+    plan.write_text(json.dumps([
+        {"function": function, "hit": n, "stubs": stubs, "env": own["env"], "seconds": own["seconds"]}
+        for n in numbers
+    ]))
+    called = invoke("taste", profile, ["repro", "capture-batch", "--version", version, "--plan", str(plan)])
+    if not called.ok:
+        why = "; ".join(str(f.get("message") or f) for f in called.document.get("findings", []))
+        return None, why or "capture batch failed", "repro.capture"
+    rows = called.document["result"]["captures"]
+    seeds = {}
+    notes = []
+    for number, row in zip(numbers, rows, strict=True):
+        if row["status"] != "captured":
+            notes.append(f"entry {number}: {row.get('message', row['status'])}")
+            continue
+        record = row["capture"]
+        if stubs and (not record.get("calls_complete") or record.get("calls_unresolved")
+                      or record.get("calls_dropped_writes")):
+            notes.append(f"entry {number}: incomplete callee effects; cannot replay strictly")
+            continue
+        seeds[number] = {**row["seed"], "capture": record}
+    if 1 not in seeds:
+        return None, "; ".join(notes) or "first entry unavailable", "repro.capture.incomplete"
+    seed = seeds[1]
+    cases, missing = hits.real_cases(seed, numbers[1:], lambda n: seeds.get(n, "not captured"), jobs=1)
+    return {**seed, "real": cases, "real_notes": [*notes, *missing], "real_asked": numbers}, "", ""
 
 
 def _no_seed(why: str, key: str, stubs: bool = False) -> dict[str, Any]:
@@ -342,7 +360,11 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         to twice what it wrote (for this and every later probe) and the probe repeats; when it still does not,
         it never returns in any budget we would record, and stays fatal."""
         nonlocal waited, budget, hopeless
-        request = dict(request, event_budget=budget, **({"lenient": True} if options.lenient else {}))
+        request = dict(request, event_budget=budget)
+        if options.lenient:
+            if not options.lenient_reason:
+                raise BehaveError("behave.lenient_reason", "lenient memory requires an explicit reason")
+            request.update(lenient=True, lenient_reason=options.lenient_reason)
         if options.seeded:  # real run-time memory under every generated case, the entry stack where it was
             request = dict(request, seed={"memory": options.seeded["memory"]}, sp=options.seeded["sp"])
         done = probe(profile, work, name, request, target)
@@ -412,6 +434,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         if options.capture and options.seeded is None
         else (None, None)
     )
+    options = replace(options, reach=options.reach or own or ({"unreplayable": True} if no_movie and no_movie.get("reach") else None))
     crash = options.fault_arguments
     if no_movie:
         from abu_decomp.behave import crash as crash_inputs
@@ -423,7 +446,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
     # 1. short probes of the original show which offsets of each pointed-to region it touches, and which
     #    fields it dereferences (those get a region of their own); repeated while it finds new ones
     learned = inputs.Learned()
-    for _ in range(config["learn_rounds"]):
+    for _ in range(0 if options.seeded else config["learn_rounds"]):
         first, regions = inputs.seeded_cases(
             proto, min(config["learn_cases"], count), options.seed, layout, learned, learn=True
         )
@@ -471,9 +494,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         # same entry with one argument moved off its real value at a time
         entry = options.seeded["case"]
         cases = [
-            *cases,
             {**entry, "labels": {"seed": entry["name"]}},
-            *inputs.around(entry, proto, max(1, count // 8)),
             *options.seeded.get("real", []),  # the other entries of the covering movie, over their own memory
         ]
     memory_end = layout.reach(regions)
@@ -516,39 +537,25 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         ),
     )
     mark = lap("original", mark)
-    swapped: dict[str, int] | None = None
+    generation = None
     if options.seeded:
-        # over a real call state, a generated case that dereferences a null argument (the game never passes one) is
-        # no state to compare: it is swapped for a real one (the entry with one argument moved) when there is one,
-        # else dropped, and the result says how many
-        cases, original, swapped = _real_states(
-            cases,
-            original,
-            options.seeded["case"],
-            proto,
-            lambda kept: ask(
-                "original-real",
-                _request(
-                    version=version,
-                    address=address,
-                    cases=kept,
-                    config=config,
-                    depth=depth,
-                    memory_end=memory_end,
-                    question=question,
-                ),
-            ),
+        generated, generation = permutations.generate(
+            cases, original["cases"], options.seeded, proto, chosen.project,
+            tuple(config["headers"]), int(config["generated_cases"]),
         )
+        if generated:
+            more = ask("original-generated", _request(
+                version=version, address=address, cases=generated, config=config, depth=depth,
+                memory_end=memory_end, question=question + " (generated from real inputs)",
+            ))
+            cases = [*cases, *generated]
+            original = {**original, "cases": [*original["cases"], *more["cases"]]}
     record = original["record"]
     cut = [name for name, why in record.get("stubs", {}).items() if why == "boundary"]
     # a case the original could not finish for want of memory is not compared. Widening the memory leaves the cases
     # that ran unchanged (they never read what it adds), so it is done when no case ran, or when a case chased a
     # pointer that is not a null one (garbage built from the input, a function pointer the game filled in): a null
     # dereference is a crash on the console and stays untestable with that reason.
-    starved = not options.lenient and (
-        (not any(c["status"] == "ok" for c in original["cases"]) and any(_unmapped(c) for c in original["cases"]))
-        or any(_unmapped(c, floor=NULL_PAGE) for c in original["cases"])
-    )
     if options.plan is not None:
         # precapture (behave.precapture): note the stub set the capture below would be asked for and go on without
         # the oracle, so a depth step or a lenient re-run notes its own set the same way
@@ -603,22 +610,6 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
             else:
                 again, code, more = run(profile, replace(options, seeded=seed, recaptured=True))
                 return again, code, [*findings, *more]
-    if starved:
-        # a case did not get through: the input memory lacks state the program built at run time (null pointers,
-        # garbage pointers and function pointers the original dereferences), even over the captured memory. Both
-        # bodies run again over a memory where unmapped reads answer zero, so what each does with the same
-        # garbage is still compared.
-        again, code, more = run(profile, replace(options, lenient=True))
-        more.append(
-            {
-                "key": "behave.lenient",
-                "blocking": False,
-                "message": "a case ran out of mapped memory; compared over a lenient memory (unmapped reads zero)",
-            }
-        )
-        if again.get("probe") is not None:
-            again["probe"]["lenient"] = True
-        return again, code, [*findings, *more]
     if (
         not any(c["status"] == "ok" or out_of_budget(c) for c in original["cases"])  # a loop cut by the budget ran
         and cut
@@ -665,8 +656,10 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         "address": f"0x{address:08X}",
         "prototype": proto.describe(),
         "cases": len(cases),
-        **({"synthetic": swapped} if swapped else {}),
         "sources": sources(cases, original["cases"]),
+        "reach": options.reach,
+        "generation": generation,
+        "memory": {"policy": "lenient" if options.lenient else "strict", "reason": options.lenient_reason},
         **({"crash_seed": crash_used} if crash_used else {}),
         "seed": options.seed,
         "depth": depth,
@@ -721,8 +714,9 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         if callee:
             callees[name] = callee
     rows = [
-        compare.compare_case(a, b, proto, callees, stack, own, opaque)
-        for a, b in zip(original["cases"], changed["cases"], strict=True)
+        compare.compare_case(a, b, proto, callees,
+                             permutations.stack_of(case, stack, int(record["stack_window"])), own, opaque)
+        for case, a, b in zip(cases, original["cases"], changed["cases"], strict=True)
     ]
     labels = [c["labels"] for c in cases]
     summary = compare.overall(
@@ -731,6 +725,16 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         int(config["min_compared"]),
         testable=sum(c["status"] == "ok" or out_of_budget(c) for c in original["cases"]),
     )
+    real_compared = sum(row["verdict"] != compare.UNTESTABLE and permutations.is_real(case)
+                        for case, row in zip(cases, rows, strict=True))
+    common["sources"]["real_compared"] = real_compared
+    common["sources"]["generated_compared"] = sum(row["verdict"] != compare.UNTESTABLE and "generated" in case["labels"]
+                                                  for case, row in zip(cases, rows, strict=True))
+    common["generated_differences"] = [dict(row, inputs=case["labels"]) for case, row in zip(cases, rows, strict=True)
+                                       if "generated" in case["labels"] and row["verdict"] == compare.DIFFERS]
+    if summary["verdict"] == compare.SAME and options.reach and not real_compared:
+        summary.update(verdict=compare.UNTESTABLE, reason="coverage reach exists but zero real cases compared")
+        findings.append({"key": "behave.real_required", "blocking": False, "message": summary["reason"]})
     notes = sorted({n for row in rows for n in row["notes"]})
     shown = [dict(r, inputs=labels[i]) for i, r in enumerate(rows) if r["verdict"] != compare.SAME][:12]
     classification = classify.classify(
@@ -774,64 +778,17 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
 def sources(cases: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[str, int]:
     """Where the cases come from and how many ran: real call states (entries the game made, in the covering movie, and
     the first entry with one argument moved), synthetic ones (generated), and how many of each did not run."""
-    real = [r for c, r in zip(cases, results, strict=True) if "seed" in c["labels"] and "crash" not in c["labels"]]
-    crashes = [r for c, r in zip(cases, results, strict=True) if "crash" in c["labels"]]
-    synthetic = [
-        r for c, r in zip(cases, results, strict=True) if "seed" not in c["labels"] and "crash" not in c["labels"]
-    ]
-    entries = [
-        c for c in cases if "seed" in c["labels"] and "crash" not in c["labels"] and set(c["labels"]) <= {"seed", "hit"}
-    ]
+    groups = {"real": [], "generated": [], "synthetic": [], "crash": []}
+    for case, result in zip(cases, results, strict=True):
+        kind = ("real" if permutations.is_real(case) else "crash" if "crash" in case["labels"]
+                else "generated" if "generated" in case["labels"] else "synthetic")
+        groups[kind].append(result)
     return {
-        **(
-            {"crash_cases": len(crashes), "crash_untestable": sum(r["status"] != "ok" for r in crashes)}
-            if crashes
-            else {}
-        ),
-        "real_entries": len(entries),
-        "real_cases": len(real),
-        "real_untestable": sum(r["status"] != "ok" for r in real),
-        "synthetic_cases": len(synthetic),
-        "synthetic_untestable": sum(r["status"] != "ok" for r in synthetic),
+        "real_entries": len(groups["real"]),
+        **{f"{kind}_{field}": len(rows) if field == "cases" else sum(r["status"] != "ok" for r in rows)
+           for kind, rows in groups.items() for field in ("cases", "untestable") if rows or kind != "crash"},
         "untestable": sum(r["status"] != "ok" for r in results),
     }
-
-
-def _null_deref(case: dict[str, Any]) -> bool:
-    """The case read through a null pointer: a crash on the console, never a state the game passes. (A read of
-    other unmapped memory is a case lacking state the game built: the lenient re-run answers it, it is kept.)"""
-    return _unmapped(case) and not _unmapped(case, floor=NULL_PAGE)
-
-
-def _real_states(
-    cases: list[dict[str, Any]],
-    original: dict[str, Any],
-    entry: dict[str, Any],
-    proto: prototype.Prototype,
-    ask_again: Any,
-) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, int] | None]:
-    """Cases and the original's results with the generated cases that did not run swapped for real call states.
-    Real is the captured entry and the entry with one argument moved off its real value (`inputs.around`): their
-    pointers stay where the game aimed them. Nothing changes unless the captured entry itself ran; a generated case
-    is only judged unrunnable when the original dereferenced a null pointer."""
-    pairs = list(zip(cases, original["cases"], strict=True))
-    real = [(c, r) for c, r in pairs if "seed" in c["labels"]]
-    if not any(c["labels"] == {"seed": entry["name"]} and r["status"] == "ok" for c, r in real):
-        return cases, original, None
-    failed = [i for i, (c, r) in enumerate(pairs) if "seed" not in c["labels"] and _null_deref(r)]
-    if not failed:
-        return cases, original, None
-    have = {c["name"] for c in cases}
-    more = [c for c in inputs.around(entry, proto, len(cases)) if c["name"] not in have][: len(failed)]
-    gone = set(failed)
-    kept = [c for i, c in enumerate(cases) if i not in gone]
-    if more:
-        cases = [*kept, *more]
-        original = ask_again(cases)
-    else:
-        original = {**original, "cases": [r for i, r in enumerate(original["cases"]) if i not in gone]}
-        cases = kept
-    return cases, original, {"unrunnable": len(failed), "replaced_by_real": len(more)}
 
 
 def _function_sha256(image: Any, function: str) -> str | None:

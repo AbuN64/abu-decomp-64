@@ -44,7 +44,9 @@ def seconds(minimum: int, first_poll: int, poll_seconds: float, span: int = SPAN
 
 def differing(base: bytes, other: bytes) -> list[tuple[int, int]]:
     """(offset, end) runs where `other` differs from `base`, runs closer than MERGE_GAP joined."""
-    size = min(len(base), len(other))
+    if len(base) != len(other):
+        raise ValueError("capture RDRAM sizes differ")
+    size = len(base)
     runs: list[list[int]] = []
     for start in range(0, size, COARSE):
         stop = min(size, start + COARSE)

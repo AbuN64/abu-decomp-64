@@ -28,7 +28,7 @@ def fake_cases(request, delta):
     for case in request["cases"]:
         regs = case["registers"]
         region = int(str(case["memory"][0]["addr"]), 0) if case.get("memory") else 0
-        a0, a1 = (int(str(regs.get(k, 0)), 0) for k in ("a0", "a1"))
+        a0, a1 = (int(str(regs.get(k, regs.get(r, 0))), 0) for k, r in (("a0", "r4"), ("a1", "r5")))
         ok = a0 != 0
         row = {
             "name": case["name"],
@@ -317,7 +317,7 @@ class RunTests(unittest.TestCase):
             )
         return json.loads(stdout.getvalue())
 
-    def test_strict_memory_that_completes_no_case_is_seeded_from_the_oracle_before_the_lenient_fallback(self):
+    def test_strict_memory_that_completes_no_case_is_seeded_from_the_oracle(self):
         envelope = self.seeded_run(self.seed())
         result = envelope["result"]
         self.assertEqual(result["oracle_seed"]["function"], "f")
@@ -329,19 +329,18 @@ class RunTests(unittest.TestCase):
             self.assertEqual(request["seed"]["memory"][0]["file"], "/ram.bin")
             self.assertEqual(request["sp"], "0x80123400")
             self.assertFalse(request.get("lenient"))
-            entry = next(c for c in request["cases"] if c["name"] == "seed-f-hit1")  # the entry registers, one case
+            entry = request["cases"][0]  # the real entry registers come first
+            self.assertEqual(entry["name"], "seed-f-hit1")
             self.assertEqual(entry["registers"]["r4"], "0x80000100")
-            self.assertEqual(request["cases"][-1]["name"], "seed-f-hit1-n-plus1")  # and one around it (8 // 8)
-        learn = [r for n, r in self.probes if n == "learn"]
-        self.assertTrue(all(r["cases"][-1]["name"] != "seed-f-hit1" for r in learn))
-        self.assertEqual(result["cases"], 10)
+        self.assertEqual(result["sources"]["real_entries"], 1)
+        self.assertGreater(result["sources"]["generated_cases"], 0)  # permutations of the real inputs
+        self.assertEqual(result["generation"]["real_bases"], 1)
         self.assertEqual(result["verdict"], "same")
 
-    def test_one_case_the_seed_cannot_finish_still_widens_the_memory_so_every_case_is_compared(self):
+    def test_a_case_the_seed_cannot_finish_is_never_silently_rerun_over_a_lenient_memory(self):
         def probe(profile, work, name, request, function):
             done = self.fake_probe(profile, work, name, request, function)
-            if not request.get("lenient"):  # one generated case chases a garbage pointer outside RDRAM
-                done["cases"][0].update(status="unmapped", detail="unmapped 0000B402 4 last 0")
+            done["cases"][0].update(status="unmapped", detail="unmapped 0000B402 4 last 0")
             return done
 
         stdout = io.StringIO()
@@ -349,41 +348,41 @@ class RunTests(unittest.TestCase):
             mock.patch.object(run, "probe", probe),
             mock.patch.object(run, "capture_seed", lambda *a: (self.seed(), "", "")),
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
-            mock.patch.object(
-                run.build_candidate,
-                "build",
-                lambda *a, **k: cand.Image(
-                    self.root / "c.bin", 0x80800000, ({"name": "f", "offset": 0, "size": 0x40},), 0x40, "ab" * 32
-                ),
-            ),
             contextlib.redirect_stdout(stdout),
         ):
             main(["--profile", str(self.seat), "behave", "--function", "f", "--candidate", str(self.candidate)])
         envelope = json.loads(stdout.getvalue())
-        keys = [f["key"] for f in envelope["findings"]]
-        self.assertIn("behave.seed", keys)
-        self.assertIn("behave.lenient", keys)
-        self.assertEqual(envelope["result"]["verdict"], "same")
-        self.assertNotIn("0000B402", json.dumps(envelope["result"]["cases_detail"]))  # compared, not left unmapped
-        final = [r for n, r in self.probes if n in ("original", "candidate")][-2:]
-        for request in final:
-            self.assertTrue(request["lenient"])
-            self.assertEqual(request["seed"]["memory"][0]["file"], "/ram.bin")  # lenient over the captured memory
+        self.assertNotIn("behave.lenient", [f["key"] for f in envelope["findings"]])
+        self.assertFalse(any(r.get("lenient") for _, r in self.probes))
+
+    def test_lenient_memory_needs_an_explicit_reason_and_reports_it(self):
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(run, "probe", self.seeded_probe),
+            mock.patch.object(run, "capture_seed", lambda *a: (None, "none", "config.schema")),
+            mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
+            contextlib.redirect_stdout(stdout),
+        ):
+            main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "4",
+                  "--lenient-reason", "boot state is not capturable"])
+        result = json.loads(stdout.getvalue())["result"]
+        self.assertEqual(result["memory"], {"policy": "lenient", "reason": "boot state is not capturable"})
+        self.assertTrue(all(r.get("lenient_reason") for _, r in self.probes if r.get("lenient")))
 
     def test_the_tools_are_asked_for_the_address_never_the_name_the_oracle_may_spell_otherwise(self):
         self.invoke("--candidate", str(self.candidate), "--cases", "4")
         self.assertTrue(self.targets)
         self.assertEqual(set(self.targets), {"0x80001000"})
 
-    def test_without_a_capture_the_lenient_fallback_still_runs_and_says_why_there_is_no_seed(self):
+    def test_without_a_capture_the_strict_run_says_why_there_is_no_seed(self):
         envelope = self.seeded_run(None)
         keys = [f["key"] for f in envelope["findings"]]
         self.assertIn("behave.seed", keys)
-        self.assertIn("behave.lenient", keys)
+        self.assertNotIn("behave.lenient", keys)
         self.assertNotIn("oracle_seed", envelope["result"])
-        self.assertTrue(any(r.get("lenient") for _, r in self.probes))
+        self.assertFalse(any(r.get("lenient") for _, r in self.probes))
 
-    def test_no_capture_flag_goes_straight_to_the_lenient_fallback(self):
+    def test_no_capture_flag_skips_the_capture(self):
         called = []
         stdout = io.StringIO()
         with (
@@ -394,7 +393,7 @@ class RunTests(unittest.TestCase):
         ):
             main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6", "--no-capture"])
         self.assertEqual(called, [])
-        self.assertIn("behave.lenient", [f["key"] for f in json.loads(stdout.getvalue())["findings"]])
+        self.assertNotIn("behave.lenient", [f["key"] for f in json.loads(stdout.getvalue())["findings"]])
 
     def test_the_capture_runs_the_movie_the_coverage_table_names_and_says_which(self):
         asked = []
@@ -427,16 +426,25 @@ class RunTests(unittest.TestCase):
             images[hit] = Path(directory.name) / f"ram{hit}.bin"
             images[hit].write_bytes(bytes(data))
         own = {"env": {}, "seconds": 160, "movie": "walk", "poll": 200, "count": 40}
-        asked, sent = [], []
+        plans, sent = [], []
 
-        def grab(profile, version, function, hit, stubs, movie):
-            asked.append((hit, movie["seconds"]))
-            if hit not in images:
-                return None, "the oracle ended before the entry", "repro.capture.unreached"
-            seed = self.seed()
-            seed["capture"].update(hit=hit, rdram_path=str(images[hit]))
-            seed["case"] = {"name": f"seed-f-hit{hit}", "registers": {"r4": "0x80000100", "r5": hex(hit)}}
-            return seed, "", ""
+        def rows(plan):
+            out = []
+            for item in plan:
+                hit = item["hit"]
+                if hit not in images:
+                    out.append({"status": "repro.capture.oracle_exit", "message": "the oracle ended before the entry"})
+                    continue
+                seed = self.seed()
+                seed["capture"].update(hit=hit, rdram_path=str(images[hit]))
+                seed["case"] = {"name": f"seed-f-hit{hit}", "registers": {"r4": "0x80000100", "r5": hex(hit)}}
+                out.append({"status": "captured", "capture": seed["capture"], "seed": seed})
+            return out
+
+        def fake_invoke(tool, profile, argv, *a, **k):
+            plan = json.loads(Path(argv[argv.index("--plan") + 1]).read_text())
+            plans.append(plan)
+            return mock.Mock(ok=True, document={"result": {"captures": rows(plan)}})
 
         def probe(profile, work, name, request, function):
             sent.append(request)
@@ -445,18 +453,17 @@ class RunTests(unittest.TestCase):
         stdout = io.StringIO()
         with (
             mock.patch.object(run, "probe", probe),
-            mock.patch.object(run, "capture_seed", grab),
+            mock.patch.object(run, "invoke", fake_invoke),
             mock.patch.object(run, "capture_movie", lambda *a: (own, None)),
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             contextlib.redirect_stdout(stdout),
         ):
             main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6"])
         result = json.loads(stdout.getvalue())["result"]
-        self.assertEqual(sorted({h for h, _ in asked})[:3], [1, 2, 3])
-        self.assertEqual(max(s for h, s in asked if h > 1), run.hits.seconds(run.movie.MIN_SECONDS, 200, 0.1))
+        self.assertEqual([p["hit"] for p in plans[0]][:3], [1, 2, 3])
         self.assertEqual(result["sources"]["real_entries"], 3)  # the first entry and the two more that exist
         self.assertTrue(any("entry 4" in n for n in result["oracle_seed"]["real_notes"]))
-        real = next(c for c in sent[-1]["cases"] if c["name"] == "seed-f-hit3")
+        real = next(c for r in sent for c in r["cases"] if c["name"] == "seed-f-hit3")
         self.assertEqual(real["registers"]["r5"], "0x3")
         self.assertEqual(real["memory"][0]["addr"], "0x80000040")  # from where it differs from the first image
 
@@ -504,13 +511,13 @@ class RunTests(unittest.TestCase):
         final = [r for n, r in self.probes if n in ("original", "candidate")][-2:]
         for request in final:
             self.assertEqual(request["seed"]["memory"][0]["file"], "/ram.bin")
-            names = [c["name"] for c in request["cases"]]
-            entry = names.index("seed-f-hit1")
-            # n (a1 = r5 = 7) moved off its real value; a (a pointer) stays where the game aimed it
-            self.assertEqual(names[entry + 1 :], ["seed-f-hit1-n-plus1", "seed-f-hit1-n-minus1"])
-            self.assertEqual(request["cases"][entry + 1]["registers"]["r5"], "0x8")
-            self.assertEqual(request["cases"][entry + 1]["registers"]["r4"], "0x80000100")
+            self.assertEqual(request["cases"][0]["name"], "seed-f-hit1")
         self.assertNotIn("behave.lenient", [f["key"] for f in envelope["findings"]])
+        both = next(r for n, r in reversed(self.probes) if n == "candidate")
+        generated = [c for c in both["cases"] if c["name"].startswith("gen")]
+        self.assertTrue(generated)
+        self.assertIn("0x8", {c["registers"]["r5"] for c in generated})  # n (r5 = 7) moved off its real value
+        self.assertTrue(all(c["name"].endswith("-seed-f-hit1") for c in generated))
 
     def test_a_function_the_oracle_never_reaches_is_a_named_finding_not_a_silent_fallback(self):
         self.grab = lambda *a: (None, "f entry hit 1 was not reached within 120s", "repro.capture.unreached")
@@ -641,55 +648,3 @@ class RunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class RealStateTests(unittest.TestCase):
-    """run._real_states: over a real call state, generated cases the original cannot run are swapped for real ones."""
-
-    ENTRY: ClassVar[dict] = {"name": "seed-f-hit1", "registers": {}}
-
-    def parts(self, statuses):
-        cases = [{"name": n, "labels": {"seed": "seed-f-hit1"} if n.startswith("seed") else {"a": n}} for n in statuses]
-        cases[0]["labels"] = {"seed": "seed-f-hit1"}
-        result = {
-            "record": {},
-            "cases": [{"status": st, "detail": "unmapped 00000004 4 last 0"} for st in statuses.values()],
-        }
-        return cases, result
-
-    def real(self, *names):
-        return [{"name": n, "labels": {"seed": "seed-f-hit1", "x": n}} for n in names]
-
-    def test_unrunnable_generated_cases_are_swapped_for_real_states_and_counted(self):
-        cases, result = self.parts({"seed-f-hit1": "ok", "g1": "ok", "g2": "unmapped", "g3": "unmapped"})
-        asked = []
-
-        def again(kept):
-            asked.append([c["name"] for c in kept])
-            return {"record": {}, "cases": [{"status": "ok", "detail": ""} for _ in kept]}
-
-        with mock.patch.object(run.inputs, "around", lambda *a: self.real("r1", "r2", "r3")):
-            got, original, swapped = run._real_states(cases, result, self.ENTRY, mock.Mock(), again)
-        self.assertEqual([c["name"] for c in got], ["seed-f-hit1", "g1", "r1", "r2"])
-        self.assertEqual(asked, [["seed-f-hit1", "g1", "r1", "r2"]])
-        self.assertEqual(swapped, {"unrunnable": 2, "replaced_by_real": 2})
-        self.assertEqual(len(original["cases"]), 4)
-
-    def test_without_enough_real_states_the_unrunnable_ones_are_dropped_not_asked_again(self):
-        cases, result = self.parts({"seed-f-hit1": "ok", "g1": "unmapped", "g2": "ok"})
-        with mock.patch.object(run.inputs, "around", lambda *a: []):
-            got, original, swapped = run._real_states(cases, result, self.ENTRY, mock.Mock(), lambda k: 1 / 0)
-        self.assertEqual([c["name"] for c in got], ["seed-f-hit1", "g2"])
-        self.assertEqual([r["status"] for r in original["cases"]], ["ok", "ok"])
-        self.assertEqual(swapped, {"unrunnable": 1, "replaced_by_real": 0})
-
-    def test_nothing_changes_when_the_captured_entry_itself_did_not_run(self):
-        cases, result = self.parts({"seed-f-hit1": "unmapped", "g1": "unmapped"})
-        got, original, swapped = run._real_states(cases, result, self.ENTRY, mock.Mock(), lambda k: 1 / 0)
-        self.assertEqual((got, original, swapped), (cases, result, None))
-
-    def test_a_read_of_other_unmapped_memory_stays_for_the_lenient_rerun(self):
-        cases, result = self.parts({"seed-f-hit1": "ok", "g1": "unmapped"})
-        result["cases"][1]["detail"] = "unmapped 0000B402 4 last 0"
-        got, original, swapped = run._real_states(cases, result, self.ENTRY, mock.Mock(), lambda k: 1 / 0)
-        self.assertEqual((got, original, swapped), (cases, result, None))

@@ -129,9 +129,11 @@ class SourcesTests(unittest.TestCase):
             run.sources(cases, results),
             {
                 "real_entries": 2,
-                "real_cases": 3,
+                "generated_cases": 0,
+                "generated_untestable": 0,
+                "real_cases": 2,
                 "real_untestable": 0,
-                "synthetic_cases": 2,
+                "synthetic_cases": 3,
                 "synthetic_untestable": 1,
                 "untestable": 1,
             },

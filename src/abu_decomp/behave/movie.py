@@ -52,7 +52,21 @@ def choose(
     row = next((r for r in table["functions"] if r["name"] == function), None)
     if row is not None and not row["in_version"]:
         return None, None
-    if row is None or not row["oracle"]["hit"]:
+    reach = row.get("oracle", {}) if row else {}
+    basis = "oracle"
+    if not reach.get("hit"):
+        reach = row.get("port", {}) if row else {}
+        basis = "port"
+    # The ELF universe can lag a source rename. Per-movie gcov facts retain the source name.
+    if not reach.get("hit") and cfg.get("runs"):
+        for run in sorted(table.get("runs", []), key=lambda r: (int(r.get("polls") or 0), r["movie"])):
+            counts = tas_coverage.read_gcovr(Path(cfg["runs"]) / "plays" / run["run"] / tas_coverage.COVERAGE)
+            count = (counts or {}).get(function, 0)
+            if count:
+                reach = {"hit": True, "movie": run["movie"], "poll": None, "count": count}
+                basis = "port"
+                break
+    if not reach.get("hit"):
         return None, {
             "key": NO_MOVIE,
             "blocking": False,
@@ -60,7 +74,7 @@ def choose(
             f"{table['summary']['movies']} movies, state {row['state'] if row else 'unlisted'}): "
             "use captured crash arguments when available; oracle reach is not established",
         }
-    name, poll = row["oracle"]["movie"], int(row["oracle"]["poll"] or 0)
+    name, poll = reach["movie"], int(reach.get("poll") or 0)
     try:
         polls = tas.movie_polls(cfg, name)
         pak = tas.movie_pak(cfg, name)
@@ -68,6 +82,7 @@ def choose(
     except DecompError as exc:
         return None, {
             "key": "behave.movie",
+            "reach": True,
             "blocking": False,
             "message": f"{name} reaches {function} but cannot be replayed: {exc}",
         }
@@ -81,5 +96,6 @@ def choose(
         "seconds": seconds,
         "movie": name,
         "poll": poll,
-        "count": int(row["oracle"].get("count") or 0),
+        "count": int(reach.get("count") or 0),
+        "reach_basis": basis,
     }, None

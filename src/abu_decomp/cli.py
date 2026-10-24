@@ -840,6 +840,7 @@ def _behave_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=1, help="seed of the deterministic input set (default 1)")
     parser.add_argument("--depth", type=int, help="calls deep the original callees run; deeper ones are stubs")
     parser.add_argument("--no-capture", action="store_true", help="compare without the oracle's captured entry state")
+    parser.add_argument("--lenient-reason", help="compare over a lenient memory (unmapped reads zero); the reason is reported")
     parser.add_argument("--capture-hit", type=int, default=1, help="which entry of the function the capture stops at")
     parser.add_argument(
         "--precapture",
@@ -917,6 +918,8 @@ def _run_behave(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dic
         args.depth,
         capture=not args.no_capture,
         hit=args.capture_hit,
+        lenient=bool(args.lenient_reason),
+        lenient_reason=args.lenient_reason,
     )
     return run(_profile(args.profile), options)
 
