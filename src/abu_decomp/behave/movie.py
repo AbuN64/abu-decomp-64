@@ -34,6 +34,13 @@ def _stored(directory: Path, data: bytes, suffix: str) -> Path:
     return path
 
 
+def _pak_on(cfg: dict[str, Any], movie: str) -> bool:
+    try:
+        return tas.movie_pak(cfg, movie) != "off"
+    except DecompError:
+        return True
+
+
 def choose(
     profile: Profile, work: Path, function: str, version: str, poll_seconds: float
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -59,7 +66,10 @@ def choose(
         basis = "port"
     # The ELF universe can lag a source rename. Per-movie gcov facts retain the source name.
     if not reach.get("hit") and cfg.get("runs"):
-        for run in sorted(table.get("runs", []), key=lambda r: (int(r.get("polls") or 0), r["movie"])):
+        # A movie recorded without a controller pak first: the headless capture host crashes in its renderer on
+        # the frames a pak-on replay draws (SIGSEGV in the GPU driver before the first entry), so a pak-on movie
+        # only comes after every pak-off one that reaches the function.
+        for run in sorted(table.get("runs", []), key=lambda r: (_pak_on(cfg, r["movie"]), int(r.get("polls") or 0), r["movie"])):
             counts = tas_coverage.read_gcovr(Path(cfg["runs"]) / "plays" / run["run"] / tas_coverage.COVERAGE)
             count = (counts or {}).get(function, 0)
             if count:
