@@ -312,6 +312,31 @@ def error_lines(text: str, count: int = 4) -> list[str]:
     return errors[:count] or lines[-3:]
 
 
+def _git_dirs(path: Path) -> tuple[Path, Path] | None:
+    """(work tree root, common git dir) of the git work tree holding `path`, or None."""
+    done = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    lines = done.stdout.splitlines()
+    if done.returncode or len(lines) != 2:
+        return None
+    root = Path(lines[0])
+    return root, (Path(lines[1]) if Path(lines[1]).is_absolute() else root / lines[1]).resolve()
+
+
+def candidate_tree(source: Path, project: Path) -> Path | None:
+    """The work tree the candidate file lives in when it is another work tree of the seat project's repository (a
+    lane's own worktree): the candidate is compiled against its headers, not the seat tree's, so a diff that adds a
+    header member or macro compiles. None when the file is in the seat tree itself or in no sibling work tree."""
+    mine, theirs = _git_dirs(project), _git_dirs(source.resolve().parent)
+    if mine is None or theirs is None or mine[1] != theirs[1] or mine[0].resolve() == theirs[0].resolve():
+        return None
+    return theirs[0]
+
+
 def build(
     profile: Profile,
     *,
@@ -326,6 +351,9 @@ def build(
 ) -> Image:
     """Compile and link `source` for `function` in `version`; the image lands in `work`."""
     chosen = settings(profile, project, host)
+    if project is None and (own := candidate_tree(source, chosen.project)) is not None:
+        project = own
+        chosen = settings(profile, project, host)
     tools = host_tools(chosen.host)
     text = "".join(f"#define {d} 1\n" for d in defines) + source.read_text(errors="replace")
     try:
