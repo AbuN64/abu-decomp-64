@@ -295,6 +295,26 @@ int main(void)
         CHECK(n64c_memory_decode_mov(moffs,&length,&reg,&write,&imm) && length==5 && write);
         CHECK(!n64c_memory_decode_mov(bad,&length,&reg,&write,&imm) && !n64c_memory_decode_mov(alu,&length,&reg,&write,&imm));
     }
+    {   /* the ARM (A32) register-page decoder: word LDR/STR in every addressing form, everything else refused */
+        N64cArmTransfer t;
+        u32 regs[16]={0};
+        CHECK(n64c_memory_decode_arm(0xE5910000u,&t) && t.load && t.rt==0 && t.rn==1 && !t.writeback);  /* ldr r0,[r1] */
+        CHECK(n64c_memory_decode_arm(0xE5832010u,&t) && !t.load && t.rt==2 && t.rn==3 && t.immediate==16 && t.up);
+        CHECK(n64c_memory_decode_arm(0xE4910004u,&t) && t.load && t.writeback && !t.pre && t.immediate==4);     /* ldr r0,[r1],#4 */
+        CHECK(n64c_memory_decode_arm(0xE5210008u,&t) && !t.load && t.writeback && t.pre && !t.up && t.immediate==8);  /* str r0,[r1,#-8]! */
+        CHECK(n64c_memory_decode_arm(0xE7910102u,&t) && t.load && t.register_offset && t.rm==2 && t.shift_amount==2);  /* ldr r0,[r1,r2,lsl #2] */
+        regs[2]=3;
+        CHECK(n64c_memory_arm_offset(&t,regs)==12);
+        regs[2]=0x80000000u;
+        t.shift_type=2; t.shift_amount=0;                       /* asr #32 */
+        CHECK(n64c_memory_arm_offset(&t,regs)==0xFFFFFFFFu);
+        CHECK(!n64c_memory_decode_arm(0xE5D10000u,&t));        /* ldrb */
+        CHECK(!n64c_memory_decode_arm(0xE1D100B0u,&t));        /* ldrh */
+        CHECK(!n64c_memory_decode_arm(0xE59FF000u,&t));        /* ldr pc,[pc] */
+        CHECK(!n64c_memory_decode_arm(0xE8910003u,&t));        /* ldm r1,{r0,r1} */
+        CHECK(!n64c_memory_decode_arm(0xF5910000u,&t));        /* unconditional space */
+        CHECK(!n64c_memory_decode_arm(0xE4B10004u,&t));        /* ldrt */
+    }
     CHECK(!n64c_memory_tracer_in_status("Name:\tx\nTracerPid:\t0\nUid:\t1\n"));
     CHECK(n64c_memory_tracer_in_status("Name:\tx\nTracerPid:\t4242\nUid:\t1\n"));
     CHECK(!n64c_memory_tracer_in_status("Name:\tx\nPid:\t7\n"));

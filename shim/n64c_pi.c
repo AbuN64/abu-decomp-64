@@ -21,6 +21,7 @@
 #include "n64c_al.h"
 #include "n64c_rnc.h"
 #include "n64c_diag.h"
+#include "os/n64c_host.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -649,6 +650,9 @@ int n64c_pi_read(u32 address,void *destination,u32 bytes)
     if (!rom || !destination) return -1;
     if (fseek(rom, (long)(address & 0x0FFFFFFF), SEEK_SET) != 0)
         return -1;
+#ifdef N64C_HOST_NATIVE
+    n64c_host_ram_prepare(destination, bytes); /* the read below is a system call: guest pages must be accessible */
+#endif
     size_t got = fread(destination, 1, bytes, rom);
     if (got < bytes)
         memset((u8 *)destination + got, 0, bytes - got); /* past the end of the cartridge: open bus */
@@ -701,7 +705,6 @@ int n64c_pi_dma(u32 address,void *destination,u32 bytes)
     layout_misses(address & 0x0FFFFFFF,destination,bytes);
     return 0;
 }
-extern void n64c_trace_event(const char *kind) __attribute__((weak)); /* boot census, when linked */
 s32 osPiStartDma(OSIoMesg *io, s32 pri, s32 dir, u32 devAddr, void *dram, size_t n, OSMesgQueue *mq)
 {
     (void)pri;

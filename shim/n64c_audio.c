@@ -4,7 +4,9 @@
  * The two-entry DMA FIFO is modeled on the virtual clock (osAiGetStatus); the AI interrupt follows each buffer's end on it. */
 #include "n64c_audio.h"
 #include "n64c_internal.h"
+#include "n64c_system.h"
 #include <stdio.h>
+#include <fenv.h>
 #include <time.h>
 #ifdef N64C_AUDIO_SDL3
 #include <SDL3/SDL.h>
@@ -93,7 +95,20 @@ static void start_open(u32 rate)
 }
 #endif
 
+#if defined(_WIN32) || defined(__ANDROID__)
+static void default_sink_inner(void *user, const int16_t *frames, size_t count, uint32_t rate);
+/* The guest runs with floating point traps enabled (osSetFpcCsr); SDL's audio code computes with values that raise invalid-
+ * operation flags harmlessly. Its calls run with the traps masked (n64c_system.h). */
 static void default_sink(void *user, const int16_t *frames, size_t count, uint32_t rate)
+{
+    const int enabled = n64c_fp_traps_mask();
+    default_sink_inner(user, frames, count, rate);
+    n64c_fp_traps_restore(enabled);
+}
+static void default_sink_inner(void *user, const int16_t *frames, size_t count, uint32_t rate)
+#else
+static void default_sink(void *user, const int16_t *frames, size_t count, uint32_t rate)
+#endif
 {
     (void)user;
 #ifdef N64C_AUDIO_SDL3

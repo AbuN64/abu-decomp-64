@@ -1,65 +1,101 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Address facts: https://n64.readthedocs.io/#memory-map
- * Linux/i386 adapter: a protected register page lets the CPU execute one native
- * access to a protected register page faults; the handler decodes that one native mov, and the component call
- * runs on a separate TLS stack after sigreturn with the result written into the saved context. A second signal
+ * Native adapter (Linux/i386 and Windows/i386, through the host seam os/n64c_host.h): a protected register page lets
+ * the CPU execute one native access to a protected register page faults; the handler decodes that one native mov, and the component call
+ * runs on a separate TLS stack after the fault handler returned, with the result written into the saved context. A resume
  * restores it past the instruction. No single-step (so the same under a debugger), guest CPU, ptrace or callbacks
  * in signal context. The decoder knows only the 32-bit mov forms; any other access stops by name. */
-#define _GNU_SOURCE
 #include "n64c_memory.h"
 #include "n64c_internal.h"
 #include "n64c_mmio.h"
 #include "n64c_diag.h"
+#include "os/n64c_host.h"
 
-#if defined(__linux__) && defined(__i386__)
-#include <signal.h>
+/* The ARM word of an A32 single data transfer (LDR/STR, word): what the CPU executed when it faulted on a register
+ * page. Pure, so the decoder runs in the host test. Refused (0): other encodings (halfword, byte, doubleword,
+ * multiple, VFP, Thumb), condition 1111, a base or transfer register that is the PC. */
+int n64c_memory_decode_arm(u32 insn,N64cArmTransfer *out)
+{
+    if (((insn>>26)&3u)!=1u || (insn>>28)==0xFu) return 0;       /* load/store word or byte, not the NV space */
+    const unsigned I=(insn>>25)&1u,P=(insn>>24)&1u,U=(insn>>23)&1u,B=(insn>>22)&1u,W=(insn>>21)&1u,L=(insn>>20)&1u;
+    const unsigned rn=(insn>>16)&15u,rt=(insn>>12)&15u;
+    if (B || rn==15u || rt==15u) return 0;
+    out->load=(int)L;
+    out->rt=rt;
+    out->rn=rn;
+    out->up=(int)U;
+    out->pre=(int)P;
+    out->writeback=(int)(!P || W);
+    out->register_offset=(int)I;
+    out->immediate=insn&0xFFFu;
+    out->rm=insn&15u;
+    out->shift_type=(insn>>5)&3u;
+    out->shift_amount=(insn>>7)&31u;
+    if (I && (out->rm==15u || (insn&0x10u))) return 0;            /* register-shifted register forms do not exist here */
+    if (!P && W) return 0;                                       /* LDRT/STRT: unprivileged transfer */
+    if (out->writeback && (rn==rt)) return 0;                    /* unpredictable */
+    return 1;
+}
+/* The offset the instruction added to (or subtracted from) the base: an immediate, or Rm shifted by an immediate. */
+u32 n64c_memory_arm_offset(const N64cArmTransfer *t,const u32 regs[16])
+{
+    if (!t->register_offset) return t->immediate;
+    u32 v=regs[t->rm];
+    const unsigned n=t->shift_amount;
+    switch (t->shift_type) {
+    case 0: return v<<n;                                          /* LSL */
+    case 1: return n ? v>>n : 0;                                  /* LSR #32 is 0 */
+    case 2: return n ? (u32)((int32_t)v>>n) : (u32)((int32_t)v>>31); /* ASR #32 is the sign */
+    default: return n ? (v>>n)|(v<<(32-n)) : v;                   /* ROR (RRX with carry is never emitted for MMIO) */
+    }
+}
+#ifdef N64C_HOST_NATIVE
 #include <errno.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <ucontext.h>
-#include <sys/syscall.h>
-#include <sys/uio.h>
 
-enum { PAGE_BYTES=4096, MAX_MAPS=12, RESUME_SIGNAL=SIGUSR2, TLB_ENTRIES=32 };
+enum { PAGE_BYTES=4096, MAX_MAPS=12, TLB_ENTRIES=32 };
 static const u32 devices[]={0x04400000,0x04500000,0x04600000,0x04800000};
 typedef struct { void *base; size_t bytes; } Mapping;
 static Mapping maps[MAX_MAPS];
-static unsigned map_count, handlers;
+static unsigned map_count;
 static u32 ram_size;
-static int window_fd=-1;               /* the memfd behind every window, kept for TLB mappings */
+static int store_open;                 /* the backing store behind every window, kept for TLB mappings */
 typedef struct { void *base; size_t bytes; u32 physical; } TlbMapping;
 static TlbMapping tlb[TLB_ENTRIES][2];
-enum { SIGNAL_COUNT=2 };
-static struct sigaction prior[SIGNAL_COUNT];
-static const int signals[SIGNAL_COUNT]={SIGSEGV,RESUME_SIGNAL};
 static _Thread_local struct {
-    ucontext_t saved;
+    N64cHostContext saved;
     u32 physical, value;
     unsigned length, reg;
     int stage, write, error;
-    _Alignas(16) unsigned char stack[65536];
+    unsigned char stack[65536]; /* its top is aligned by hand (redirect): thread-local storage promises no more than 4 */
 } transaction;
 
-static _Noreturn void fault_stop(void)
+static _Noreturn void fault_stop_at(int line)
 {
     static const char message[]="n64compat: invalid MMIO fault\n";
+#ifdef _WIN32
+    char where[48];
+    const int n=snprintf(where,sizeof where,"n64compat: fault stop at n64c_memory.c:%d\n",line);
+    if (n>0) (void)write(STDERR_FILENO,where,(size_t)n);
+#else
+    (void)line;
+#endif
     (void)write(STDERR_FILENO,message,sizeof message-1);
     _Exit(78);
 }
+#define fault_stop() fault_stop_at(__LINE__)
 static _Noreturn void dispatch(void);
 
-static void redirect(ucontext_t *context)
+static void redirect(void *context)
 {
     uintptr_t top=(uintptr_t)(transaction.stack+sizeof transaction.stack);
     top=(top & ~(uintptr_t)15)-sizeof(uintptr_t);
     *(uintptr_t *)top=0; /* dispatch never returns */
-    context->uc_mcontext.gregs[REG_ESP]=(greg_t)top;
-    context->uc_mcontext.gregs[REG_EIP]=(greg_t)(uintptr_t)dispatch;
-    context->uc_mcontext.gregs[REG_EFL]&=~(greg_t)0x400;
+    n64c_host_redirect(context,top,(void (*)(void))dispatch);
 }
 static int device_page(uintptr_t address,u32 *physical)
 {
@@ -69,20 +105,18 @@ static int device_page(uintptr_t address,u32 *physical)
         if (*physical>=devices[i] && *physical<devices[i]+PAGE_BYTES) return 1;
     return 0;
 }
-extern char __executable_start[];
 /* A guest KUSEG address the guest maps through the TLB (osMapTLB): below the host image, where the host itself
- * maps nothing, and above the lowest 64 KiB that Linux never maps (vm.mmap_min_addr), so a null-pointer access
- * stays a host fault. */
+ * maps nothing, and above the lowest 64 KiB that the host never maps (Linux vm.mmap_min_addr, the Windows null
+ * region), so a null-pointer access stays a host fault. */
 static int guest_virtual(uintptr_t address)
 {
-    return ram_size && address>=0x10000u && address<(uintptr_t)__executable_start;
+    return ram_size && address>=0x10000u && address<n64c_host_image_start();
 }
-static int host_traced(void);
 /* Every named stop ends the same way: under a debugger through the stop function it breaks on, so the stop is
  * held with its stacks; otherwise the line is written and the process exits 78. `line` is "boot-missing: S\n". */
 static _Noreturn void named_stop(const char *line,size_t length)
 {
-    if (n64c_boot_missing && host_traced()) {
+    if (N64C_LINKED(n64c_boot_missing) && n64c_host_traced()) {
         char subject[64];
         size_t start=sizeof "boot-missing: "-1,n=length-start-1;
         if (n>=sizeof subject) n=sizeof subject-1;
@@ -112,15 +146,14 @@ static _Noreturn void code_pointer_stop(u32 address)
     for (int i=0;i<8;i++) line[sizeof line-3-i]=hex[(address>>(4*i))&15u];
     named_stop(line,sizeof line-1);
 }
-static int guest_code_fetch(const ucontext_t *context,uintptr_t address)
+static int guest_code_fetch(const N64cHostFault *fault)
 {
-    if ((uintptr_t)context->uc_mcontext.gregs[REG_EIP]!=address || !ram_size) return 0;
-    return guest_virtual(address) || (address>=0x80000000u && address<0xC0000000u);
+    if (fault->pc!=fault->address || !ram_size) return 0;
+    return guest_virtual(fault->address) || (fault->address>=0x80000000u && fault->address<0xC0000000u);
 }
 /* Decode the one native mov that faulted on a register page: 8B/89 mov r32,r/m32 and r/m32,r32, C7 /0 mov
  * r/m32,imm32, A1/A3 mov eax,moffs32 and moffs32,eax. The address is the fault's, so only the length, the direction
  * and the register are read; anything else (prefixes, byte or 16-bit access, read-modify-write) is refused. */
-static const int gpr[8]={REG_EAX,REG_ECX,REG_EDX,REG_EBX,REG_ESP,REG_EBP,REG_ESI,REG_EDI};
 int n64c_memory_decode_mov(const unsigned char *code,unsigned *length,unsigned *reg,unsigned *write,u32 *immediate)
 {
     unsigned n=1;
@@ -150,17 +183,33 @@ int n64c_memory_decode_mov(const unsigned char *code,unsigned *length,unsigned *
     *length=n;
     return 1;
 }
-static int decode_mov(ucontext_t *context,int write_fault,unsigned *length,unsigned *reg,unsigned *write,u32 *value)
+#if defined(__arm__)
+/* The decoded ARM transfer of the faulting instruction, kept for mmio_finish. */
+static _Thread_local N64cArmTransfer arm_transfer;
+static int decode_mov(const N64cHostFault *fault,unsigned *length,unsigned *reg,unsigned *write,u32 *value)
 {
-    const unsigned char *code=(const unsigned char *)(uintptr_t)context->uc_mcontext.gregs[REG_EIP];
-    u32 immediate;
-    if (!n64c_memory_decode_mov(code,length,reg,write,&immediate) || (int)*write!=write_fault) return 0;
-    if (*write) *value=code[0]==0xC7 ? immediate : (u32)context->uc_mcontext.gregs[gpr[*reg]];
+    N64cArmTransfer t;
+    if (!n64c_memory_decode_arm(*(const u32 *)fault->pc,&t)) return 0; /* the decoded instruction says whether it stores */
+    arm_transfer=t;
+    *length=4;
+    *reg=t.rt;
+    *write=(unsigned)!t.load;
+    if (*write) *value=n64c_host_reg(fault->context,t.rt);
     return 1;
 }
-static _Noreturn void mmio_decode_stop(const ucontext_t *context)
+#else
+static int decode_mov(const N64cHostFault *fault,unsigned *length,unsigned *reg,unsigned *write,u32 *value)
 {
-    const unsigned char *code=(const unsigned char *)(uintptr_t)context->uc_mcontext.gregs[REG_EIP];
+    const unsigned char *code=(const unsigned char *)fault->pc;
+    u32 immediate;
+    if (!n64c_memory_decode_mov(code,length,reg,write,&immediate) || (int)*write!=fault->write) return 0;
+    if (*write) *value=code[0]==0xC7 ? immediate : n64c_host_reg(fault->context,*reg);
+    return 1;
+}
+#endif
+static _Noreturn void mmio_decode_stop(const N64cHostFault *fault)
+{
+    const unsigned char *code=(const unsigned char *)fault->pc;
     static const char hex[]="0123456789abcdef";
     char line[]="boot-missing: MMIO-instruction 000000000000\n";
     for (int i=0;i<6;i++) {
@@ -172,12 +221,24 @@ static _Noreturn void mmio_decode_stop(const ucontext_t *context)
 /* The component call is done: a read lands in the register, and the saved context moves past the instruction. */
 static void mmio_finish(u32 value)
 {
-    if (!transaction.write) {
-        const unsigned char *code=(const unsigned char *)(uintptr_t)transaction.saved.uc_mcontext.gregs[REG_EIP];
-        const int reg=code[0]==0xA1 ? 0 : (int)transaction.reg;
-        transaction.saved.uc_mcontext.gregs[gpr[reg]]=(greg_t)value;
+#if defined(__arm__)
+    const N64cArmTransfer *t=&arm_transfer;
+    if (t->writeback) { /* pre-indexed with writeback: the base becomes the address; post-indexed: the offset is added */
+        u32 snapshot[16];
+        for (unsigned i=0;i<16;i++) snapshot[i]=n64c_host_reg(&transaction.saved,i);
+        const u32 offset=n64c_memory_arm_offset(t,snapshot);
+        const u32 base=snapshot[t->rn];
+        n64c_host_set_reg(&transaction.saved,t->rn,t->up ? base+offset : base-offset);
     }
-    transaction.saved.uc_mcontext.gregs[REG_EIP]+=(greg_t)transaction.length;
+    if (!transaction.write) n64c_host_set_reg(&transaction.saved,t->rt,value);
+#else
+    if (!transaction.write) {
+        const unsigned char *code=(const unsigned char *)n64c_host_pc(&transaction.saved);
+        const unsigned reg=code[0]==0xA1 ? 0 : transaction.reg;
+        n64c_host_set_reg(&transaction.saved,reg,value);
+    }
+#endif
+    n64c_host_set_pc(&transaction.saved,n64c_host_pc(&transaction.saved)+transaction.length);
 }
 /* A debugger holds the process (the tile runs under gdb). It stops on every signal the handlers below take
  * on purpose, so the supervisor passes SIGSEGV and SIGUSR2 through; a genuine host fault then dies in
@@ -196,127 +257,57 @@ int n64c_memory_tracer_in_status(const char *text)
     }
     return 0;
 }
-static int host_traced(void)
+/* The module's part of a fault: the OS backend calls this first and chains to the OS default when it returns 0. */
+int n64c_memory_on_fault(const N64cHostFault *fault)
 {
-    char text[2048];
-    int fd=open("/proc/self/status",O_RDONLY);
-    if (fd<0) return 0;
-    ssize_t got=read(fd,text,sizeof text-1);
-    (void)close(fd);
-    if (got<=0) return 0;
-    text[got]=0;
-    return n64c_memory_tracer_in_status(text);
-}
-/* Words at a host address, 1 when all were readable (a bad frame pointer is no second fault). */
-static int read_words(uintptr_t at,u32 *words,unsigned count)
-{
-    struct iovec local={words,count*sizeof *words},remote={(void *)at,count*sizeof *words};
-    return process_vm_readv(getpid(),&local,1,&remote,1,0)==(ssize_t)(count*sizeof *words);
-}
-int n64c_memory_fault_json(char *out,size_t cap,int signo,const void *given,const void *opaque,int tid)
-{
-    const siginfo_t *info=given;
-    const greg_t *g=((const ucontext_t *)opaque)->uc_mcontext.gregs;
-    static const struct { const char *name; int reg; } regs[]={{"eax",REG_EAX},{"ecx",REG_ECX},{"edx",REG_EDX},
-        {"ebx",REG_EBX},{"esp",REG_ESP},{"ebp",REG_EBP},{"esi",REG_ESI},{"edi",REG_EDI}};
-    const unsigned err=(unsigned)g[REG_ERR];
-    size_t used=0;
-    u32 words[8];
-#define PUT(...) do { int n_=snprintf(out+used,cap-used,__VA_ARGS__); if (n_<0 || (size_t)n_>=cap-used) return 0; used+=(size_t)n_; } while (0)
-    PUT("{\"signal\":%d,\"code\":%d,\"si_addr\":\"0x%08x\",\"access\":\"%s\",\"tid\":%d,\"eip\":\"0x%08x\","
-        "\"eflags\":\"0x%08x\",\"regs\":{",signo,info->si_code,(unsigned)(uintptr_t)info->si_addr,
-        (err&16) ? "exec" : (err&2) ? "write" : "read",tid,(unsigned)g[REG_EIP],(unsigned)g[REG_EFL]);
-    for (unsigned i=0;i<sizeof regs/sizeof *regs;i++) PUT("%s\"%s\":\"0x%08x\"",i ? "," : "",regs[i].name,(unsigned)g[regs[i].reg]);
-    PUT("},\"stack\":[");
-    const unsigned stack_words=read_words((uintptr_t)g[REG_ESP],words,8) ? 8 : 0;
-    for (unsigned i=0;i<stack_words;i++) PUT("%s\"0x%08x\"",i ? "," : "",words[i]);
-    PUT("],\"args\":[");
-    if (read_words((uintptr_t)g[REG_EBP]+8,words,4))
-        for (unsigned i=0;i<4;i++) PUT("%s\"0x%08x\"",i ? "," : "",words[i]);
-    PUT("],\"frames\":[");
-    uintptr_t frame=(uintptr_t)g[REG_EBP];
-    for (unsigned depth=0;depth<8 && read_words(frame,words,2);depth++) {
-        PUT("%s\"0x%08x\"",depth ? "," : "",words[1]);
-        if (words[0]<=frame) break;
-        frame=words[0];
-    }
-    PUT("]}\n");
-#undef PUT
-    return (int)used;
-}
-/* Where a host fault is recorded for the supervisor: N64C_FAULT_FRAME names the file (the run folder's). */
-static void fault_record(const siginfo_t *info,const ucontext_t *context)
-{
-    const char *path=getenv("N64C_FAULT_FRAME");
-    char text[2048];
-    const int length=path ? n64c_memory_fault_json(text,sizeof text,SIGSEGV,info,context,(int)syscall(SYS_gettid)) : 0;
-    const int fd=length>0 ? open(path,O_WRONLY|O_CREAT|O_TRUNC,0644) : -1;
-    if (fd<0) return;
-    (void)write(fd,text,(size_t)length);
-    (void)close(fd);
-}
-static void signal_handler(int signal_number,siginfo_t *info,void *opaque)
-{
-    ucontext_t *context=opaque;
-    if (signal_number==SIGSEGV && guest_code_fetch(context,(uintptr_t)info->si_addr)) {
-        if (n64c_diag_code_pointer && n64c_diag_code_pointer((u32)(uintptr_t)info->si_addr,context)) return;
-        code_pointer_stop((u32)(uintptr_t)info->si_addr);
-    }
-    if (signal_number==RESUME_SIGNAL && transaction.stage==3) {
-        *context=transaction.saved;
-        transaction.stage=0;
-        errno=transaction.error;
-        return;
+    void *context=fault->context;
+    if (guest_code_fetch(fault)) {
+        n64c_host_describe("code-pointer call from",fault,1);
+        if (n64c_diag_code_pointer && n64c_diag_code_pointer((u32)fault->address,context)) return 1;
+        code_pointer_stop((u32)fault->address);
     }
     u32 physical;
-    if (signal_number==SIGSEGV && transaction.stage==0 &&
-        device_page((uintptr_t)info->si_addr,&physical)) {
+    if (transaction.stage==0 && device_page(fault->address,&physical)) {
         unsigned length,reg,write;
         u32 value=0;
-        const int write_fault=(context->uc_mcontext.gregs[REG_ERR]&2)!=0;
-        if ((physical & 3u) || !decode_mov(context,write_fault,&length,&reg,&write,&value)) mmio_decode_stop(context);
+        if ((physical & 3u) || !decode_mov(fault,&length,&reg,&write,&value)) mmio_decode_stop(fault);
         transaction.error=errno;
         transaction.physical=physical;
         transaction.write=(int)write;
         transaction.length=length;
         transaction.reg=reg;
         transaction.value=value;
-        transaction.saved=*context;
+        n64c_host_ctx_copy(&transaction.saved,context);
         transaction.stage=5;
         redirect(context);
-        return;
+        return 1;
     }
-    if (signal_number==SIGSEGV && transaction.stage==0 && guest_virtual((uintptr_t)info->si_addr)) {
+    if (transaction.stage==0 && guest_virtual(fault->address)) {
         if (!n64c_sched_on_guest()) {
             if (n64c_diag_fault &&
-                n64c_diag_fault(signal_number,info,context)) return;
-            tlb_miss_stop((u32)(uintptr_t)info->si_addr);
+                n64c_diag_fault(SIGSEGV,fault->info,context)) return 1;
+            n64c_host_describe("host thread TLB-miss at",fault,0); /* a host thread, not a guest thread */
+            tlb_miss_stop((u32)fault->address);
         }
         transaction.error=errno;
-        transaction.physical=(u32)(uintptr_t)info->si_addr; /* the guest virtual address (badvaddr) */
-        transaction.write=(context->uc_mcontext.gregs[REG_ERR]&2)!=0;
-        transaction.saved=*context;
+        transaction.physical=(u32)fault->address; /* the guest virtual address (badvaddr) */
+        transaction.write=fault->write;
+        n64c_host_ctx_copy(&transaction.saved,context);
         transaction.stage=6;
         redirect(context);
-        return;
+        return 1;
     }
     /* Run-on (the walk's diagnostic boot) records a host fault and returns from the faulting original function. */
-    if (signal_number==SIGSEGV && transaction.stage==0 &&
-        n64c_diag_fault && n64c_diag_fault(signal_number,info,context)) return;
-    if (signal_number==SIGSEGV) fault_record(info,context);
-    /* Preserve real faults outside the hardware windows. We install only over
-     * default handlers; returning retries the fault under the default action. */
-    if (signal_number==SIGSEGV && n64c_boot_missing && host_traced()) {
-        char subject[32];
-        snprintf(subject,sizeof subject,"host-fault-%08x",(unsigned)(uintptr_t)info->si_addr);
-        n64c_boot_missing(subject); /* the debugger's stop function; the process ends there */
-    }
-    for (unsigned i=0;i<SIGNAL_COUNT;i++)
-        if (signals[i]==signal_number) {
-            (void)sigaction(signal_number,&prior[i],NULL);
-            return;
-        }
-    fault_stop();
+    if (transaction.stage==0 && n64c_diag_fault && n64c_diag_fault(SIGSEGV,fault->info,context)) return 1;
+    return 0;
+}
+int n64c_memory_on_resume(void *context)
+{
+    if (transaction.stage!=3) return 0;
+    n64c_host_ctx_copy(context,&transaction.saved);
+    transaction.stage=0;
+    errno=transaction.error;
+    return 1;
 }
 static _Noreturn void dispatch(void)
 {
@@ -334,14 +325,10 @@ static _Noreturn void dispatch(void)
          * the guest gets is logged with the host instruction that took it, so a fault the guest service cannot
          * resolve (a wild pointer it answers with its crash path) names its code in the boot log. */
         fprintf(stderr,"n64c-fault: TLB-miss-%08x %s at host pc %#lx\n",(unsigned)transaction.physical,
-                transaction.write ? "store" : "load",(unsigned long)transaction.saved.uc_mcontext.gregs[REG_EIP]);
+                transaction.write ? "store" : "load",(unsigned long)n64c_host_pc(&transaction.saved));
         if (!n64c_sched_fault((transaction.write ? 3u : 2u)<<2,transaction.physical)) {
             /* Run-on: the saved context returns from the faulting original function instead. */
-            siginfo_t miss;
-            memset(&miss,0,sizeof miss);
-            miss.si_signo=SIGSEGV;
-            miss.si_addr=(void *)(uintptr_t)transaction.physical;
-            if (!n64c_diag_fault || !n64c_diag_fault(SIGSEGV,&miss,&transaction.saved))
+            if (!n64c_host_diag_tlb_miss(transaction.physical,&transaction.saved))
                 tlb_miss_stop(transaction.physical);
         }
         transaction.stage=3;
@@ -361,37 +348,37 @@ static _Noreturn void dispatch(void)
             transaction.stage=3;
         } else fault_stop();
     }
-    sigset_t resume;
-    sigemptyset(&resume);
-    sigaddset(&resume,RESUME_SIGNAL);
-    if (sigprocmask(SIG_UNBLOCK,&resume,NULL)!=0 || raise(RESUME_SIGNAL)!=0)
-        fault_stop();
-    fault_stop(); /* signal return resumes the original native instruction */
+    n64c_host_resume(); /* the resume restores the saved context: the original native instruction is past */
 }
-static int map_at(u32 address,size_t bytes,int protection,int fd,off_t offset)
+static int map_at(u32 address,size_t bytes,int protection,size_t offset)
 {
     if (map_count>=MAX_MAPS) return 0;
-    void *target=(void *)(uintptr_t)address;
-    void *result=mmap(target,bytes,protection,MAP_SHARED|MAP_FIXED_NOREPLACE,fd,offset);
-    if (result==MAP_FAILED) return 0;
-    if (result!=target) { munmap(result,bytes); return 0; }
+    void *result=n64c_host_map((uintptr_t)address,bytes,offset,protection);
+    if (!result) return 0;
     maps[map_count++]=(Mapping){result,bytes};
     return 1;
 }
-static int map_pair(u32 physical,size_t bytes,int protection,int fd,off_t offset)
+static int map_pair(u32 physical,size_t bytes,int protection,size_t offset)
 {
-    return map_at(0x80000000u+physical,bytes,protection,fd,offset) &&
-           map_at(0xA0000000u+physical,bytes,protection,fd,offset);
+    return map_at(0x80000000u+physical,bytes,protection,offset) &&
+           map_at(0xA0000000u+physical,bytes,protection,offset);
+}
+static int tlb_trace(void)
+{
+    static int on=-1;
+    if (on<0) { const char *text=getenv("N64C_TLB_TRACE"); on=text && *text && *text!='0'; }
+    return on;
 }
 void osUnmapTLB(s32 index)
 {
+    if (tlb_trace()) fprintf(stderr,"n64c-tlb: unmap %d\n",(int)index);
     if (index<0 || index>=TLB_ENTRIES) {
         fprintf(stderr,"n64c: osUnmapTLB index %d outside the native TLB model\n",(int)index);
         fault_stop();
     }
     for (unsigned j=0;j<2;j++) {
         TlbMapping *page=&tlb[index][j];
-        if (page->base && munmap(page->base,page->bytes)!=0) fault_stop();
+        if (page->base && n64c_host_tlb_unmap(page->base,page->bytes)!=0) fault_stop();
         *page=(TlbMapping){0};
     }
 }
@@ -402,8 +389,9 @@ void osUnmapTLBAll(void)
 void osMapTLB(s32 index,u32 pm,void *vaddr,u32 evenpaddr,u32 oddpaddr,s32 asid)
 {
     (void)asid;
+    if (tlb_trace()) fprintf(stderr,"n64c-tlb: map %d pm %#x v %p even %#x odd %#x\n",(int)index,(unsigned)pm,vaddr,(unsigned)evenpaddr,(unsigned)oddpaddr);
     const size_t page=(((size_t)pm|0x1FFFu)+1u)/2u;
-    if (index<0 || index>=TLB_ENTRIES || window_fd<0 || (uintptr_t)vaddr%(2*page)) {
+    if (index<0 || index>=TLB_ENTRIES || !store_open || (uintptr_t)vaddr%(2*page)) {
         fprintf(stderr,"n64c: osMapTLB index %d vaddr %p outside the native TLB model\n",(int)index,vaddr);
         fault_stop();
     }
@@ -413,26 +401,23 @@ void osMapTLB(s32 index,u32 pm,void *vaddr,u32 evenpaddr,u32 oddpaddr,s32 asid)
         if (pages[j]==0xFFFFFFFFu) continue;
         const u32 physical=pages[j]&0x1FFFFFFFu;
         void *target=(char *)vaddr+j*page;
-        void *result=physical%PAGE_BYTES || physical>ram_size || page>ram_size-physical ? MAP_FAILED :
-            mmap(target,page,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_FIXED_NOREPLACE,window_fd,(off_t)physical);
-        if (result!=target) {
+        int failed=physical%PAGE_BYTES || physical>ram_size || page>ram_size-physical ||
+            n64c_host_tlb_map(target,page,physical)!=0;
+        if (failed) {
             fprintf(stderr,"n64c: osMapTLB page 0x%08x -> %p not mappable\n",physical,target);
             fault_stop();
         }
-        tlb[index][j]=(TlbMapping){result,page,physical};
+        tlb[index][j]=(TlbMapping){target,page,physical};
     }
 }
 void n64c_memory_close(void)
 {
     osUnmapTLBAll();
-    if (window_fd>=0) { close(window_fd);window_fd=-1; }
-    while (handlers) {
-        --handlers;
-        (void)sigaction(signals[handlers],&prior[handlers],NULL);
-    }
+    if (store_open) { n64c_host_store_close();store_open=0; }
+    n64c_host_fault_uninstall();
     while (map_count) {
         --map_count;
-        munmap(maps[map_count].base,maps[map_count].bytes);
+        n64c_host_unmap(maps[map_count].base,maps[map_count].bytes);
     }
     ram_size=0;
     transaction.stage=0;
@@ -442,38 +427,22 @@ int n64c_memory_open(const N64cMemoryConfig *config)
     if (!config || map_count || (config->rdram_bytes!=0x400000u &&
         config->rdram_bytes!=0x800000u) || !config->rom_bytes ||
         config->rom_bytes>0x0FC00000u || !config->video_clock_hz ||
-        sysconf(_SC_PAGESIZE)!=PAGE_BYTES) return 0;
-    for (unsigned i=0;i<SIGNAL_COUNT;i++) {
-        if (sigaction(signals[i],NULL,&prior[i])!=0 || prior[i].sa_handler!=SIG_DFL)
-            return 0;
-    }
-    size_t cart_bytes=((size_t)config->rom_bytes+PAGE_BYTES-1u)&~(size_t)(PAGE_BYTES-1u);
-    int fd=memfd_create("n64c-address-windows",MFD_CLOEXEC);
-    if (fd<0) return 0;
-    size_t total=(size_t)config->rdram_bytes+cart_bytes+sizeof devices/sizeof devices[0]*PAGE_BYTES;
-    int ok=ftruncate(fd,(off_t)total)==0 &&
-        map_pair(0,config->rdram_bytes,PROT_READ|PROT_WRITE,fd,0) &&
-        map_pair(0x10000000u,cart_bytes,PROT_READ|PROT_WRITE,fd,(off_t)config->rdram_bytes);
+        n64c_host_page_size()!=PAGE_BYTES) return 0;
+    const size_t granule=n64c_host_granule();
+    size_t cart_bytes=((size_t)config->rom_bytes+granule-1u)&~(granule-1u);
+    size_t total=(size_t)config->rdram_bytes+cart_bytes+sizeof devices/sizeof devices[0]*granule;
+    if (!n64c_host_fault_install()) return 0;
+    if (!n64c_host_store_create(total)) { n64c_host_fault_uninstall();return 0; }
+    store_open=1;
+    int ok=map_pair(0,config->rdram_bytes,N64C_PROT_RW,0) &&
+        map_pair(0x10000000u,cart_bytes,N64C_PROT_RW,(size_t)config->rdram_bytes);
     if (ok) {
         ok=n64c_pi_read(0,(void *)(uintptr_t)0x90000000u,config->rom_bytes)==0;
-        ok=ok && mprotect((void *)(uintptr_t)0x90000000u,cart_bytes,PROT_READ)==0 &&
-            mprotect((void *)(uintptr_t)0xB0000000u,cart_bytes,PROT_READ)==0;
+        ok=ok && n64c_host_protect((void *)(uintptr_t)0x90000000u,cart_bytes,N64C_PROT_READ)==0 &&
+            n64c_host_protect((void *)(uintptr_t)0xB0000000u,cart_bytes,N64C_PROT_READ)==0;
     }
     for (unsigned i=0;ok && i<sizeof devices/sizeof devices[0];i++)
-        ok=map_pair(devices[i],PAGE_BYTES,PROT_NONE,fd,
-            (off_t)(config->rdram_bytes+cart_bytes+i*PAGE_BYTES));
-    if (ok) window_fd=fd; else close(fd);
-    if (ok) {
-        struct sigaction action;
-        memset(&action,0,sizeof action);
-        action.sa_sigaction=signal_handler;
-        action.sa_flags=SA_SIGINFO;
-        sigemptyset(&action.sa_mask);
-        for (unsigned i=0;ok && i<SIGNAL_COUNT;i++) {
-            ok=sigaction(signals[i],&action,NULL)==0;
-            if (ok) handlers++;
-        }
-    }
+        ok=map_pair(devices[i],granule,N64C_PROT_NONE,(size_t)config->rdram_bytes+cart_bytes+i*granule);
     if (!ok) { n64c_memory_close(); return 0; }
     ram_size=config->rdram_bytes;
     n64c_mmio_reset(config->video_clock_hz);

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Shim tests live beside the shim: N64 names are allowed here and nowhere else outside the shim and the port's boundary directory.
-foreach(t sched scsched interrupts gu pi_cont si_pfs cpak dl audio vi_dp rnc memory pi_relocate pi_resources pi_packed system fpu fpu_thread al albnk tas)
+foreach(t sched scsched interrupts gu pi_cont si_pfs cpak dl audio vi_dp rnc memory memory_win pi_relocate pi_resources pi_packed system fpu fpu_thread al albnk tas)
     add_executable(n64c_test_${t} test_${t}.c)
     target_link_libraries(n64c_test_${t} PRIVATE n64compat)
     target_compile_options(n64c_test_${t} PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)
@@ -18,8 +18,12 @@ endif()
 
 if(N64C_M32)
     target_compile_options(n64c_test_memory PRIVATE -msse2 -mfpmath=sse)
+    target_compile_options(n64c_test_memory_win PRIVATE -msse2 -mfpmath=sse)
 endif()
-set_tests_properties(n64c_memory PROPERTIES TIMEOUT 20)
+if(WIN32) # the windows live above 2 GB
+    target_link_options(n64c_test_memory_win PRIVATE -Wl,--large-address-aware -Wl,--image-base=0x10000000 -Wl,--disable-dynamicbase -Wl,--stack,262144)
+endif()
+set_tests_properties(n64c_memory n64c_memory_win PROPERTIES TIMEOUT 20)
 
 
 add_executable(n64c_test_frame ../boot/frame.c ../boot/missing.c test_frame.c)

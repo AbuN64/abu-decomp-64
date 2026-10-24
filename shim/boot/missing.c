@@ -12,7 +12,6 @@ __attribute__((noinline, noreturn)) void n64c_boot_stopped(void)
 {
     _Exit(78);
 }
-extern void n64c_trace_summary(void) __attribute__((weak)); /* trace.c, when the census is built in */
 long long n64c_boot_missing(const char *symbol)
 {
     if (n64c_diag_missing && n64c_diag_missing(symbol))

@@ -27,6 +27,7 @@
  * carries so a viewer can time key -> frame. */
 #include "n64c_tas.h"
 #include "n64c_os.h"
+#include "n64c_hook.h"
 #include "n64c_memory.h"
 #include "tas_state.h"
 #include <stdint.h>
@@ -35,9 +36,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#endif
 
 static int started;
 static FILE *play, *record;
@@ -63,6 +66,14 @@ static int live_fresh[MAXCONTROLLERS];
 static atomic_int taken;
 static atomic_ulong live_seq;
 
+#ifdef _WIN32
+/* Live input from another process is a Unix datagram socket (Linux and Android); the Windows build runs without it. */
+static void live_open(const char *path)
+{
+    fprintf(stderr, "n64c-tas: no live input on Windows, N64C_INPUT %s ignored\n", path);
+}
+static void live_drain(void) {}
+#else
 /* "@name" is a Linux abstract socket (no file, no path length limit from the run folder); anything else a path.
  * A socket that cannot be bound leaves the run without live input (one warning), never stops it. */
 static void live_open(const char *path)
@@ -118,6 +129,8 @@ static void live_drain(void)
         live_fresh[who] = 1;
     }
 }
+
+#endif /* _WIN32 */
 
 static void start(void)
 {
@@ -230,7 +243,7 @@ static int next(OSContPad *pad)
 }
 /* Eight independent 32-bit lanes (multiply-xorshift), folded into 64 bits at the end: order sensitive, and the lanes
  * run in parallel (SIMD where the CPU has a 32-bit vector multiply), so hashing 8 MB every poll stays cheap. */
-#if (defined(__i386__) || defined(__x86_64__)) && defined(__GNUC__)
+#if (defined(__i386__) || defined(__x86_64__)) && defined(__GNUC__) && !defined(_WIN32) /* no ifunc on PE */
 __attribute__((target_clones("avx2", "sse4.1", "default")))
 #endif
 uint64_t n64c_tas_hash_bytes(const void *data, size_t bytes)
@@ -297,7 +310,11 @@ static void state_poll(void)
 }
 
 /* Defined by the boot's frame loop (boot/frame.c): its closing frame-rate line, written before the process ends here. */
+#ifdef _WIN32
+void n64c_boot_run_ended(void); /* boot/frame.c, always linked into the Windows game */
+#else
 void n64c_boot_run_ended(void) __attribute__((weak));
+#endif
 int n64c_tas_pads(void)
 {
     if (!started) start();
@@ -317,7 +334,7 @@ void n64c_tas_poll(OSContPad *pad)
         if (play_done) {
             if (exit_after >= 0 && polls - played >= exit_after) {
                 fprintf(stderr, "n64c-tas: done polls=%ld\n", polls);
-                if (n64c_boot_run_ended)
+                if (N64C_LINKED(n64c_boot_run_ended))
                     n64c_boot_run_ended();
                 fflush(stderr);
                 _Exit(0);

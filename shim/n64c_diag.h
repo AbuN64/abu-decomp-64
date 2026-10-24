@@ -6,9 +6,21 @@
 #ifndef N64C_DIAG_H
 #define N64C_DIAG_H
 #include "n64c_os.h"
+#include "n64c_hook.h"
 /* A named stop (the text after "boot-missing: "). can_continue: the site has a way on (skip the task, return 0,
  * leave the bytes raw). Returns 1 when the boot goes on; 0 means the site stops as before (when run-on is active it
  * has then also printed the run's failure list). */
+#ifdef _WIN32
+/* The Windows build links no run-on diagnostics (n64c_hook.h): each hook is an absent function. n64c_boot_missing is the game's
+ * own (boot/missing.c) and always linked. */
+#define n64c_diag_stop N64C_ABSENT(int (*)(const char *,int))
+#define n64c_diag_missing N64C_ABSENT(int (*)(const char *))
+#define n64c_diag_fault N64C_ABSENT(int (*)(int,void *,void *))
+#define n64c_diag_code_pointer N64C_ABSENT(int (*)(u32,void *))
+#define n64c_diag_layout N64C_ABSENT(void (*)(const char *,u32,u32,const void *))
+#define n64c_diag_rendered_frame N64C_ABSENT(void (*)(void))
+long long n64c_boot_missing(const char *symbol);
+#else
 int n64c_diag_stop(const char *subject,int can_continue) __attribute__((weak));
 /* A call into original code the boot has not linked (a generated stop function). Returns 1 when the call returns 0
  * to its caller and the boot goes on. */
@@ -25,4 +37,5 @@ void n64c_diag_layout(const char *what,u32 rom,u32 bytes,const void *ram) __attr
 void n64c_diag_rendered_frame(void) __attribute__((weak));
 /* The named boot stop (boot/missing.c). Linked in the boot driver only. */
 long long n64c_boot_missing(const char *symbol) __attribute__((weak));
+#endif
 #endif

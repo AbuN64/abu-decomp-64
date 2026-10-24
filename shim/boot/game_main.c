@@ -9,6 +9,7 @@
 #include "install/inst_ui.h"
 #include "n64c_internal.h"
 #include "n64c_memory.h"
+#include "os/n64c_host.h"
 #include "sched_glue.h"
 #include "trace.h"
 #include <SDL3/SDL_filesystem.h>
@@ -27,7 +28,11 @@
 enum { EXIT_RUNTIME = 1, EXIT_USAGE = 2, EXIT_PROGRAM_TREE = 4 };
 
 /* N64C_REPLAY=PLAN (replay.c, `decomp behave --replay`): run recorded function calls on the loaded image instead of booting. */
+#ifdef _WIN32
+int n64c_replay_run(const char *plan); /* replay.c: a stub on Windows */
+#else
 int n64c_replay_run(const char *plan) __attribute__((weak));
+#endif
 
 typedef struct {
     const char *rom, *user_dir, *capture, *pak, *cpak;
@@ -139,8 +144,7 @@ static int parse(int argc,char **argv,Options *o)
     return 1;
 }
 
-/* stderr also goes to <user>/logs/<game>.log: a child process copies the pipe to both, so nothing is lost
- * when this process dies, and it ends when the last writer is gone. */
+/* stderr also goes to <user>/logs/<game>.log (os/n64c_host.h: nothing is lost when this process dies). */
 static void tee_log(const char *user,const char *name)
 {
     char logs[INST_PATH],path[INST_PATH];
@@ -148,35 +152,7 @@ static void tee_log(const char *user,const char *name)
         snprintf(path,sizeof path,"%s/%s.log",logs,name)>=(int)sizeof path)
         return;
     inst_log_rotate(logs,name,5);
-    int log=open(path,O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC,0644),fds[2];
-    if (log<0) return;
-    if (pipe(fds)) { close(log);return; }
-    fflush(stderr);
-    pid_t pid=fork();
-    if (pid<0) { close(log);close(fds[0]);close(fds[1]);return; }
-    if (!pid) {
-        close(fds[1]);
-        close(STDIN_FILENO);
-        close(STDOUT_FILENO);
-        signal(SIGINT,SIG_IGN);
-        signal(SIGTERM,SIG_IGN);
-        signal(SIGHUP,SIG_IGN);
-        signal(SIGPIPE,SIG_IGN);
-        char buf[4096];
-        for (ssize_t n;(n=read(fds[0],buf,sizeof buf))!=0;) {
-            if (n<0) {
-                if (errno==EINTR) continue;
-                break;
-            }
-            (void)!write(STDERR_FILENO,buf,(size_t)n);
-            (void)!write(log,buf,(size_t)n);
-        }
-        _exit(0);
-    }
-    close(fds[0]);
-    close(log);
-    if (dup2(fds[1],STDERR_FILENO)>=0) setvbuf(stderr,NULL,_IONBF,0);
-    close(fds[1]);
+    n64c_host_tee_stderr(path);
 }
 
 static int boot(const Options *o,const char *cart_path,const char *base,const char *user)
@@ -302,7 +278,7 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
     }
     const char *replay=getenv("N64C_REPLAY");
     if (replay && *replay) {
-        if (!n64c_replay_run) {
+        if (!N64C_LINKED(n64c_replay_run)) {
             fprintf(stderr,"boot-input: this build has no function replay (N64C_REPLAY)\n");
             n64c_shutdown();
             return EXIT_RUNTIME;
@@ -371,7 +347,7 @@ static int from_rom(const Options *o,const char *user,const char *base,InstAsset
     return 0;
 }
 
-int main(int argc,char **argv)
+static int program(int argc,char **argv)
 {
     Options o;
     if (!parse(argc,argv,&o)) return EXIT_USAGE;
@@ -428,4 +404,11 @@ int main(int argc,char **argv)
         return 0;
     }
     return boot(&o,assets.cart,base,user);
+}
+
+int main(int argc,char **argv)
+{
+    const int elsewhere=n64c_host_process_start();
+    if (elsewhere>=0) return elsewhere;
+    return n64c_host_run(program,argc,argv);
 }

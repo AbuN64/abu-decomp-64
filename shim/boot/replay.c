@@ -22,6 +22,15 @@
  *     res ID nomem PHYS              an input outside RDRAM
  * The function's own callees run natively too; shim functions they reach run against an unstarted shim, so a case
  * that faults inside the shim is the tool's to classify (EIP), never the game's. */
+#ifdef _WIN32
+/* The replay tool forks a child per case; the Windows build has no fork and no replay. */
+#include <stdio.h>
+int n64c_replay_run(const char *plan)
+{
+    fprintf(stderr, "replay: %s: function replay needs fork and is not available on Windows\n", plan);
+    return 2;
+}
+#else
 #define _GNU_SOURCE
 #include "n64c_memory.h"
 #include <errno.h>
@@ -72,7 +81,11 @@ static void on_fault(int signo, siginfo_t *info, void *context)
 {
     const ucontext_t *uc = context;
     say("res %s crash %d %lx %lx\n", current_id, signo, (unsigned long)(uintptr_t)info->si_addr,
+#if defined(__arm__)
+        (unsigned long)uc->uc_mcontext.arm_pc);
+#else
         (unsigned long)uc->uc_mcontext.gregs[REG_EIP]);
+#endif
     _exit(0);
 }
 
@@ -255,3 +268,4 @@ int n64c_replay_run(const char *plan)
     fprintf(stderr, "replay: %u cases\n", cases);
     return 0;
 }
+#endif /* _WIN32 */

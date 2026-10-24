@@ -11,7 +11,12 @@ extern const char *volatile n64c_boot_stop_symbol;
 extern void (*volatile n64c_boot_stop_hook)(const char *symbol);
 /* Coverage flavour (coverage.c): write the gcov counters. Call it before n64c_boot_stopped, where a debugger holds and
  * then kills the process. Absent (NULL) in every other build. */
+#ifdef _WIN32
+#include "../n64c_hook.h"
+#define n64c_coverage_dump N64C_ABSENT(void (*)(void))
+#else
 void n64c_coverage_dump(void) __attribute__((weak));
+#endif
 __attribute__((noreturn)) void n64c_boot_stopped(void);
 long long n64c_boot_missing(const char *symbol);
 #endif

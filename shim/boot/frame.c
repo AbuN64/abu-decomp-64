@@ -12,11 +12,26 @@
 #include "n64c_dltrace.h"
 #include "n64c_audio.h"
 #include "audio_abi/n64a_abi.h"
+#include "os/n64c_host.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+/* A new file for writing that must not exist yet (fopen's "wbx"; the C runtime of Windows has no "x"). */
+static FILE *fopen_new(const char *path)
+{
+#ifdef _WIN32
+    const int fd=_open(path,_O_WRONLY|_O_CREAT|_O_EXCL|_O_BINARY,0644);
+    return fd<0 ? NULL : _fdopen(fd,"wb");
+#else
+    return fopen(path,"wbx");
+#endif
+}
 
 /* Movie comparison shots are small: enough to see a wrong screen, cheap to write every few polls. */
 #define TAS_SHOT_WIDTH 320
@@ -54,7 +69,7 @@ static void first_graphics(const OSTask *task)
     u32 physical=task ? n64c_memory_physical(task->data_ptr) : 0;
     const unsigned char *data=task && task->data_ptr && task->data_size && !(task->data_size%8)
         ? n64c_memory_ram(physical,task->data_size) : NULL;
-    FILE *out=data ? fopen(path,"wbx") : NULL;
+    FILE *out=data ? fopen_new(path) : NULL;
     int ok=out!=NULL;
     for (u32 i=0;ok && i<task->data_size;i+=4) {
         u32 word;memcpy(&word,data+i,4);
@@ -245,7 +260,7 @@ static int write_presented(const char *path,u32 width,u32 height)
 {
     uint32_t *pixels=read_presented(width,height,0,0);
     if (!pixels) return 0;
-    FILE *out=fopen(path,"wbx");
+    FILE *out=fopen_new(path);
     if (!out) { free(pixels);perror("boot-frame output");return 0; }
     int ok=fprintf(out,"P6\n%u %u\n255\n",width,height)>0;
     for (size_t i=0;i<(size_t)width*height && ok;i++) {
@@ -392,10 +407,7 @@ int n64c_parse_pak(const char *text,u32 profile_bytes,u32 *ram)
 }
 #define CHECK_W 284
 #define CHECK_H 222
-static void sleep_until(const struct timespec *due)
-{
-    while (clock_nanosleep(CLOCK_MONOTONIC,TIMER_ABSTIME,due,NULL)!=0) {}
-}
+static void sleep_until(const struct timespec *due) { n64c_host_sleep_until(due); }
 int n64c_unlock_rate(const char *text,u32 refresh_hz,u32 *hz)
 {
     if (!text || !*text || !strcmp(text,"1")) { *hz=refresh_hz>120 ? refresh_hz : 120;return 1; }

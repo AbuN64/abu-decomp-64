@@ -12,11 +12,41 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
-#if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
+#if (defined(__linux__) && (defined(__i386__) || defined(__x86_64__))) || (defined(_WIN32) && defined(__i386__))
 #include <xmmintrin.h>
 #define NATIVE_FPU 1
+#define NATIVE_SSE 1
+#elif defined(__linux__) && defined(__arm__)
+/* ARM VFP: the rounding mode and flags are the host's; trapping exceptions are not an ARM feature, so a guest that
+ * enables them stops by name. No SSE control register to cross-check. */
+#define NATIVE_FPU 1
+#define NATIVE_SSE 0
 #else
 #define NATIVE_FPU 0
+#define NATIVE_SSE 0
+#endif
+#if NATIVE_FPU && defined(_WIN32)
+/* fegetexcept, feenableexcept and fedisableexcept are glibc's. The trap masks sit in the x87 control word (bits 0..5, a set
+ * bit masks) and in MXCSR (bits 7..12), both in the FE_ bit order, and are kept equal. */
+static int fegetexcept(void)
+{
+    unsigned short word;
+    __asm__ volatile("fnstcw %0" : "=m"(word));
+    return ~word & FE_ALL_EXCEPT;
+}
+static void set_masks(int excepts, int masked)
+{
+    unsigned short word;
+    excepts &= FE_ALL_EXCEPT;
+    __asm__ volatile("fnstcw %0" : "=m"(word));
+    word = (unsigned short)(masked ? word | excepts : word & ~excepts);
+    __asm__ volatile("fldcw %0" : : "m"(word));
+    unsigned csr = _mm_getcsr();
+    csr = masked ? csr | ((unsigned)excepts << 7) : csr & ~((unsigned)excepts << 7);
+    _mm_setcsr(csr);
+}
+static int feenableexcept(int excepts) { const int previous = fegetexcept(); set_masks(excepts, 0); return previous; }
+static int fedisableexcept(int excepts) { const int previous = fegetexcept(); set_masks(excepts, 1); return previous; }
 #endif
 static N64cSystemGlobals state;
 static fenv_t host_environment;
@@ -65,11 +95,15 @@ u32 n64c_fpu_get_control(void)
     if (fetestexcept(FE_ALL_EXCEPT)) stop("FPU-status");
     u32 result=0;
     int mode=fegetround(), enabled=fegetexcept();
+#if !NATIVE_SSE
+    if (enabled<0) enabled=0; /* no trap control on this CPU: nothing is enabled */
+#endif
     unsigned i;
     for (i=0;i<4 && rounding[i]!=mode;i++) {}
     if (i==4 || enabled<0) stop("FPU-control");
     result=i;
     for (i=0;i<5;i++) if (enabled & exceptions[i]) result |= 1u<<(7+i);
+#if NATIVE_SSE
     unsigned csr=_mm_getcsr();
     /* Original units use SSE arithmetic. Reject disagreement with x87 control
      * rather than silently reporting whichever control register was read first. */
@@ -83,6 +117,7 @@ u32 n64c_fpu_get_control(void)
     unsigned flush=csr & ((1u<<15)|(1u<<6));
     if (flush && flush!=((1u<<15)|(1u<<6))) stop("FPU-flush-mismatch");
     if (flush) result |= 1u<<24;
+#endif
     return result;
 #else
     stop("FPU-platform");
@@ -98,9 +133,13 @@ u32 n64c_fpu_set_control(u32 control)
     for (unsigned i=0;i<5;i++) if (control & (1u<<(7+i))) enabled |= exceptions[i];
     if (fedisableexcept(FE_ALL_EXCEPT)<0 || fesetround(rounding[control&3u])!=0 ||
         (enabled && feenableexcept(enabled)<0)) stop("FPU-control");
+#if NATIVE_SSE
     unsigned csr=_mm_getcsr() & ~((1u<<15)|(1u<<6));
     if (control & (1u<<24)) csr |= (1u<<15)|(1u<<6);
     _mm_setcsr(csr);
+#else
+    if (control & (1u<<24)) stop("FPU-flush"); /* flush-to-zero has no host mapping here */
+#endif
     return previous;
 #else
     (void)control;
@@ -116,8 +155,10 @@ void n64c_fpu_thread_start(void)
 #if NATIVE_FPU
     if (fedisableexcept(FE_ALL_EXCEPT)<0 || feclearexcept(FE_ALL_EXCEPT)!=0 ||
         fesetround(FE_TONEAREST)!=0) stop("FPU-control");
+#if NATIVE_SSE
     /* Normalize the host flush pair before importing the initial OS mode. */
     _mm_setcsr(_mm_getcsr() & ~((1u<<15)|(1u<<6)));
+#endif
     (void)n64c_fpu_set_control(0x01000800u);
 #else
     stop("FPU-platform");
@@ -215,3 +256,48 @@ u8 *n64c_string_find(u8 *string, u8 value)
 static void *dev_handler;
 void n64c_dev_handler_set(void *handler) { dev_handler = handler; }
 void *n64c_dev_handler(void) { return dev_handler; }
+
+/* The guest runs with trap-enabled floating point (osSetFpcCsr). Code of the host (the renderer, a graphics driver, the audio
+ * backend) computes with values that set invalid-operation flags harmlessly: it runs with the traps masked. Linux and the
+ * Windows build mask them only where a host library is called; no other platform needs it. */
+#if NATIVE_FPU && defined(_WIN32)
+/* The saved state is the low 16 bits of MXCSR and the x87 control word, packed: restore puts both back exactly. */
+int n64c_fp_traps_mask(void)
+{
+    unsigned short word;
+    __asm__ volatile("fnstcw %0" : "=m"(word));
+    const unsigned csr=_mm_getcsr();
+    if ((csr & (0x3Fu<<7))!=(0x3Fu<<7) || (word & 0x3Fu)!=0x3Fu) {
+        __asm__ volatile("fnclex");
+        _mm_setcsr((csr | (0x3Fu<<7)) & ~0x3Fu);
+        const unsigned short masked=(unsigned short)(word | 0x3Fu);
+        __asm__ volatile("fldcw %0" : : "m"(masked));
+    }
+    return (int)((csr & 0xFFFFu) | ((unsigned)word<<16));
+}
+void n64c_fp_traps_restore(int saved)
+{
+    const unsigned csr=_mm_getcsr();
+    const unsigned short word=(unsigned short)((unsigned)saved>>16);
+    __asm__ volatile("fnclex");
+    _mm_setcsr((csr & ~0xFFFFu) | ((unsigned)saved & 0xFFC0u)); /* control bits back, the flags raised meanwhile cleared */
+    __asm__ volatile("fldcw %0" : : "m"(word));
+}
+#elif NATIVE_FPU && defined(__ANDROID__)
+int n64c_fp_traps_mask(void)
+{
+    const int enabled=fegetexcept();
+    if (enabled>0) (void)fedisableexcept(FE_ALL_EXCEPT);
+    return enabled;
+}
+void n64c_fp_traps_restore(int enabled)
+{
+    if (enabled>0) {
+        (void)feclearexcept(FE_ALL_EXCEPT);
+        (void)feenableexcept(enabled);
+    }
+}
+#else
+int n64c_fp_traps_mask(void) { return 0; }
+void n64c_fp_traps_restore(int enabled) { (void)enabled; }
+#endif

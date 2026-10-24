@@ -38,7 +38,16 @@ rate-divider quantization is not emulated. SDL errors return -1.
 `RAGE_N64COMPAT_M32` selects 32-bit compilation for the whole project, including
 SDL and the audio ABI, so every linked library has the same architecture.
 
-Native address windows: `n64c_memory_open` supports Linux/i386 and refuses
+Host seam: everything that is an operating-system call (address windows, fault handling, guest thread stacks,
+the stderr log, process start) sits behind `os/n64c_host.h`; `os/os_posix.c` and `os/os_posix_proc.c` are the Linux
+backend, `os/os_win32.c` and `os/os_win32_proc.c` the Windows one (mingw-w64, i686). The generic modules hold no OS
+call. Windows maps views at 64 KiB granularity, so a guest TLB page the host cannot alias (4 KiB, or not 64 KiB
+aligned) is kept coherent in software (see the head of `os/os_win32.c`); the Windows build also needs the process
+start (`n64c_host_process_start`) to claim the guest's virtual range `0x00400000..0x01000000` before the loader's
+stack and heap take it, and the game image at 0x10000000 (`--image-base`). The boot tools read the target's object
+conventions from `boot/hostabi.py` (the leading underscore of PE symbols, the target's nm and ar).
+
+Native address windows: `n64c_memory_open` supports Linux/i386 and Windows/i386 and refuses
 other hosts. It maps shared RDRAM at KSEG0/KSEG1, a read-only typed cartridge
 view through the existing PI loader, and protected PI/VI/AI/SI register pages.
 It never maps over an existing allocation. Call it after registering resource

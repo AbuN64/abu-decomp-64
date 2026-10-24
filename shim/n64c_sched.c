@@ -4,12 +4,12 @@
  * runs at a time. The baton goes to the highest-priority runnable thread (FIFO within a priority) whenever the
  * running one blocks, yields, or wakes a higher-priority thread. The host driver owns the baton when no guest
  * thread is runnable, which is how a frame ends. All state is behind one mutex; there is no timeslicing. */
-#define _GNU_SOURCE /* MAP_FIXED_NOREPLACE */
 #include "n64c_internal.h"
 #include "n64c_memory.h"
 #include "n64c_system.h"
+#include "os/n64c_host.h"
+#include "n64c_hook.h"
 #include <pthread.h>
-#include <sys/mman.h>
 #include <errno.h>
 #include <setjmp.h>
 #include <stdlib.h>
@@ -79,31 +79,11 @@ static HostThread *self(void) { pthread_once(&key_once, key_init); return pthrea
 /* The guest-visible context holds slot + 1 (0: never created), never a host pointer, so guest RAM is the same
  * every run. */
 static HostThread *hostof(OSThread *t) { u32 slot; memcpy(&slot, t->context, sizeof slot); return slot ? all_threads[slot - 1] : NULL; }
-/* Each slot runs on its own stack at a fixed host address (a guard page below each), so host addresses the
- * game stores in guest RAM (pointers to its locals) do not depend on host allocation order or ASLR. */
+/* Each slot runs on its own stack at a fixed host address where the OS allows (os/n64c_host.h), so host addresses
+ * the game stores in guest RAM (pointers to its locals) do not depend on host allocation order or ASLR. */
 #define STACK_BYTES (1u << 20)
 #define STACK_SLOT (STACK_BYTES + 0x10000u)
-#define STACK_BASE ((uintptr_t)0x60000000u) /* between the i386 brk heap and the top-down mmap area; guest windows start at 0x80000000 */
-static unsigned char *stacks;
-static void *slot_stack(int slot)
-{
-    if (!stacks) {
-        const size_t bytes = 64u * STACK_SLOT;
-        const int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
-        void *at = mmap((void *)STACK_BASE, bytes, PROT_NONE, flags | MAP_FIXED_NOREPLACE, -1, 0);
-        if (at == MAP_FAILED) {
-            /* A position-independent host (the unit tests) can sit there; it still runs, only not reproducibly. */
-            fprintf(stderr, "n64c-sched: 0x%08lx is taken (%s); guest thread stacks float, so host pointers in guest RAM "
-                    "vary per run\n", (unsigned long)STACK_BASE, strerror(errno));
-            at = mmap(NULL, bytes, PROT_NONE, flags, -1, 0);
-            if (at == MAP_FAILED) abort();
-        }
-        stacks = at;
-    }
-    unsigned char *base = stacks + (size_t)slot * STACK_SLOT + 0x10000u;
-    if (mprotect(base, STACK_BYTES, PROT_READ | PROT_WRITE)) abort();
-    return base;
-}
+static void *slot_stack(int slot) { return n64c_host_guest_stack(slot, STACK_BYTES, STACK_SLOT, 0x10000u); }
 static void trace(const char *what, OSThread *t)
 {
     if (!trace_sink)
@@ -386,7 +366,6 @@ void osCreateThread(OSThread *t, OSId id, void (*entry)(void *), void *arg, void
     memcpy(t->context, &slot, sizeof slot);
 }
 /* The boot census (boot/trace.c) notes the first thread start; absent when it is not linked. */
-extern void n64c_trace_event(const char *kind) __attribute__((weak));
 void osStartThread(OSThread *t)
 {
     if (n64c_trace_event) n64c_trace_event("first thread start");
@@ -396,7 +375,11 @@ void osStartThread(OSThread *t)
         if (!h->created) {
             pthread_attr_t a;
             pthread_attr_init(&a);
-            pthread_attr_setstack(&a, slot_stack(h->slot), STACK_BYTES);
+            void *stack = slot_stack(h->slot);
+            if (stack)
+                pthread_attr_setstack(&a, stack, STACK_BYTES);
+            else
+                pthread_attr_setstacksize(&a, STACK_BYTES);
             pthread_create(&h->th, &a, thread_main, h);
             pthread_attr_destroy(&a);
             h->created = 1;
