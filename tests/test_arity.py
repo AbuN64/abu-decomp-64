@@ -152,9 +152,18 @@ def test_gate_accepts_a_fix(tmp_path):
     assert report["refused"] == [] and report["checked"][0]["new"] == 0
 
 
-def test_gate_refuses_editing_a_disagreeing_function_without_reducing(tmp_path):
+def test_gate_leaves_a_disagreement_the_base_already_had_alone(tmp_path):
     edited = {"a.c": DEF.replace("x = 1", "x = 2"), "b.c": BASE["b.c"]}
-    refused = gate(tmp_path, BASE, edited)["refused"]
+    broken = {"a.c": DEF, "b.c": "void g(void) { func_80209CD8_de(p, q); }\n"}
+    still = {"a.c": DEF.replace("x = 1", "x = 2"), "b.c": broken["b.c"]}
+    assert gate(tmp_path, broken, still)["refused"] == []  # a typing diff inside a function whose call sites disagree
+    assert gate(tmp_path / "x", BASE, edited)["refused"] == []
+
+
+def test_gate_refuses_a_diff_that_changes_which_sites_disagree(tmp_path):
+    broken = {"a.c": DEF, "b.c": "void g(void) { func_80209CD8_de(p, q); }\n"}
+    moved = {"a.c": DEF, "b.c": "void g(void) { func_80209CD8_de(p, q, r); }\n"}
+    refused = gate(tmp_path, broken, moved)["refused"]
     assert refused and "without reducing" in refused[0]["why"]
 
 

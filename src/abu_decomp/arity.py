@@ -521,10 +521,19 @@ def next_command(profile_file: Path | str | None, name: str, kinds: list[str]) -
 # --- gate --------------------------------------------------------------------------------------------------------
 
 
+def _disagreement(entry: dict[str, Any] | None) -> tuple[Any, ...] | None:
+    """What a symbol's disagreement is made of, without line numbers: a diff that leaves it alone introduced nothing."""
+    if entry is None:
+        return None
+    sites = sorted((m["kind"], m["file"], m["n"], m.get("direction", "")) for m in entry["mismatches"])
+    return (entry["def"]["n"] if entry["def"] else None, entry["asm_short"], tuple(sites))
+
+
 def judge(
     base: dict[str, Any], new: dict[str, Any], touched: set[str]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """(refused, checked): a touched symbol is refused when its disagreement grew, or stays and was not reduced."""
+    """(refused, checked): a touched symbol is refused when its disagreement grew or changed without being reduced; a
+    disagreement the base already had, site for site, is not the diff's (a typing diff renaming an access inside it)."""
     refused: list[dict[str, Any]] = []
     checked: list[dict[str, Any]] = []
     for name in sorted(touched):
@@ -537,7 +546,7 @@ def judge(
         row = {"function": name, "base": was, "new": now}
         if now > was:
             row["why"] = f"adds {now - was} disagreement(s) between definition, declarations, calls and assembly"
-        elif now and now >= was:
+        elif now and now >= was and _disagreement(before) != _disagreement(after):
             row["why"] = "touches a function whose sites disagree without reducing them"
         else:
             checked.append(row)
