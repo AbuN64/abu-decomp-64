@@ -1,0 +1,3 @@
+category	function	bytes	score	named	file
+rng	Rng_Next	16	100.0	1	tests/fixtures/phase/src/a.c
+input	Pak_Save	16	50.0	1	tests/fixtures/phase/src/a.c

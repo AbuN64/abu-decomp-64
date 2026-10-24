@@ -1,0 +1,47 @@
+{
+ "schema_version": 1,
+ "name": "phase-fixture",
+ "tas": {
+  "runs": "runs"
+ },
+ "phase": {
+  "games": {
+   "Alpha": {
+    "tree": "../../..",
+    "ref": "HEAD",
+    "versions": [
+     "v1"
+    ],
+    "map": "tests/fixtures/phase/map-{version}.json",
+    "foundations": "foundations-{version}.tsv",
+    "port": {
+     "movie": "boot-idle",
+     "profile": "profile.json"
+    }
+   }
+  },
+  "focus": {
+   "game": "Alpha",
+   "version": "v1"
+  },
+  "ladder": [
+   {
+    "stage": "R1",
+    "byte_reach": 50,
+    "line": 40,
+    "branch": 30,
+    "crash": 0
+   },
+   {
+    "stage": "R2",
+    "byte_reach": 70,
+    "line": 60,
+    "branch": 45,
+    "oracle_only": 20
+   }
+  ],
+  "named_rule": "\\b(func_|D_)[0-9A-F]{8}|\\bunk[0-9A-Fa-f_x]",
+  "out": "out/phase.json",
+  "history": "out/history.jsonl"
+ }
+}

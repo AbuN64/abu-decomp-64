@@ -1,0 +1,1 @@
+{"schema": 1, "version": "v1", "rom_size": 64, "fns": [["Rng_Next", 0, 16, 100.0, "tests/fixtures/phase/src/a.c", 1], ["Pak_Save", 16, 16, 50.0, "tests/fixtures/phase/src/a.c", 5], ["func_00000020", 32, 16, 100.0, null, null]], "spans": {"data": [[48, 56]], "fill": [], "platform": []}, "blobs": []}

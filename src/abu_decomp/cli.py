@@ -1051,6 +1051,19 @@ def _run_claims(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dic
     return {"file": str(args.file), **report}, (1 if findings else 0), findings
 
 
+def _phase_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--game", help="only this game of phase.games")
+    parser.add_argument("--version", help="only this version (default: the focus version, else the game's first)")
+    parser.add_argument("--refresh", action="store_true", help="write phase.out and append a phase.history line")
+
+
+def _run_phase(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import phase
+
+    result, findings = phase.run(_profile(args.profile), args.game, args.version, args.refresh)
+    return result, 0, findings
+
+
 def _served_elsewhere(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     raise DecompError("internal.dispatch", f"{args.command} is served by main, not by a command handler")
 
@@ -1122,6 +1135,11 @@ COMMANDS: dict[str, Command] = {
         _run_claims,
     ),
     "tas": Command("record, save, list and replay controller movies against the port", _tas_arguments, _run_tas),
+    "phase": Command(
+        "print every phase gate (map, foundations, port/oracle, coverage, release ladder) with the next work items",
+        _phase_arguments,
+        _run_phase,
+    ),
     "describe": Command("list every command and its arguments as JSON", _none, _run_describe),
     "mcp": Command("serve the commands as MCP tools over stdio", _none, _served_elsewhere),
 }
