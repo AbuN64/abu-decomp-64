@@ -93,6 +93,22 @@ class PhaseTests(Fixture):
         rows = self.rows(phase.run(self.profile(), None, None, False)[0])
         self.assertFalse(rows["p2", "oracle"]["met"])
 
+    def test_p2_oracle_reads_the_newest_run_that_has_a_record(self):
+        plays = self.root / "tests/fixtures/phase/runs/plays"
+        newer = plays / "20261025T000000Z-boot-idle"
+        newer.mkdir()
+        self.addCleanup(shutil.rmtree, newer)
+        first = next(plays.glob("20261024*/run.json"))
+        record = json.loads(first.read_text())
+        record.pop("oracle")
+        (newer / "run.json").write_text(json.dumps(record))
+        for name in first.parent.iterdir():
+            if name.name != "run.json":
+                shutil.copy(name, newer / name.name)
+        rows = self.rows(phase.run(self.profile(), None, None, False)[0])
+        self.assertTrue(rows["p2", "oracle"]["met"])
+        self.assertIn("20261024T000000Z", rows["p2", "oracle"]["value"])
+
     def test_mapped_counts_leftover_spans(self):
         data = {
             "rom_size": 100,

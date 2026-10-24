@@ -194,10 +194,13 @@ def p1(profile: Profile, cfg: dict[str, Any], game: str, version: str) -> tuple[
     return rows, detail
 
 
-def _newest_runs(runs: Path) -> dict[str, tuple[Path, dict[str, Any]]]:
+def _newest_runs(runs: Path, with_oracle: bool = False) -> dict[str, tuple[Path, dict[str, Any]]]:
+    """The newest finished run of each movie; with `with_oracle`, the newest one that carries an oracle record."""
     newest: dict[str, tuple[Path, dict[str, Any]]] = {}
     for run, rec in tas.run_rows({"runs": runs}):
         if rec.get("status") == "running" or rec.get("input") == "human" or not rec.get("outcome"):
+            continue
+        if with_oracle and not rec.get("oracle"):
             continue
         name = str(rec.get("movie") or "")
         if name and (name not in newest or run.name > newest[name][0].name):
@@ -239,13 +242,16 @@ def p2(profile: Profile, game: str, version: str, spec: dict[str, Any]) -> list[
     run, rec = found
     age = time.time() - (run / tas.RECORD).stat().st_mtime
     ok = rec.get("outcome") == "ok" and lit(run / tas.VIEW)
+    # the oracle row reads the newest run that was played with --oracle, not merely the newest run
+    orun, orun_rec = _newest_runs(runs, True).get(movie) or (None, {})
+    orec = orun_rec.get("oracle") or {}
     # an oracle record is {"status": "done", "outcome": "ok"}; "status" alone never equals "ok"
-    orec = rec.get("oracle") or {}
     oracle = (
         "ok"
         if orec.get("status") == "done" and orec.get("outcome") == "ok"
-        else (orec.get("outcome") or orec.get("status"))
+        else (orec.get("outcome") or orec.get("status") or "no oracle record")
     )
+    oage = time.time() - (orun / tas.RECORD).stat().st_mtime if orun else None
     return [
         row(
             "p2", game, version, "port", run.name if ok else f"{rec.get('outcome')} {run.name}", True, ok, str(run), age
@@ -255,11 +261,11 @@ def p2(profile: Profile, game: str, version: str, spec: dict[str, Any]) -> list[
             game,
             version,
             "oracle",
-            run.name if oracle == "ok" else f"{oracle} {run.name}",
+            orun.name if oracle == "ok" else f"{oracle} {orun.name if orun else movie}",
             True,
             oracle == "ok",
-            str(run),
-            age,
+            str(orun or runs),
+            oage,
         ),
     ]
 
