@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +30,22 @@ class CliTests(unittest.TestCase):
         path.write_text(json.dumps(value))
         return path
 
+    def test_profile_defaults_to_the_seat_config_without_the_flag(self):
+        seat = self.profile({"schema_version": 1, "name": "seat", "tools": {}})
+        link = self.root / "xdg" / "abu-decomp" / "profile.json"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(seat)
+        other = self.root / "other.json"
+        other.write_text(json.dumps({"schema_version": 1, "name": "other", "tools": {}}))
+        clean = {"HOME": str(self.root), "XDG_CONFIG_HOME": str(self.root / "xdg")}
+        with mock.patch.dict("os.environ", clean):
+            os.environ.pop("DECOMP_PROFILE", None)
+            os.environ.pop("DECOMP_TAS_PROFILE", None)
+            self.assertEqual(json.loads(run(["profile"])[1])["result"]["name"], "seat")
+            os.environ["DECOMP_PROFILE"] = str(other)  # the environment beats the config file
+            self.assertEqual(json.loads(run(["profile"])[1])["result"]["name"], "other")
+            self.assertEqual(json.loads(run(["--profile", str(seat), "profile"])[1])["result"]["name"], "seat")
+
     def test_help_is_plain_text_and_lists_every_command(self):
         code, text = run(["--help"])
         self.assertEqual(code, 0)
@@ -42,7 +59,10 @@ class CliTests(unittest.TestCase):
         envelope = json.loads(text)
         self.assertEqual(set(envelope), {"ok", "result", "findings", "stages", "invocation"})
         self.assertEqual(envelope["result"]["sections"], ["tools"])
-        code, text = run(["profile"])
+        with mock.patch.dict("os.environ", {"HOME": str(self.root), "XDG_CONFIG_HOME": str(self.root / "none")}):
+            for name in ("DECOMP_PROFILE", "DECOMP_TAS_PROFILE"):
+                os.environ.pop(name, None)
+            code, text = run(["profile"])
         self.assertEqual((code, json.loads(text)["findings"][0]["key"]), (1, "config.missing"))
         code, text = run(["nonsense"])
         self.assertEqual((code, json.loads(text)["findings"][0]["key"]), (1, "cli.arguments"))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -99,6 +100,20 @@ def _unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _nonfinite(value: str) -> Any:
     raise ValueError(f"nonfinite JSON number: {value}")
+
+
+def default_profile_path(environ: Mapping[str, str] | None = None) -> Path | None:
+    """The seat profile a command uses when no --profile is given: DECOMP_PROFILE, else the older DECOMP_TAS_PROFILE,
+    else `abu-decomp/profile.json` in the user's config directory (XDG_CONFIG_HOME, else ~/.config) when it exists.
+    A seat names its profile once there (a symlink to the real file is enough); no path is written in code."""
+    env = os.environ if environ is None else environ
+    for name in ("DECOMP_PROFILE", "DECOMP_TAS_PROFILE"):
+        if env.get(name):
+            return Path(env[name]).expanduser()
+    home = Path(env.get("HOME") or "~").expanduser()
+    base = Path(env["XDG_CONFIG_HOME"]) if env.get("XDG_CONFIG_HOME") else home / ".config"
+    found = base / "abu-decomp" / "profile.json"
+    return found if found.is_file() else None
 
 
 def load_profile(path: Path) -> Profile:

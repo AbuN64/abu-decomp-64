@@ -15,7 +15,9 @@ PACKAGE = Path(abu_decomp.__file__).parent
 
 class Client:
     def __init__(self, source: Path):
-        environment = dict(os.environ, PYTHONPATH=str(source))
+        environment = {k: v for k, v in os.environ.items() if k not in ("DECOMP_PROFILE", "DECOMP_TAS_PROFILE")}
+        # a seat's own profile link must not answer for the missing --profile these tests expect to refuse
+        environment.update(PYTHONPATH=str(source), XDG_CONFIG_HOME=str(source / "no-config"), HOME=str(source))
         self.process = subprocess.Popen(
             [sys.executable, "-m", "abu_decomp", "mcp"],
             stdin=subprocess.PIPE,

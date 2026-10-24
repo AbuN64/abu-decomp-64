@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError, priority, runslice
-from abu_decomp.config import Profile, load_profile
+from abu_decomp.config import Profile, default_profile_path, load_profile
 
 
 class _Parser(argparse.ArgumentParser):
@@ -34,8 +34,13 @@ class Command:
 
 
 def _profile(path: Path | None) -> Profile:
+    path = path or default_profile_path()
     if path is None:
-        raise DecompError("config.missing", "pass --profile PATH before the command")
+        raise DecompError(
+            "config.missing",
+            "pass --profile PATH before the command, set DECOMP_PROFILE, or link the seat profile at "
+            "~/.config/abu-decomp/profile.json",
+        )
     return load_profile(path)
 
 
@@ -495,8 +500,7 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
 def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import tas
 
-    default = os.environ.get("DECOMP_TAS_PROFILE")
-    profile = _profile(args.profile if args.profile is not None else Path(default) if default else None)
+    profile = _profile(args.profile)
     if args.action == "save":
         saved = tas.save(
             profile, args.name, source=args.source, note=args.note, replace=args.replace, pak=args.pak, cpak=args.cpak
