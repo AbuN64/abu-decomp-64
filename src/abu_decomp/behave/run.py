@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError, arity
-from abu_decomp.behave import abi, classify, compare, describe, hits, inputs, movie, permutations, prototype
+from abu_decomp.behave import abi, classify, compare, describe, hits, inputs, movie, permutations, prototype, rodata
 from abu_decomp.behave import candidate as build_candidate
 from abu_decomp.config import Profile
 from abu_decomp.tools import drain_cache, invoke, settings
@@ -451,6 +451,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
 
     # 1. short probes of the original show which offsets of each pointed-to region it touches, and which
     #    fields it dereferences (those get a region of their own); repeated while it finds new ones
+    readonly = rodata.read_only_ranges(chosen.project, version)
     learned = inputs.Learned()
     for _ in range(0 if options.seeded else config["learn_rounds"]):
         first, regions = inputs.seeded_cases(
@@ -483,7 +484,14 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
             (*learned.returns, *answers),
             learned.finite or any("NaN operand" in str(c.get("detail", "")) for c in result["cases"]),
         )
-        if learned == before:
+        # literal pools and constant tables are the ROM's words, not state: seeded as they are, never swept
+        learned = replace(
+            learned,
+            rom=tuple(
+                sorted(rodata.words(rodata.linked_elf(chosen.project, version), learned.state, readonly).items())
+            ),
+        )
+        if replace(learned, rom=()) == replace(before, rom=()):
             break
     mark = lap("learn", mark)
     cases, regions = inputs.seeded_cases(proto, count, options.seed, layout, learned)
@@ -553,6 +561,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
             chosen.project,
             tuple(config["headers"]),
             int(config["generated_cases"]),
+            readonly,
         )
         if generated:
             more = ask(

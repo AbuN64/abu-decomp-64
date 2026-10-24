@@ -89,6 +89,7 @@ class Learned:
     stubs: tuple[str, ...] = ()  # callees cut off at the boundary: their return values are tagged to find pointers
     returns: tuple[str, ...] = ()  # of those, the stubs whose return value the original dereferenced
     finite: bool = False  # the original hit a NaN check on the way: no filler or sweep word is a NaN as a float
+    rom: tuple[tuple[int, int], ...] = ()  # (address, word) of ROM read-only state: seeded
 
     def offsets(self, region: int) -> list[tuple[int, int]]:
         return list(dict(self.hot).get(region, ()))
@@ -373,7 +374,9 @@ def seeded_cases(
             }
         if not learn:
             known = {a for p, a in learned.pointers if p == -1}
-            for i, address in enumerate(a for a in learned.state if a not in known):
+            memory += [{"addr": a, "hex": struct.pack(">I", w).hex()} for a, w in learned.rom]
+            fixed = {a for a, _ in learned.rom}
+            for i, address in enumerate(a for a in learned.state if a not in known and a not in fixed):
                 if (number + i) % 3:
                     word = _STATE[(number * 7 + i * 3) % len(_STATE)]
                     if learned.finite and is_nan_word(word):

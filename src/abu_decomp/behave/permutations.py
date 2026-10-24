@@ -184,6 +184,7 @@ def _factors(
     proto: Any,
     project: Path,
     headers: tuple[str, ...],
+    readonly: tuple[tuple[int, int], ...] = (),
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     registers = [c.get("registers", {}) for c in real]
@@ -234,6 +235,7 @@ def _factors(
                 width in (1, 2, 4)
                 and address >= RAM_BASE
                 and address % width == 0
+                and not any(lo <= address < hi for lo, hi in readonly)  # the ROM's constants are not inputs
                 and not (low >= RAM_BASE and low - 0x4000 <= address < low + 0x10)
             ):
                 count[(address, width)] = count.get((address, width), 0) + 1
@@ -290,6 +292,7 @@ def generate(
     project: Path,
     headers: tuple[str, ...],
     budget: int,
+    readonly: tuple[tuple[int, int], ...] = (),
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Generated cases (at most `budget`) over the real cases that ran in the original, and the report of how."""
     pairs = [(c, r) for c, r in zip(cases, results, strict=True) if is_real(c) and r["status"] == "ok"]
@@ -297,7 +300,7 @@ def generate(
     if not pairs or budget <= 0:
         return [], {**report, "generated": 0, "why": "no real case ran in the original" if not pairs else "budget 0"}
     real = [c for c, _ in pairs]
-    factors = _factors(real, [r for _, r in pairs], _Image(seeded), proto, project, headers)
+    factors = _factors(real, [r for _, r in pairs], _Image(seeded), proto, project, headers, readonly)
     report["inputs"] = [{"kind": f["kind"], "name": f["name"], "values": len(f["domain"])} for f in factors]
     if not factors:
         return [], {**report, "generated": 0, "why": "no input with more than one value"}
