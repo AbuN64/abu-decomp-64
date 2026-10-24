@@ -2,6 +2,7 @@
 /* n64c_cont: serial interface adapter. Controllers come from a port-supplied source (live device or recorded
  * input script); EEPROM and the Controller Pak are plain files. Absent files mean absent hardware, which is
  * what the oracle reports (no Pak). */
+#include "n64c_prof.h"
 #include "n64c_internal.h"
 #include "n64c_cont.h"
 #include "n64c_cpak.h"
@@ -140,7 +141,9 @@ s32 osContStartReadData(OSMesgQueue *mq)
         else if (i >= n64c_tas_pads())
             latched[i].errno_ = CONT_ERR_NO_CONTROLLER;
     }
+    N64C_ZONE(zi,"input-poll");
     n64c_tas_poll(&latched[0]);
+    N64C_ZONE_END(zi);
     done(mq);
     return 0;
 }

@@ -10,6 +10,7 @@
 #include "n64c_diag.h"
 #include "n64c_tas.h"
 #include "n64c_dltrace.h"
+#include "n64c_prof.h"
 #include "n64c_audio.h"
 #include "audio_abi/n64a_abi.h"
 #include "os/n64c_host.h"
@@ -96,7 +97,9 @@ static void graphics(OSTask *task,void *user)
     N64cDlStats stats;
     FILE *draw_trace=n64c_tas_draw_trace();
     if (draw_trace) n64c_dltrace_begin(draw_trace);
+    N64C_ZONE(zg,"gfx-submit");
     int commands=n64c_f3d_run(frame.f3d,&frame.memory,(u32)(uintptr_t)task->data_ptr,&stats);
+    N64C_ZONE_END(zg);
     if (draw_trace) {
         n64c_dltrace_begin(NULL);
         fclose(draw_trace);
@@ -129,7 +132,10 @@ static void audio(OSTask *task,void *user)
         return;
     }
     unsigned before=n64a_abi_warnings(frame.audio);
-    if (n64a_abi_run(frame.audio,frame.ram,list,task->data_size)!=0 ||
+    N64C_ZONE(za,"audio-submit");
+    const int audio_rc=n64a_abi_run(frame.audio,frame.ram,list,task->data_size);
+    N64C_ZONE_END(za);
+    if (audio_rc!=0 ||
         n64a_abi_warnings(frame.audio)!=before) {
         task_stop("audio-task-refused","audio ABI refused task");
         return;
@@ -172,9 +178,11 @@ static void present(void *fb,void *user)
     (void)user;
     frame.presented=fb;
     u32 physical=fb ? n64c_memory_physical(fb) : 0;
+    N64C_ZONE(zp,"present");
     if (unlock.live) { if (!n64c_f3d_events(frame.f3d)) frame.closed=1; }
     else if (!n64c_f3d_present(frame.f3d,physical)) frame.closed=1;
     else unlock.flips++;
+    N64C_ZONE_END(zp);
     /* Only new, successfully rendered work across a frame boundary proves
      * progress. An idle VI repaint must not conceal a blocked game thread. */
     if (!frame.closed && frame.tasks!=frame.progress_tasks) {
@@ -489,7 +497,9 @@ static void wait_retrace(const struct timespec *start,u32 n,u32 speed)
             }
         }
     }
+    N64C_ZONE(zw,"retrace-wait");
     sleep_until(&due);
+    N64C_ZONE_END(zw);
 }
 static u32 live_speed;
 static void fps_report(const char *why,u32 speed)
@@ -542,7 +552,10 @@ int n64c_boot_frame_live(void)
         }
         if (n64c_tas_live_taken() && view.path) view.interval_ns=1000000000ll/60-2000000ll;
         if (unlock.on) n64c_f3d_group_begin(frame.f3d);
+        N64C_ZONE(zf,"frame");
         const int alive=n64c_frame();
+        N64C_ZONE_END(zf);
+        N64C_FRAME_MARK();
         if (unlock.on) unlock_commit(n);
         if (n64c_sched_halted()) {
             show_stop(n64c_boot_stop_symbol);
@@ -559,7 +572,9 @@ int n64c_boot_frame_live(void)
             snprintf(path,sizeof path,"%s/poll-%06ld.ppm",n64c_tas_shot_dir(),shot);
             if (!write_presented(path,TAS_SHOT_WIDTH,TAS_SHOT_HEIGHT)) fprintf(stderr,"n64c-tas: shot %ld failed\n",shot);
         }
+        N64C_ZONE(zv,"view-write");
         view_write(0);
+        N64C_ZONE_END(zv);
         if (n%600==0) fps_report("running",speed);
         if (n%600==0)
             fprintf(stderr,"boot-step: retrace=%u tasks=%u audio=%u commands=%llu\n",osViGetRetraceCount(),

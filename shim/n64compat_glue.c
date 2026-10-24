@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* n64compat_glue: the host frame driver and RSP task dispatch. This is the only place that ties the
  * adapters together (sched, vi, pi, cont, gfx); every function is a ledger-tracked adapter, no framework. */
+#include "n64c_prof.h"
 #include "n64c_internal.h"
 #include "n64c_diag.h"
 #include "n64c_audio.h"
@@ -103,10 +104,16 @@ uint32_t n64c_waiting_threads(void) { return n64c_sched_waiting(); }
 int n64c_thread_count(void) { return n64c_sched_alive(); }
 int n64c_frame(void)
 {
+    N64C_ZONE(zr1,"game-run");
     n64c_sched_run_idle();
+    N64C_ZONE_END(zr1);
     n64c_clock_advance_to(n64c_vi_next_retrace_time());
+    N64C_ZONE(zvi,"vi-retrace");
     n64c_vi_retrace();
+    N64C_ZONE_END(zvi);
+    N64C_ZONE(zr2,"game-run");
     n64c_sched_run_idle();
+    N64C_ZONE_END(zr2);
     if (present_fn) {
         fenv_t saved;
         host_fpu_enter(&saved);
