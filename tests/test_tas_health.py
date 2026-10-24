@@ -76,7 +76,7 @@ class HealthTests(unittest.TestCase):
     def test_play_on_the_page_port_refuses_when_older_than_pins(self):
         health = {"pins_stale": "page port older than pins: x", "rebuild": "page-port ensure"}
         with (
-            mock.patch("abu_decomp.tas.settings", return_value=self.cfg),
+            mock.patch("abu_decomp.tas.settings", return_value={**self.cfg, "runs": self.port.parent / "runs"}),
             self.assertRaisesRegex(Exception, "page port older than pins: x; rebuild it first: page-port ensure"),
         ):
             tas.play(self.profile, "m", health=health)

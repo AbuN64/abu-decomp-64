@@ -1,8 +1,11 @@
 import hashlib
 import io
 import json
+import os
+import signal
 import subprocess
 import tempfile
+import threading
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -238,6 +241,7 @@ class MovieTests(unittest.TestCase):
             stdin = io.StringIO()
 
             def __init__(self, argv, env, stdout, **kwargs):
+                self.returncode = None
                 seen.append(env)
                 run = Path(argv[argv.index("--run-dir") + 1])
                 seen.append(json.loads((run / "run.json").read_text()))
@@ -247,6 +251,7 @@ class MovieTests(unittest.TestCase):
                 stdout.write("n64c-tas: done polls=2\n")
 
             def wait(self, timeout=None):
+                self.returncode = 0
                 return 0
 
         return mock.patch.object(tas.subprocess, "Popen", Port)
@@ -607,12 +612,168 @@ class MovieTests(unittest.TestCase):
             twice = tas.play_twice(self.profile, "m")
         self.assertIs(twice["same_twice"], True)
 
-    def test_a_run_whose_process_vanished_reads_as_done_without_outcome(self):
+    def test_a_run_whose_process_vanished_reads_as_killed(self):
         run = self.root / "runs" / "plays" / "20261021T000000Z-m"
         run.mkdir(parents=True)
         (run / "run.json").write_text(json.dumps({"id": run.name, "status": "running", "pid": 2**22 + 12345}))
         ((_, row),) = tas.run_rows(tas.settings(self.profile))
-        self.assertEqual((row["status"], row["outcome"]), ("done", None))
+        self.assertEqual((row["status"], row["outcome"]), ("done", "killed"))
+
+    def test_signals_finalize_the_record_kill_the_owned_group_and_restore_handlers(self):
+        self.movie()
+        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+        for sig in previous:
+            with self.subTest(signal=sig):
+
+                def interrupt(process, timeout, run=None, sig=sig):
+                    signal.getsignal(sig)(sig, None)
+                    tas._check_play_signal()
+
+                with (
+                    self.port("1 aa\n", []),
+                    mock.patch.object(tas, "_wait", interrupt),
+                    mock.patch.object(tas.os, "killpg") as kill,
+                    self.assertRaises(tas.PlayInterrupted) as caught,
+                ):
+                    tas.play(self.profile, "m", now=T0, state_diff=False)
+                self.assertEqual(caught.exception.signum, sig)
+                row = tas.run_rows(tas.settings(self.profile))[-1][1]
+                self.assertEqual((row["status"], row["outcome"], row["signal"]), ("done", "killed", sig.name))
+                self.assertGreaterEqual(row["ended"], row["started"])
+                self.assertEqual(row["pgid"], 1)
+                kill.assert_called_once_with(1, signal.SIGKILL)
+                self.assertEqual({sig: signal.getsignal(sig) for sig in previous}, previous)
+                self.assertEqual(tas._play_signal, 0)
+
+    def test_signal_during_reporting_cannot_leave_a_running_record(self):
+        self.movie()
+
+        def interrupt(*args):
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+            return None
+
+        with (
+            self.port("1 aa\n", []),
+            mock.patch.object(tas.tas_coverage, "run_report", interrupt),
+            self.assertRaises(tas.PlayInterrupted),
+        ):
+            tas.play(self.profile, "m", now=T0, state_diff=False)
+        row = tas.run_rows(tas.settings(self.profile))[0][1]
+        self.assertEqual((row["status"], row["outcome"], row["signal"]), ("done", "killed", "SIGTERM"))
+
+    def test_signal_between_spawn_and_registration_still_kills_the_child(self):
+        self.movie()
+        process = mock.Mock(pid=42, returncode=None)
+
+        def spawn(*args, **kwargs):
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+            return process
+
+        with (
+            mock.patch.object(tas.subprocess, "Popen", spawn),
+            mock.patch.object(tas.os, "killpg") as kill,
+            self.assertRaises(tas.PlayInterrupted),
+        ):
+            tas.play(self.profile, "m", now=T0, state_diff=False)
+        kill.assert_called_once_with(42, signal.SIGKILL)
+        row = tas.run_rows(tas.settings(self.profile))[0][1]
+        self.assertEqual((row["outcome"], row["pgid"]), ("killed", 42))
+
+    def test_spawn_setup_and_reporting_failures_all_finalize_the_record(self):
+        self.movie()
+        for target in ("subprocess.Popen", "tas_statediff.begin", "tas_coverage.run_report"):
+            with self.subTest(stage=target), self.port("1 aa\n", []):
+                with (
+                    mock.patch("abu_decomp.tas." + target, side_effect=RuntimeError("failed")),
+                    self.assertRaisesRegex(RuntimeError, "failed"),
+                ):
+                    tas.play(self.profile, "m", now=T0)
+                run, row = tas.run_rows(tas.settings(self.profile))[-1]
+                self.assertEqual((row["status"], row["outcome"]), ("done", "killed"))
+                self.assertEqual(tas.read_record(run)["status"], "done")
+                self.assertIn("RuntimeError", row["subject"])
+
+    def test_next_play_persists_stale_records_and_preserves_a_live_lease(self):
+        self.movie()
+        cfg = tas.settings(self.profile)
+        live, stale, legacy = (cfg["runs"] / "plays" / name for name in ("live", "stale", "legacy"))
+        for run in (live, stale, legacy):
+            run.mkdir(parents=True)
+        # Reused PID: a vanished lease still proves the writer is gone.
+        tas._write_record(stale, {"status": "running", "pid": os.getpid(), "lease": True})
+        tas._write_record(legacy, {"status": "running", "pid": 2**22 + 12345})
+        with tas._run_record(live, {"status": "running", "pid": 2**22 + 12345}):
+            with self.port("1 aa\n", []):
+                tas.play(self.profile, "m", now=T0, state_diff=False)
+            self.assertTrue(tas.running(live))
+            self.assertEqual(tas.read_record(live)["status"], "running")
+            for run in (stale, legacy):
+                row = tas.read_record(run)
+                self.assertEqual((row["status"], row["outcome"], row["reconciled"]), ("done", "killed", True))
+            before = (stale / tas.RECORD).read_bytes()
+            tas.reconcile_runs(cfg)
+            self.assertEqual((stale / tas.RECORD).read_bytes(), before)
+
+    def test_legacy_live_pid_and_completed_records_are_not_rewritten(self):
+        cfg = tas.settings(self.profile)
+        for name, row in (
+            ("live", {"status": "running", "pid": os.getpid()}),
+            ("done", {"status": "done", "outcome": "ok"}),
+        ):
+            run = cfg["runs"] / "plays" / name
+            run.mkdir(parents=True)
+            tas._write_record(run, row)
+        tas.reconcile_runs(cfg)
+        self.assertEqual(tas.read_record(cfg["runs"] / "plays/live")["status"], "running")
+        self.assertEqual(tas.read_record(cfg["runs"] / "plays/done")["outcome"], "ok")
+
+    def test_parallel_play_cancellation_finalizes_every_active_run(self):
+        self.movie()
+        cfg = tas.settings(self.profile)
+        (cfg["movies"] / "n.tas").write_bytes((cfg["movies"] / "m.tas").read_bytes())
+        barrier = threading.Barrier(2)
+
+        def interrupt(process, timeout, run=None):
+            barrier.wait(timeout=5)
+            with tas._starting_play_process():
+                tas._cancel_play(signal.SIGTERM, None)
+
+        with (
+            self.port("1 aa\n", []),
+            mock.patch.object(tas, "_wait", interrupt),
+            mock.patch.object(tas.os, "killpg") as kill,
+            self.assertRaises(tas.PlayInterrupted),
+        ):
+            tas.play_all(self.profile, jobs=2, now=T0, state_diff=False)
+        rows = tas.run_rows(cfg)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([(row["status"], row["outcome"]) for _, row in rows], [("done", "killed")] * 2)
+        self.assertEqual(kill.call_count, 2)
+
+    def test_aborted_record_finishes_the_oracle_and_reaps_all_owned_children(self):
+        run = self.root / "runs/plays/aborted"
+        run.mkdir(parents=True)
+        processes = [mock.Mock(pid=pid, returncode=None) for pid in (101, 102, 103)]
+        reaper = mock.Mock()
+        with (
+            mock.patch.object(tas.os, "killpg") as kill,
+            self.assertRaises(subprocess.TimeoutExpired),
+            tas._run_record(run, {"status": "running", "oracle": {"status": "running", "pid": 102}}) as (
+                children,
+                reapers,
+            ),
+        ):
+            children.extend(processes)
+            reapers.append(reaper)
+            raise subprocess.TimeoutExpired("port", 5)
+        self.assertEqual(kill.call_args_list, [mock.call(pid, signal.SIGKILL) for pid in (101, 102, 103)])
+        reaper.join.assert_called_once_with(timeout=5)
+        for process in processes:
+            process.wait.assert_called_once_with(timeout=5)
+        row = tas.read_record(run)
+        self.assertEqual(
+            (row["outcome"], row["oracle"]["status"], row["oracle"]["outcome"]), ("timeout", "done", "timeout")
+        )
 
     def test_fn_of_names_the_function_an_outcome_points_at(self):
         self.assertEqual(tas.fn_of({"subject": "func_80256C90_de+0x10"}), "func_80256C90_de")

@@ -49,6 +49,8 @@ host fault leaves the failing stack and every thread's stack in the run folder. 
 from __future__ import annotations
 
 import contextlib
+import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -669,6 +671,8 @@ def _wait(process: subprocess.Popen, timeout: float, run: Path | None = None) ->
     end = time.monotonic() + timeout
     last, moved = -1, time.monotonic()
     while True:
+        if run is not None:
+            _check_play_signal()
         pid, status, usage = os.wait4(process.pid, os.WNOHANG)
         if pid:
             process.returncode = os.waitstatus_to_exitcode(status)
@@ -768,23 +772,176 @@ def alive(pid: Any) -> bool:
     return True
 
 
+class PlayInterrupted(KeyboardInterrupt):
+    """Cancellation shared by the CLI's parallel plays; never swallowed as a tool error."""
+
+    def __init__(self, signum: int):
+        self.signum = signum
+        super().__init__(signal.Signals(signum).name)
+
+
+_play_signal = 0
+_play_local = threading.local()
+
+
+def _check_play_signal() -> None:
+    if _play_signal:
+        raise PlayInterrupted(_play_signal)
+
+
+def _play_signals(function):
+    @functools.wraps(function)
+    def call(*args, **kwargs):
+        global _play_signal
+        # play_all owns the main-thread handlers; its workers share the cancellation.
+        if (
+            threading.current_thread() is not threading.main_thread()
+            or signal.getsignal(signal.SIGTERM) is _cancel_play
+        ):
+            _check_play_signal()
+            return function(*args, **kwargs)
+        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+        _play_signal = 0
+        try:
+            for sig in previous:
+                signal.signal(sig, _cancel_play)
+            result = function(*args, **kwargs)
+            _check_play_signal()
+            return result
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+            _play_signal = 0
+
+    return call
+
+
+def _cancel_play(signum, _frame) -> None:
+    global _play_signal
+    if not _play_signal:
+        _play_signal = signum
+        if not getattr(_play_local, "starting", False):
+            raise PlayInterrupted(signum)
+
+
+@contextlib.contextmanager
+def _starting_play_process():
+    # A signal between Popen returning and registering its child must not orphan
+    # that child. Defer the exception until ownership is recorded, without blocking
+    # signals in the child (it would inherit a pthread signal mask).
+    _play_local.starting = True
+    try:
+        yield
+    finally:
+        _play_local.starting = False
+    _check_play_signal()
+
+
+def _abandoned(row: dict[str, Any], subject: str, *, outcome: str = "killed") -> dict[str, Any]:
+    ended = time.time()
+    result = {**row, "status": "done", "outcome": outcome, "subject": subject, "ended": ended}
+    if isinstance(row.get("started"), (int, float)):
+        result["wall_seconds"] = round(max(0, ended - row["started"]), 1)
+    if isinstance(row.get("oracle"), dict) and row["oracle"].get("status") == "running":
+        result["oracle"] = {**row["oracle"], "status": "done", "outcome": outcome, "subject": subject}
+    return result
+
+
+@contextlib.contextmanager
+def _run_record(run: Path, record: dict[str, Any]):
+    """A kernel lease covers setup, replay and reporting, including exceptional exits."""
+    with (run / "run.lock").open("a") as lease:
+        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        record["lease"] = True
+        children, reapers = [], []
+        try:
+            _write_record(run, record)
+            _check_play_signal()
+            yield children, reapers
+            _check_play_signal()
+        except BaseException as error:
+            row = read_record(run) or record
+            if row.get("status") == "running":
+                signum = error.signum if isinstance(error, PlayInterrupted) else None
+                if isinstance(error, KeyboardInterrupt):
+                    signum = signum or signal.SIGINT
+                subject = (
+                    f"interrupted by {signal.Signals(signum).name}"
+                    if signum
+                    else f"play aborted: {type(error).__name__}"
+                )
+                outcome = "timeout" if isinstance(error, subprocess.TimeoutExpired) else "killed"
+                row = _abandoned(row, subject, outcome=outcome)
+                if signum:
+                    row["signal"] = signal.Signals(signum).name
+                _write_record(run, row)
+            # Only process groups started by this play. Reapers may already own wait4
+            # for the oracle; kill first, then let their wait complete.
+            for process in children:
+                if process is not None and process.returncode is None:
+                    with contextlib.suppress(OSError):
+                        os.killpg(process.pid, signal.SIGKILL)
+            for waiter in reapers:
+                waiter.join(timeout=5)
+            for process in children:
+                if process is not None:
+                    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+                        process.wait(timeout=5)
+            raise
+
+
+def _record_live(run: Path, row: dict[str, Any]) -> bool:
+    if row.get("status") != "running":
+        return False
+    if not row.get("lease"):
+        return alive(row.get("pid"))
+    with (run / "run.lock").open("a") as lease:
+        try:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
+
+
 def running(run: Path) -> bool:
-    """The run's record says running and the process that writes it is still there."""
-    row = read_record(run) or {}
-    return row.get("status") == "running" and alive(row.get("pid"))
+    """A running record with a live writer (kernel lease; PID for old records)."""
+    return _record_live(run, read_record(run) or {})
+
+
+def reconcile_runs(cfg: dict[str, Any]) -> None:
+    """Persist abandoned records before the next play; never touch a live lease.
+
+    SIGKILL and reboot cannot run cleanup. An unlocked lease is authoritative even
+    if the owner's PID has been reused; old records use their recorded PID.
+    """
+    plays = cfg["runs"] / "plays"
+    for run in sorted(plays.iterdir()) if plays.is_dir() else []:
+        row = read_record(run)
+        if not row or row.get("status") != "running":
+            continue
+        with (run / "run.lock").open("a") as lease:
+            try:
+                fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            row = read_record(run)
+            if not row or row.get("status") != "running" or (not row.get("lease") and alive(row.get("pid"))):
+                continue
+            row = _abandoned(row, "play owner disappeared; reconciled on next play")
+            row["reconciled"] = True
+            _write_record(run, row)
 
 
 def run_rows(cfg: dict[str, Any]) -> list[tuple[Path, dict[str, Any]]]:
-    """Every replay folder with its record, oldest first. A record left `running` by a process that is gone (killed
-    server, reboot) reads as done with no outcome."""
+    """Every replay folder with its record, oldest first; abandoned plays read as killed."""
     plays = cfg["runs"] / "plays"
     rows = []
     for run in sorted(plays.iterdir()) if plays.is_dir() else []:
         row = read_record(run)
         if row is None:
             continue
-        if row.get("status") == "running" and not alive(row.get("pid")):
-            row = {**row, "status": "done", "outcome": None}
+        if row.get("status") == "running" and not _record_live(run, row):
+            row = _abandoned(row, "play owner disappeared")
         rows.append((run, row))
     return rows
 
@@ -941,6 +1098,7 @@ def inspect_files(run: Path, shots_every: int, dump_ram_at: int | None, trace_dr
     return found
 
 
+@_play_signals
 def play(
     profile: Profile,
     name: str | None,
@@ -994,6 +1152,7 @@ def play(
     `sanitize` runs the sanitizer port (profile tas.sanitizer.port, or `port`): reports become findings.jsonl lines
     (module tas_sanitize) and the result's `sanitizer` counts them; the run is tagged `sanitizer` on the page."""
     cfg = settings(profile)
+    reconcile_runs(cfg)
     if sanitize and port is None:
         if not cfg.get("sanitizer_port"):
             raise DecompError("tas.sanitize", "no sanitizer port: set tas.sanitizer.port in the profile or pass --port")
@@ -1149,142 +1308,163 @@ def play(
         record.update({"start": started[0], "prefix": started[1]})
     if retry and source is not None:
         record.update({"from": source, "at": take_at})
-    state = None
-    if state_diff and not sanitize and not human and not retry:
-        try:
-            state = tas_statediff.begin(profile, cfg, run, pak, card, polls)
-        except (DecompError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-            record["state_diff"] = {"error": str(error)}
-        if state:
-            env.update(state.port_env())
-    oracle_process, oracle_end, oracle_waiter = None, {}, None
-    if original:
-        env.update(tas_oracle.port_env(original, run))
-        record["oracle"] = {"status": "running", "every": original["shot_every"], "host": str(original["host"])}
-        oracle_began = time.monotonic()
-        oracle_process = tas_oracle.start(original, run, cfg["exit_after"], pak, card=oracle_card, pads=pads)
-        record["oracle"]["pid"] = oracle_process.pid
+    with _run_record(run, record) as (children, reapers):
+        state = None
+        if state_diff and not sanitize and not human and not retry:
+            try:
+                with _starting_play_process():
+                    state = tas_statediff.begin(profile, cfg, run, pak, card, polls)
+                    if state:
+                        children.append(state.process)
+                        if state._waiter:
+                            reapers.append(state._waiter)
+            except (DecompError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+                record["state_diff"] = {"error": str(error)}
+            if state:
+                env.update(state.port_env())
+        oracle_process, oracle_end, oracle_waiter = None, {}, None
+        if original:
+            env.update(tas_oracle.port_env(original, run))
+            record["oracle"] = {"status": "running", "every": original["shot_every"], "host": str(original["host"])}
+            oracle_began = time.monotonic()
+            with _starting_play_process():
+                oracle_process = tas_oracle.start(original, run, cfg["exit_after"], pak, card=oracle_card, pads=pads)
+                children.append(oracle_process)
+                record["oracle"]["pid"] = oracle_process.pid
 
-        def reap() -> None:  # reaped as soon as it ends, so the page sees it done while the port goes on
-            code, cpu = _wait(oracle_process, original["timeout_seconds"])
-            oracle_end.update(code=code, cpu=cpu, wall=round(time.monotonic() - oracle_began, 1))
+            def reap() -> None:  # reaped as soon as it ends, so the page sees it done while the port goes on
+                code, cpu = _wait(oracle_process, original["timeout_seconds"])
+                oracle_end.update(code=code, cpu=cpu, wall=round(time.monotonic() - oracle_began, 1))
 
-        oracle_waiter = threading.Thread(target=reap, daemon=True)
-        oracle_waiter.start()
-    _write_record(run, record)
-    argv = supervised(cfg, run, _argv(cfg, user_dir, pak, card, fps_unlock))
-    try:
+            oracle_waiter = threading.Thread(target=reap, daemon=True)
+            oracle_waiter.start()
+            reapers.append(oracle_waiter)
+        _write_record(run, record)
+        _check_play_signal()
+        argv = supervised(cfg, run, _argv(cfg, user_dir, pak, card, fps_unlock))
         with (run / "output.txt").open("w") as output:
-            process = subprocess.Popen(
-                argv, env=env, stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT, start_new_session=True
-            )
-            _write_record(run, {**record, "pgid": process.pid})
+            with _starting_play_process():
+                process = subprocess.Popen(
+                    argv,
+                    env=env,
+                    stdin=subprocess.PIPE,
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                children.append(process)
+                record["pgid"] = process.pid
+                _write_record(run, record)
             # The bridge holds a stopped port until its stdin says "continue"; a closed pipe ends it after the stacks.
             process.stdin.close()
             code, cpu = _wait(process, timeout, run)
-    except BaseException:
-        for other in (oracle_process, state.process if state else None):
-            if other and other.poll() is None:
-                with contextlib.suppress(OSError):
-                    os.killpg(other.pid, signal.SIGKILL)
-        _write_record(run, {**record, "status": "done", "outcome": None, "ended": time.time()})
-        raise
-    text = (run / "output.txt").read_text(errors="replace")
-    reached = len(parse_raw((run / "polls.raw").read_text())) if (run / "polls.raw").is_file() else 0
-    result = {"movie": name, "run": str(run), "id": run.name, "speed": speed, "polls": len(polls)}
-    result.update(polls_reached=reached, **classify(code, text))
-    found = inspect_files(run, shots_every, dump_ram_at, trace_draws)
-    if found:
-        result["inspect"] = found
-    if sanitize or tas_sanitize.present(text):
-        result["sanitizer"] = tas_sanitize.collect(cfg, run, text, movie=name, port=cfg["port"], build=build)
-    try:  # RUN/coverage.json: this run's gcovr report (nothing without a coverage build)
-        if tas_coverage.run_report(profile, cfg, run):
-            result["coverage"] = str(run / tas_coverage.COVERAGE)
-    except DecompError as error:
-        result["coverage_error"] = str(error)
-    stopped = (run / "stopped").exists()
-    if stopped:
-        result["subject"] = "stopped from the page"
-    result["wall_seconds"], result["cpu_seconds"] = round(time.monotonic() - began, 1), cpu
-    stacks = [str(p) for p in sorted(run.glob("*-st*.txt")) + sorted(run.glob("*-threads.txt"))]
-    if result["outcome"] == "crash" and (fault := tas_fault.capture(run, cfg["port"])):
-        result["fault"] = fault
-        stacks.insert(0, str(run / tas_fault.STACK))  # the signal frame's own stack ranks before the supervisor's
-    if stacks:
-        result["stacks"] = stacks
-    # Kind, blocking, what cannot help, owner, arity note and one next command (the arity note comes first when set).
-    result.update(tas_symbolize.claim(profile, result, stacks, health))
-    if health:
-        result["build"] = tas_health.header(health)
-    before = previous_run(cfg, name, build, run.name, pak, mode) if build and not stopped else None
-    result["same_twice"] = same_hashes(run, before) if before else None
-    if before:
-        result["compared_with"] = before.name
-    result["fn"] = fn_of(result)
-    result["cpak"] = mode
-    result["shown"] = fps_shown(text)
-    taken = (run / TAKEN).is_file()
-    if taken:
-        result.update(
-            taken=True,
-            same_twice=None,
-            compared_with=None,
-            saved=save_taken(profile, cfg, run, name, human or bool(retry and retry.get("fresh")), pak, mode, *started),
+        text = (run / "output.txt").read_text(errors="replace")
+        reached = len(parse_raw((run / "polls.raw").read_text())) if (run / "polls.raw").is_file() else 0
+        result = {"movie": name, "run": str(run), "id": run.name, "speed": speed, "polls": len(polls)}
+        result.update(polls_reached=reached, **classify(code, text))
+        found = inspect_files(run, shots_every, dump_ram_at, trace_draws)
+        if found:
+            result["inspect"] = found
+        if sanitize or tas_sanitize.present(text):
+            result["sanitizer"] = tas_sanitize.collect(cfg, run, text, movie=name, port=cfg["port"], build=build)
+        try:  # RUN/coverage.json: this run's gcovr report (nothing without a coverage build)
+            if tas_coverage.run_report(profile, cfg, run):
+                result["coverage"] = str(run / tas_coverage.COVERAGE)
+        except DecompError as error:
+            result["coverage_error"] = str(error)
+        stopped = (run / "stopped").exists()
+        if stopped:
+            result["subject"] = "stopped from the page"
+        result["wall_seconds"], result["cpu_seconds"] = round(time.monotonic() - began, 1), cpu
+        stacks = [str(p) for p in sorted(run.glob("*-st*.txt")) + sorted(run.glob("*-threads.txt"))]
+        if result["outcome"] == "crash" and (fault := tas_fault.capture(run, cfg["port"])):
+            result["fault"] = fault
+            stacks.insert(0, str(run / tas_fault.STACK))  # the signal frame's own stack ranks before the supervisor's
+        if stacks:
+            result["stacks"] = stacks
+        # Kind, blocking, owner and one next command (the arity note comes first when set).
+        result.update(tas_symbolize.claim(profile, result, stacks, health))
+        if health:
+            result["build"] = tas_health.header(health)
+        before = previous_run(cfg, name, build, run.name, pak, mode) if build and not stopped else None
+        result["same_twice"] = same_hashes(run, before) if before else None
+        if before:
+            result["compared_with"] = before.name
+        result["fn"] = fn_of(result)
+        result["cpak"] = mode
+        result["shown"] = fps_shown(text)
+        taken = (run / TAKEN).is_file()
+        if taken:
+            result.update(
+                taken=True,
+                same_twice=None,
+                compared_with=None,
+                saved=save_taken(
+                    profile, cfg, run, name, human or bool(retry and retry.get("fresh")), pak, mode, *started
+                ),
+            )
+        keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
+        keep += (
+            "taken",
+            "saved",
+            "coverage",
+            "frame",
+            "fault",
+            "shown",
+            "state_diff",
+            "sanitizer",
+            "function",
+            "source",
+            "source_precision",
+            "instruction",
+            "fcsr",
+            "claim",
+            "owner",
         )
-    keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
-    keep += (
-        "taken",
-        "saved",
-        "coverage",
-        "frame",
-        "fault",
-        "shown",
-        "state_diff",
-        "sanitizer",
-        "function",
-        "source",
-        "source_precision",
-        "instruction",
-        "fcsr",
-        "claim",
-        "owner",
-    )
-    if state:
-        try:
-            result["state_diff"] = tas_statediff.finish(state, profile, name, {**record, "batch": batch})
-        except (DecompError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-            result["state_diff"] = {"error": str(error)}
-    elif "state_diff" in record:
-        result["state_diff"] = record["state_diff"]
-    if oracle_waiter:
-        oracle_waiter.join()
-        wall, polls = oracle_end["wall"], tas_oracle.reached(run)
-        record["oracle"] = {
-            **record["oracle"],
-            **tas_oracle.outcome(oracle_end["code"]),
+        if state:
+            try:
+                result["state_diff"] = tas_statediff.finish(state, profile, name, {**record, "batch": batch})
+            except (DecompError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+                result["state_diff"] = {"error": str(error)}
+        elif "state_diff" in record:
+            result["state_diff"] = record["state_diff"]
+        if oracle_waiter:
+            oracle_waiter.join()
+            wall, polls = oracle_end["wall"], tas_oracle.reached(run)
+            record["oracle"] = {
+                **record["oracle"],
+                **tas_oracle.outcome(oracle_end["code"]),
+                "status": "done",
+                "polls_reached": polls,
+                "wall_seconds": wall,
+                "cpu_seconds": oracle_end["cpu"],
+                "fps": round(polls / wall, 1) if wall else None,
+            }
+            result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
+        final = {
+            **record,
+            **{k: result.get(k) for k in keep},
             "status": "done",
-            "polls_reached": polls,
-            "wall_seconds": wall,
-            "cpu_seconds": oracle_end["cpu"],
-            "fps": round(polls / wall, 1) if wall else None,
+            "stopped": stopped,
+            "ended": time.time(),
         }
-        result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
-    final = {**record, **{k: result.get(k) for k in keep}, "status": "done", "stopped": stopped, "ended": time.time()}
-    _write_record(run, final)
-    if not human:  # a crash, stop, hang or exit is a finding (tas_findings; sanitized: crash-sanitized); clean clears
-        marked = {**final, "id": run.name, "sanitizer": final.get("sanitizer") or sanitize}
-        tas_findings.record_run(profile, cfg, marked, run, batch)
-    if not human and not retry and not sanitize:  # a run reaching new code keeps its movie (tas_corpus)
-        from abu_decomp import tas_corpus
+        _check_play_signal()
+        _write_record(run, final)
+        if (
+            not human
+        ):  # a crash, stop, hang or exit is a finding (tas_findings; sanitized: crash-sanitized); clean clears
+            marked = {**final, "id": run.name, "sanitizer": final.get("sanitizer") or sanitize}
+            tas_findings.record_run(profile, cfg, marked, run, batch)
+        if not human and not retry and not sanitize:  # a run reaching new code keeps its movie (tas_corpus)
+            from abu_decomp import tas_corpus
 
-        try:
-            kept = tas_corpus.offer(profile, settings(profile), run, final)
-        except (DecompError, OSError) as error:
-            kept = {"error": str(error)}
-        if kept:
-            result["corpus"] = kept
-    return result
+            try:
+                kept = tas_corpus.offer(profile, settings(profile), run, final)
+            except (DecompError, OSError) as error:
+                kept = {"error": str(error)}
+            if kept:
+                result["corpus"] = kept
+        return result
 
 
 def play_twice(
@@ -1375,6 +1555,7 @@ def table(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+@_play_signals
 def play_all(
     profile: Profile,
     *,

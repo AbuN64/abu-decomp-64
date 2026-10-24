@@ -1283,6 +1283,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         code, findings = 1, [exc.finding()]
     except (ValueError, OSError) as exc:
         code, findings = 1, [{"key": "command.failed", "message": str(exc), "blocking": True}]
+    except KeyboardInterrupt as exc:
+        code = 128 + getattr(exc, "signum", 2)
+        findings = [{"key": "command.interrupted", "message": str(exc) or "SIGINT", "blocking": True}]
     except SystemExit as exc:
         # argparse help is the only plain-text stdout path.
         if exc.code == 0:

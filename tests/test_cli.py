@@ -47,6 +47,20 @@ class CliTests(unittest.TestCase):
         code, text = run(["nonsense"])
         self.assertEqual((code, json.loads(text)["findings"][0]["key"]), (1, "cli.arguments"))
 
+    def test_play_interruption_keeps_signal_exit_code_and_is_not_an_argument_error(self):
+        from abu_decomp.tas import PlayInterrupted
+
+        for signum in (2, 15):
+            command = SimpleNamespace(
+                **{**vars(COMMANDS["profile"]), "run": mock.Mock(side_effect=PlayInterrupted(signum))}
+            )
+            with mock.patch.dict(COMMANDS, {"profile": command}):
+                code, text = run(["profile"])
+            envelope = json.loads(text)
+            self.assertEqual(code, 128 + signum)
+            self.assertFalse(envelope["ok"])
+            self.assertEqual(envelope["findings"][0]["key"], "command.interrupted")
+
     def test_version_needs_no_profile(self):
         with mock.patch("abu_decomp.tools.version_text", return_value="decomp 9\nunbake 1\n"):
             self.assertEqual(run(["--version"]), (0, "decomp 9\nunbake 1\n"))
