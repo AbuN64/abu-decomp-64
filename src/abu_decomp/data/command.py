@@ -14,7 +14,7 @@ from abu_decomp.data import config as config_mod
 from abu_decomp.data import gate as gate_mod
 from abu_decomp.data import rewrite as rewrite_mod
 from abu_decomp.data import stamp as stamp_mod
-from abu_decomp.data import trial
+from abu_decomp.data import stampbuild, trial
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
 
@@ -79,6 +79,11 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     st = sub.add_parser("stamp", help="refuse a diff that touches declarations or data without a passing check stamp")
     st.add_argument("--diff", type=Path, required=True)
     st.add_argument("--stamps", type=Path)
+    st.add_argument(
+        "--build", action="store_true", help="no stamp yet: build the diff alone on a fresh warm tree, stamp it"
+    )
+    st.add_argument("--tree", type=Path, help="--build: the shared tree the fresh tree is seeded from")
+    st.add_argument("--at", help="--build: the commit the diff applies on (default: the shared tree's branch tip)")
     g = sub.add_parser(
         "gate", help="refuse a diff that re-adds a raw member extern or a kind-conflicting decl; tree ratchet"
     )
@@ -137,6 +142,19 @@ def run(args: argparse.Namespace) -> Result:
     if verb == "units":
         syms = check_mod.changed_symbols(cfg, args.tree, base=args.since)
         return {"symbols": syms, "units": check_mod.referencing_units(cfg, args.tree, syms)}, 0, []
+    if verb == "stamp" and args.build:
+        from abu_decomp import cli
+
+        if not args.tree:
+            raise DecompError("data.stamp", "--build needs --tree SHARED")
+        return stampbuild.build(
+            cfg,
+            cli._profile(args.profile),
+            args.tree,
+            args.diff,
+            stamp_mod.stamp_dir(args.stamps, args.config),
+            args.at,
+        )
     if verb == "stamp":
         text = args.diff.read_text(errors="replace")
         bad = stamp_mod.missing(cfg, stamp_mod.stamp_dir(args.stamps, args.config), text, args.diff)
