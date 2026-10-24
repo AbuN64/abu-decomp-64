@@ -49,12 +49,15 @@ from abu_decomp import (
     tas_fn,
     tas_health,
     tas_oracle,
+    tas_phasemap,
     tas_points,
     tas_triage,
 )
 from abu_decomp.config import Profile
 
-_SERVE_KEYS = frozenset({"listen", "jobs", "inbox", "states", "pin", "lanes", "keep_days", "invocations", "claims"})
+_SERVE_KEYS = frozenset(
+    {"listen", "jobs", "inbox", "states", "pin", "lanes", "keep_days", "invocations", "claims", "phase_frame_minutes"}
+)
 RECENT_SHOWN = 12  # newest finished runs in /api/state (all running and queued ones are always there)
 HISTORY_PAGE = 60  # runs per /api/runs page
 INBOX_SHOWN = 12
@@ -103,6 +106,9 @@ class Server:
             str(profile.path("tas.serve.invocations", item)) for item in ([given] if isinstance(given, str) else given)
         ]
         self.claims = profile.path("tas.serve.claims", serve["claims"]) if "claims" in serve else None
+        self.phase = tas_phasemap.Phase(
+            profile, self.cfg, self.pin_dir, self.table, float(serve.get("phase_frame_minutes", 10))
+        )
         self.work = tas_board.Work(self.ranked, self.cfg["runs"] / "standing.json")
         self.triage = tas_board.Work(self.buckets, tas_findings.path(self.cfg["runs"]))
         self.oracles: dict[str, tuple[int, Any]] = {}  # run id -> (record mtime, summary) of finished runs
@@ -853,6 +859,12 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     args = dict(part.partition("=")[::2] for part in query.split("&") if part)
                     before = float(args["before"]) if args.get("before") else None
                     self.json(server.history(before, int(args.get("limit") or HISTORY_PAGE)))
+                elif path == "/api/phase":
+                    self.json(*server.phase.phase())
+                elif path == "/api/phase/map":
+                    self.phase_map(query)
+                elif path == "/phase/frame.png":
+                    self.phase_frame(query)
                 elif path == "/api/maze":
                     self.json(server.maze())
                 elif head == "fn" and run_id and tas_fn.NAME.match(run_id):
@@ -880,6 +892,32 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.missing()
             except (BrokenPipeError, ConnectionResetError):
                 return
+
+        def phase_map(self, query: str) -> None:
+            version = dict(p.partition("=")[::2] for p in query.split("&") if p).get("version") or server.phase.focus()
+            tag = server.phase.etag(version) if version else None
+            if tag and self.headers.get("If-None-Match") == tag:
+                self.send_response(HTTPStatus.NOT_MODIFIED)
+                self.send_header("ETag", tag)
+                self.end_headers()
+                return
+            body, status = server.phase.map(version) if version else ({"error": "no version"}, 404)
+            payload = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            if status == HTTPStatus.OK and tag:
+                self.send_header("ETag", tag)
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def phase_frame(self, query: str) -> None:
+            version = dict(p.partition("=")[::2] for p in query.split("&") if p).get("version") or server.phase.focus()
+            image, why = server.phase.frame(version) if version else (None, "no version")
+            if image is None:
+                self.json({"error": why}, HTTPStatus.NOT_FOUND)
+            else:
+                self.reply(image, "image/png")
 
         def static(self, root: Path, name: str) -> None:
             """A file of the gcovr HTML report (runs/coverage); a name that leaves the folder is a 404."""
@@ -1068,6 +1106,7 @@ def serve(profile: Profile) -> dict[str, Any]:
     http.daemon_threads = True
     threading.Thread(target=server.archive, daemon=True).start()
     threading.Thread(target=server.gatekeeper, daemon=True).start()
+    threading.Thread(target=server.phase.run_frames, daemon=True).start()
     print(f"tas page: http://{server.listen}/", flush=True)
     try:
         http.serve_forever()
