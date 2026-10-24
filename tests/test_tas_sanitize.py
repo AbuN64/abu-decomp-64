@@ -261,3 +261,11 @@ class SanitizerRunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_monkey_and_findings_are_tas_actions():
+    from abu_decomp import cli
+
+    parsed = cli.parser().parse_args(["tas", "monkey", "--seeds", "1-2", "--prefix", "boot-idle"])
+    assert (parsed.command, parsed.action, parsed.seeds, parsed.prefix) == ("tas", "monkey", "1-2", "boot-idle")
+    assert cli.parser().parse_args(["tas", "findings"]).action == "findings"

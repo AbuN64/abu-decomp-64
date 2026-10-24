@@ -298,18 +298,6 @@ def _probe_arguments(parser: argparse.ArgumentParser) -> None:
     request.add_argument("--match-state", help="match state of that source")
     request.add_argument("--evidence", type=Path, action="append", default=[], help="file the request rests on")
     request.add_argument("--supersedes", help="id of the request this one replaces")
-    monkey = actions.add_parser(
-        "monkey", help="seeded random controller input on the sanitizer port; keeps the movies that find something"
-    )
-    monkey.add_argument("--seeds", required=True, help="3, 1-8 or 1,4,9-11")
-    monkey.add_argument("--polls", type=int, default=3000, help="random polls per movie (default 3000)")
-    monkey.add_argument("--hold", type=int, default=24, help="longest run of equal polls (default 24)")
-    monkey.add_argument("--prefix", help="a saved movie that reaches the start point; the random input follows it")
-    monkey.add_argument("--port", type=Path, help="the sanitizer build's executable (default tas.sanitizer.port)")
-    monkey.add_argument("--jobs", type=int, default=2, help="parallel runs (default 2)")
-    monkey.add_argument("--keep", choices=("findings", "all"), default="findings", help="which movies stay saved")
-    findings = actions.add_parser("findings", help="the sanitizer findings, grouped by file:line")
-    findings.add_argument("--limit", type=int, default=50, help="groups to list (default 50)")
     actions.add_parser("serve", help="the open requests, oldest first, each with its Taste repro story")
     status = actions.add_parser("status", help="every request joined to its PROBE events")
     status.add_argument("--id", help="one request")
@@ -339,6 +327,18 @@ def _run_probe(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
 
 def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
+    monkey = actions.add_parser(
+        "monkey", help="seeded random controller input on the sanitizer port; keeps the movies that find something"
+    )
+    monkey.add_argument("--seeds", required=True, help="3, 1-8 or 1,4,9-11")
+    monkey.add_argument("--polls", type=int, default=3000, help="random polls per movie (default 3000)")
+    monkey.add_argument("--hold", type=int, default=24, help="longest run of equal polls (default 24)")
+    monkey.add_argument("--prefix", help="a saved movie that reaches the start point; the random input follows it")
+    monkey.add_argument("--port", type=Path, help="the sanitizer build's executable (default tas.sanitizer.port)")
+    monkey.add_argument("--jobs", type=int, default=2, help="parallel runs (default 2)")
+    monkey.add_argument("--keep", choices=("findings", "all"), default="findings", help="which movies stay saved")
+    findings = actions.add_parser("findings", help="the sanitizer findings, grouped by file:line")
+    findings.add_argument("--limit", type=int, default=50, help="groups to list (default 50)")
     save = actions.add_parser("save", help="save a recording (default: the newest) as a named movie")
     save.add_argument("name", help="lower-case words joined by '-', saying what the movie does")
     save.add_argument("--from", dest="source", type=Path, help="raw recording to save")
