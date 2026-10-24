@@ -7,6 +7,7 @@
  * as in the ROM. */
 #include "../n64c_os.h"
 #include "../n64c_pi.h"
+#include "../n64c_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +35,43 @@ typedef struct { u32 texture; s8 width, height, offsetX, offsetY; } Glyph;
 _Static_assert(sizeof(Glyph)==8,"8-byte glyph");
 typedef struct { u32 pointer, link; u16 format, width, height, colours, spare, runtime; u32 palette, pixels; } ImageRecord;
 _Static_assert(sizeof(ImageRecord)==28,"28-byte menu archive image record");
+/* Registration order and coverage overlap must not change the bytes of a DMA.
+ * Compare every short slice against a separately constructed native image. */
+static void indexed_ranges(const char *path,const u8 *rom)
+{
+    u8 expected[0xC0],got[24];
+    const u8 image[8]={9,8,7,6,5,4,3,2};
+    memcpy(expected,rom,sizeof expected);
+    CHECK(n64c_pi_open(path));
+    CHECK(n64c_pi_read(0x40,got,8)==0 && memcmp(got,rom+0x40,8)==0); /* empty table */
+    CHECK(n64c_pi_register(0x90,0x94,N64C_RES_RAW,NULL)==0);
+    CHECK(n64c_pi_register(0x10,0xA0,N64C_RES_BYTE_STREAM,NULL)==0);
+    CHECK(n64c_pi_register(0x40,0x50,N64C_RES_SWAP32,NULL)==0);
+    CHECK(n64c_pi_register_image(0x20,0x28,image)==0);
+    CHECK(n64c_pi_register(0,0xC0,N64C_RES_BYTE_STREAM,NULL)==0);
+    memcpy(expected+0x20,image,sizeof image);
+    for (unsigned at=0x40;at<0x50;at+=4)
+        for (unsigned b=0;b<4;b++) expected[at+b]=rom[at+3-b];
+    CHECK(n64c_pi_read(0x40,got,8)==0 && memcmp(got,expected+0x40,8)==0);
+    CHECK(n64c_pi_register(0x48,0x54,N64C_RES_SWAP32,NULL)==-1); /* overlap after sort */
+    CHECK(n64c_pi_register(0x50,0x58,N64C_RES_SWAP16,NULL)==0); /* adjacent, late insert */
+    for (unsigned at=0x50;at<0x58;at+=2) {
+        expected[at]=rom[at+1];expected[at+1]=rom[at];
+    }
+    for (u32 at=0;at<0xA0;at++) {
+        for (u32 bytes=0;bytes<=sizeof got;bytes++) {
+            memset(got,0xEE,sizeof got);
+            CHECK(n64c_pi_read(at,got,bytes)==0);
+            CHECK(memcmp(got,expected+at,bytes)==0);
+            for (u32 b=bytes;b<sizeof got;b++) CHECK(got[b]==0xEE);
+        }
+    }
+    n64c_pi_close();
+    CHECK(n64c_pi_open(path));
+    CHECK(n64c_pi_register(0,0xC0,N64C_RES_BYTE_STREAM,NULL)==0); /* coverage only */
+    CHECK(n64c_pi_read(0x40,got,8)==0 && memcmp(got,rom+0x40,8)==0);
+    n64c_pi_close();
+}
 int main(void)
 {
     const char *path="n64c_resources_test.rom";
@@ -389,6 +427,7 @@ int main(void)
         CHECK(n64c_pi_origin(buffers[ORIGIN_CAPACITY-1],&source) && source==TEXT);
     }
     n64c_shutdown();
+    indexed_ranges(path,rom);
     CHECK(remove(path)==0);
     printf("PI resource descriptors: %d checks; swap32 header, image and font records, glyphs, offsets, map, audio table, directory, raw text, tagged widget pages, audio control bank, overlay image, refusals\n",checks);
     return 0;

@@ -49,6 +49,8 @@ typedef struct {
 } Res;
 static Res *res;
 static size_t n_res, cap_res;
+static size_t n_fixup;
+static int ranges_sorted;
 /* RNC streams nested in a GRAPH-typed ROM range (P types): found when the range's graph is walked at registration;
  * their headers are typed by that range's width map, their unpacked bytes by the graph from the P type's target. */
 static Res *nested;
@@ -99,6 +101,8 @@ void n64c_pi_close(void)
     free(res);
     res = NULL;
     n_res = cap_res = 0;
+    n_fixup = 0;
+    ranges_sorted = 0;
     n_tagged = 0;
     pthread_mutex_lock(&origin_lock);
     n_origin = 0;
@@ -425,12 +429,14 @@ int n64c_pi_register(u32 lo,u32 hi,N64cResKind kind,const char *fields)
     }
     if ((hi-lo)%entry.stride) return -1;
     res[n_res++]=entry;
+    ranges_sorted=0;
     return 0;
 }
 int n64c_pi_register_image(u32 lo,u32 hi,const u8 *image)
 {
     if (!reserve_range(lo,hi,N64C_RES_IMAGE) || !image) return -1;
     res[n_res++]=(Res){.lo=lo,.hi=hi,.kind=N64C_RES_IMAGE,.stride=1,.image=image};
+    ranges_sorted=0;
     return 0;
 }
 static u32 be_value(const u8 *bytes,u32 width)
@@ -457,6 +463,7 @@ int n64c_pi_register_packed(u32 lo,u32 hi,N64cResKind kind,const char *fields)
         entry.unpacked.kind=N64C_RES_UNTYPED;
     } else if (!parse_layout(&entry.unpacked,kind,fields)) return -1;
     res[n_res++]=entry;
+    ranges_sorted=0;
     return 0;
 }
 static int convert_field(u8 *bytes,char field)
@@ -553,12 +560,39 @@ static void untyped(Res *entry,u32 dev)
     fflush(stderr);
     _Exit(78);
 }
+/* Typed ranges are disjoint; BYTE_STREAM rows only supply coverage and may overlap
+ * them. Keep coverage rows at the end, so both lo and hi are ordered in the typed
+ * prefix. Registration can resume after a DMA; the next lookup sorts it once. */
+static int compare_ranges(const void *left,const void *right)
+{
+    const Res *a=left,*b=right;
+    int a_coverage=a->kind==N64C_RES_BYTE_STREAM;
+    int b_coverage=b->kind==N64C_RES_BYTE_STREAM;
+    if (a_coverage!=b_coverage) return a_coverage-b_coverage;
+    return (a->lo>b->lo)-(a->lo<b->lo);
+}
+static size_t first_fixup(u32 dev)
+{
+    if (!ranges_sorted) {
+        if (n_res>1) qsort(res,n_res,sizeof *res,compare_ranges);
+        n_fixup=n_res;
+        while (n_fixup && res[n_fixup-1].kind==N64C_RES_BYTE_STREAM) n_fixup--;
+        ranges_sorted=1;
+    }
+    size_t lo=0,hi=n_fixup;
+    while (lo<hi) {
+        size_t mid=lo+(hi-lo)/2;
+        if (res[mid].hi<=dev) lo=mid+1;
+        else hi=mid;
+    }
+    return lo;
+}
 static int fixup(u32 dev,u8 *destination,u32 bytes)
 {
     uint64_t end=(uint64_t)dev+bytes;
-    for (size_t i=0;i<n_res;i++) {
+    if (!bytes) return 1;
+    for (size_t i=first_fixup(dev);i<n_fixup && res[i].lo<end;i++) {
         Res *entry=&res[i];
-        if (entry->kind==N64C_RES_BYTE_STREAM) continue; /* typed overlays own conversion; coverage only */
         uint64_t start=dev>entry->lo ? dev : entry->lo;
         uint64_t finish=end<entry->hi ? end : entry->hi;
         if (start>=finish || entry->kind==N64C_RES_RAW) continue;
