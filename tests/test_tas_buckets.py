@@ -70,6 +70,17 @@ class RunFindingTests(unittest.TestCase):
         self.assertEqual(tas_findings.from_run({**CRASH, "input": "human"}), [])
         self.assertEqual(tas_findings.from_run({**CRASH, "stopped": True}), [])
 
+    def test_a_sanitizer_run_crash_is_its_own_kind(self):
+        san = {**CRASH, "sanitizer": {"reports": 3}}
+        (row,) = tas_findings.from_run(san, Path("/r/run-s"))
+        self.assertEqual((row["kind"], row["signature"]), ("crash-sanitized", "null+0x10 in func_8041F2A0_us_rev1"))
+        self.assertEqual(tas_findings.from_run({**san, "outcome": "hang"}), [])
+        plain = tas_findings.from_run({"movie": CRASH["movie"], "outcome": "ok", "id": "p"})
+        sclear = tas_findings.from_run({"movie": CRASH["movie"], "outcome": "ok", "id": "q", "sanitizer": True})
+        self.assertEqual(sclear[0]["clears"], ["crash-sanitized"])
+        self.assertEqual(tas_findings.active([row, *plain]), [row])  # a plain clean run leaves the sanitizer crash
+        self.assertEqual(tas_findings.active([row, *sclear]), [])
+
     def test_a_stop_names_its_function(self):
         (row,) = tas_findings.from_run(
             {"movie": "m", "outcome": "stop", "subject": "boot-missing: func_8041CAD8_de", "polls_reached": 3}

@@ -8,6 +8,8 @@ optional): "run", "batch", "outcome", "subject", "fn", "callers" [fn...], "datum
 (Type.member), "offset" (into the datum or off a null base), "base" ("null"), "region", "fp" (a sweep hit's stable
 fingerprint). `signature` is the writer's own one-line root key, used when nothing structured is known.
 A clean replay of a movie appends {"kind": "clear", "movie", "clears": [kinds]} so a fixed movie leaves its buckets.
+A sanitizer-build run's crash is kind "crash-sanitized" (its layout differs from the page port's, so it neither replaces
+nor is cleared by the movie's plain runs); a clean sanitizer run clears only that kind.
 
 The root of a finding (`root`) is the strongest fact it carries, in this order: the struct field touched, the datum
 touched, the sweep rule, a null base with its offset in the faulting function, the faulting function with its caller,
@@ -30,6 +32,7 @@ from typing import Any
 
 FILE = "findings.jsonl"
 BAD = ("crash", "stop", "hang", "exit")  # the outcomes of a movie run that are findings
+SANITIZED = "crash-sanitized"  # a crash of a sanitizer-build run (its stops, hangs and exits are the slow build's)
 GUEST_BASE, GUEST_END = 0x80000000, 0x80800000  # the guest RAM window of the port (KSEG0 addresses, 8 MB with the pak)
 NULL_LIMIT = 0x10000
 NEAR = 0x2000  # a guest address further than this past its symbol names no datum
@@ -180,12 +183,14 @@ def from_run(
     movie, outcome = record.get("movie"), record.get("outcome")
     if not movie or record.get("input") == "human" or record.get("stopped") or outcome is None:
         return []
+    sanitized = bool(record.get("sanitizer"))
     if outcome == "ok":
-        return [{"kind": "clear", "movie": movie, "clears": list(BAD), "run": record.get("id"), "poll": None}]
-    if outcome not in BAD:
+        clears = [SANITIZED] if sanitized else list(BAD)
+        return [{"kind": "clear", "movie": movie, "clears": clears, "run": record.get("id"), "poll": None}]
+    if outcome not in BAD or (sanitized and outcome != "crash"):
         return []
     row: dict[str, Any] = {
-        "kind": outcome,
+        "kind": SANITIZED if sanitized else outcome,
         "movie": movie,
         "poll": record.get("polls_reached"),
         "run": record.get("id"),
@@ -265,6 +270,8 @@ def root(f: dict[str, Any]) -> tuple[str, str]:
 def _standing_key(row: dict[str, Any]) -> tuple[Any, ...]:
     if row["kind"] in BAD:  # a movie's newest run replaces its older run outcomes
         return ("run", row.get("movie"))
+    if row["kind"] == SANITIZED:  # and its newest sanitizer run its older sanitizer crash
+        return ("sanitized run", row.get("movie"))
     return (row["kind"], row.get("movie"), root(row)[1], row.get("fp", ""))
 
 

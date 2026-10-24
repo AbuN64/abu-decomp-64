@@ -382,8 +382,8 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         "--kind",
         action="append",
         default=[],
-        help="only findings of this kind (crash, hang, stop, exit, fn-differs, state-diverge, sweep, ubsan; repeat or "
-        "comma-separate); a sanitizer kind lists its buckets uncollapsed",
+        help="only findings of this kind (crash, crash-sanitized, hang, stop, exit, fn-differs, state-diverge, sweep, "
+        "ubsan; repeat or comma-separate); a sanitizer kind lists its buckets uncollapsed",
     )
     triage.add_argument(
         "--backfill", action="store_true", help="first add findings for each movie's newest recorded run"

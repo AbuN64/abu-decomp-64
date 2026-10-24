@@ -1239,8 +1239,9 @@ def play(
         result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
     final = {**record, **{k: result.get(k) for k in keep}, "status": "done", "stopped": stopped, "ended": time.time()}
     _write_record(run, final)
-    if not human and not sanitize:  # a crash, stop, hang or exit is a finding (tas_findings); a clean replay clears
-        tas_findings.record_run(profile, cfg, {**final, "id": run.name}, run, batch)
+    if not human:  # a crash, stop, hang or exit is a finding (tas_findings; sanitized: crash-sanitized); clean clears
+        marked = {**final, "id": run.name, "sanitizer": final.get("sanitizer") or sanitize}
+        tas_findings.record_run(profile, cfg, marked, run, batch)
     if not human and not retry and not sanitize:  # a run reaching new code keeps its movie (tas_corpus)
         from abu_decomp import tas_corpus
 
