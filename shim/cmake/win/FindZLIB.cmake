@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# FindZLIB for the Windows build: the zlib is rage_win_zlib (cmake/fast3d_win_deps.cmake), built from the pinned sources.
+if(TARGET rage_win_zlib)
+    if(NOT TARGET ZLIB::ZLIB)
+        add_library(ZLIB::ZLIB ALIAS rage_win_zlib)
+    endif()
+    get_target_property(ZLIB_INCLUDE_DIRS rage_win_zlib INTERFACE_INCLUDE_DIRECTORIES)
+    set(ZLIB_INCLUDE_DIR "${ZLIB_INCLUDE_DIRS}")
+    set(ZLIB_LIBRARIES rage_win_zlib)
+    set(ZLIB_VERSION_STRING 1.3.1)
+    set(ZLIB_VERSION 1.3.1)
+    set(ZLIB_FOUND TRUE)
+else()
+    set(ZLIB_FOUND FALSE)
+endif()

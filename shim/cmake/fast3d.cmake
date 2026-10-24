@@ -13,13 +13,17 @@ if(NOT N64C_M32)
     message(FATAL_ERROR "The Fast3D renderer is built for the 32-bit port (N64C_M32=ON)")
 endif()
 # The consumer already adds -m32 to the C and C++ flags; C++ is enabled here with them.
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse2 -mfpmath=sse")
+if(NOT ANDROID OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86|i[3-6]86)")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse2 -mfpmath=sse")
+endif()
 enable_language(CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF) # no C++ modules; skips a dependency scan per source
-# Find the i386 multiarch builds of the system libraries (tools/i386-deps.sh installs them).
-set(CMAKE_LIBRARY_ARCHITECTURE i386-linux-gnu)
+if(NOT WIN32 AND NOT ANDROID)
+    # Find the i386 multiarch builds of the system libraries (tools/i386-deps.sh installs them).
+    set(CMAKE_LIBRARY_ARCHITECTURE i386-linux-gnu)
+endif()
 if(NOT TARGET SDL3::SDL3-static)
     message(FATAL_ERROR "The Fast3D renderer needs the consumer's SDL3::SDL3-static target")
 endif()
@@ -46,9 +50,21 @@ n64c_dep(lus_stb https://github.com/nothings/stb.git 0bc88af4de5fb022db643c2d8e5
     GIT_SHALLOW FALSE
     SOURCE_SUBDIR fetch-only)
 set(PRISM_STANDALONE OFF CACHE BOOL "" FORCE)
+if(WIN32)
+    # Windows (mingw-w64): window and GL context come from SDL (WGL); there is no EGL device to pick, and the C++
+    # libraries have no system package, so they are built from their pinned sources (licences in SOURCES.md). They are
+    # defined before prism, which looks spdlog up itself and must not find the build host's.
+    set(CMAKE_DISABLE_FIND_PACKAGE_spdlog ON)
+    set(CMAKE_DISABLE_FIND_PACKAGE_fmt ON)
+    include("${CMAKE_CURRENT_LIST_DIR}/fast3d_win_deps.cmake")
+endif()
 FetchContent_MakeAvailable(lus lus_imgui lus_threadpool lus_prism lus_monocypher lus_stb)
 # prism replaces CMAKE_CXX_FLAGS in its own CMakeLists, so it gets the port's pointer width here.
-target_compile_options(prism PRIVATE -m32 -msse2 -mfpmath=sse)
+if(NOT ANDROID)
+    target_compile_options(prism PRIVATE -m32 -msse2 -mfpmath=sse)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86|i[3-6]86)")
+    target_compile_options(prism PRIVATE -msse2 -mfpmath=sse)
+endif()
 execute_process(COMMAND git -C "${lus_imgui_SOURCE_DIR}" apply --reverse --check
         "${lus_SOURCE_DIR}/cmake/dependencies/patches/imgui-fixes-and-config.patch"
     RESULT_VARIABLE fast3d_imgui_patched OUTPUT_QUIET ERROR_QUIET)
@@ -58,13 +74,44 @@ if(NOT fast3d_imgui_patched EQUAL 0)
         COMMAND_ERROR_IS_FATAL ANY)
 endif()
 
-find_package(OpenGL REQUIRED)
-find_library(FAST3D_EGL_LIBRARY EGL REQUIRED) # n64c_f3d picks the software EGL device
 find_package(Threads REQUIRED)
-find_package(nlohmann_json REQUIRED)
-find_package(tinyxml2 REQUIRED)
-find_package(spdlog REQUIRED)
-find_package(libzip REQUIRED)
+if(WIN32)
+    find_package(OpenGL REQUIRED)
+elseif(ANDROID)
+    # The NDK has no system packages: the four libraries LUS uses are built from pinned sources, and the GL backend
+    # is OpenGL ES 3 (LUS USE_OPENGLES; <GLES3/gl3.h>, libGLESv3).
+    n64c_dep(nlohmann_json https://github.com/nlohmann/json.git v3.11.3 GIT_SHALLOW TRUE)
+    n64c_dep(tinyxml2 https://github.com/leethomason/tinyxml2.git 10.0.0 GIT_SHALLOW TRUE)
+    n64c_dep(spdlog https://github.com/gabime/spdlog.git v1.14.1 GIT_SHALLOW TRUE)
+    n64c_dep(libzip https://github.com/nih-at/libzip.git v1.10.1 GIT_SHALLOW TRUE)
+    set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+    set(JSON_Install OFF CACHE BOOL "" FORCE)
+    set(tinyxml2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
+    foreach(option BUILD_TOOLS BUILD_REGRESS BUILD_EXAMPLES BUILD_DOC BUILD_SHARED_LIBS ENABLE_COMMONCRYPTO
+            ENABLE_GNUTLS ENABLE_MBEDTLS ENABLE_OPENSSL ENABLE_WINDOWS_CRYPTO ENABLE_BZIP2 ENABLE_LZMA ENABLE_ZSTD)
+        set(${option} OFF CACHE BOOL "" FORCE)
+    endforeach()
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+    FetchContent_MakeAvailable(nlohmann_json tinyxml2 spdlog libzip)
+    if(NOT TARGET tinyxml2::tinyxml2)
+        add_library(tinyxml2::tinyxml2 ALIAS tinyxml2)
+    endif()
+    if(NOT TARGET libzip::zip)
+        add_library(libzip::zip ALIAS zip)
+    endif()
+    add_library(OpenGL::GL INTERFACE IMPORTED)
+    target_link_libraries(OpenGL::GL INTERFACE GLESv3)
+else()
+    find_package(OpenGL REQUIRED)
+    find_library(FAST3D_EGL_LIBRARY EGL REQUIRED) # n64c_f3d picks the software EGL device
+    find_package(nlohmann_json REQUIRED)
+    find_package(tinyxml2 REQUIRED)
+    find_package(spdlog REQUIRED)
+    find_package(libzip REQUIRED)
+endif()
 
 add_library(fast3d_imgui STATIC
     ${lus_imgui_SOURCE_DIR}/imgui.cpp ${lus_imgui_SOURCE_DIR}/imgui_demo.cpp
@@ -104,22 +151,41 @@ endforeach()
 # (they need the game-facing GBI), scripting and MPQ archives (off), non-Linux backends.
 set(lus_src "${lus_SOURCE_DIR}/src")
 file(GLOB_RECURSE fast3d_sources CONFIGURE_DEPENDS "${lus_src}/fast/*.cpp" "${lus_src}/ship/*.cpp" "${lus_src}/ship/*.c")
-list(FILTER fast3d_sources EXCLUDE REGEX
+set(fast3d_excluded
     "/fast/Fast3d(Window|Gui)\\.cpp|/fast/backends/gfx_(direct3d|dxgi|metal|sdl)|/fast/resource/factory/|/fast/resource/type/(DisplayList|Vertex|Matrix)\\.cpp|/ship/(scripting|security|port)/|WasapiAudioPlayer|CoreAudioAudioPlayer|/ship/utils/Apple")
+if(WIN32)
+    # The ship audio component names its WASAPI player on Windows; it builds with mingw-w64's COM headers.
+    string(REPLACE "|WasapiAudioPlayer" "" fast3d_excluded "${fast3d_excluded}")
+endif()
+list(FILTER fast3d_sources EXCLUDE REGEX "${fast3d_excluded}")
 configure_file("${lus_src}/ship/install_config.h.in" "${CMAKE_CURRENT_BINARY_DIR}/fast3d-config/ship/install_config.h" @ONLY)
 include("${lus_SOURCE_DIR}/cmake/cvars.cmake")
 add_library(rage_fast3d STATIC ${fast3d_sources})
 target_include_directories(rage_fast3d BEFORE PUBLIC "${fast3d_dir}/include" "${fast3d_guard}")
+if(WIN32)
+    # The crash handler includes <DbgHelp.h> (mingw-w64's header is lower case); the forwarding header is on this path only.
+    target_include_directories(rage_fast3d BEFORE PRIVATE "${N64C_SHIM_DIR}/cmake/win/include")
+    target_link_libraries(rage_fast3d PUBLIC dbghelp ole32 oleaut32 uuid ksuser)
+endif()
 # Third-party headers: consumers compile with their own warnings, not LUS's.
 target_include_directories(rage_fast3d SYSTEM PUBLIC
     "${lus_SOURCE_DIR}/include" "${lus_SOURCE_DIR}/include/libultraship" "${lus_src}"
     "${CMAKE_CURRENT_BINARY_DIR}/fast3d-config" "${lus_threadpool_SOURCE_DIR}/include")
+if(ANDROID)
+    target_compile_definitions(rage_fast3d PUBLIC USE_OPENGLES)
+    set_source_files_properties("${lus_src}/fast/backends/gfx_opengl.cpp" PROPERTIES
+        COMPILE_OPTIONS "-include;${fast3d_dir}/f3d_gles_rgba.h")
+endif()
 target_compile_definitions(rage_fast3d PUBLIC ENABLE_OPENGL F3DEX_GBI_2
     LUS_VERSION_EPOCH=2 LUS_VERSION_MAJOR=0 LUS_VERSION_MINOR=0 LUS_VERSION_PATCH=0)
 target_compile_options(rage_fast3d PRIVATE -w)
 target_link_libraries(rage_fast3d PUBLIC fast3d_imgui prism fast3d_monocypher nlohmann_json::nlohmann_json
     tinyxml2::tinyxml2 spdlog::spdlog SDL3::SDL3-static OpenGL::GL Threads::Threads
     PRIVATE fast3d_stb libzip::zip)
+if(WIN32)
+    # The renderer loads OpenGL 3 entry points through GLEW on Windows (opengl32.dll exports only GL 1.1).
+    target_link_libraries(rage_fast3d PUBLIC fast3d_glew)
+endif()
 
 # Replay: a captured display list through the port's DL boundary into Fast3D, gated by the same
 # SSIM check as the hand-written renderer (tests/replay_ssim.py).
@@ -131,7 +197,12 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/fast3d-shaders.o2r"
     VERBATIM)
 add_library(n64c_fast3d STATIC "${fast3d_dir}/f3d_window.cpp" "${fast3d_dir}/n64c_f3d.cpp")
 target_include_directories(n64c_fast3d PUBLIC "${fast3d_dir}")
-target_link_libraries(n64c_fast3d PUBLIC rage_fast3d n64compat PRIVATE ${FAST3D_EGL_LIBRARY})
+target_link_libraries(n64c_fast3d PUBLIC rage_fast3d n64compat)
+if(FAST3D_EGL_LIBRARY)
+    target_link_libraries(n64c_fast3d PRIVATE ${FAST3D_EGL_LIBRARY})
+else()
+    target_compile_definitions(n64c_fast3d PRIVATE N64C_F3D_NO_EGL)
+endif()
 target_compile_options(n64c_fast3d PRIVATE -Wall -Wextra -Werror)
 add_executable(n64c_f3d_replay "${fast3d_dir}/f3d_replay.cpp" "${CMAKE_CURRENT_BINARY_DIR}/fast3d-shaders.o2r")
 target_link_libraries(n64c_f3d_replay PRIVATE n64c_fast3d)

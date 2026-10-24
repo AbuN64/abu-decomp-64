@@ -14,8 +14,10 @@
 #include "ship/config/ConsoleVariable.h"
 #include "ship/resource/ResourceManager.h"
 #include "ship/thread/ThreadPool.h"
+#ifndef N64C_F3D_NO_EGL
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#endif
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_opengl.h>
@@ -118,6 +120,9 @@ static void matrix_seen(void* user, const uintptr_t cmd[2])
 // instead so results do not depend on the host GPU.
 static void prefer_software_device()
 {
+#ifdef N64C_F3D_NO_EGL
+    return; // Windows: SDL's windows driver creates the context through WGL (Mesa's opengl32.dll on a host without a GPU)
+#else
     auto query = (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
     auto query_string = (PFNEGLQUERYDEVICESTRINGEXTPROC)eglGetProcAddress("eglQueryDeviceStringEXT");
     EGLDeviceEXT devices[16];
@@ -131,10 +136,21 @@ static void prefer_software_device()
             return;
         }
     }
+#endif
 }
 
+extern "C" int n64c_fp_traps_mask(void);
+extern "C" void n64c_fp_traps_restore(int enabled);
+namespace {
+// Host code (this renderer, the graphics driver) runs with the guest's floating point traps masked (n64c_system.h).
+struct FpMasked {
+    int enabled = n64c_fp_traps_mask();
+    ~FpMasked() { n64c_fp_traps_restore(enabled); }
+};
+} // namespace
 extern "C" N64cF3d* n64c_f3d_open(const N64cF3dConfig* config)
 {
+    FpMasked fp_masked;
     if (!config || !config->window_w || !config->window_h || !config->fb_w || !config->fb_h)
         return nullptr;
     N64c::F3dContextScope context; // Init creates a context; release it before a guest task runs.
@@ -217,6 +233,7 @@ static int render(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N64cDlArena*
 }
 extern "C" int n64c_f3d_run(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N64cDlStats* stats)
 {
+    FpMasked fp_masked;
     auto context = f3d->window->UseContext();
     n64c_dl_arena_reset(&f3d->arena);
     f3d->surface = 0;
@@ -251,6 +268,7 @@ extern "C" int n64c_f3d_run(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N6
 }
 extern "C" void n64c_f3d_unlock(N64cF3d* f3d, int on)
 {
+    FpMasked fp_masked;
     f3d->unlock = on != 0;
     f3d->pending = {};
     f3d->cur = {};
@@ -282,6 +300,7 @@ static void purge_snapshot_textures(N64cF3d* f3d)
 }
 extern "C" void n64c_f3d_group_begin(N64cF3d* f3d)
 {
+    FpMasked fp_masked;
     f3d->pending = {};
     if (f3d->unlock) {
         auto context = f3d->window->UseContext();
@@ -305,6 +324,7 @@ static bool same_shape(const Group& a, const Group& b)
 }
 extern "C" int n64c_f3d_group_end(N64cF3d* f3d)
 {
+    FpMasked fp_masked;
     if (f3d->pending.tasks.empty())
         return 0;
     const bool had = f3d->have_cur;
@@ -336,6 +356,7 @@ static MtxF lerp_matrix(const MtxF& a, const MtxF& b, float t)
 }
 extern "C" int n64c_f3d_interp_draw(N64cF3d* f3d, float alpha)
 {
+    FpMasked fp_masked;
     if (!f3d->unlock || !f3d->have_cur || !f3d->interp)
         return 0;
     auto context = f3d->window->UseContext();
@@ -396,11 +417,13 @@ static int read_surface(N64cF3d* f3d, const std::map<uint32_t, int>& surfaces, u
 }
 extern "C" int n64c_f3d_read(N64cF3d* f3d, uint32_t phys, uint32_t* rgba, uint32_t w, uint32_t h)
 {
+    FpMasked fp_masked;
     return read_surface(f3d, f3d->surfaces, phys, rgba, w, h);
 }
 // Debug check: the interpolated draw at alpha 1 must be the game's own picture of the same frame.
 extern "C" int n64c_f3d_interp_check(N64cF3d* f3d, uint32_t w, uint32_t h, uint32_t* drawn_out, uint32_t* game_out)
 {
+    FpMasked fp_masked;
     if (!f3d->sub_surface || !f3d->cur.surface || !w || !h)
         return -1;
     std::vector<uint32_t> drawn((size_t)w * h), game((size_t)w * h);
@@ -425,12 +448,14 @@ extern "C" int n64c_f3d_interp_check(N64cF3d* f3d, uint32_t w, uint32_t h, uint3
 }
 extern "C" uint32_t n64c_f3d_refresh_hz(N64cF3d* f3d)
 {
+    FpMasked fp_masked;
     uint32_t hz = 0;
     f3d->window->GetActiveWindowRefreshRate(&hz);
     return hz;
 }
 extern "C" int n64c_f3d_interp_read(N64cF3d* f3d, uint32_t* rgba, uint32_t w, uint32_t h)
 {
+    FpMasked fp_masked;
     return f3d->sub_surface && read_surface(f3d, f3d->sub_surfaces, f3d->sub_surface, rgba, w, h);
 }
 // The port's own 5x7 status font: printable ASCII 0x20-0x5f, one byte per row, bit 4 the leftmost
@@ -536,8 +561,21 @@ static int present(N64cF3d* f3d, const std::map<uint32_t, int>& surfaces, uint32
     if (it != surfaces.end()) {
         const auto info = f3d->interpreter->mFrameBuffers.find(it->second);
         if (info != f3d->interpreter->mFrameBuffers.end())
+        {
+            int dx = 0, dy = 0, dw = (int)ww, dh = (int)wh;
+#ifdef __ANDROID__
+            // The picture is 4:3; a phone screen is wider. Keep the aspect and leave bars (cleared above).
+            if ((uint64_t)ww * 3 > (uint64_t)wh * 4) {
+                dw = (int)((uint64_t)wh * 4 / 3);
+                dx = ((int)ww - dw) / 2;
+            } else {
+                dh = (int)((uint64_t)ww * 3 / 4);
+                dy = ((int)wh - dh) / 2;
+            }
+#endif
             f3d->renderer->CopyFramebuffer(0, it->second, 0, 0, (int)info->second.applied_width,
-                                           (int)info->second.applied_height, 0, 0, (int)ww, (int)wh);
+                                           (int)info->second.applied_height, dx, dy, dx + dw, dy + dh);
+        }
     }
     if (text) {
         f3d->renderer->StartDrawToFramebuffer(0, 1); // CopyFramebuffer may leave its source bound
@@ -549,27 +587,32 @@ static int present(N64cF3d* f3d, const std::map<uint32_t, int>& surfaces, uint32
 }
 extern "C" int n64c_f3d_present(N64cF3d* f3d, uint32_t phys)
 {
+    FpMasked fp_masked;
     return present(f3d, f3d->surfaces, phys, nullptr, true);
 }
 // The interpolated draw's picture, with no event poll: input is read once per VI present as ever.
 extern "C" int n64c_f3d_interp_present(N64cF3d* f3d)
 {
+    FpMasked fp_masked;
     return present(f3d, f3d->sub_surfaces, f3d->sub_surface, nullptr, false);
 }
 extern "C" int n64c_f3d_events(N64cF3d* f3d)
 {
+    FpMasked fp_masked;
     auto context = f3d->window->UseContext();
     f3d->window->HandleEvents();
     return f3d->window->IsRunning() ? 1 : 0;
 }
 extern "C" int n64c_f3d_present_text(N64cF3d* f3d, uint32_t phys, const char* text)
 {
+    FpMasked fp_masked;
     return present(f3d, f3d->surfaces, phys, text ? text : "", true);
 }
 extern "C" const char* n64c_f3d_renderer(const N64cF3d* f3d) { return f3d->gl_renderer.c_str(); }
 
 extern "C" void n64c_f3d_close(N64cF3d* f3d)
 {
+    FpMasked fp_masked;
     if (!f3d)
         return;
     auto context = f3d->window->UseContext();

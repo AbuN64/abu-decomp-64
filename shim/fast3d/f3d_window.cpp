@@ -16,6 +16,12 @@ void F3dWindow::Init(const char* gameName, const char*, bool startFullScreen, ui
     }
     // Default (compatibility) context: the OpenGL backend draws without a vertex array object
     // outside Apple/GLES builds, which a core profile rejects. Depth for the game's z-buffer.
+#ifdef __ANDROID__
+    // Android has OpenGL ES only (LUS USE_OPENGLES, shaders #version 300 es).
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     mFullScreen = startFullScreen;
