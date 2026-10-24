@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "f3d_window.h"
 #include "n64c_input.h"
+#include <SDL3/SDL_opengl.h>
 #include <cstdio>
 #include <cstdlib>
 
@@ -39,7 +40,7 @@ void F3dWindow::Init(const char* gameName, const char*, bool startFullScreen, ui
     }
     SDL_GL_MakeCurrent(mWindow, mContext);
     // Which GPU or software rasterizer serves the picture is part of every run log (perf and bug reports need it).
-    if (auto getString = reinterpret_cast<const unsigned char *(*)(unsigned)>(SDL_GL_GetProcAddress("glGetString"))) {
+    if (auto getString = reinterpret_cast<decltype(&glGetString)>(SDL_GL_GetProcAddress("glGetString"))) {
         const char *renderer = reinterpret_cast<const char *>(getString(0x1F01));
         const char *version = reinterpret_cast<const char *>(getString(0x1F02));
         std::fprintf(stderr, "boot-gl: renderer=%s version=%s\n", renderer ? renderer : "?", version ? version : "?");
