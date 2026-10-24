@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from abu_decomp.data import cdecl
+
 NM_WRAP = r"#ifdef NON_MATCHING\n((?:(?!#ifdef NON_MATCHING)[\s\S])*?)#else\nINCLUDE_ASM\(\"[^\"]+\", %s\);\n#endif\n"
 SPANS = re.compile(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"', re.S)
 
@@ -61,9 +63,46 @@ def replace_uses(text: str, sym: str, expr: str) -> str:
     return "".join(out)
 
 
+def local_decls(text: str, sym: str) -> tuple[list[str], list[str]]:
+    """(extern type texts, unit-local definition type texts) of SYM in TEXT."""
+    plain = cdecl.strip_comments(text)
+    token = re.compile(r"(?<![\w])%s\b" % re.escape(sym))
+    ext = [t for m in cdecl.CDECL.finditer(plain) for s, t in cdecl.declarators(m.group(1), token) if s == sym]
+    ldef = re.compile(cdecl.LOCALDEF % re.escape(sym), re.M)
+    local = [
+        m.group(1).strip() + m.group(3)
+        for m in ldef.finditer(plain)
+        if m.group(1).strip().split()[0] not in ("return", "extern", "typedef")
+    ]
+    return ext, local
+
+
+def skip_reason(text: str, sym: str, owner: str, kinds_all: set[str], access: dict | None) -> str:
+    """Why this file must keep the raw SYM ('' when the rewrite is safe): a unit-local definition or a struct alias of
+    a symbol other units declare as a scalar (rewriting would re-type the access), a declared kind that contradicts how
+    the ROM accesses it, or an owner declared here as something that has no members."""
+    ext, local = local_decls(text, sym)
+    if local:
+        return f"unit-local definition of {sym}: {local[0]}"
+    kinds = cdecl.decl_kind(ext)
+    if "s" in kinds and kinds_all - {"s"}:
+        return f"struct alias of {sym} here ({ext[0]}) where other units declare it as a scalar"
+    seen = {"f" if k.split(":")[1][:1] == "f" else "i" for k in (access or {}) if ":" in k}
+    mine = {k for k in kinds if k in ("i", "f")}
+    if seen and mine and not (seen & mine):
+        return f"declared {ext[0]} but the ROM accesses it as {'/'.join(sorted(seen))}"
+    o_ext, o_local = local_decls(text, owner)
+    if o_local or (o_ext and cdecl.decl_kind(o_ext) - {"s"}):
+        return f"owner {owner} is declared here as {(o_local or o_ext)[0]}, not as its struct"
+    return ""
+
+
 def add_include(text: str, owner_expr: str, header: str, is_header_file: bool) -> str:
-    """Include HEADER after the first #include when the text now names the owner outside the leading include block."""
+    """Include HEADER after the first #include when the text now names the owner outside the leading include block; a
+    file that declares the owner itself (extern or definition) already has it and gets no second, conflicting copy."""
     owner = re.match(r"\w+", owner_expr).group(0)
+    if any(local_decls(text, owner)):
+        return text
     code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.S)
     lead = re.match(r"(?:\s*(?:#include [^\n]*|#ifndef [^\n]*|#define [^\n]*|/\*.*?\*/)\n)*", text, re.S).group(0)
     if is_header_file or not re.search(r"\b%s\b" % owner, code) or ('"%s"' % header) in lead:
@@ -73,12 +112,40 @@ def add_include(text: str, owner_expr: str, header: str, is_header_file: bool) -
     return text[:at] + '#include "%s"\n' % header + text[at:]
 
 
+def file_expr(text: str, sym: str, expr: str, decls: list[str] | None = None) -> str:
+    """EXPR as this file uses it. The census names the leaf at the symbol's address (`O.regs[0]`); a file that declares the
+    symbol as an array (or, with no declaration of its own, whose header does: DECLS) uses the whole member (`O.regs`),
+    or `regs[0][i]` would index the element, not the array."""
+    ext, _local = local_decls(text, sym)
+    array = any("[" in t for t in (ext or decls or []))
+    return expr[:-3] if expr.endswith("[0]") and array else expr
+
+
+def plan_file(
+    text: str,
+    sym: str,
+    expr: str,
+    header: str,
+    is_header_file: bool = False,
+    member: dict | None = None,
+) -> tuple[str, str]:
+    """(new text, skip reason): the per-file rewrite of rewrite.py. A file with a reason keeps its text. The safety
+    rules run when the census MEMBER of the symbol is given (kinds every unit declares it with, ROM access, decl types)."""
+    if sym not in text:
+        return text, ""
+    owner = re.match(r"\w+", expr).group(0)
+    kinds = set(member.get("decl_kind") or []) if member is not None else None
+    why = skip_reason(text, sym, owner, kinds, member.get("access")) if member is not None else ""
+    if why:
+        return text, why
+    use = file_expr(text, sym, expr, (member or {}).get("decl"))
+    new = replace_uses(drop_externs(text, sym), sym, use)
+    return (add_include(new, expr, header, is_header_file) if new != text else text), ""
+
+
 def rewrite_file(text: str, sym: str, expr: str, header: str, is_header_file: bool = False) -> str:
     """The whole per-file rewrite of rewrite.py: externs out, uses to EXPR, owner include in."""
-    if sym not in text:
-        return text
-    new = replace_uses(drop_externs(text, sym), sym, expr)
-    return add_include(new, expr, header, is_header_file) if new != text else text
+    return plan_file(text, sym, expr, header, is_header_file)[0]
 
 
 def put_back(text: str, fn: str, expr: str, sym: str, decl: str) -> str:

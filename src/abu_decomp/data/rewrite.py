@@ -47,13 +47,25 @@ def resolve(census_path: Path | None, sym: str, expr: str | None, header: str | 
 
 
 def run(
-    cfg: DataConfig, tree: Path, sym: str, expr: str, header: str, only: list[str] | None = None, dry: bool = False
+    cfg: DataConfig,
+    tree: Path,
+    sym: str,
+    expr: str,
+    header: str,
+    only: list[str] | None = None,
+    dry: bool = False,
+    member: dict | None = None,
+    skipped: dict[str, str] | None = None,
 ) -> list[str]:
+    """Files rewritten. With the census MEMBER the per-file safety rules apply: a file they refuse keeps the raw symbol and
+    is named with its reason in SKIPPED (the MIXED candidates)."""
     files = [tree / f for f in only] if only else cdecl.source_files(tree, cfg)
     touched = []
     for f in files:
         text = f.read_text(errors="replace")
-        new = source.rewrite_file(text, sym, expr, header, f.name == Path(header).name)
+        new, why = source.plan_file(text, sym, expr, header, f.name == Path(header).name, member)
+        if why and skipped is not None:
+            skipped[str(f.relative_to(tree))] = why
         if new != text:
             touched.append(str(f.relative_to(tree)))
             if not dry:
