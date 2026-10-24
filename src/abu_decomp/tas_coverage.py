@@ -72,7 +72,14 @@ def settings(profile: Profile, cfg: dict[str, Any]) -> dict[str, Any] | None:
 
 def read_gcovr(path: Path) -> dict[str, int] | None:
     """name -> execution count of every function in a gcovr JSON report (same-named statics add up); None when
-    the file is missing or unreadable."""
+    the file is missing or unreadable. The counts are kept beside it (`<report>-fns.json`, ~100 KB against the
+    report's ~13 MB) while newer than it: a union over every movie otherwise parses gigabytes each time."""
+    cache = path.with_name(path.stem + "-fns.json")
+    try:
+        if cache.stat().st_mtime >= path.stat().st_mtime:
+            return json.loads(cache.read_text())
+    except (OSError, ValueError):
+        pass
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -83,6 +90,12 @@ def read_gcovr(path: Path) -> dict[str, int] | None:
             name = str(fn.get("name", ""))
             if name:
                 counts[name] = counts.get(name, 0) + int(fn.get("execution_count", 0))
+    try:
+        tmp = cache.with_suffix(".tmp")
+        tmp.write_text(json.dumps(counts))
+        tmp.replace(cache)
+    except OSError:
+        pass
     return counts
 
 
@@ -157,7 +170,7 @@ def mixed_builds(by_build: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
     for key in keys:
         seen = {sha[:12]: spans_.get(key, "absent") for sha, spans_ in sorted(by_build.items())}
         if len(set(seen.values())) > 1:
-            file, _, name = key.rpartition(":")
+            file, _, name = key.partition(":")
             out.append({"file": file, "function": name, "spans": seen})
     return out
 
@@ -674,7 +687,7 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
     # the functions whose older-build counts were dropped, by name: a smaller union shows what it lost
     report["dropped_functions"] = [
         {"file": file, "function": name}
-        for file, _, name in sorted(key.rpartition(":") for key in spans(base))
+        for file, _, name in sorted(key.partition(":") for key in spans(base))
         if file in dropped
     ]
     report["changed_functions"] = len(report["dropped_functions"])

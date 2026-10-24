@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -342,6 +343,19 @@ class RunReportTests(unittest.TestCase):
         dropped = [{"file": "x.c", "function": "f"}]
         view = cov.lists({"functions": [], "dropped_functions": dropped})
         self.assertEqual(view["dropped_functions"], dropped)
+
+    def test_function_counts_are_cached_beside_the_report(self):
+        path = self.run / "coverage.json"
+        path.write_text(json.dumps({"files": [{"file": "x.c", "functions": [{"name": "f", "execution_count": 2}]}]}))
+        self.assertEqual(cov.read_gcovr(path), {"f": 2})
+        self.assertEqual(json.loads((self.run / "coverage-fns.json").read_text()), {"f": 2})
+        path.write_text("not json")
+        os.utime(path, (1, 1))
+        self.assertEqual(cov.read_gcovr(path), {"f": 2})
+
+    def test_a_method_name_keeps_its_file_apart(self):
+        mixed = cov.mixed_builds({"a": {"x.c:A::f": "1-2"}, "b": {"x.c:A::f": "1-3"}})
+        self.assertEqual((mixed[0]["file"], mixed[0]["function"]), ("x.c", "A::f"))
 
     def test_no_section_no_report(self):
         self.profile.section.return_value = {}
