@@ -13,7 +13,6 @@
 static N64aPcmSink pcm_sink;
 static void *pcm_user;
 static u32 sample_rate = 32000;
-static int sink_failed;
 static OSTime fifo_end[2]; /* virtual time each held buffer finishes playing, oldest first */
 static u32 fifo_count;
 static void fifo_drain_to(OSTime now)
@@ -26,17 +25,71 @@ static void fifo_drain_to(OSTime now)
 static void fifo_drain(void) { fifo_drain_to(osGetTime()); }
 static void buffer_done(void);
 #ifdef N64C_AUDIO_SDL3
+/* The device opens on a helper thread: probing the audio drivers (dlopen of each backend library, a connect to a
+ * sound server) can be slow or hang where there is no sound server and no card. The caller waits OPEN_WAIT_MS; a
+ * device that is not up by then, or never comes up, leaves the sink silent. The guest's AI FIFO runs on the virtual
+ * clock and never sees the sink, so a silent sink changes no guest timing. The outcome is latched: a failed open is
+ * not retried per buffer. A device that opens late takes over from the next buffer on. */
+enum { OPEN_NONE, OPEN_PENDING, OPEN_READY, OPEN_FAILED, OPEN_ABANDONED };
+#define OPEN_WAIT_MS 1500
 static SDL_AudioStream *stream;
-static int audio_initialized;
+static SDL_AtomicInt open_state;
 static u32 stream_rate;
+static int open_rate;
 
 static void close_stream(void)
 {
+    int expected = OPEN_PENDING;
+    if (SDL_CompareAndSwapAtomicInt(&open_state, expected, OPEN_ABANDONED)) return; /* the helper cleans up after itself */
     if (stream) SDL_DestroyAudioStream(stream);
     stream = NULL;
-    if (audio_initialized) SDL_QuitSubSystem(SDL_INIT_AUDIO);
-    audio_initialized = 0;
+    if (SDL_GetAtomicInt(&open_state) == OPEN_READY) SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    SDL_SetAtomicInt(&open_state, OPEN_NONE);
     stream_rate = 0;
+}
+
+static int open_worker(void *data)
+{
+    SDL_Semaphore *done = data;
+    const SDL_AudioSpec spec = {.format = SDL_AUDIO_S16, .channels = 2, .freq = open_rate};
+    SDL_AudioStream *s = NULL;
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+        s = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+        if (s && !SDL_ResumeAudioStreamDevice(s)) {
+            SDL_DestroyAudioStream(s);
+            s = NULL;
+        }
+        if (!s) SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    }
+    stream = s;
+    int expected = OPEN_PENDING;
+    if (!SDL_CompareAndSwapAtomicInt(&open_state, expected, s ? OPEN_READY : OPEN_FAILED)) { /* abandoned while opening */
+        if (s) {
+            SDL_DestroyAudioStream(s);
+            SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        }
+        stream = NULL;
+        SDL_SetAtomicInt(&open_state, OPEN_NONE);
+    }
+    SDL_SignalSemaphore(done);
+    return 0;
+}
+
+static void start_open(u32 rate)
+{
+    SDL_Semaphore *done = SDL_CreateSemaphore(0);
+    open_rate = (int)rate;
+    SDL_SetAtomicInt(&open_state, OPEN_PENDING);
+    SDL_Thread *thread = done ? SDL_CreateThread(open_worker, "n64c-audio-open", done) : NULL;
+    if (!thread) {
+        SDL_SetAtomicInt(&open_state, OPEN_FAILED);
+        if (done) SDL_DestroySemaphore(done);
+        return;
+    }
+    SDL_DetachThread(thread);
+    (void)SDL_WaitSemaphoreTimeout(done, OPEN_WAIT_MS);
+    /* The semaphore is left to the helper's lifetime: a tiny one-off allocation per open attempt. */
+    stream_rate = rate;
 }
 #endif
 
@@ -44,29 +97,18 @@ static void default_sink(void *user, const int16_t *frames, size_t count, uint32
 {
     (void)user;
 #ifdef N64C_AUDIO_SDL3
-    if (sink_failed) return;
-    if (!audio_initialized) {
-        if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) { sink_failed = 1; return; }
-        audio_initialized = 1;
-    }
+    if (SDL_GetAtomicInt(&open_state) == OPEN_NONE) start_open(rate);
+    if (SDL_GetAtomicInt(&open_state) != OPEN_READY) return; /* silent: still opening, or no device */
     const SDL_AudioSpec spec = {.format = SDL_AUDIO_S16, .channels = 2, .freq = (int)rate};
-    if (!stream) {
-        stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
-        if (!stream || !SDL_ResumeAudioStreamDevice(stream)) {
-            close_stream();
-            sink_failed = 1;
-            return;
-        }
-        stream_rate = rate;
-    } else if (stream_rate != rate) {
-        if (!SDL_SetAudioStreamFormat(stream, &spec, NULL)) { sink_failed = 1; return; }
+    if (stream_rate != rate) {
+        if (!SDL_SetAudioStreamFormat(stream, &spec, NULL)) return;
         stream_rate = rate;
     }
     /* Above a quarter second queued (a guest faster than real time, N64C_SPEED) new frames are dropped,
      * so the queue and its latency stay bounded; the guest's AI FIFO runs on the virtual clock regardless. */
     if (SDL_GetAudioStreamQueued(stream) > (int)rate) return;
     /* n64a_ai_submit supplies at most 256 frames per call. SDL copies the data. */
-    if (!SDL_PutAudioStreamData(stream, frames, (int)(count * 2 * sizeof *frames))) sink_failed = 1;
+    (void)SDL_PutAudioStreamData(stream, frames, (int)(count * 2 * sizeof *frames));
 #else
     (void)frames;
     (void)count;
@@ -144,9 +186,11 @@ void n64c_set_audio_sink(N64aPcmSink sink, void *user)
 void n64c_audio_reset(void)
 {
     n64c_set_audio_sink(NULL, NULL);
+#ifdef N64C_AUDIO_SDL3
+    close_stream();
+#endif
     tap_close();
     sample_rate = 32000;
-    sink_failed = 0;
     fifo_count = 0;
 }
 
@@ -170,9 +214,7 @@ s32 osAiSetNextBuffer(void *buffer, u32 bytes)
     if (!buffer || !bytes || (bytes & 3u) || bytes > 0x1000000u || ((uintptr_t)buffer & 3u)) return -1;
     fifo_drain();
     if (fifo_count == 2) return -1; /* both FIFO entries held */
-    sink_failed = 0;
     n64a_ai_submit(buffer, 0, bytes, sample_rate, tap ? tap_sink : pcm_sink ? pcm_sink : default_sink, pcm_user);
-    if (sink_failed) return -1;
     /* Plays after the buffer ahead of it, at the rate in force now; frames * counter / rate in exact integers. */
     OSTime start = fifo_count ? fifo_end[fifo_count - 1] : osGetTime();
     fifo_end[fifo_count++] = start + ((OSTime)(bytes / 4u) * OS_CPU_COUNTER + sample_rate - 1) / sample_rate;
