@@ -4,7 +4,7 @@ How a decompilation and its native port are worked with this tool, in four phase
 of them. Each playbook says what the phase is for, the measurement that ends it, the order of attack and the rules that
 hold throughout. They are generic: every game fact (version names, addresses, sizes, constants, figures) lives in the
 project's profile and config, and the current numbers come from `decomp phase` and the project's progress block, never
-from these pages. For the tool-side steering text of a lane or an orchestrator see [../../Playbooks](../../Playbooks/README.md).
+from these pages.
 
 | Playbook | Ends when |
 |---|---|
@@ -13,6 +13,33 @@ from these pages. For the tool-side steering text of a lane or an orchestrator s
 | [3-coverage-by-play](3-coverage-by-play.md) | One version: every reachable function is executed by play and behaves like the original |
 | [4-staged-releases](4-staged-releases.md) | Releases in stages, each gated by measured coverage |
 | [track-names-and-real-c](track-names-and-real-c.md) | Parallel track: clean names, file structure, and 100% real C with no cheating |
+
+## Tool-side playbooks
+Steering text for whoever drives a decompilation and its native port with this tool (an orchestrator, a lane or a person):
+one class of problem, the order of attack that worked, and the commands that carry it. Read the one that matches the
+phase you are in before planning a lane or a fix.
+
+| Playbook | Phase | Use when |
+|---|---|---|
+| [01-first-boot-speedrun](01-first-boot-speedrun.md) | Port boots to its first original frame | The decomp is mostly matched and the port does not yet draw the game |
+| [02-tas-behaviour-loop](02-tas-behaviour-loop.md) | Port runs; the last functions and behaviours | The port draws frames and the remaining failures show up only while playing |
+| [03-play-loop-agent](03-play-loop-agent.md) | Same, run by an agent beside a player | The standing prompt for the agent that reacts to what the player sees |
+
+Rules every tool-side playbook shares:
+
+- Work by **class**, never by stop. A detector runs over every unit and every
+  traced function at once; a single crash is one sample of a class.
+- **One body serves both goals.** A function lands as C that behaves the same
+  as the original, in its real file, and is matched in place later. There is
+  never a port-only copy.
+- **Measure on main.** Progress is a number taken on the main branch after
+  landing, not a lane's private tree or a stop count.
+- **Every repeated step becomes a tested tool** here or in the port, never a
+  lane-local script.
+- Project facts (paths, addresses, titles, ROM names) live in the seat profile
+  and the port spec, never in a playbook.
+
+The four phases and the naming/real-C track are in [../docs/playbooks](../docs/playbooks/README.md).
 
 Throughout every phase:
 - **One body serves both goals.** A function lands once, in its real file, as C that builds the original bytes (or,
