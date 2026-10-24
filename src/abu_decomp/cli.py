@@ -994,6 +994,39 @@ def _run_data(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     return command.run(args)
 
 
+def _diff_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("paths", nargs="*", help="files or directories whose change is carried")
+    parser.add_argument("--onto", required=True, help="revision to rebuild the change on (e.g. github/main)")
+    parser.add_argument(
+        "--from", dest="base", default="HEAD", help="revision the tree's change is measured from (default HEAD)"
+    )
+    parser.add_argument("--hunks", help="keep only hunks with a changed line matching this regex")
+    parser.add_argument("--rename-symbol", help="OLD=NEW: also rename the symbol in every version's symbol_addrs.txt")
+    parser.add_argument("--msg", help="written as the first line `# MSG: ...` of the diff")
+    parser.add_argument("--out", type=Path, help="write the diff here (default: report only)")
+    parser.add_argument("--project", type=Path, help="project tree (default: the profile's)")
+
+
+def _run_diff(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import diffonto, tools
+
+    tree = tools.project_dir(_profile(args.profile), args.project)
+    return (
+        diffonto.run(
+            tree,
+            args.onto,
+            args.paths,
+            base=args.base,
+            hunks=args.hunks,
+            rename=args.rename_symbol,
+            msg=args.msg,
+            out=args.out,
+        ),
+        0,
+        [],
+    )
+
+
 def _owes_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", type=Path, help="project tree (default: the profile's)")
     parser.add_argument(
@@ -1172,6 +1205,11 @@ COMMANDS: dict[str, Command] = {
         "data typing of raw globals: census (classes + work queue), probe, rewrite, check, gate",
         _data_arguments,
         _run_data,
+    ),
+    "diff": Command(
+        "rebuild a lane tree's change to PATHs on another revision (3-way, scratch index) as a train diff",
+        _diff_arguments,
+        _run_diff,
     ),
     "owes": Command(
         "functions that owe a match (NON_MATCHING bodies, reached INCLUDE_ASM) by evidence level, most reached first",
