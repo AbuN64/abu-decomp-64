@@ -5,7 +5,7 @@
  * pages; every window is a MapViewOfFileEx at its fixed address, never over an existing allocation. Faults come
  * through a vectored exception handler. A fault on a register page is serviced like the Linux backend does it: the
  * handler copies the thread's CONTEXT, points the live one at the generic dispatch on a TLS stack, and the dispatch
- * ends in NtContinue of the saved copy. The x87/SSE state is saved with fxsave when the handler is entered and
+ * ends in NtContinue of an OS-sized copy, including extended XState. The x87/SSE state is saved with fxsave when the handler is entered and
  * restored before NtContinue, so a fault between two floating point instructions of the game loses nothing.
  *
  * Granule: Windows maps views at 64 KiB addresses and offsets, but the guest TLB maps 4 KiB pages. A TLB page whose
@@ -19,6 +19,7 @@
 #if defined(_WIN32) && defined(__i386__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "win_context.h"
 #include "n64c_host.h"
 #include "../n64c_memory.h"
 #include "../n64c_diag.h"
@@ -43,6 +44,31 @@ static unsigned char claimed[CLAIM_CHUNKS];
 
 static HANDLE section;
 static PVOID veh_handle;
+static DWORD context_slot=FLS_OUT_OF_INDEXES;
+static VOID CALLBACK context_free(PVOID value)
+{
+    N64cWinContext *state=value;
+    if (state) {
+        n64c_win_context_destroy(state);
+        HeapFree(GetProcessHeap(),0,state);
+    }
+}
+static N64cWinContext *context_current(void)
+{
+    N64cWinContext *state=FlsGetValue(context_slot);
+    if (!state) {
+        state=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof *state);
+        if (!state) { SetLastError(ERROR_NOT_ENOUGH_MEMORY);return NULL; }
+        if (!FlsSetValue(context_slot,state)) { HeapFree(GetProcessHeap(),0,state);return NULL; }
+    }
+    return state;
+}
+static _Noreturn void context_stop(const char *operation)
+{
+    const DWORD error=GetLastError();
+    fprintf(stderr,"n64compat: %s Windows fault context failed: error %lu\n",operation,(unsigned long)error);
+    _exit(78);
+}
 static CRITICAL_SECTION lock;
 static int lock_ready;
 
@@ -454,8 +480,12 @@ _Noreturn void n64c_host_resume(void)
         (void)!_write(2,message,sizeof message-1);
         _exit(78);
     }
+    N64cWinContext *state=context_current();
+    if (!state || !n64c_win_context_merge(state,&context)) context_stop("restore");
     __asm__ volatile("fxrstor %0"::"m"(*fx_area()):"memory");
-    nt_continue(&context,FALSE);
+    const LONG status=nt_continue(state->context,FALSE);
+    fprintf(stderr,"n64compat: NtContinue returned status 0x%08lx (flags 0x%08lx)\n",
+            (unsigned long)status,(unsigned long)state->context->ContextFlags);
     _exit(78);
 }
 
@@ -523,6 +553,8 @@ static LONG veh_main(EXCEPTION_POINTERS *ep)
     const uintptr_t address=(uintptr_t)record->ExceptionInformation[1];
     if (dsm_fault(address)) return EXCEPTION_CONTINUE_EXECUTION;
     const N64cHostFault fault={address,ep->ContextRecord->Eip,kind==1,ep->ContextRecord,(void *)record};
+    N64cWinContext *state=context_current();
+    if (!state || !n64c_win_context_save(state,ep->ContextRecord)) context_stop("save");
     if (n64c_memory_on_fault(&fault)) return EXCEPTION_CONTINUE_EXECUTION;
     fault_record(ep);
     return EXCEPTION_CONTINUE_SEARCH;
@@ -545,12 +577,16 @@ int n64c_host_fault_install(void)
 {
     if (!nt_continue) nt_continue=(NtContinueFn)(void *)GetProcAddress(GetModuleHandleA("ntdll.dll"),"NtContinue");
     if (!nt_continue || veh_handle) return nt_continue && veh_handle ? 1 : 0;
+    context_slot=FlsAlloc(context_free);
+    if (context_slot==FLS_OUT_OF_INDEXES) return 0;
     veh_handle=AddVectoredExceptionHandler(1,veh);
+    if (!veh_handle) { FlsFree(context_slot);context_slot=FLS_OUT_OF_INDEXES; }
     return veh_handle!=NULL;
 }
 void n64c_host_fault_uninstall(void)
 {
     if (veh_handle) { RemoveVectoredExceptionHandler(veh_handle);veh_handle=NULL; }
+    if (context_slot!=FLS_OUT_OF_INDEXES) { FlsFree(context_slot);context_slot=FLS_OUT_OF_INDEXES; }
 }
 
 #endif /* _WIN32 && __i386__ */

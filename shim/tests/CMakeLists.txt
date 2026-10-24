@@ -50,3 +50,8 @@ if(TARGET SDL3::SDL3-static)
     add_test(NAME n64c_input_sdl COMMAND n64c_test_input_sdl)
     set_tests_properties(n64c_input_sdl PROPERTIES TIMEOUT 10)
 endif()
+
+# Mocked Windows API contract: context size/alignment is OS-owned, including XState.
+add_executable(n64c_test_win_context test_win_context.c)
+target_compile_options(n64c_test_win_context PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME n64c_win_context COMMAND n64c_test_win_context)

@@ -58,7 +58,18 @@ static unsigned fault_done;
 static void faulter(void *argument)
 {
     (void)argument;
-    fault_value=*(volatile u32 *)(uintptr_t)0x00900004u;
+    if (GetEnabledXStateFeatures() & 4) {
+        unsigned char before[32],after[32];
+        for (unsigned i=0;i<sizeof before;i++) before[i]=(unsigned char)(i*7+3);
+        /* One instruction faults with both halves of YMM0 live. The pager must
+         * resume the load and retain all 256 bits, not just the FXSAVE half. */
+        __asm__ volatile("vmovdqu %2, %%ymm0\n\t"
+                         "movl 0x00900004, %%eax\n\t"
+                         "vmovdqu %%ymm0, %0\n\t"
+                         "vzeroupper"
+                         : "=m"(after), "=a"(fault_value) : "m"(before) : "xmm0", "memory");
+        CHECK(!memcmp(before,after,sizeof before));
+    } else fault_value=*(volatile u32 *)(uintptr_t)0x00900004u;
     fault_done=1;
 }
 static void pager(void *argument)
