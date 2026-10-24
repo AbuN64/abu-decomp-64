@@ -1302,3 +1302,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     sys.stdout.flush()
     _refusal_lines(findings)
     return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

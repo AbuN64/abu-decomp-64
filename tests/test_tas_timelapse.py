@@ -65,7 +65,7 @@ class TimelapseTest(unittest.TestCase):
             text=True,
             check=True,
         )
-        self.assertGreater(float(probe.stdout), 0)
+        self.assertAlmostEqual(float(probe.stdout), 3 / 4, places=3)  # 3 frames at 4 fps, no extra frame
         self.assertFalse((self.runs / "phase" / "v.list").exists())
 
 

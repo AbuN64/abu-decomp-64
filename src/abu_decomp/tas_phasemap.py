@@ -236,7 +236,7 @@ def _outside(segs: list[list[int]], ranges: list[tuple[int, int]]) -> int:
 
 def _data_ranges(map_json: dict[str, Any]) -> list[tuple[int, int]]:
     out = []
-    for key in ("data", "fill", "platform"):
+    for key in ("data", "fill", "platform", "leftover"):
         for pair in (map_json.get("spans") or {}).get(key, []):
             if isinstance(pair, list) and len(pair) == 2 and isinstance(pair[0], int):
                 out.append((pair[0], pair[1]))

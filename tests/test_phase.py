@@ -83,6 +83,25 @@ class PhaseTests(Fixture):
         self.assertTrue(rows["p2", "port"]["met"])
         self.assertTrue(rows["p2", "oracle"]["met"])
 
+    def test_p2_oracle_needs_a_done_ok_record(self):
+        run = next((self.root / "tests/fixtures/phase/runs/plays").glob("*/run.json"))
+        original = run.read_text()
+        self.addCleanup(run.write_text, original)
+        record = json.loads(original)
+        record["oracle"] = {"status": "done", "outcome": "fail"}
+        run.write_text(json.dumps(record))
+        rows = self.rows(phase.run(self.profile(), None, None, False)[0])
+        self.assertFalse(rows["p2", "oracle"]["met"])
+
+    def test_mapped_counts_leftover_spans(self):
+        data = {
+            "rom_size": 100,
+            "fns": [["f", 0, 40, 100.0, "a.c", 1]],
+            "blobs": [],
+            "spans": {"leftover": [[40, 100]]},
+        }
+        self.assertEqual(phase.mapped_bytes(data), (100, 100, 40))
+
     def test_p3_stale_report_finding(self):
         _, findings = phase.run(self.profile(fresh=False), None, None, False)
         self.assertIn("phase.stale", [f["key"] for f in findings])

@@ -88,5 +88,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual([row["name"] for row in port], ["spec", "destination"])
 
 
+class ModuleEntryTests(unittest.TestCase):
+    def test_python_m_cli_prints_the_help(self):
+        import os
+        import subprocess
+        import sys
+
+        env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+        done = subprocess.run(
+            [sys.executable, "-m", "abu_decomp.cli", "--help"], capture_output=True, text=True, env=env
+        )
+        self.assertEqual(done.returncode, 0)
+        self.assertIn("phase", done.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

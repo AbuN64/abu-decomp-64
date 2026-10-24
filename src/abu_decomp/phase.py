@@ -239,7 +239,13 @@ def p2(profile: Profile, game: str, version: str, spec: dict[str, Any]) -> list[
     run, rec = found
     age = time.time() - (run / tas.RECORD).stat().st_mtime
     ok = rec.get("outcome") == "ok" and lit(run / tas.VIEW)
-    oracle = (rec.get("oracle") or {}).get("status")
+    # an oracle record is {"status": "done", "outcome": "ok"}; "status" alone never equals "ok"
+    orec = rec.get("oracle") or {}
+    oracle = (
+        "ok"
+        if orec.get("status") == "done" and orec.get("outcome") == "ok"
+        else (orec.get("outcome") or orec.get("status"))
+    )
     return [
         row(
             "p2", game, version, "port", run.name if ok else f"{rec.get('outcome')} {run.name}", True, ok, str(run), age

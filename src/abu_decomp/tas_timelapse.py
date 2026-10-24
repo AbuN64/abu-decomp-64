@@ -37,12 +37,12 @@ def listing(files: list[Path], fps: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def command(work: Path, part: Path, fps: int) -> list[str]:
+def command(work: Path, part: Path, fps: int, count: int) -> list[str]:
     scale = "scale=iw*2:ih*2:flags=neighbor,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
     return [
         "nice", "-n", "10", "ffmpeg", "-y", "-loglevel", "error", "-threads", "2",
         "-f", "concat", "-safe", "0", "-i", str(work),
-        "-vf", scale, "-r", str(fps),
+        "-vf", scale, "-r", str(fps), "-frames:v", str(count),  # the repeated last file must not add a frame
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-movflags", "+faststart", str(part),
     ]  # fmt: skip
 
@@ -66,7 +66,9 @@ def make(runs: Path, version: str, fps: int = DEFAULT_FPS) -> dict[str, Any]:
     started = time.time()
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     try:
-        done = subprocess.run(command(work, part, fps), capture_output=True, text=True, preexec_fn=_limit, check=False)
+        done = subprocess.run(
+            command(work, part, fps, len(files)), capture_output=True, text=True, preexec_fn=_limit, check=False
+        )
     except OSError as error:
         raise DecompError("phase.ffmpeg", f"cannot run ffmpeg: {error}") from error
     finally:
