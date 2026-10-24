@@ -12,7 +12,7 @@ from these pages.
 | [2-port-shell-and-oracle](2-port-shell-and-oracle.md) | A native build and a reference replay the same movie and show the game's first picture |
 | [3-coverage-by-play](3-coverage-by-play.md) | One version: every reachable function is executed by play and behaves like the original |
 | [4-staged-releases](4-staged-releases.md) | Releases in stages, each gated by measured coverage |
-| [5-native-port](5-native-port.md) | The port runs 64-bit and above the original frame rate as toggles, proven against the 32-bit reference |
+| [5-ship-of-theseus](5-ship-of-theseus.md) | The port is replaced plank by plank with our own modern code (no console hacks, native memory, 64-bit, tick rate vs frame rate), each plank proven against the frozen R4 reference; the decompilation stays 1:1 |
 | [track-names-and-real-c](track-names-and-real-c.md) | Parallel track: clean names, file structure, and 100% real C with no cheating |
 
 ## Tool-side playbooks
