@@ -556,6 +556,7 @@ int n64c_boot_frame_live(void)
         const int alive=n64c_frame();
         N64C_ZONE_END(zf);
         N64C_FRAME_MARK();
+        if (n%60==0) N64C_PROFILE_MEMORY();
         if (unlock.on) unlock_commit(n);
         if (n64c_sched_halted()) {
             show_stop(n64c_boot_stop_symbol);
