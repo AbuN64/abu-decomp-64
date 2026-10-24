@@ -55,6 +55,7 @@ def make(runs: Path, version: str, fps: int = DEFAULT_FPS) -> dict[str, Any]:
     """Write `<runs>/phase/<version>.mp4` from the frames; refuses when there are none or ffmpeg fails."""
     if fps < 1:
         raise DecompError("phase.fps", f"--fps must be at least 1, got {fps}")
+    runs = runs.resolve()  # the concat list sits beside the mp4: a relative frame path would not resolve from there
     folder = runs / "phase" / "frames" / version
     files, dropped = frames(folder)
     if not files:

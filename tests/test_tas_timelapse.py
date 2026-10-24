@@ -54,6 +54,17 @@ class TimelapseTest(unittest.TestCase):
         with self.assertRaises(DecompError):
             tas_timelapse.make(self.runs, "v", 0)
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
+    def test_relative_runs_dir_plays(self):
+        import os
+
+        self.put([10, 60])
+        here = os.getcwd()
+        os.chdir(self.runs.parent)
+        self.addCleanup(os.chdir, here)
+        result = tas_timelapse.make(Path(self.runs.name), "v", 4)
+        self.assertEqual(result["frames"], 2)
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
     def test_mp4_plays(self):
         self.put([10, 10, 60, 120])
