@@ -138,6 +138,64 @@ class PhaseTests(Fixture):
         self.assertEqual(got["next_stage"]["stage"], "R2")
         self.assertEqual([f["key"] for f in got["next_stage"]["failing"]], ["byte_reach", "line", "oracle_only"])
 
+    def test_p4_platform_rows_read_evidence(self):
+        rows = self.rows(phase.run(self.profile(), None, None, False)[0])
+        linux = rows["p4", "linux.r0"]
+        self.assertTrue(linux["met"])
+        self.assertEqual(linux["value"], {"installs": True, "title": True, "iface": "5/5"})
+        self.assertTrue(linux["source"].endswith("evidence/linux/evidence.json"))
+        self.assertGreater(linux["age_s"], 0)
+        self.assertFalse(rows["p4", "windows.r0"]["met"])  # no evidence.json yet
+        self.assertEqual(rows["p4", "windows.r0"]["value"], "no evidence")
+
+    def test_p4_platform_needs_all_three_and_iface_5_of_5(self):
+        path = self.dir / "evidence" / "linux" / "evidence.json"
+        for edit in ({"iface": "4/5"}, {"title": False}, {"installs": False}):
+            rec = json.loads(path.read_text())
+            path.write_text(json.dumps({**rec, **edit}))
+            rows = self.rows(phase.run(self.profile(), None, None, False)[0])
+            self.assertFalse(rows["p4", "linux.r0"]["met"], edit)
+            path.write_text(json.dumps(rec))
+
+    def test_ladder_stage_is_null_with_a_finding_while_coverage_is_unknown(self):
+        def reasons(result, findings):
+            self.assertIsNone(result["detail"]["p4"]["stage"])
+            self.assertEqual(self.rows(result)["p4", "stage"]["value"], "coverage unknown")
+            self.assertFalse(self.rows(result)["p4", "stage"]["met"])
+            return [f["message"] for f in findings if f["key"] == "phase.coverage_unknown"]
+
+        # absent
+        (self.dir / "runs" / "coverage-table.json").rename(self.dir / "runs" / "gone.json")
+        self.assertIn("absent", reasons(*phase.run(self.profile(fresh=False), None, None, False))[0])
+        (self.dir / "runs" / "gone.json").rename(self.dir / "runs" / "coverage-table.json")
+        # older than 6 h
+        table = self.dir / "runs" / "coverage-table.json"
+        report = json.loads(table.read_text())
+        report["generated"] = time.time() - 7 * 3600
+        table.write_text(json.dumps(report))
+        self.assertIn("h old", reasons(*phase.run(self.profile(fresh=False), None, None, False))[0])
+        # empty
+        report["generated"] = time.time()
+        report["summary"]["game"]["port"]["functions"] = 0
+        table.write_text(json.dumps(report))
+        self.assertIn("empty", reasons(*phase.run(self.profile(fresh=False), None, None, False))[0])
+
+    def test_ladder_stage_is_null_when_the_report_shrank(self):
+        result, _ = phase.run(self.profile(), None, None, True)
+        self.assertIsNotNone(result["detail"]["p3"]["port_functions"])
+        out = self.dir / "out" / "phase.json"
+        prior = json.loads(out.read_text())
+        prior["detail"]["p3"]["port_functions"] += 3
+        out.write_text(json.dumps(prior))
+        result, findings = phase.run(self.profile(), None, None, False)
+        self.assertIsNone(result["detail"]["p4"]["stage"])
+        self.assertTrue(any("shrank" in f["message"] for f in findings))
+
+    def test_a_known_report_keeps_the_ladder_stage(self):
+        result, findings = phase.run(self.profile(), None, None, False)
+        self.assertNotIn("phase.coverage_unknown", [f["key"] for f in findings])
+        self.assertNotEqual(self.rows(result)["p4", "stage"]["value"], "coverage unknown")
+
     def test_next_commands_are_runnable_and_name_fns(self):
         result, _ = phase.run(self.profile(), None, None, False)
         self.assertEqual(result["next"][0]["phase"], "p1")

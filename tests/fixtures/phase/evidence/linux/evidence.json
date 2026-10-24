@@ -1,0 +1,10 @@
+{
+ "platform": "linux",
+ "sha": "abc1234",
+ "at": "2026-10-23T20:00:00Z",
+ "installs": true,
+ "title": true,
+ "iface": "5/5",
+ "screenshot": "title.png",
+ "log": "proof.log"
+}

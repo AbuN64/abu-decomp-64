@@ -11,6 +11,7 @@ import json
 import re
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -327,7 +328,61 @@ def p3(profile: Profile, cfg: dict[str, Any], game: str, version: str) -> tuple[
             str(gate_file),
         )
     )
-    return rows, {"values": values, "behaviour": behaviour, "age_s": round(age), "states": states}
+    return rows, {
+        "values": values,
+        "behaviour": behaviour,
+        "age_s": round(age),
+        "states": states,
+        "game_functions": summary["game"]["functions"],
+        "port_functions": port_game["functions"],
+    }
+
+
+def _evidence_time(rec: dict[str, Any], path: Path) -> float:
+    """Epoch seconds of a record's `at` (epoch number or ISO 8601); the file mtime when absent or unreadable."""
+    at = rec.get("at")
+    if isinstance(at, (int, float)):
+        return float(at)
+    if isinstance(at, str):
+        try:
+            return datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+    return path.stat().st_mtime
+
+
+def platform_rows(profile: Profile, cfg: dict[str, Any], game: str, version: str) -> list[dict[str, Any]]:
+    """Phase 4 release rows, one per `phase.platforms` entry: `<platform>.r0` is met when the platform's
+    evidence.json says installs and title and iface "5/5". Value {installs, title, iface}; age_s counts from `at`."""
+    rows = []
+    for name, location in sorted((cfg.get("platforms") or {}).items()):
+        path = profile.resolve_path(location)
+        try:
+            rec = json.loads(path.read_text())
+            if not isinstance(rec, dict):
+                raise ValueError("not an object")
+            age = time.time() - _evidence_time(rec, path)
+        except (OSError, ValueError):
+            rows.append(row("p4", game, version, f"{name}.r0", "no evidence", "R0", False, str(path)))
+            continue
+        value = {k: rec.get(k) for k in ("installs", "title", "iface")}
+        met = bool(value["installs"]) and bool(value["title"]) and value["iface"] == "5/5"
+        rows.append(row("p4", game, version, f"{name}.r0", value, "R0", met, str(path), age))
+    return rows
+
+
+def coverage_unknown(d3: dict[str, Any], previous: dict[str, Any] | None) -> str | None:
+    """Why the coverage report cannot place a ladder stage: absent, empty, shrank since the last out, or > 6 h old."""
+    if not d3:
+        return "coverage report absent"
+    if not d3.get("game_functions") or not d3.get("port_functions"):
+        return "coverage report empty"
+    before = ((previous or {}).get("detail") or {}).get("p3", {}).get("port_functions")
+    if isinstance(before, int) and d3["port_functions"] < before:
+        return f"coverage report shrank ({before} -> {d3['port_functions']} port functions)"
+    if d3.get("age_s", 0) > STALE_S:
+        return f"coverage report is {d3['age_s'] // 3600} h old"
+    return None
 
 
 def p4(ladder: list[dict[str, Any]], values: dict[str, float], corpus_ok: bool = True) -> dict[str, Any]:
@@ -429,6 +484,10 @@ def run(
     findings: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     detail: dict[str, Any] = {"foundations": {}}
+    try:
+        previous = json.loads(profile.resolve_path(cfg["out"]).read_text())
+    except (OSError, ValueError):
+        previous = None
     for name, spec in cfg["games"].items():
         if game and name != game:
             continue
@@ -443,21 +502,27 @@ def run(
                 r3, d3 = p3(profile, cfg, name, v)
                 rows += r3
                 detail["p3"] = d3
-                if d3:
-                    gate_ok = all(x["met"] for x in r3 if x["key"] == "corpus_gate")
-                    detail["p4"] = p4(cfg["ladder"], d3["values"], gate_ok)
-                    rows.append(
-                        row(
-                            "p4",
-                            name,
-                            v,
-                            "stage",
-                            detail["p4"]["stage"] or "none",
-                            cfg["ladder"][-1]["stage"],
-                            detail["p4"]["next_stage"] is None,
-                            "phase.ladder",
-                        )
+                gate_ok = all(x["met"] for x in r3 if x["key"] == "corpus_gate")
+                detail["p4"] = p4(cfg["ladder"], d3["values"], gate_ok) if d3 else {"stage": None, "next_stage": None}
+                why = coverage_unknown(d3, previous)
+                if why:
+                    detail["p4"] = {"stage": None, "next_stage": None, "unknown": why}
+                    findings.append(
+                        {"key": "phase.coverage_unknown", "message": f"ladder stage unknown: {why}", "blocking": False}
                     )
+                rows += platform_rows(profile, cfg, name, v)
+                rows.append(
+                    row(
+                        "p4",
+                        name,
+                        v,
+                        "stage",
+                        "coverage unknown" if why else detail["p4"]["stage"] or "none",
+                        cfg["ladder"][-1]["stage"],
+                        not why and detail["p4"]["next_stage"] is None,
+                        "phase.ladder",
+                    )
+                )
                 if refresh and d3.get("age_s", 0) > REFRESH_S:
                     findings.append(
                         {

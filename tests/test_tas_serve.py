@@ -73,6 +73,19 @@ class ServeTests(Base):
         with self.assertRaises(DecompError):
             tas_serve.Server(self.profile(display=":97"))
 
+    def test_build_format_is_the_port_json_format_of_the_port_source(self):
+        source = self.root / "ports"
+        source.mkdir()
+        self.assertIsNone(tas_serve.Server(self.profile()).state()["build"]["format"])  # no tas.serve.port_source
+        server = tas_serve.Server(self.profile(port_source="ports"))
+        self.assertIsNone(server.state()["build"]["format"])  # no port.json: a pre-format build
+        (source / "port.json").write_text(json.dumps({"name": "x", "format": 1}))
+        self.assertEqual(server.state()["build"]["format"], 1)
+        (source / "port.json").write_text("{not json")
+        self.assertIsNone(server.state()["build"]["format"])
+        (source / "port.json").write_text(json.dumps({"format": "1"}))
+        self.assertIsNone(server.state()["build"]["format"])
+
     def test_state_follows_the_contract(self):
         server = tas_serve.Server(self.profile())
         live = self.make_run(

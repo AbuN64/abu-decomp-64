@@ -160,6 +160,11 @@ def _phase_fixture() -> tuple[dict, dict]:
             row(2, "p2.RageWars.port", True, True, True),
             row(3, "p3.fn_reachable_pct", 31.9, 100, False),
             row(4, "p4.byte_reach_pct", 42.5, 50, False),
+            {
+                **row(4, "linux.r0", {"installs": True, "title": True, "iface": "5/5"}, "R0", True),
+                "shot": "/phase/shot?platform=linux",
+            },
+            {**row(4, "android.r0", "no evidence", "R0", False), "age_s": None},
         ],
         "stage": None,
         "next_stage": {"stage": "R1", "failing": [{"key": "byte_reach", "value": 42.5, "threshold": 50}]},
@@ -670,6 +675,23 @@ class PageTests(unittest.TestCase):
         for text in (*shown, "R1 needs", "byte_reach 42.5 / 50", "below R1"):
             self.assertIn(text, dom, text)
         self.assertNotIn('class="empty">phase data not deployed yet', dom)
+
+    def test_headless_release_strip_shows_ticks_age_and_screenshot_link(self):
+        stub = Stub(mock_state())
+        self.addCleanup(stub.close)
+        dom = self._dom(stub, "#map")
+        for text in (">Release</h2>", ">linux R0<", ">android R0<", "/phase/shot?platform=linux", ">no evidence<"):
+            self.assertIn(text, dom, text)
+        self.assertNotIn(">coverage unknown</span>", dom)
+        self.assertIn(">below R1</span>", dom)
+
+    def test_headless_ladder_says_coverage_unknown(self):
+        stub = Stub(mock_state())
+        self.addCleanup(stub.close)
+        stub.phase["stage_unknown"] = "coverage report absent"
+        dom = self._dom(stub, "#map")
+        self.assertIn(">coverage unknown</span>", dom)
+        self.assertNotIn(">below R1</span>", dom)
 
     def test_headless_map_tab_degrades_when_phase_routes_are_missing(self):
         stub = Stub(mock_state(), phase=False)

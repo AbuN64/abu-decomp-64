@@ -56,7 +56,19 @@ from abu_decomp import (
 from abu_decomp.config import Profile
 
 _SERVE_KEYS = frozenset(
-    {"listen", "jobs", "inbox", "states", "pin", "lanes", "keep_days", "invocations", "claims", "phase_frame_minutes"}
+    {
+        "listen",
+        "jobs",
+        "inbox",
+        "states",
+        "pin",
+        "lanes",
+        "keep_days",
+        "invocations",
+        "claims",
+        "phase_frame_minutes",
+        "port_source",
+    }
 )
 RECENT_SHOWN = 12  # newest finished runs in /api/state (all running and queued ones are always there)
 HISTORY_PAGE = 60  # runs per /api/runs page
@@ -105,6 +117,9 @@ class Server:
         self.invocations = [
             str(profile.path("tas.serve.invocations", item)) for item in ([given] if isinstance(given, str) else given)
         ]
+        self.port_source = (
+            profile.path("tas.serve.port_source", serve["port_source"]) if "port_source" in serve else None
+        )
         self.claims = profile.path("tas.serve.claims", serve["claims"]) if "claims" in serve else None
         self.phase = tas_phasemap.Phase(
             profile, self.cfg, self.pin_dir, self.table, float(serve.get("phase_frame_minutes", 10))
@@ -422,6 +437,16 @@ class Server:
             self.oracles[run.name] = hit
         return hit[1]
 
+    def port_format(self) -> int | None:
+        """`format` of port.json in the page port's source (tas.serve.port_source); None when absent or unreadable."""
+        if not self.port_source:
+            return None
+        try:
+            value = json.loads((self.port_source / "port.json").read_text()).get("format")
+        except (OSError, ValueError, AttributeError):
+            return None
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
     def state(self) -> dict[str, Any]:
         rows = tas.run_rows(self.cfg)
         on_disk = {row["id"] for _, row in rows if "id" in row}
@@ -441,7 +466,7 @@ class Server:
             built = 0
         return {
             "now": time.time(),
-            "build": {"port": str(port), "pin": self.pin_sha(), "built": built},
+            "build": {"port": str(port), "pin": self.pin_sha(), "built": built, "format": self.port_format()},
             "runs": runs,
             "movies": self.movies(rows, inbox),
             "lanes": tas_board.lanes(self.lanes_dir, runs),
@@ -863,6 +888,8 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.json(*server.phase.phase())
                 elif path == "/api/phase/map":
                     self.phase_map(query)
+                elif path == "/phase/shot":
+                    self.phase_shot(query)
                 elif path == "/phase/frame.png":
                     self.phase_frame(query)
                 elif path == "/api/maze":
@@ -910,6 +937,14 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 self.send_header("ETag", tag)
             self.end_headers()
             self.wfile.write(payload)
+
+        def phase_shot(self, query: str) -> None:
+            platform = dict(p.partition("=")[::2] for p in query.split("&") if p).get("platform") or ""
+            found = server.phase.shot(platform)
+            if found is None:
+                self.json({"error": "no screenshot for that platform"}, HTTPStatus.NOT_FOUND)
+            else:
+                self.reply(found[0], found[1])
 
         def phase_frame(self, query: str) -> None:
             version = dict(p.partition("=")[::2] for p in query.split("&") if p).get("version") or server.phase.focus()

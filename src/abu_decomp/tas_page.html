@@ -243,6 +243,9 @@
   .mp .gate { display: flex; align-items: center; gap: 8px; font: 12px var(--mono); padding: 2px 0; }
   .mp .gate .tick { width: 14px; flex: none; text-align: center; }
   .mp .ladder { margin: 8px 0; }
+  .mp .release { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 8px 0; font: 12px var(--mono); }
+  .mp .release h2 { margin: 0; }
+  .mp .release .rel { display: inline-flex; align-items: center; gap: 6px; }
   .mp .wrapc { position: relative; width: 100%; margin-top: 8px; }
   #mapc { display: block; width: 100%; aspect-ratio: 1 / 1; background: #222; image-rendering: pixelated; border: 1px solid var(--line); }
   .mp .bar1 { height: 6px; border-radius: 3px; background: var(--line); margin-top: 8px; overflow: hidden; }
@@ -457,7 +460,7 @@ const humanRun = () => liveRuns().find(r => r.input === "human") || null;
 
 function render() {
   const b = S.build || {};
-  $("build").textContent = b.pin ? `port of RW ${String(b.pin).slice(0, 9)} · built ${ago(b.built)}` : "no build";
+  $("build").textContent = b.pin ? `port of RW ${String(b.pin).slice(0, 9)} · built ${ago(b.built)} · ${fmtText(b)}` : "no build";
   $("build").title = b.port || "";
   pickFollow();
   renderStage(); renderStrip(); renderPanes(); renderNav(); followAudio(); followLog();
@@ -895,16 +898,37 @@ function mapHover(e) {
   tip.style.left = Math.min(e.clientX - w.left + 12, w.width - 200) + "px";
   tip.style.top = Math.max(0, e.clientY - w.top + 12) + "px";
 }
+const fmtText = b => b.format == null ? "pre-format" : `format ${b.format}`;
+/* Release strip: one R0 tick per platform (phase 4 rows keyed "<platform>.r0"), age of the evidence, screenshot link */
+function releaseStrip(rows) {
+  const mine = rows.filter(r => r.phase === 4 && /\.r0$/.test(r.key || ""));
+  if (!mine.length) return null;
+  const strip = el("div", "release row"), unk = PH.phase && PH.phase.stage_unknown;
+  strip.append(el("h2", "", "Release"));
+  for (const r of mine) {
+    const name = r.key.replace(/\.r0$/, ""), v = r.value && typeof r.value === "object" ? r.value : null;
+    const cell = el("span", "rel", el("span", "tick " + (r.met ? "ok" : "bad"), r.met ? "✓" : "✗"), el("span", "", `${name} R0`),
+      el("span", "dim", r.age_s != null ? ago(now() - r.age_s) : "no evidence"));
+    cell.title = (v ? `installs ${v.installs ? "yes" : "no"} · title ${v.title ? "yes" : "no"} · iface ${v.iface || "—"}` : String(r.value || "")) + ` · ${r.source || ""}`;
+    if (r.shot) { const a = el("a", "", "shot"); a.href = r.shot; a.target = "_blank"; a.rel = "noopener"; cell.append(a); }
+    strip.append(cell);
+  }
+  if (unk) strip.append(el("span", "dim", "coverage unknown"));
+  strip.title = unk ? `ladder stage unknown: ${unk}` : "";
+  return strip;
+}
 function renderMapGates() {
   const box = $("mapgates");
   if (!box) return;
   if (PH.gone || !PH.phase) { box.replaceChildren(el("div", "empty", "phase data not deployed yet")); return; }
   const p = PH.phase, kids = [];
-  const stage = el("div", "ladder row", el("h2", "", "Ladder"), el("span", "grow"), badge(p.stage || "below R1", p.stage ? "ok" : ""));
+  const stage = el("div", "ladder row", el("h2", "", "Ladder"), el("span", "grow"), badge(p.stage || (p.stage_unknown ? "coverage unknown" : "below R1"), p.stage ? "ok" : ""));
   kids.push(stage);
+  const rel = releaseStrip(p.rows || []);
+  if (rel) kids.push(rel);
   if (p.next_stage) kids.push(el("div", "l2", `${p.next_stage.stage} needs: ` + (p.next_stage.failing || []).map(f => `${f.key} ${f.value} / ${f.threshold}`).join(" · ")));
   for (const ph of [1, 2, 3, 4]) {
-    const rows = (p.rows || []).filter(r => r.phase === ph);
+    const rows = (p.rows || []).filter(r => r.phase === ph && !(ph === 4 && /\.r0$/.test(r.key || "")));
     if (!rows.length) continue;
     kids.push(el("h2", "", `Phase ${ph}`));
     for (const r of rows) {
@@ -1521,7 +1545,7 @@ document.addEventListener("keydown", e => {
 });
 document.addEventListener("click", e => { if (e.target.tagName === "BUTTON") e.target.blur(); });
 window.addEventListener("resize", () => { if (S) renderStage(); });
-setInterval(() => { if (S) { renderStage(); const b = S.build || {}; if (b.pin) $("build").textContent = `port of RW ${String(b.pin).slice(0, 9)} · built ${ago(b.built)}`; } }, 1000);
+setInterval(() => { if (S) { renderStage(); const b = S.build || {}; if (b.pin) $("build").textContent = `port of RW ${String(b.pin).slice(0, 9)} · built ${ago(b.built)} · ${fmtText(b)}`; } }, 1000);
 (function fromHash() {  // #work, #decomp, #lanes, #runs or #watch: open that view (links from elsewhere, bookmarks)
   const h = location.hash.slice(1);
   if (TABS.some(([k]) => k === h)) { ui.tab = h; if (isPhone()) { ui.view = h; document.body.dataset.view = h; } }

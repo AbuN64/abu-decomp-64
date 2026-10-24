@@ -330,6 +330,7 @@ class Phase:
         given: dict[str, Any] | None = None,
     ) -> None:
         self.cfg, self.pin, self.table, self.frame_minutes = cfg, pin, table, float(frame_minutes)
+        self.profile = profile
         section = given
         if section is None:
             try:
@@ -361,14 +362,65 @@ class Phase:
                 return game.get("foundations")
         return None
 
+    def evidence(self, platform: str) -> tuple[dict[str, Any], Path] | None:
+        """(record, evidence.json path) of one `phase.platforms` entry, or None when absent or unreadable."""
+        location = (self.section.get("platforms") or {}).get(platform)
+        if not location:
+            return None
+        try:
+            path = self.profile.resolve_path(location)
+        except (AttributeError, TypeError):
+            path = Path(location)
+        try:
+            rec = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+        return (rec, path) if isinstance(rec, dict) else None
+
+    def shot(self, platform: str) -> tuple[bytes, str] | None:
+        """(bytes, content type) of a platform's evidence screenshot; only a file inside the evidence folder."""
+        found = self.evidence(platform)
+        name = found[0].get("screenshot") if found else None
+        if not found or not isinstance(name, str) or not name:
+            return None
+        root = found[1].parent.resolve()
+        image = (root / name).resolve()
+        if root not in image.parents or not image.is_file():
+            return None
+        kinds = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+        kind = kinds.get(image.suffix.lower())
+        return (image.read_bytes(), kind) if kind else None
+
     def phase(self) -> tuple[Any, int]:
-        """(body, status): the phase JSON file as written by `decomp phase`, or a 404 error body."""
+        """(body, status): the contract shape of `decomp phase` phase.out: numeric `phase`, `generated`, `stage` and
+        `next_stage` at the top, and a `shot` link on each release row whose evidence has a screenshot."""
         if not self.out:
             return {"error": "no phase.out in the profile"}, 404
         try:
-            return json.loads(self.out.read_text()), 200
+            body = json.loads(self.out.read_text())
+            generated = self.out.stat().st_mtime
         except (OSError, ValueError):
             return {"error": "phase.out not found (decomp phase has not run)"}, 404
+        p4 = (body.get("detail") or {}).get("p4") or {}
+        rows = []
+        for r in body.get("rows", []):
+            r = dict(r)
+            if isinstance(r.get("phase"), str) and r["phase"][1:].isdigit():
+                r["phase"] = int(r["phase"][1:])
+            if r.get("phase") == 4 and str(r.get("key", "")).endswith(".r0"):
+                platform = r["key"][: -len(".r0")]
+                if self.shot(platform):
+                    r["shot"] = f"/phase/shot?platform={platform}"
+            rows.append(r)
+        body = {
+            **body,
+            "generated": body.get("generated", generated),
+            "rows": rows,
+            "stage": p4.get("stage"),
+            "next_stage": p4.get("next_stage"),
+            "stage_unknown": p4.get("unknown"),
+        }
+        return body, 200
 
     def sha(self) -> str | None:
         if not self.pin:

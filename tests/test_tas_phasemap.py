@@ -160,7 +160,44 @@ class Routes(unittest.TestCase):
         self.assertEqual((status, list(json.loads(body))), (404, ["error"]))
         self.out.write_text('{"generated": 1, "rows": []}')
         status, _, body = self.get("/api/phase")
-        self.assertEqual((status, json.loads(body)), (200, {"generated": 1, "rows": []}))
+        got = json.loads(body)
+        self.assertEqual((status, got["generated"], got["rows"], got["stage"]), (200, 1, [], None))
+
+    def test_phase_rows_get_numeric_phase_top_level_stage_and_a_shot_link(self):
+        evidence = self.root / "evidence" / "linux"
+        evidence.mkdir(parents=True)
+        (evidence / "evidence.json").write_text(json.dumps({"screenshot": "title.png"}))
+        (evidence / "title.png").write_bytes(b"\x89PNG")
+        (self.root / "secret.png").write_bytes(b"no")
+        (self.root / "evidence" / "windows").mkdir()
+        (self.root / "evidence" / "windows" / "evidence.json").write_text(
+            json.dumps({"screenshot": "../../secret.png"})
+        )
+        self.server.phase.section["platforms"] = {
+            "linux": str(evidence / "evidence.json"),
+            "windows": str(self.root / "evidence" / "windows" / "evidence.json"),
+        }
+        self.out.write_text(
+            json.dumps(
+                {
+                    "rows": [
+                        {"phase": "p1", "key": "mapped_pct"},
+                        {"phase": "p4", "key": "linux.r0"},
+                        {"phase": "p4", "key": "windows.r0"},
+                    ],
+                    "detail": {"p4": {"stage": None, "next_stage": None, "unknown": "coverage report absent"}},
+                }
+            )
+        )
+        got = json.loads(self.get("/api/phase")[2])
+        self.assertEqual([r["phase"] for r in got["rows"]], [1, 4, 4])
+        self.assertEqual(got["rows"][1]["shot"], "/phase/shot?platform=linux")
+        self.assertNotIn("shot", got["rows"][2])  # the screenshot path leaves the evidence folder
+        self.assertEqual((got["stage"], got["stage_unknown"]), (None, "coverage report absent"))
+        status, headers, body = self.get("/phase/shot?platform=linux")
+        self.assertEqual((status, headers["Content-Type"], body), (200, "image/png", b"\x89PNG"))
+        self.assertEqual(self.get("/phase/shot?platform=windows")[0], 404)
+        self.assertEqual(self.get("/phase/shot?platform=nope")[0], 404)
 
     def test_map_has_an_etag_and_answers_304(self):
         status, headers, body = self.get("/api/phase/map?version=t")

@@ -42,6 +42,10 @@
   ],
   "named_rule": "\\b(func_|D_)[0-9A-F]{8}|\\bunk[0-9A-Fa-f_x]",
   "out": "out/phase.json",
-  "history": "out/history.jsonl"
+  "history": "out/history.jsonl",
+  "platforms": {
+   "linux": "evidence/linux/evidence.json",
+   "windows": "evidence/windows/evidence.json"
+  }
  }
 }
