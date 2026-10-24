@@ -272,7 +272,7 @@ class ServeTests(unittest.TestCase):
         )
         write_shot(self.run / "shots" / "port", 25, picture((200, 0, 0)))
         write_shot(self.run / "shots" / "oracle", 25, picture())
-        (self.run / "oracle.bmp").write_bytes(b"BMoriginal")
+        (self.run / "oracle.bmp").write_bytes(tas_oracle.bmp(bytes(W * H * 3)))
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), tas_serve.handler(self.server))
         self.http.daemon_threads = True
         threading.Thread(target=self.http.serve_forever, daemon=True).start()
@@ -292,10 +292,12 @@ class ServeTests(unittest.TestCase):
         self.assertEqual(
             (row["frame"], row["status"], row["max_diff"], row["max_poll"]), ("/oracle/r1", "done", 1.0, 25)
         )
-        self.assertEqual(self.get("/oracle/r1")[1:], ("image/bmp", b"BMoriginal"))
+        self.assertEqual(
+            self.get("/oracle/r1")[1:], ("image/png", tas_serve.picture(tas_oracle.bmp(bytes(W * H * 3)))[0])
+        )
         status, kind, body = self.get("/shot/r1?side=port&poll=25")
-        self.assertEqual((status, kind, len(body)), (200, "image/bmp", 54 + W * H * 3))
-        self.assertEqual(body[54:57], bytes((0, 0, 200)))  # BGR
+        self.assertEqual((status, kind), (200, "image/png"))
+        self.assertEqual(body, tas_serve.picture((self.run / "shots/port/poll-000025.ppm").read_bytes())[0])
         self.assertEqual(self.get("/shot/r1?side=oracle&poll=50")[0], 404)
         self.assertEqual(self.get("/shot/r1?side=other&poll=25")[0], 404)
         diff = json.loads(self.get("/diff/r1")[2])

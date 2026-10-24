@@ -2,6 +2,7 @@
 the 1x sound as a growing WAV, play / play-all / stop. Mocked: no port runs."""
 
 import hashlib
+import io
 import json
 import os
 import struct
@@ -15,8 +16,56 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from abu_decomp import DecompError, tas, tas_serve
+from PIL import Image
+
+from abu_decomp import DecompError, tas, tas_oracle, tas_serve
 from abu_decomp.config import load_profile
+
+
+def capture_bmp(width=3, height=2, bits=24, top_down=False, seq=42):
+    # Distinct rows and columns; a width of three exercises row padding at 24 bpp.
+    rgb = bytes((v + y * 31 + x * 73) % 256 for y in range(height) for x in range(width) for v in (3, 9, 17))
+    stride = ((width * bits + 31) // 32) * 4
+    head = bytearray(70)  # non-default pixel offset catches header-as-pixels bugs
+    struct.pack_into("<2sIII", head, 0, b"BM", 70 + height * stride, seq, 70)
+    struct.pack_into("<IiiHHI", head, 14, 40, width, -height if top_down else height, 1, bits, 0)
+    body = bytearray()
+    for y in range(height) if top_down else range(height - 1, -1, -1):
+        line = bytearray()
+        for x in range(width):
+            i = (y * width + x) * 3
+            line += rgb[i : i + 3][::-1] + (b"\0" if bits == 32 else b"")
+        body += line + bytes(stride - len(line))
+    return bytes(head) + body, rgb
+
+
+def png_rgb(png):
+    with Image.open(io.BytesIO(png)) as image:
+        return *image.size, image.convert("RGB").tobytes()
+
+
+class PictureTests(unittest.TestCase):
+    def test_stride_orientation_offset_and_pixel_size_preserve_each_pixel(self):
+        for bits in (24, 32):
+            for top_down in (False, True):
+                with self.subTest(bits=bits, top_down=top_down):
+                    bmp, rgb = capture_bmp(bits=bits, top_down=top_down)
+                    png, seq = tas_serve.picture(bmp)
+                    self.assertEqual(png_rgb(png), (3, 2, rgb))
+                    self.assertEqual(seq, 42)
+
+    def test_live_jpeg_keeps_dimensions_and_input_acknowledgement(self):
+        bmp, _ = capture_bmp(320, 240)
+        jpeg, seq = tas_serve.picture(bmp, "JPEG")
+        with Image.open(io.BytesIO(jpeg)) as image:
+            self.assertEqual((image.format, image.size, seq), ("JPEG", (320, 240), 42))
+        self.assertLess(len(jpeg), len(bmp) // 2)
+
+    def test_truncated_and_unsupported_captures_fail_closed(self):
+        bmp, _ = capture_bmp()
+        for data in (b"BM", bmp[:-1], b"P6\n1 1\n255\nabc", bmp[:28] + b"\x10\x00" + bmp[30:]):
+            with self.subTest(data=data[:30]), self.assertRaises(ValueError):
+                tas_serve.picture(data)
 
 
 class Base(unittest.TestCase):
@@ -225,6 +274,17 @@ class ServeTests(Base):
         self.assertEqual(server.fn_state("func_80000000"), "none")
         self.assertEqual(server.fn_state("func_8041CAD8_de"), "none")
 
+    def test_realtime_policy_waits_for_takeover_acknowledgement(self):
+        run = self.make_run("prefix", speed=0, input="human", at=30)
+        row = tas.read_record(run)
+        (run / tas.TAKEN).write_text("retry")
+        self.assertFalse(tas_serve.realtime(run, row))
+        (run / "output.txt").write_text("n64c-tas: live input took over at poll 1\n")
+        self.assertTrue(tas_serve.realtime(run, row))
+        self.assertTrue(tas_serve.realtime(run, {"speed": 1}))
+        (run / tas.TAKEN).unlink()
+        self.assertFalse(tas_serve.realtime(run, row))
+
     def test_wav_header_is_a_stereo_s16_stream(self):
         head = tas_serve.wav_header(22050)
         self.assertEqual((head[:4], head[8:16], head[36:40], len(head)), (b"RIFF", b"WAVEfmt ", b"data", 44))
@@ -268,14 +328,17 @@ class HttpTests(Base):
         self.assertEqual(json.loads(self.get("/api/state")[2])["runs"], [])
         run = self.make_run("r1", movie="boot-idle", status="done", speed=0, started=1.0, outcome="ok")
         self.assertEqual(self.status("/frame/r1"), 404)  # no picture yet
-        (run / "view.bmp").write_bytes(b"BMpicture")
-        self.assertEqual(self.get("/frame/r1")[1:], ("image/bmp", b"BMpicture"))
+        bmp, rgb = capture_bmp()
+        (run / "view.bmp").write_bytes(bmp)
+        _, kind, body = self.get("/frame/r1")
+        self.assertEqual(kind, "image/png")
+        self.assertEqual(png_rgb(body), (3, 2, rgb))
         (run / "output.txt").write_bytes(b"line one\nline two\n")
         self.assertEqual(self.get("/log/r1?from=0")[2], b"line one\nline two\n")
         self.assertEqual(self.get("/log/r1?from=9")[2], b"line two\n")
         self.assertEqual(self.status("/log/nope"), 404)
         self.assertEqual(self.status("/frame/..%2Fx"), 404)
-        self.assertEqual(self.status("/audio/r1"), 404)  # turbo runs have no sound
+        self.assertEqual(self.status("/audio/r1"), 204)  # turbo is explicitly muted even if PCM exists
 
     def fetch(self, path, **headers):
         request = urllib.request.Request(self.base + path, headers=headers)
@@ -308,9 +371,13 @@ class HttpTests(Base):
 
     def test_images_are_never_compressed_or_tagged(self):
         run = self.make_run("r1", movie="boot-idle", status="done", speed=0, started=1.0, outcome="ok")
-        (run / "view.bmp").write_bytes(b"BM" * 2000)
+        bmp, _ = capture_bmp()
+        (run / "view.bmp").write_bytes(bmp)
         status, head, body = self.fetch("/frame/r1", **{"Accept-Encoding": "gzip"})
-        self.assertEqual((status, head.get("Content-Encoding"), head.get("ETag"), len(body)), (200, None, None, 4000))
+        self.assertEqual(
+            (status, head.get("Content-Encoding"), head.get("ETag"), len(body)),
+            (200, None, None, len(tas_serve.picture(bmp)[0])),
+        )
 
     def test_run_records_are_reread_only_when_they_change(self):
         run = self.make_run("r1", movie="boot-idle", status="done", speed=0, started=1.0, outcome="ok")
@@ -609,30 +676,64 @@ class HttpTests(Base):
             self.assertIn(b"/api/fn/", reply.read())
         self.assertEqual(self.status("/fn/bad%20name"), 404)
 
-    def test_frame_long_poll_names_the_frame_and_the_input_it_shows(self):
+    def test_every_frame_source_uses_the_same_decoder(self):
         run = self.make_run("r6", movie="boot-idle", status="running", speed=1, started=1.0, pid=os.getpid())
-        picture = bytearray(b"BM" + bytes(60))
-        picture[6:10] = (42).to_bytes(4, "little")
-        (run / "view.bmp").write_bytes(bytes(picture))
-        request = urllib.request.urlopen(self.base + "/frame/r6", timeout=10)
-        stamp = int(request.headers["X-Frame"])
-        self.assertEqual((request.headers["X-Input-Seq"], request.read()), ("42", bytes(picture)))
-        began = time.monotonic()
-        with urllib.request.urlopen(self.base + f"/frame/r6?after={stamp}", timeout=10) as reply:
-            self.assertEqual(reply.status, 204)  # nothing newer within a second
-        self.assertGreater(time.monotonic() - began, 0.9)
+        bmp, rgb = capture_bmp(320, 240)
+        (run / "view.bmp").write_bytes(bmp)
+        (run / "oracle.bmp").write_bytes(bmp)
+        shot = run / "shots" / "port" / "poll-000025.ppm"
+        shot.parent.mkdir(parents=True)
+        shot.write_bytes(tas_oracle.PPM_HEAD + rgb)
+        for url in ("/frame/r6", "/oracle/r6", "/shot/r6?side=port&poll=25"):
+            with self.subTest(url=url):
+                self.assertEqual(png_rgb(self.get(url)[2]), (320, 240, rgb))
+        # A completed run is still served through exactly the same frame path.
+        (run / tas.RECORD).write_text(json.dumps({"status": "done", "speed": 1}))
+        with urllib.request.urlopen(self.base + "/frame/r6", timeout=10) as reply:
+            self.assertEqual(reply.headers["X-Input-Seq"], "42")
+            self.assertEqual(png_rgb(reply.read()), (320, 240, rgb))
+        with mock.patch.object(tas_serve, "picture", side_effect=AssertionError("decoded twice")):
+            self.server.capture(run / "view.bmp")
 
-        def newer():
-            time.sleep(0.2)
-            picture[6:10] = (43).to_bytes(4, "little")
-            (run / "view.tmp").write_bytes(bytes(picture))
-            os.utime(run / "view.tmp", ns=(stamp * 1000 + 5_000_000,) * 2)
-            (run / "view.tmp").replace(run / "view.bmp")
+    def test_turbo_audio_is_muted_with_pcm_present(self):
+        for speed in (0, 2):
+            run = self.make_run(f"s{speed}", status="running", speed=speed, pid=os.getpid())
+            (run / tas.AUDIO).write_bytes(b"\0" * 8000)
+            (run / (tas.AUDIO + ".rate")).write_text("32000")
+            status, head, body = self.fetch(f"/audio/s{speed}")
+            self.assertEqual((status, head["X-Audio-Muted"], body), (204, "not-realtime", b""))
 
-        threading.Thread(target=newer, daemon=True).start()
-        with urllib.request.urlopen(self.base + f"/frame/r6?after={stamp}", timeout=10) as reply:
-            self.assertEqual((reply.status, reply.headers["X-Input-Seq"]), (200, "43"))
-            self.assertGreater(int(reply.headers["X-Frame"]), stamp)
+    def test_stream_samples_latest_and_preserves_the_capture_tag(self):
+        run = self.make_run("v", status="running", speed=1, pid=os.getpid())
+        h = object.__new__(tas_serve.handler(self.server))
+        h.send_response = h.send_header = h.end_headers = mock.Mock()
+        h.connection, h.wfile = mock.Mock(), io.BytesIO()
+        png = tas_serve.picture(capture_bmp()[0])[0]
+        with (
+            mock.patch.object(self.server, "capture", side_effect=[(1, png, 7), (1, png, 7), (3, png, 9)]),
+            mock.patch.object(tas, "running", side_effect=[True, True, False]),
+            mock.patch.object(tas_serve.time, "monotonic", side_effect=[0, 0.001, 0.034]),
+            mock.patch.object(tas_serve.time, "sleep") as wait,
+        ):
+            h.video(run)
+        data = h.wfile.getvalue()
+        n = len(png)
+        self.assertEqual(tas_serve.VIDEO_HEADER.unpack(data[:16]), (n, 1, 7))
+        self.assertEqual(tas_serve.VIDEO_HEADER.unpack(data[n + 16 : n + 32]), (n, 3, 9))
+        self.assertEqual(len(data), 2 * (n + 16))
+        self.assertEqual(wait.call_count, 2)
+        self.assertEqual(wait.call_args_list[1].args[0], 0.002)
+        self.assertTrue(all(0 <= call.args[0] <= 1 / 30 for call in wait.call_args_list))
+
+    def test_stream_disconnect_releases_the_viewer(self):
+        run = self.make_run("v", status="running", speed=1, pid=os.getpid())
+        h = object.__new__(tas_serve.handler(self.server))
+        h.send_response = h.send_header = h.end_headers = mock.Mock()
+        h.connection, h.wfile = mock.Mock(), mock.Mock()
+        h.wfile.write.side_effect = BrokenPipeError
+        with mock.patch.object(self.server, "capture", return_value=(1, b"png", 7)) as grab:
+            h.video(run)
+        grab.assert_called_once()
 
 
 if __name__ == "__main__":

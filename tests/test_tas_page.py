@@ -28,6 +28,7 @@ CONTRACT = {
     "/api/phase/map",
     "/coverage/",
     "/frame/",
+    "/video/",
     "/audio/",
     "/log/",
     "/api/play",
@@ -197,6 +198,7 @@ def mock_state() -> dict:
         "movie": name,
         "status": "running",
         "speed": 0,
+        "realtime": kw.get("speed") == 1,
         "label": None,
         "port": "/rig/tas/build/ragewars",
         "poll": 300,
@@ -472,6 +474,11 @@ class Stub:
                 elif path == "/api/runs":
                     done = [r for r in stub.state["runs"] if r["status"] == "done"]
                     self.reply(json.dumps({"runs": done, "more": False}).encode(), "application/json")
+                elif path.startswith("/video/"):
+                    from abu_decomp.tas_serve import VIDEO_HEADER, picture
+
+                    png, _ = picture(bmp(), "JPEG")
+                    self.reply(VIDEO_HEADER.pack(len(png), 1, 0) + png, "application/x-tas-frames")
                 elif path.startswith(("/frame/", "/oracle/")):
                     self.reply(bmp(), "image/bmp")
                 elif path.startswith("/shot/"):
@@ -644,6 +651,63 @@ class PageTests(unittest.TestCase):
         ):
             self.assertIn(needle, html, needle)
         self.assertLess(html.index('["map", "Map"]'), html.index('["work", "Work"]'))  # Map is the first tab
+
+    def test_follow_and_audio_use_realtime_and_a_contiguous_clock(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        js = script()
+        policy = js[js.index("const isRealtime") : js.index("function pickFollow")]
+        audio = js[js.index("async function pcm(") : js.index("/* ---------- log of")]
+        stop = js[js.index("function stopAudio(") : js.index("function followAudio(")]
+        check = (
+            r"""
+const assert = require('node:assert/strict');
+const F = {policy:'realtime'};
+"""
+            + policy
+            + r"""
+const rows = [{id:'new',started:3,realtime:false}, {id:'play',started:1,realtime:true},
+              {id:'prefix',started:4,input:'human',realtime:false}];
+assert.equal(rows.slice().sort(followOrder)[0].id, 'play');
+F.policy = 'newest'; assert.equal(rows.slice().sort(followOrder)[0].id, 'prefix');
+const starts = [], stops = [], active = new Set(), AUDIO_BUFFER = .5, AUDIO_MAX = 2;
+const A = {ctx:{currentTime:0,state:'running',destination:{},
+ createBuffer:(ch,n,rate)=>({duration:n/rate,getChannelData:()=>new Float32Array(n)}),
+ createBufferSource:()=>Object.assign(new EventTarget(), {connect(){},disconnect(){},stop(){stops.push(this);},
+ start(at){this.end=at+this.buffer.duration;active.add(this);starts.push([at, this.end]);}})}};
+function advance(t) { A.ctx.currentTime=t; for(const src of [...active]) if(src.end<=t) {
+ active.delete(src);src.onended();src.dispatchEvent(new Event('ended'));
+}}
+(async () => {
+"""
+            + audio
+            + stop
+            + r"""
+const st = {abort:new AbortController(),head:0,sources:new Set(),underruns:0,gapSeconds:0,backpressure:0,scheduled:0};
+const fmt = {channels:2,rate:32000,align:4}, bytes = new Uint8Array(12800);
+for(let i=0;i<30;i++) { advance(i*.1 + (i%2 ? .04 : 0)); await pcm(st,bytes,fmt,3200); }
+assert.equal(st.underruns,0); assert.equal(st.backpressure,0);
+for(let i=1;i<starts.length;i++) assert.ok(Math.abs(starts[i][0]-starts[i-1][1])<1e-9);
+advance(st.head+.05); await pcm(st,bytes,fmt,3200); assert.equal(st.underruns,1);
+assert.ok(st.gapSeconds>.049); assert.ok(starts.at(-1)[0]>=A.ctx.currentTime+.25);
+const mark=starts.length;
+let done=false; const burst=pcm(st,new Uint8Array(96000*4),fmt,96000).then(()=>done=true);
+await Promise.resolve();assert.equal(done,false);assert.ok(st.backpressure>0);
+assert.ok(st.head-A.ctx.currentTime<=AUDIO_MAX+1e-9);assert.equal(stops.length,0);
+for(let i=0;i<4&&!done;i++) { advance(st.head-.2);await Promise.resolve();await Promise.resolve(); }
+await burst;assert.equal(done,true);
+for(let i=mark;i<starts.length;i++) assert.ok(Math.abs(starts[i][0]-starts[i-1][1])<1e-9);
+const pending=pcm(st,new Uint8Array(96000*4),fmt,96000);
+const count=starts.length; stopAudio(st);await pending;await pcm(st,bytes,fmt,3200);
+assert.equal(st.sources.size,0); assert.equal(starts.length,count);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+"""
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "av.js"
+            path.write_text(check)
+            subprocess.run([node, str(path)], check=True, timeout=10)
 
     def test_hilbert_mapping_is_the_standard_curve(self):
         node = shutil.which("node")

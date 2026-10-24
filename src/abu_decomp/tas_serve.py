@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import json
 import os
 import signal
@@ -33,11 +34,14 @@ import threading
 import time
 import urllib.parse
 import zlib
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+from PIL import Image
 
 from abu_decomp import (
     DecompError,
@@ -83,6 +87,8 @@ TEXT_KINDS = ("application/json", "text/html", "text/css", "text/javascript")
 ARCHIVE_SECONDS = 3600.0  # how often old runs are archived
 GATE_CHECK_SECONDS = 60.0  # how often serve looks for a port build the regression corpus has not been gated on
 STOP_GRACE = 3.0  # seconds a stopped run gets before its process group is killed
+VIDEO_FPS = 30  # latest frame sampled at wall pace; no backlog or replay of missed pictures
+VIDEO_HEADER = struct.Struct(">IQI")  # JPEG length, capture stamp (microseconds), input sequence
 AUDIO_LEAD_SECONDS = 0.25  # a listener joins this far behind the live end of the sound
 PAGE = Path(__file__).with_name("tas_page.html").read_text
 FN_PAGE = Path(__file__).with_name("tas_fn.html").read_text
@@ -103,9 +109,53 @@ def wav_header(rate: int) -> bytes:
     )
 
 
+def realtime(run: Path, record: dict[str, Any]) -> bool:
+    """The actual pacing, including a turbo prefix and a live takeover, shared by state and audio."""
+    if record.get("speed") == 1:
+        return True
+    # TAKEN is written before a retry's prefix starts. Only the port's acknowledgement means 1x.
+    if not (run / tas.TAKEN).exists():
+        return False
+    try:
+        return "live input took over at poll " in (run / "output.txt").read_text(errors="replace")
+    except OSError:
+        return False
+
+
+def picture(data: bytes, kind: str = "PNG") -> tuple[bytes, int]:
+    """One capture decoder for live BMP, archived BMP and PPM shots; PNG stills, JPEG video.
+
+    Pillow owns offset, signed height, padded stride and channel conversion. Validate the capture contract
+    before decoding, preserving the shim's reserved input acknowledgement independently of the pixel bytes.
+    """
+    seq = 0
+    if data.startswith(b"BM") and len(data) >= 54:
+        offset, dib = struct.unpack_from("<II", data, 10)
+        width, signed_height, planes, bits, compression = struct.unpack_from("<iiHHI", data, 18)
+        height = abs(signed_height)
+        stride = ((width * bits + 31) // 32) * 4
+        if dib < 40 or offset < 14 + dib or planes != 1 or bits not in (24, 32) or compression:
+            raise ValueError("unsupported BMP layout")
+        if not 0 < width <= 4096 or not 0 < height <= 4096 or len(data) < offset + stride * height:
+            raise ValueError("incomplete BMP")
+        seq = struct.unpack_from("<I", data, 6)[0]
+    elif not (data.startswith(tas_oracle.PPM_HEAD) and len(data) == tas_oracle.PPM_SIZE):
+        raise ValueError("unsupported capture")
+    with Image.open(io.BytesIO(data)) as image:
+        rgb = image.convert("RGB")
+        out = io.BytesIO()
+        if kind == "JPEG":
+            rgb.save(out, "JPEG", quality=82, subsampling=0)
+        else:
+            rgb.save(out, "PNG", compress_level=1)
+        return out.getvalue(), seq
+
+
 class Server:
     def __init__(self, profile: Profile) -> None:
         self.profile = profile
+        self.pictures: OrderedDict[tuple[Path, str], tuple[int, int, bytes, int]] = OrderedDict()
+        self.picture_lock = threading.Lock()
         self.cfg = tas.settings(profile)
         serve = dict(profile.section("tas").get("serve", {}))
         extra = serve.keys() - _SERVE_KEYS
@@ -403,6 +453,25 @@ class Server:
 
     # --- the contract ---
 
+    def capture(self, path: Path, kind: str = "PNG") -> tuple[int, bytes, int]:
+        """Cache only the newest capture per path, bounded across viewers and archived runs."""
+        with self.picture_lock:
+            info = path.stat()
+            key = (path, kind)
+            hit = self.pictures.get(key)
+            if hit and hit[:2] == (info.st_mtime_ns, info.st_size):
+                self.pictures.move_to_end(key)
+                return hit[0] // 1000, hit[2], hit[3]
+            # Capture writers rename atomically. Stat the open file, not the name that may already be newer.
+            with path.open("rb") as handle:
+                info = os.fstat(handle.fileno())
+                body, seq = picture(handle.read(), kind)
+            self.pictures[key] = (info.st_mtime_ns, info.st_size, body, seq)
+            self.pictures.move_to_end(key)
+            while len(self.pictures) > 32:
+                self.pictures.popitem(last=False)
+            return info.st_mtime_ns // 1000, body, seq
+
     def row(self, run: Path, record: dict[str, Any]) -> dict[str, Any]:
         """One runs[] row (contract) of a run folder and its record."""
         running = record.get("status") == "running"
@@ -412,6 +481,7 @@ class Server:
             "movie": record.get("movie", ""),
             "status": "running" if running else "done",
             "speed": int(record.get("speed") or 0),
+            "realtime": realtime(run, record),
             "poll": tas.last_poll(run / tas.HASH) if running else int(record.get("polls_reached") or 0),
             "polls": int(record.get("polls") or 0),
             "outcome": None if running else record.get("outcome"),
@@ -877,6 +947,11 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
+        def setup(self) -> None:
+            super().setup()
+            # A frame/PCM fragment must not wait for a delayed ACK on HTTP/1.1 phones.
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
         def log_message(self, *args: Any) -> None:
             pass
 
@@ -968,10 +1043,12 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.json(server.fn_calls(path[11:], urllib.parse.unquote(args.get("movie", "")) or None))
                 elif head == "coverage":
                     self.static(server.cfg["runs"] / tas_coverage.HTML, run_id or "index.html")
+                elif head == "video" and run_id:
+                    self.video(server.run_dir(run_id))
                 elif head == "frame" and run_id:
-                    self.frame(server.run_dir(run_id), query)
+                    self.frame(server.run_dir(run_id))
                 elif head == "oracle" and run_id:
-                    self.frame(server.run_dir(run_id), query, tas_oracle.VIEW)
+                    self.frame(server.run_dir(run_id), tas_oracle.VIEW)
                 elif head == "shot" and run_id:
                     self.shot(server.run_dir(run_id), query)
                 elif head == "diff" and run_id:
@@ -1023,57 +1100,62 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             kind = {".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript"}
             self.reply(path.read_bytes(), kind.get(path.suffix, "application/octet-stream"))
 
-        def frame(self, run: Path | None, query: str, name: str = tas.VIEW) -> None:
-            after = None
-            for part in query.split("&"):
-                key, _, value = part.partition("=")
-                if key == "after" and value.isdigit():
-                    after = int(value)
+        def frame(self, run: Path | None, name: str = tas.VIEW) -> None:
             path = run / name if run else None
-            stamp = 0
-            if path and after is not None:  # long poll: the next picture, or 204 after a second
-                deadline = time.monotonic() + 1.0
-                while True:
-                    with contextlib.suppress(OSError):
-                        stamp = path.stat().st_mtime_ns // 1000
-                    if stamp > after or time.monotonic() > deadline:
-                        break
-                    time.sleep(0.004)
-                if stamp <= after:
-                    self.send_response(HTTPStatus.NO_CONTENT)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return None
             try:
-                with path.open("rb") as handle:  # type: ignore[union-attr]
-                    stamp = os.fstat(handle.fileno()).st_mtime_ns // 1000
-                    body = handle.read()
-            except (OSError, AttributeError):
-                body = b""
-            if not body:
+                stamp, body, seq = server.capture(path)  # type: ignore[arg-type]
+            except (OSError, AttributeError, ValueError):
                 return self.missing()
-            seq = struct.unpack_from("<I", body, 6)[0] if len(body) >= 10 else 0
+            return self.reply(body, "image/png", extra={"X-Frame": str(stamp), "X-Input-Seq": str(seq)})
+
+        def video(self, run: Path | None) -> None:
+            """One bounded latest-frame stream: 30 samples/s, independent of RTT and turbo's game clock."""
+            if not run:
+                return self.missing()
             self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "image/bmp")
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Type", "application/x-tas-frames")
             self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Frame", str(stamp))
-            self.send_header("X-Input-Seq", str(seq))
-            self.send_header("Access-Control-Expose-Headers", "X-Frame, X-Input-Seq")
+            self.send_header("X-Video-Fps", str(VIDEO_FPS))
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(body)
-            return None
+            self.close_connection = True
+            # A stalled phone cannot accumulate seconds of pictures in the server's socket buffer.
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+            self.connection.settimeout(5)
+            stamp, deadline = 0, time.monotonic()
+            while True:
+                try:
+                    current, body, seq = server.capture(run / tas.VIEW, "JPEG")
+                except (OSError, ValueError):
+                    current, body, seq = stamp, b"", 0
+                changed = current != stamp
+                if changed:
+                    try:
+                        self.wfile.write(VIDEO_HEADER.pack(len(body), current, seq) + body)
+                        self.wfile.flush()
+                    except OSError:
+                        return  # disconnect/backpressure timeout: release this viewer immediately
+                    stamp = current
+                if not tas.running(run):
+                    return
+                now = time.monotonic()
+                if changed:
+                    deadline = max(deadline + 1 / VIDEO_FPS, now)
+                # When the producer is late, wait for its next capture without losing another whole period.
+                time.sleep(max(0.002, deadline - now))
 
         def shot(self, run: Path | None, query: str) -> None:
-            """One side's picture at one compared poll, as a BMP: ?side=port|oracle&poll=N."""
+            """One side's picture at one compared poll: ?side=port|oracle&poll=N."""
             args = dict(part.partition("=")[::2] for part in query.split("&"))
             side, poll = args.get("side", ""), args.get("poll", "")
             if not run or side not in tas_oracle.SIDES or not poll.isdigit():
                 return self.missing()
-            pixels = tas_oracle.pixels(run / tas_oracle.SHOTS / side / f"poll-{int(poll):06d}.ppm")
-            if pixels is None:
+            try:
+                _, body, _ = server.capture(run / tas_oracle.SHOTS / side / f"poll-{int(poll):06d}.ppm")
+            except (OSError, ValueError):
                 return self.missing()
-            return self.reply(tas_oracle.bmp(pixels), "image/bmp")
+            return self.reply(body, "image/png")
 
         def diff(self, run: Path | None) -> None:
             """Every compared poll's score: {"every", "rows": [{"poll", "diff", "drift", "vi_drift"}]}."""
@@ -1106,46 +1188,53 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             row = tas.read_record(run) if run else None
             if not run or not row:
                 return self.missing()
-            # ?side=oracle: the original game's sound (audio-oracle.pcm), same layout and rate file as the port's
+            if not realtime(run, row):
+                return self.reply(b"", "audio/wav", HTTPStatus.NO_CONTENT, extra={"X-Audio-Muted": "not-realtime"})
             name = tas_oracle.AUDIO if "side=oracle" in query.split("&") else tas.AUDIO
             pcm, rate_file = run / name, run / (name + ".rate")
             deadline = time.monotonic() + 10
-            while not rate_file.is_file():  # the first sound has not been played yet
+            while not rate_file.is_file() or not pcm.is_file():
                 if not tas.running(run) or time.monotonic() > deadline:
                     return self.missing()
-                time.sleep(0.1)
+                time.sleep(0.05)
             rate = int(rate_file.read_text().strip() or 32000)
+            if not 8000 <= rate <= 192000:
+                return self.missing()
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "audio/wav")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
             self.send_header("Connection", "close")
             self.end_headers()
             self.close_connection = True
+            self.connection.settimeout(5)
             self.wfile.write(wav_header(rate))
             oracle = name == tas_oracle.AUDIO
 
-            # The original replays faster than real time, so its file is played at wall pace from the run's own start
-            # (what the port's listener hears at the same moment of the movie), not from the end of the file.
             def due() -> int:
                 return int(max(0.0, time.time() - float(row.get("started") or 0)) * rate) * 4
 
             end = min(due(), pcm.stat().st_size) if oracle else pcm.stat().st_size
             offset = max(0, end - int(rate * AUDIO_LEAD_SECONDS) * 4) // 4 * 4
+            # Even a producer that writes in bursts gets one steady wall-paced stream. Initial lead covers jitter.
+            began, sent = time.monotonic(), 0
             with pcm.open("rb") as handle:
                 while True:
-                    handle.seek(offset)
-                    chunk = handle.read()
+                    allowance = int((time.monotonic() - began + AUDIO_LEAD_SECONDS) * rate) * 4 - sent
+                    count = min(max(0, allowance), int(rate * 0.05) * 4)
                     if oracle:
-                        chunk = chunk[: max(0, due() - offset)]
+                        count = min(count, max(0, due() - offset))
+                    handle.seek(offset)
+                    chunk = handle.read(count)
                     chunk = chunk[: len(chunk) // 4 * 4]
                     if chunk:
                         self.wfile.write(chunk)
                         self.wfile.flush()
                         offset += len(chunk)
-                        continue
-                    if not tas.running(run):
+                        sent += len(chunk)
+                    elif not tas.running(run) and (offset >= pcm.stat().st_size or (oracle and offset >= due())):
                         return
-                    time.sleep(0.05)
+                    time.sleep(0.02)
 
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)

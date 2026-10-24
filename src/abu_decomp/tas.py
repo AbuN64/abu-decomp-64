@@ -21,7 +21,8 @@ card as it ended; `cpak-start.mpk`, as it began), so the same movie ends on the 
 runs on the page use the profile's card (`controller-pak.mpk` beside the runs) and keep what the game saves to it; the
 movie saved from such a run names the card it started with. `play --cpak on|off` and the page's checkbox override.
 Every replay is the same one kind of run, and every one is visible: the port writes its latest picture to the run
-folder (`N64C_VIEW`, a BMP at most ~15 times a second), a per-poll RAM hash (`N64C_TAS_HASH`) and, at speed 1 only,
+folder (`N64C_VIEW`, a BMP sampled at up to 30 Hz), a per-poll RAM hash
+(`N64C_TAS_HASH`) and, at speed 1 only,
 the sound it plays (`N64C_AUDIO_OUT`). Speed 0 (turbo, the default) skips the retrace sleep; the game's own clock
 is per retrace, so a movie is the same run at any speed. `run.json` in the run folder is the run's record (written at
 start and at the end), which `tas serve` reads. `same_twice` compares the hash file with the movie's previous run on
@@ -1096,6 +1097,8 @@ def play(
         "N64C_TAS_RECORD": str(run / "polls.raw"),
         "N64C_TAS_HASH": str(run / HASH),
         "N64C_VIEW": str(run / VIEW),
+        # Keep readbacks within the realtime frame budget, including human input and takeovers.
+        "N64C_VIEW_FPS": str(cfg["env"].get("N64C_VIEW_FPS", "30")),
         "N64C_FAULT_FRAME": str(run / tas_fault.FILE),  # a host fault leaves its signal frame here (shim)
         "N64C_SPEED": str(speed),
         "N64C_INPUT": input_address(run),
@@ -1106,14 +1109,13 @@ def play(
         env["N64C_PADS"] = str(pads)  # the guest sees that many controllers; every movie line holds that many pads
     if human:
         (run / TAKEN).write_text("new run\n")
-        env["N64C_VIEW_FPS"] = "60"
     else:
         (run / "movie.raw").write_text(format_raw(polls))
         env.update(N64C_TAS_PLAY=str(run / "movie.raw"), N64C_TAS_EXIT_AFTER=str(cfg["exit_after"]))
     if retry:
         where = f"start point {start}" if retry.get("fresh") else f"retry of {source}"
         (run / TAKEN).write_text(f"{where} from poll {take_at}\n")
-        env.update(N64C_TAS_TAKE_AT=str(take_at), N64C_VIEW_FPS="60")
+        env.update(N64C_TAS_TAKE_AT=str(take_at))
     inspect = inspect_env(run, shots_every, dump_ram_at, trace_draws)
     env.update(inspect)
     if sanitize:  # recoverable reports: one run lists many (tas_sanitize)

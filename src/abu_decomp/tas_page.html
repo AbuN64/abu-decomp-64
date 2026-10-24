@@ -342,9 +342,10 @@
       <label><input type="radio" name="snd" value="on"> on</label><label><input type="radio" name="snd" value="off"> off</label>
       <span id="sndstate" class="dim"></span></div>
     <div class="opt"><span>sound of</span>
-      <label><input type="radio" name="scope" value="all"> every live run</label><label><input type="radio" name="scope" value="focus"> the run on stage</label></div>
+      <label><input type="radio" name="scope" value="all"> up to two realtime runs</label><label><input type="radio" name="scope" value="focus"> the run on stage</label></div>
     <div class="opt"><span>sound from</span>
       <label><input type="radio" name="side" value="port"> the port</label><label><input type="radio" name="side" value="oracle"> the original</label></div>
+    <div class="opt"><span>follow live</span><label><select id="followmode"><option value="realtime">prefer realtime play</option><option value="newest">newest run</option></select></label></div>
     <div class="opt"><span>original</span>
       <label><input type="checkbox" id="orig"> replays I start also run the original game beside the port</label></div>
     <div class="opt"><span>runs</span>
@@ -382,7 +383,7 @@ const STRIP_MS = 220, MAX_LOG = 3000;
 
 let S = null, BD = null, CV = null, CP = null, skew = 0;
 const H = { rows: [], more: false, at: 0, busy: false, filter: store.get("tas.filter", "all") };
-const F = { id: null, run: null, follow: true, cursor: null, cursorFor: null };
+const F = { id: null, run: null, follow: true, policy: store.get("tas.follow", "realtime"), cursor: null, cursorFor: null };
 const ui = { view: "watch", tab: store.get("tas.tab", "map"), open: new Set(), covTab: "oracle_only" };
 const now = () => Date.now() / 1000 + skew;
 const isPhone = () => matchMedia("(max-width: 699px)").matches;
@@ -504,11 +505,15 @@ function render() {
   renderStage(); renderStrip(); renderPanes(); renderNav(); followAudio(); followLog();
 }
 
-/* ---------- focus: the stage follows the newest live run (yours first) until you pick one ---------- */
+/* ---------- one follow rule: prefer realtime play (configurable), then newest; manual choice stays put ---------- */
+const isRealtime = r => !!r && r.realtime === true;
+function followOrder(a, b) {
+  return (F.policy === "realtime" ? Number(isRealtime(b)) - Number(isRealtime(a)) : 0)
+    || b.started - a.started || a.id.localeCompare(b.id);
+}
 function pickFollow() {
   if (!F.follow) return;
-  const live = liveRuns().sort((a, b) => b.started - a.started);
-  const want = humanRun() || live[0];
+  const want = liveRuns().sort(followOrder)[0];
   if (want) { if (want.id !== F.id) setFocus(want.id, true); return; }
   if (!F.id) {
     const done = S.runs.filter(r => r.status === "done").sort((a, b) => b.started - a.started)[0];
@@ -519,6 +524,7 @@ function setFocus(id, auto) {
   if (!auto) F.follow = false;
   if (F.id === id) return;
   F.id = id; F.run = findRun(id); F.cursor = null; F.cursorFor = null;
+  if (ST.abort) ST.abort.abort();
   ST.gen++; Object.assign(ST, { stamp: 0, frames: [], lat: [], gotSeq: 0, has: false, miss: 0 });
   const g = $("scr").getContext("2d"); g.fillStyle = "#000"; g.fillRect(0, 0, 320, 240);
   if (id) stageFrames(ST.gen);
@@ -526,30 +532,54 @@ function setFocus(id, auto) {
 function focusRun(id) { setFocus(id, false); if (isPhone()) showView("watch"); render(); window.scrollTo({ top: 0, behavior: "smooth" }); }
 function followLive() { F.follow = true; pickFollow(); render(); }
 
-/* ---------- stage picture: long-poll /frame?after=<stamp> while live; a finished run shows its last picture ---------- */
-const ST = { gen: 0, stamp: 0, frames: [], lat: [], gotSeq: 0, has: false, miss: 0 };
+/* ---------- stage picture: one compressed, wall-paced stream; binary header is length/u64 stamp/input-seq ---------- */
+const ST = { gen: 0, stamp: 0, frames: [], lat: [], gotSeq: 0, has: false, miss: 0, abort: null };
+async function paintFrame(blob, seq, gen) {
+  const bmp = await createImageBitmap(blob);
+  try {
+    if (gen !== ST.gen) return;
+    const g = $("scr").getContext("2d"); g.imageSmoothingEnabled = false;
+    g.drawImage(bmp, 0, 0, 320, 240); ST.has = true; ST.miss = 0;
+    const t = performance.now(); ST.frames.push(t);
+    while (ST.frames.length && t - ST.frames[0] > 2000) ST.frames.shift();
+    if (seq > ST.gotSeq) { if (P.sent.has(seq)) { ST.lat.push(t - P.sent.get(seq)); if (ST.lat.length > 30) ST.lat.shift(); } ST.gotSeq = seq; }
+  } finally { bmp.close(); }
+}
 async function stageFrames(gen) {
-  const g = $("scr").getContext("2d");
-  g.imageSmoothingEnabled = false;
-  while (gen === ST.gen && F.id) {
-    const run = findRun(F.id), live = !!run && run.status !== "done";
+  while (gen === ST.gen && F.id && !document.hidden) {
+    const run = findRun(F.id), live = !!run && run.status !== "done", abort = new AbortController(); ST.abort = abort;
     try {
-      const r = await fetch(`/frame/${encodeURIComponent(F.id)}` + (live ? `?after=${ST.stamp}` : `?n=${Date.now()}`), { cache: "no-store" });
-      if (gen !== ST.gen) return;
-      if (r.status === 200) {
-        ST.stamp = +r.headers.get("X-Frame") || ST.stamp;
-        const seq = +r.headers.get("X-Input-Seq") || 0, bmp = await createImageBitmap(await r.blob());
-        if (gen !== ST.gen) return;
-        g.drawImage(bmp, 0, 0, 320, 240); ST.has = true; ST.miss = 0;
-        const t = performance.now();
-        ST.frames.push(t);
-        while (ST.frames.length && t - ST.frames[0] > 2000) ST.frames.shift();
-        if (seq > ST.gotSeq) { if (P.sent.has(seq)) { ST.lat.push(t - P.sent.get(seq)); if (ST.lat.length > 30) ST.lat.shift(); } ST.gotSeq = seq; }
-      } else if (r.status !== 204) { ST.miss++; await sleep(live ? 400 : 1000); }
-    } catch (e) { await sleep(700); }
-    if (!live && (ST.has || ST.miss > 3)) return;
+      const r = await fetch(`${live ? "/video/" : "/frame/"}${encodeURIComponent(F.id)}`, { cache: "no-store", signal: abort.signal });
+      if (!r.ok || !r.body) throw Error("picture unavailable");
+      if (!live) { await paintFrame(await r.blob(), +r.headers.get("X-Input-Seq") || 0, gen); return; }
+      const reader = r.body.getReader();
+      let bytes = new Uint8Array(0);
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done || gen !== ST.gen) break;
+        const joined = new Uint8Array(bytes.length + value.length); joined.set(bytes); joined.set(value, bytes.length); bytes = joined;
+        let newest = null, seq = 0;
+        while (bytes.length >= 16) {
+          const h = new DataView(bytes.buffer, bytes.byteOffset, bytes.length), n = h.getUint32(0);
+          if (n > 16 * 1024 * 1024) throw Error("invalid frame length");
+          if (bytes.length < 16 + n) break;
+          ST.stamp = Number(h.getBigUint64(4)); seq = h.getUint32(12);
+          newest = bytes.slice(16, 16 + n); bytes = bytes.slice(16 + n);
+        }
+        // Coalesced network reads paint only the newest sample. Missed pictures never replay as a burst.
+        if (newest) await paintFrame(new Blob([newest], { type: "image/jpeg" }), seq, gen);
+      }
+    } catch (e) { if (abort.signal.aborted) return; ST.miss++; }
+    finally { abort.abort(); }
+    if (gen !== ST.gen || !live) return;
+    await sleep(300);
   }
 }
+document.addEventListener("visibilitychange", () => {
+  if (ST.abort) ST.abort.abort(); ST.gen++;
+  if (!document.hidden && F.id) stageFrames(ST.gen);
+  followAudio();
+});
 
 function median(v) { if (!v.length) return null; const s = v.slice().sort((a, b) => a - b); return s[s.length >> 1]; }
 function runTitle(r) { return r.movie || r.id; }
@@ -605,13 +635,13 @@ function renderStage() {
   $("sline").className = "s " + (r.status === "done" ? endClass(r) || "dim" : "");
   $("follow").replaceChildren(F.follow
     ? el("span", "row dim", el("span", "dot live"), "following live")
-    : btn("Follow live", followLive, "ghost", "f", "the stage jumps to the newest live run"));
+    : btn("Follow live", followLive, "ghost", "f", "follow the preferred live run (Settings)"));
   const live = r.status === "running";
   const ctl = controlling();
   $("scr").classList.toggle("ctl", ctl);
   const n = ST.frames.length, fps = n > 1 ? (n - 1) * 1000 / (ST.frames[n - 1] - ST.frames[0]) : 0, lat = median(ST.lat);
   $("stats").hidden = !live;
-  $("stats").textContent = `${fps ? fps.toFixed(0) : "–"} fps` + (r.input === "human" ? ` · input→frame ${lat == null ? "–" : Math.round(lat) + " ms"}` : "");
+  $("stats").textContent = `${fps ? fps.toFixed(0) : "–"} fps` + (isRealtime(r) ? " · realtime" : r.status === "running" ? " · sampled, audio muted" : "") + (r.input === "human" ? ` · input→frame ${lat == null ? "–" : Math.round(lat) + " ms"}` : "");
   $("sover").hidden = !ctl;
   $("sover").textContent = runPads() > 1 ? `you drive pad ${P.pad + 1} of ${runPads()} (keys 1-${runPads()} switch)` : "you drive this run";
   renderActions(r);
@@ -819,7 +849,7 @@ async function thumb(t) {
   if (![...tiles.values()].includes(t)) return;
   if (seen && !t.vis) { t.waiting = true; return; }
   const pull = async (url, g) => {
-    try { const r = await fetch(`${url}?n=${Date.now()}`, { cache: "no-store" }); if (r.ok) g.drawImage(await createImageBitmap(await r.blob()), 0, 0, 320, 240); } catch (e) {}
+    try { const r = await fetch(`${url}?n=${Date.now()}`, { cache: "no-store" }); if (r.ok) { const bmp = await createImageBitmap(await r.blob()); try { g.drawImage(bmp, 0, 0, 320, 240); } finally { bmp.close(); } } } catch (e) {}
   };
   await Promise.all([pull(`/frame/${encodeURIComponent(t.run.id)}`, t.g), t.og ? pull(`/oracle/${encodeURIComponent(t.run.id)}`, t.og) : null]);
   if (!t.still && t.run.status === "running" && !document.hidden) t.timer = setTimeout(() => { if ([...tiles.values()].includes(t)) thumb(t); }, WALL_MS);
@@ -1420,35 +1450,43 @@ function renderPad(ctl) {
 }
 
 /* ---------- sound: per viewer (on/off, every live run or the stage's, port or original), on by default ---------- */
-const A = { on: store.get("tas.sound", "on") !== "off", scope: store.get("tas.scope", "all") === "focus" ? "focus" : "all",
+const A = { on: store.get("tas.sound", "on") !== "off", scope: store.get("tas.scope", "focus") === "all" ? "all" : "focus",
             side: store.get("tas.side", "port") === "oracle" ? "oracle" : "port", ctx: null, streams: new Map() };
-const MAX_STREAMS = 8;
+// HTTP/1.1 phones have six sockets per host. Leave room for video, state and thumbnails.
+const MAX_STREAMS = 2, AUDIO_BUFFER = 0.5, AUDIO_MAX = 2.0;
 function soundLabel() {
-  const waiting = A.on && A.streams.size && (!A.ctx || A.ctx.state !== "running");
-  $("sndstate").textContent = !A.on ? "" : waiting ? "tap anywhere to start the sound" : `${A.streams.size} audible`;
+  const waiting = A.on && A.streams.size && (!A.ctx || A.ctx.state !== "running"), r = findRun(F.id);
+  $("sndstate").textContent = !A.on ? "" : r && r.status === "running" && !isRealtime(r) ? "non-realtime audio muted"
+    : waiting ? "tap anywhere to start the sound" : `${A.streams.size} audible`;
   $("setbtn").classList.toggle("ok", !!(A.on && A.streams.size && !waiting));
 }
 function wake() {
   if (!A.on) return;
-  try { if (!A.ctx) A.ctx = new AudioContext(); if (A.ctx.state === "suspended") A.ctx.resume().then(soundLabel, () => {}); } catch (e) {}
+  try { if (!A.ctx) A.ctx = new AudioContext({ latencyHint: "playback" }); if (A.ctx.state === "suspended") A.ctx.resume().then(soundLabel, () => {}); } catch (e) {}
 }
 document.addEventListener("pointerdown", wake, true);
 document.addEventListener("keydown", wake, true);
+function stopAudio(st) {
+  st.abort.abort();
+  for (const src of st.sources) { try { src.stop(); } catch (e) {} src.disconnect(); }
+  st.sources.clear();
+}
 function followAudio() {
   let want = [];
-  if (A.on && S) {
-    if (A.scope === "focus") { const r = findRun(F.id); if (r && r.status === "running") want = [r.id]; }
-    else want = liveRuns().sort((a, b) => b.started - a.started).slice(0, MAX_STREAMS).map(r => r.id);
+  if (A.on && S && !document.hidden) {
+    if (A.scope === "focus") { const r = findRun(F.id); if (r && r.status === "running" && isRealtime(r)) want = [r.id]; }
+    else want = liveRuns().filter(isRealtime).sort(followOrder).slice(0, MAX_STREAMS).map(r => r.id);
   }
-  for (const [id, st] of A.streams) if (!want.includes(id)) { st.abort.abort(); A.streams.delete(id); }
+  for (const [id, st] of A.streams) if (!want.includes(id)) { stopAudio(st); A.streams.delete(id); }
   for (const id of want) if (!A.streams.has(id)) streamAudio(id);
   soundLabel();
 }
 async function streamAudio(id) {
-  const st = { abort: new AbortController(), head: 0 }; A.streams.set(id, st);
+  const st = { abort: new AbortController(), head: 0, sources: new Set(), underruns: 0, gapSeconds: 0, backpressure: 0, scheduled: 0 };
+  A.streams.set(id, st);
   try {
     const r = await fetch(`/audio/${encodeURIComponent(id)}` + (A.side === "oracle" ? "?side=oracle" : ""), { signal: st.abort.signal });
-    if (!r.ok || !r.body) { setTimeout(() => { if (A.streams.get(id) === st) A.streams.delete(id); }, 3000); return; }
+    if (!r.ok || r.status === 204 || !r.body) return;
     const reader = r.body.getReader();
     let buf = new Uint8Array(0), fmt = null;
     for (;;) {
@@ -1458,10 +1496,14 @@ async function streamAudio(id) {
       if (!fmt) { const h = wavHeader(buf); if (!h) continue; fmt = h; buf = buf.slice(h.data); }
       const n = Math.floor(buf.length / fmt.align);
       if (!n) continue;
-      pcm(st, buf.subarray(0, n * fmt.align), fmt, n);
+      await pcm(st, buf.subarray(0, n * fmt.align), fmt, n);
       buf = buf.slice(n * fmt.align);
     }
   } catch (e) {}
+  finally {
+    // Keep the stream's identity until queued sound drains; failed requests retry on a later state refresh.
+    setTimeout(() => { if (A.streams.get(id) === st) { stopAudio(st); A.streams.delete(id); } }, 2000);
+  }
 }
 function wavHeader(b) {
   if (b.length < 12) return null;
@@ -1475,14 +1517,35 @@ function wavHeader(b) {
   }
   return null;
 }
-function pcm(st, bytes, fmt, n) {
+async function pcm(st, bytes, fmt, n) {
   const c = A.ctx;
-  if (!c || c.state !== "running") return;
-  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.length), ab = c.createBuffer(fmt.channels, n, fmt.rate);
-  for (let ch = 0; ch < fmt.channels; ch++) { const out = ab.getChannelData(ch); for (let i = 0; i < n; i++) out[i] = v.getInt16(i * fmt.align + ch * 2, true) / 32768; }
-  const src = c.createBufferSource(); src.buffer = ab; src.connect(c.destination);
-  if (st.head < c.currentTime + 0.03 || st.head > c.currentTime + 0.4) st.head = c.currentTime + 0.05;
-  src.start(st.head); st.head += ab.duration;
+  if (!c || c.state !== "running" || st.abort.signal.aborted) return;
+  if (fmt.channels !== 2 || fmt.align !== 4 || fmt.rate < 8000 || fmt.rate > 192000) throw Error("invalid PCM format");
+  // Split network bursts into bounded buffers. A stalled audio clock applies backpressure to fetch,
+  // rather than canceling already scheduled sound and jumping backwards on the playback timeline.
+  const block = Math.floor(fmt.rate * .1);
+  for (let offset = 0; offset < n; offset += block) {
+    const count = Math.min(block, n - offset);
+    while (st.head + count / fmt.rate > c.currentTime + AUDIO_MAX && st.sources.size) {
+      st.backpressure++;
+      await new Promise(resolve => {
+        const source = st.sources.values().next().value;
+        const done = () => { source.removeEventListener("ended", done); st.abort.signal.removeEventListener("abort", done); resolve(); };
+        source.addEventListener("ended", done, { once: true });
+        st.abort.signal.addEventListener("abort", done, { once: true });
+      });
+      if (st.abort.signal.aborted) return;
+    }
+    if (st.abort.signal.aborted) return;
+    if (st.head && st.head < c.currentTime) { st.underruns++; st.gapSeconds += c.currentTime - st.head; st.head = 0; }
+    if (!st.head) st.head = c.currentTime + AUDIO_BUFFER;
+    const v = new DataView(bytes.buffer, bytes.byteOffset + offset * fmt.align, count * fmt.align);
+    const ab = c.createBuffer(fmt.channels, count, fmt.rate);
+    for (let ch = 0; ch < fmt.channels; ch++) { const out = ab.getChannelData(ch); for (let i = 0; i < count; i++) out[i] = v.getInt16(i * fmt.align + ch * 2, true) / 32768; }
+    const src = c.createBufferSource(); src.buffer = ab; src.connect(c.destination); st.sources.add(src);
+    src.onended = () => { st.sources.delete(src); src.disconnect(); };
+    src.start(st.head); st.head += ab.duration; st.scheduled += ab.duration;
+  }
 }
 
 /* ---------- log of the stage's run (when the Log box is open): tail /log/<id>, follow the bottom unless scrolled up ---------- */
@@ -1525,6 +1588,7 @@ $("latest").onclick = () => { const b = $("log"); LG.follow = true; b.scrollTop 
 /* ---------- settings (sound, original, new-run paks, touch pad) and the controls map ---------- */
 function openSettings() {
   for (const [name, v] of [["snd", A.on ? "on" : "off"], ["scope", A.scope], ["side", A.side]]) document.querySelector(`#settings input[name="${name}"][value="${v}"]`).checked = true;
+  $("followmode").value = F.policy;
   $("orig").checked = O.on; $("touchpad").checked = touchWanted();
   soundLabel();
   $("settings").showModal();
@@ -1532,6 +1596,7 @@ function openSettings() {
 $("pak").checked = store.get("tas.pak", "on") === "on";
 $("cpak").checked = store.get("tas.cpak", "on") === "on";
 $("fps").checked = store.get("tas.fps", "off") === "on";
+$("followmode").onchange = () => { F.policy = $("followmode").value; store.set("tas.follow", F.policy); pickFollow(); render(); };
 $("fps").onchange = () => store.set("tas.fps", $("fps").checked ? "on" : "off");
 $("pak").onchange = () => store.set("tas.pak", $("pak").checked ? "on" : "off");
 setTimeout(async function fillPoints() {
@@ -1555,7 +1620,7 @@ document.querySelectorAll('#settings input[name="snd"]').forEach(i => i.onchange
 document.querySelectorAll('#settings input[name="scope"]').forEach(i => i.onchange = () => { A.scope = i.value; store.set("tas.scope", i.value); followAudio(); });
 document.querySelectorAll('#settings input[name="side"]').forEach(i => i.onchange = () => {
   A.side = i.value; store.set("tas.side", i.value);
-  for (const st of A.streams.values()) st.abort.abort();
+  for (const st of A.streams.values()) stopAudio(st);
   A.streams.clear(); followAudio();
 });
 (function controlsTable() {

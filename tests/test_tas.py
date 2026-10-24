@@ -284,6 +284,7 @@ class MovieTests(unittest.TestCase):
             result = tas.play(self.profile, "m", now=T0)
         env, during = seen
         run = Path(result["run"])
+        self.assertEqual(env["N64C_VIEW_FPS"], "30")
         self.assertEqual((env["N64C_VIEW"], env["N64C_TAS_HASH"]), (str(run / "view.bmp"), str(run / "hash.txt")))
         self.assertEqual(env["N64C_SPEED"], "0")
         self.assertEqual(env["N64C_AUDIO_OUT"], str(run / "audio.pcm"))  # every speed (the port paces turbo sound)
@@ -486,7 +487,7 @@ class MovieTests(unittest.TestCase):
             human = tas.play(self.profile, None, now=T0)
         env, during = seen
         self.assertNotIn("N64C_TAS_PLAY", env)
-        self.assertEqual((env["N64C_SPEED"], env["N64C_VIEW_FPS"]), ("1", "60"))
+        self.assertEqual((env["N64C_SPEED"], env["N64C_VIEW_FPS"]), ("1", "30"))
         self.assertEqual(
             (during["input"], during["label"], during["movie"]), ("human", "owner", "play-20261020-190000")
         )
@@ -540,7 +541,7 @@ class MovieTests(unittest.TestCase):
             retry = tas.play(self.profile, None, source=source, take_at=1)
         env, during = seen
         run = Path(retry["run"])
-        self.assertEqual((env["N64C_TAS_TAKE_AT"], env["N64C_SPEED"], env["N64C_VIEW_FPS"]), ("1", "0", "60"))
+        self.assertEqual((env["N64C_TAS_TAKE_AT"], env["N64C_SPEED"], env["N64C_VIEW_FPS"]), ("1", "0", "30"))
         self.assertEqual((run / "movie.raw").read_text(), "8000 0 0\n")  # the run's own polls up to the poll
         self.assertEqual((during["movie"], during["input"], during["from"], during["at"]), ("m", "human", source, 1))
         self.assertTrue((run / "taken").is_file())
