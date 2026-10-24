@@ -205,6 +205,32 @@ class RunReportTests(unittest.TestCase):
         self.assertNotEqual(seen["cwd"], self.run)
         self.assertEqual(list(self.run.glob("*gcov*")) + list(self.run.glob(".gcovr-*")), [])
 
+    def test_a_failed_gcovr_names_its_cause_not_only_the_trailing_paths(self):
+        stderr = (
+            "(INFO) Reading\n(ERROR) Got function f in a.c on multiple lines: 3, 4.\n"
+            "GCOV source files:\n\t/r/1.json\n\t/r/2.json\n"
+        )
+        self.assertEqual(cov.failure(stderr), "(ERROR) Got function f in a.c on multiple lines: 3, 4. | /r/2.json")
+        self.assertEqual(cov.failure(""), "no output")
+
+    def test_an_older_build_counts_only_for_source_the_current_build_shares(self):
+        def report(path, md5):
+            files = [
+                {"file": f, "lines": [{"line_number": 1, "gcovr/md5": m}], "functions": []} for f, m in md5.items()
+            ]
+            path.write_text(json.dumps({"files": files}))
+            return path
+
+        base = report(self.run / "base.json", {"a.c": "x", "b.c": "y"})
+        old = report(self.run / "old.json", {"a.c": "x", "b.c": "z"})
+        changed = {f for f, sig in cov.file_signatures(old).items() if cov.file_signatures(base)[f] != sig}
+        self.assertEqual(changed, {"b.c"})
+        kept = cov.comparable(old, changed, self.run / "old.on-x.json")
+        self.assertEqual(kept, self.run / "old.on-x.json")
+        self.assertEqual([e["file"] for e in json.loads(kept.read_text())["files"]], ["a.c"])
+        self.assertEqual(cov.comparable(old, set(), self.run / "unused.json"), old)
+        self.assertNotIn("--merge-mode-functions", " ".join((self.counters(), cov._gcovr_base(self.build))[1]))
+
     def test_a_tree_that_is_not_a_coverage_build_is_refused(self):
         self.counters()
         (self.build / "ragewars-decomp").rmdir()
@@ -254,6 +280,68 @@ class RunReportTests(unittest.TestCase):
         self.assertEqual(cov.covered_functions(cov.read_table(self.cfg)), 50)
         self.assertTrue((runs / "coverage-table.refused.json").is_file())
         self.assertFalse((runs / "coverage.new").exists())
+
+    def test_functions_whose_source_moved_between_merged_builds_are_flagged(self):
+        a = {"x.c:f": "1-9", "x.c:g": "10-20", "x.c:h": "30-40"}
+        b = {"x.c:f": "1-9", "x.c:g": "10-22"}
+        mixed = cov.mixed_builds({"aaaaaaaaaaaaaaaa": a, "bbbbbbbbbbbbbbbb": b})
+        self.assertEqual([m["function"] for m in mixed], ["g", "h"])
+        self.assertEqual(mixed[0]["spans"], {"aaaaaaaaaaaa": "10-20", "bbbbbbbbbbbb": "10-22"})
+        self.assertEqual(mixed[1]["spans"]["bbbbbbbbbbbb"], "absent")
+        self.assertEqual(cov.mixed_builds({"a": a}), [])
+
+    def test_spans_reads_gcovr_function_positions(self):
+        path = self.run / "c.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "files": [
+                        {
+                            "file": "x.c",
+                            "functions": [
+                                {"name": "f", "lineno": 3, "pos": ["3:6", "9:1"]},
+                                {"name": "g", "lineno": 12},
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
+        self.assertEqual(cov.spans(path), {"x.c:f": "3-9", "x.c:g": "12-12"})
+        self.assertEqual(cov.spans(self.run / "missing.json"), {})
+
+    def test_a_builds_runs_merge_once_into_the_cache(self):
+        cache = self.run / "cache"
+        cache.mkdir()
+        runs = [self.run / "r1.json", self.run / "r2.json"]
+
+        def fake(args, _cwd):
+            Path(args[args.index("--json") + 1]).write_text("{}")
+
+        with (
+            mock.patch.object(cov, "gcovr", side_effect=fake) as gcovr,
+            mock.patch.object(cov, "_gcovr_base", return_value=[]),
+        ):
+            first = cov.merge_build("abcdef0123456789", runs, cache, self.build)
+            again = cov.merge_build("abcdef0123456789", runs, cache, self.build)
+        self.assertEqual(first, again)
+        self.assertEqual(gcovr.call_count, 1)
+        self.assertEqual(cov.merge_build("x", runs[:1], cache, self.build), runs[0])
+
+    def test_a_smaller_union_passes_only_by_the_functions_of_changed_source(self):
+        old = {"gcovr": {"function_covered": 100}, "baseline": "a"}
+        same = {"gcovr": {"function_covered": 99}, "baseline": "a", "changed_functions": 50}
+        self.assertIn("covers 99", cov.refusal(old, same))
+        moved = {"gcovr": {"function_covered": 95}, "baseline": "b", "changed_functions": 5}
+        self.assertIsNone(cov.refusal(old, moved))
+        lost = {"gcovr": {"function_covered": 94}, "baseline": "b", "changed_functions": 5}
+        self.assertIn("another port build", cov.refusal(old, lost))
+        self.assertIsNone(cov.refusal(None, lost))
+
+    def test_the_page_lists_the_dropped_functions_by_name(self):
+        dropped = [{"file": "x.c", "function": "f"}]
+        view = cov.lists({"functions": [], "dropped_functions": dropped})
+        self.assertEqual(view["dropped_functions"], dropped)
 
     def test_no_section_no_report(self):
         self.profile.section.return_value = {}

@@ -25,6 +25,7 @@ Section `tas.coverage`: {"elf": ".../build/{version}/RageWars.elf", "version":
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import os
 import re
@@ -85,6 +86,82 @@ def read_gcovr(path: Path) -> dict[str, int] | None:
     return counts
 
 
+def spans(path: Path) -> dict[str, str]:
+    """ "file:function" -> "first-last" source lines of every function in a gcovr JSON report ({} when unreadable)."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    out: dict[str, str] = {}
+    for entry in data.get("files", []):
+        for fn in entry.get("functions", []):
+            pos = fn.get("pos") or [str(fn.get("lineno", "?"))] * 2
+            out[f"{entry.get('file')}:{fn.get('name')}"] = "-".join(str(p).split(":")[0] for p in pos[:2])
+    return out
+
+
+def file_signatures(path: Path) -> dict[str, str]:
+    """file -> digest of its (line, gcovr/md5) pairs in a gcovr JSON report: equal digests mean the same source text."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for entry in data.get("files", []):
+        text = "|".join(f"{line.get('line_number')}:{line.get('gcovr/md5')}" for line in entry.get("lines", []))
+        out[str(entry.get("file"))] = hashlib.md5(text.encode()).hexdigest()
+    return out
+
+
+def comparable(report: Path, changed: set[str], out: Path) -> Path:
+    """`report` without the files whose source differs from the build the union is drawn on (`changed`), written to
+    `out` (kept while it is newer than `report`): an older port build counts only for code it shares with the current
+    one (gcovr refuses to merge lines whose text differs, and merging them would credit other code). The report
+    itself when nothing changed."""
+    if not changed:
+        return report
+    if out.is_file() and out.stat().st_mtime >= report.stat().st_mtime:
+        return out
+    data = json.loads(report.read_text())
+    data["files"] = [entry for entry in data.get("files", []) if entry.get("file") not in changed]
+    tmp = out.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    tmp.replace(out)
+    return out
+
+
+def merge_build(group: str, paths: list[Path], cache: Path, build: Path) -> Path:
+    """One gcovr JSON for the runs of one port build (same source, so gcovr's strict merge holds), kept in `cache`
+    under the run set's digest: an old build's runs are merged once, not on every union. A lone run is its own."""
+    if len(paths) == 1:
+        return paths[0]
+    key = hashlib.md5("\n".join(sorted(str(p) for p in paths)).encode()).hexdigest()[:12]
+    out = cache / f"{group[:12]}-{key}.json"
+    if not out.is_file():
+        tmp = out.with_suffix(".tmp")
+        args = [*_gcovr_base(build), "--json", str(tmp)]
+        for path in paths:
+            args += ["--add-tracefile", str(path)]
+        gcovr(args, build)
+        tmp.replace(out)
+    return out
+
+
+def mixed_builds(by_build: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+    """Functions whose source span differs between the port builds a union merges (or that some build lacks): their
+    counts come from different code, so the merged line coverage is not one program's. by_build: sha -> spans()."""
+    if len(by_build) < 2:
+        return []
+    keys = sorted({k for spans_ in by_build.values() for k in spans_})
+    out = []
+    for key in keys:
+        seen = {sha[:12]: spans_.get(key, "absent") for sha, spans_ in sorted(by_build.items())}
+        if len(set(seen.values())) > 1:
+            file, _, name = key.rpartition(":")
+            out.append({"file": file, "function": name, "spans": seen})
+    return out
+
+
 def gcovr(args: list[str], cwd: Path, timeout: float = 600) -> None:
     """Run gcovr (the decomp venv's own pinned copy); a failure is a DecompError carrying its last lines.
 
@@ -106,7 +183,16 @@ def gcovr(args: list[str], cwd: Path, timeout: float = 600) -> None:
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     if done.returncode:
-        raise DecompError("tas.coverage", "gcovr failed: " + " | ".join(done.stderr.strip().splitlines()[-3:]))
+        raise DecompError("tas.coverage", "gcovr failed: " + failure(done.stderr))
+
+
+def failure(stderr: str) -> str:
+    """The cause of a gcovr failure: its first error line (a merge conflict ends in a long list of tracefile paths,
+    so the last lines alone name files, not the cause) plus the last line."""
+    lines = [line.strip() for line in stderr.strip().splitlines() if line.strip()]
+    cause = next((line for line in lines if "(ERROR)" in line or "Error" in line or line.startswith("Got ")), "")
+    tail = lines[-1] if lines else "no output"
+    return " | ".join(dict.fromkeys(x for x in (cause, tail) if x))
 
 
 def read_oracle(run: Path) -> tuple[dict[str, tuple[int, int]], int] | None:
@@ -393,6 +479,11 @@ def lists(report: dict[str, Any], limit: int = LISTED) -> dict[str, Any]:
         "generated": report.get("generated"),
         "summary": report.get("summary"),
         "gcovr": report.get("gcovr"),
+        "builds": report.get("builds"),
+        "changed_files": report.get("changed_files"),
+        "dropped_functions": report.get("dropped_functions") or [],
+        "mixed_build_count": len(report.get("mixed_build") or []),
+        "mixed_build": (report.get("mixed_build") or [])[:limit],
         "oracle_only": pick("oracle-only"),
         "neither": pick("neither"),
         "port_only": pick("port-only"),
@@ -519,12 +610,36 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
             "oracle": got[0] if got else None,
             "port_polls": int(record.get("polls_reached") or 0),
             "oracle_polls": got[1] if got else 0,
+            "build": str(record.get("build") or "unknown"),
         }
 
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
         collected = list(pool.map(one, sorted(runs.items())))
     build_tree = build_dir(cfg)
-    tracefiles = [baseline(cfg)] + [p for p in (run / COVERAGE for run in runs.values()) if p.is_file()]
+    # One build per movie (its newest run). The runs of each port build merge once (cached); a build other than the
+    # baseline's (the current port) keeps only the files whose source text the current build shares, the dropped
+    # files counted per build.
+    base = baseline(cfg)
+    current = file_signatures(base)
+    groups: dict[str, list[Path]] = {}
+    for r in collected:
+        path = runs[r["movie"]] / COVERAGE
+        if path.is_file():  # a run of an unknown build is its own group: its source cannot be assumed shared
+            groups.setdefault(r["build"] if r["build"] != "unknown" else f"unknown-{r['run']}", []).append(path)
+    cache = cfg["runs"] / "coverage-builds"
+    cache.mkdir(parents=True, exist_ok=True)
+    tag = base.stem.rsplit("-", 1)[-1]
+    tracefiles, changed, keep = [base], {}, set()
+    for group, paths in sorted(groups.items()):
+        merged = merge_build(group, paths, cache, build_tree)
+        changed[group] = {f for f, sig in file_signatures(merged).items() if current.get(f) != sig}
+        key = merged.stem if merged.parent == cache else merged.parent.name
+        out = comparable(merged, changed[group], cache / f"{key}.on-{tag}.json")
+        keep.update({merged.name, out.name})
+        tracefiles.append(out)
+    for old in cache.iterdir():
+        if old.name not in keep:
+            old.unlink()
     final_page, final_summary = cfg["runs"] / HTML, cfg["runs"] / "coverage-summary.json"
     page, summary_file = cfg["runs"] / (HTML + ".new"), cfg["runs"] / "coverage-summary.new.json"
     shutil.rmtree(page, ignore_errors=True)
@@ -545,9 +660,31 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
     _, names = tas_symbolize.symbols(cfg["port"])
     report = union(rows, totals, cov["version"], collected, set(names) if names else None)
     report["runs"] = [
-        {"movie": r["movie"], "run": r["run"], "polls": r["port_polls"], "covered": cov}
+        {"movie": r["movie"], "run": r["run"], "polls": r["port_polls"], "covered": cov, "build": r["build"]}
         for r, cov in zip(collected, report.pop("covered"), strict=True)
     ]
+    # One build per movie (its newest run): which port builds the union merges, and the functions they disagree on.
+    builds: dict[str, int] = {}
+    for r in collected:
+        builds[r["build"]] = builds.get(r["build"], 0) + 1
+    report["builds"] = dict(sorted(builds.items(), key=lambda kv: -kv[1]))
+    report["changed_files"] = {group: len(files) for group, files in changed.items() if files}
+    report["baseline"] = tag
+    dropped = set().union(*changed.values()) if changed else set()
+    # the functions whose older-build counts were dropped, by name: a smaller union shows what it lost
+    report["dropped_functions"] = [
+        {"file": file, "function": name}
+        for file, _, name in sorted(key.rpartition(":") for key in spans(base))
+        if file in dropped
+    ]
+    report["changed_functions"] = len(report["dropped_functions"])
+    # spans per known build (one run each; a run of an unknown build is not compared)
+    report["mixed_build"] = mixed_builds(
+        {group: spans(paths[0]) for group, paths in groups.items() if not group.startswith("unknown-")}
+    )
+    mixed = {m["function"] for m in report["mixed_build"]}
+    for row in report.get("functions", []):
+        row["mixed_build"] = row.get("name") in mixed
     try:
         gsum = json.loads(summary_file.read_text())
         report["gcovr"] = {
@@ -567,10 +704,9 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
     except (OSError, ValueError):
         report["gcovr"] = None
     path = cfg["runs"] / TABLE
-    old = covered_functions(read_table(cfg))
-    new = covered_functions(report)
-    if new < old:  # never replace a report with one covering fewer functions: the new one lands beside it
-        report["refused"] = f"covers {new} functions, the report in place {old}"
+    why = refusal(read_table(cfg), report)
+    if why:  # never replace a report with one covering fewer functions: the new one lands beside it
+        report["refused"] = why
         side = path.with_name("coverage-table.refused.json")
         side.write_text(json.dumps(report, sort_keys=True) + "\n")
         shutil.rmtree(page, ignore_errors=True)
@@ -588,6 +724,20 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
 def covered_functions(report: dict[str, Any] | None) -> int:
     """Functions gcovr counted as covered in a coverage table (0 for none or an unreadable one)."""
     return int(((report or {}).get("gcovr") or {}).get("function_covered") or 0)
+
+
+def refusal(old: dict[str, Any] | None, new: dict[str, Any]) -> str | None:
+    """Why `new` must not replace `old`: it covers fewer functions. On the same baseline (port build) any loss is lost
+    counters. Drawn on another build, the union drops the source files that changed since the older runs, so it may
+    lose at most the functions those files define (`changed_functions`); a bigger loss is still refused."""
+    before, after = covered_functions(old), covered_functions(new)
+    same = (old or {}).get("baseline") == new.get("baseline")
+    allowed = 0 if same else int(new.get("changed_functions") or 0)
+    if after >= before - allowed:
+        return None
+    return f"covers {after} functions, the report in place {before}" + (
+        "" if same else f" (another port build: up to {allowed} functions of changed files may go)"
+    )
 
 
 def read_table(cfg: dict[str, Any]) -> dict[str, Any] | None:
@@ -610,5 +760,6 @@ def line(report: dict[str, Any]) -> str:
         f"{pct('function_percent')}; port {s['game']['port']['bytes_pct']}% of game bytes; oracle-only "
         f"{states.get('oracle-only', 0)}, neither {states.get('neither', 0)}; behaves "
         f"{s.get('behaviour', {}).get('behaves', 0)}, differs {s.get('behaviour', {}).get('differs', 0)} "
-        f"({s['movies']} movies, {s['oracle_movies']} with oracle); report runs/{HTML}/index.html"
+        f"({s['movies']} movies, {s['oracle_movies']} with oracle; {len(report.get('builds') or {})} port builds, "
+        f"{len(report.get('mixed_build') or [])} mixed-build functions); report runs/{HTML}/index.html"
     )
