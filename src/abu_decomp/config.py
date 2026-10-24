@@ -123,6 +123,15 @@ def load_profile(path: Path) -> Profile:
         value = json.loads(content, object_pairs_hook=_unique, parse_constant=_nonfinite)
     except (OSError, ValueError, UnicodeError) as exc:
         raise ConfigError(file, "profile", str(exc)) from exc
+    if isinstance(value, dict) and value.keys() - _ALLOWED:
+        # the usual cause is another tool's profile (a Cake Taste or unbake one) passed where the seat profile goes
+        raise ConfigError(
+            file,
+            "profile",
+            f"unknown keys: {', '.join(sorted(value.keys() - _ALLOWED))}; this is not a decomp seat profile (its "
+            f"top-level keys: {', '.join(sorted(_ALLOWED))}): pass the seat's profile, or none to use DECOMP_PROFILE "
+            "or ~/.config/abu-decomp/profile.json",
+        )
     check_keys(file, "profile", value, _REQUIRED, _ALLOWED)
     if type(value["schema_version"]) is not int or value["schema_version"] != 1:
         raise ConfigError(file, "schema_version", "only version 1 is supported")

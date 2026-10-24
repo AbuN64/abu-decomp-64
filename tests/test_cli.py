@@ -109,6 +109,9 @@ class CliTests(unittest.TestCase):
     def test_profile_rejects_unknown_and_duplicate_keys(self):
         with self.assertRaisesRegex(ConfigError, "unknown keys: project"):
             load_profile(self.profile({"schema_version": 1, "name": "seat", "project": "x"}))
+        taste = {"schema_version": 1, "name": "t", "project_root": "x", "handoff": {}}  # another tool's profile
+        with self.assertRaisesRegex(ConfigError, "unknown keys: handoff, project_root; this is not a decomp seat"):
+            load_profile(self.profile(taste))
         path = self.root / "dup.json"
         path.write_text('{"schema_version": 1, "name": "a", "name": "b"}')
         with self.assertRaisesRegex(ConfigError, "duplicate JSON key"):
