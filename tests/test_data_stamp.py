@@ -29,6 +29,15 @@ PLAIN = """diff --git a/src/a.CPP b/src/a.CPP
 """
 
 
+MAKEFILE = """diff --git a/Makefile b/Makefile
+--- a/Makefile
++++ b/Makefile
+@@ -1 +1 @@
+-# extern D_80154024 header list
++# extern D_80154020 header key
+"""
+
+
 class StampTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -41,6 +50,7 @@ class StampTests(unittest.TestCase):
             self.assertTrue(stamp.touches_data(self.cfg, text))
             self.assertTrue(stamp.missing(self.cfg, self.dir, text, Path("x.diff")))
         self.assertFalse(stamp.touches_data(self.cfg, PLAIN))
+        self.assertFalse(stamp.touches_data(self.cfg, MAKEFILE))
         self.assertEqual(stamp.missing(self.cfg, self.dir, PLAIN, Path("x.diff")), [])
 
     def test_stamp_is_for_that_exact_diff(self):

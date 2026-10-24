@@ -21,13 +21,19 @@ def files_of(text: str) -> list[str]:
 
 
 def touches_data(cfg: DataConfig, text: str) -> bool:
-    """A header changed, an `extern` line changed, or a changed line names a data symbol."""
-    if any(HEADER.search(f) for f in files_of(text)):
-        return True
+    """A header changed, or an `extern` line or a data symbol changed in a C source file (a Makefile or a note never
+    declares data)."""
+    suffixes = tuple(cfg.source_suffixes)
     token = re.compile(r"\b" + cfg.symbol_token)
+    current = ""
     for line in text.splitlines():
-        if (
-            line[:1] in "+-"
+        if line.startswith("diff --git "):
+            current = line.split(" b/", 1)[-1]
+            if HEADER.search(current):
+                return True
+        elif (
+            current.lower().endswith(suffixes)
+            and line[:1] in "+-"
             and line[:3] not in ("+++", "---")
             and (re.search(r"\bextern\b", line) or token.search(line))
         ):
