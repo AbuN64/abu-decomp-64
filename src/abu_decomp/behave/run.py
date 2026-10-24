@@ -729,7 +729,12 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
     helpers = {f["name"] for f in image.functions if f["name"] != options.function}
     opaque = frozenset(abi.opaque(chosen.project, version, {n.removeprefix(compare.PREFIX) for n in called}) | helpers)
     for name in called:
-        callee = prototype.find(chosen.project, name, tuple(config["headers"]), None)
+        # the recompiler's replacement of a library routine (osRecvMesg_recomp) takes the library prototype's arguments
+        callee = prototype.find(chosen.project, name, tuple(config["headers"]), None) or (
+            prototype.find(chosen.project, name.removesuffix("_recomp"), tuple(config["headers"]), None)
+            if name.endswith("_recomp")
+            else None
+        )
         if callee:
             callees[name] = callee
     rows = [
