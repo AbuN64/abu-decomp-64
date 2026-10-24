@@ -12,9 +12,26 @@ from abu_decomp.data.config import DataConfig
 from abu_decomp.data.trial import Builder, fn_unit  # noqa: F401  re-export for callers
 
 
-def changed_units(tree: Path, run=subprocess.run) -> list[str]:
+def header_dependents(tree: Path, version: str, headers: list[str], run=subprocess.run) -> list[str]:
+    """Units whose dependency file (build/<version>/<unit>.d of an earlier build) names one of HEADERS."""
+    if not headers:
+        return []
+    cmd = ["grep", "-rlF", "--include=*.d", *[a for h in headers for a in ("-e", h)], f"build/{version}"]
+    out = run(cmd, cwd=tree, capture_output=True, text=True).stdout.split()
+    prefix = f"build/{version}/"
+    return sorted(p[len(prefix) : -2] for p in out if p.startswith(prefix) and p.endswith(".d"))
+
+
+def expand_units(tree: Path, version: str, files: list[str], run=subprocess.run) -> list[str]:
+    """The units to rebuild for changed FILES: the changed units themselves, and every unit including a changed header."""
+    units = [f for f in files if f.startswith("src/") and not f.lower().endswith(".h")]
+    heads = [f for f in files if f.startswith("include/") or f.lower().endswith(".h")]
+    return sorted(set(units) | set(header_dependents(tree, version, heads, run)))
+
+
+def changed_units(tree: Path, run=subprocess.run, version: str = "") -> list[str]:
     out = run(["git", "-C", str(tree), "diff", "--name-only"], capture_output=True, text=True).stdout.split()
-    return [u for u in out if u.startswith("src/")]
+    return expand_units(tree, version, out, run) if version else [u for u in out if u.startswith("src/")]
 
 
 def exact_fns(cfg: DataConfig, tree: Path, version: str, units: list[str]) -> dict[str, list[str]]:
@@ -42,7 +59,7 @@ def broken(b: Builder, version: str, units: list[str]) -> list[tuple[str, str, s
 
 
 def check(b: Builder, version: str, units: list[str] | None = None) -> dict:
-    units = units if units is not None else changed_units(b.tree, b.run)
+    units = units if units is not None else changed_units(b.tree, b.run, version)
     if not units:
         return {"version": version, "units": 0, "built": True, "broken": []}
     rc, log = b.objects(version, units)
@@ -57,7 +74,7 @@ def mixed_loop(
     b: Builder, version: str, sym: str, expr: str, decl: str, units: list[str] | None = None, rounds: int = 3
 ) -> dict:
     """rewrite done -> check -> put each broken function's accesses back to the scalar -> check, until clean."""
-    units = units if units is not None else changed_units(b.tree, b.run)
+    units = units if units is not None else changed_units(b.tree, b.run, version)
     logged: list[list[str]] = []
     res = check(b, version, units)
     for _ in range(rounds):

@@ -236,3 +236,14 @@ def test_gate_refuses_only_when_an_owner_form_exists(tmp_path: Path):
     cj.write_text(json.dumps(d))
     assert gate.check_diff(CFG, cj, "+++ b/src/b.c\n+extern s32 D_80100004;\n") == []
     assert gate.count_tree(CFG, cj, tmp_path / "tree") == 1  # still counted by the ratchet
+
+
+def test_expand_units_adds_dependents_of_a_changed_header(tmp_path: Path):
+    def run(cmd, **kw):
+        assert cmd[0] == "grep" and "include/T.H" in cmd
+        out = "build/r1/src/a.c.d\nbuild/r1/src/b.c.d\n"
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    got = check.expand_units(tmp_path, "r1", ["include/T.H", "src/c.c", "README"], run)
+    assert got == ["src/a.c", "src/b.c", "src/c.c"]
+    assert check.expand_units(tmp_path, "r1", ["src/c.c"], run) == ["src/c.c"]

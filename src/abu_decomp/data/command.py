@@ -146,7 +146,10 @@ def _rewrite(args: argparse.Namespace, cfg) -> Result:
         census = json.loads(args.census.read_text()) if args.census else {"clusters": [], "lones": []}
         decl = (rewrite_mod.member_info(census, args.symbol) or {}).get("decl") or ["s32"]
         b = trial.Builder(cfg, args.tree)
-        res = check_mod.mixed_loop(b, args.version or cfg.reference, args.symbol, expr, decl[0], files)
+        version = args.version or cfg.reference
+        units = check_mod.expand_units(args.tree, version, files, b.run)
+        res = check_mod.mixed_loop(b, version, args.symbol, expr, decl[0], units)
+        result["units"] = units
         result["check"] = res
         findings = [
             {"key": "data.check", "blocking": True, "message": f"{u} {fn} {why}"} for u, fn, why in res["broken"]
