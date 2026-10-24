@@ -232,3 +232,15 @@ def test_notes_never_raise_without_a_project(monkeypatch):
 
     monkeypatch.setattr(arity, "census_for", refuse)
     assert arity.notes(SimpleNamespace(source_file="w.json"), ["func_80209CD8_de"]) == []
+
+
+def test_census_top_zero_lists_every_offender(monkeypatch):
+    from types import SimpleNamespace
+
+    table = census_of({"a.c": DEF, "b.c": USER}, {"func_80209CD8_de": {"words": 1, "regs": ["a0"]}})
+    table.update(census_of({"c.c": "void func_80208158_de(int a) { }", "d.c": "void g(void) { func_80208158_de(); }"}))
+    fake = SimpleNamespace(table=lambda: table, close=lambda: None, project="p")
+    monkeypatch.setattr(arity, "census_for", lambda profile, project=None: fake)
+    profile = SimpleNamespace(source_file="w.json")
+    every = arity.run(profile, "census", None, None, None, 0)["worst"]
+    assert len(every) >= 2 and len(arity.run(profile, "census", None, None, None, 1)["worst"]) == 1

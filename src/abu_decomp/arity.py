@@ -656,7 +656,7 @@ def run(profile: Any, verb: str, name: str | None, project: Path | None, base: s
                 "next": next_command(profile.source_file, name or "", kinds) if entry["score"] else None,
             }
         counts = totals(table)
-        worst = sorted((e["score"], n) for n, e in table.items() if e["score"])[::-1][:top]
+        worst = sorted((e["score"], n) for n, e in table.items() if e["score"])[::-1][: top or None]
         return {
             "counts": counts,
             "project": str(census.project),
