@@ -313,6 +313,16 @@ class ReturnSpellingTests(unittest.TestCase):
         self.assertIn("defined void", hits[0]["detail"])
         self.assertEqual(Tree(files).sweep(SPELLING)["hits"], [])
 
+    def test_a_float_function_declared_void_is_a_hit_when_scalars_are_on(self):
+        text = SPELLING + "scalars = true\n"
+        files = {
+            "def.c": "float dist(int a) {\n  return sqrtf(a);\n}\n",
+            "use.h": "extern void dist(int);\nextern float dist(int);\n",
+        }
+        hits = Tree(files).sweep(text)["hits"]
+        self.assertEqual([(h["file"], h["line"], h["fn"]) for h in hits], [("use.h", 1, "dist")])
+        self.assertIn("x87 stack", hits[0]["detail"])
+
 
 class WordAliasTests(unittest.TestCase):
     FILES: ClassVar[dict[str, str]] = {

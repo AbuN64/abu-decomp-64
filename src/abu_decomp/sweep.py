@@ -19,9 +19,10 @@ The engine is generic and names no project: the rules are project facts, TOML fi
                          original mixes both; a native 32-bit host pops the hidden pointer in the callee (ret $4), so
                          the other spelling leaves the stack 4 bytes off. The reverse (a declaration by value of a
                          function defined with a result pointer) is a hit too
-                         `scalars = true` also flags a function defined void whose result another file declares as a
-                         value: the original leaves it in $v0 or $f0, a native host has no such register (a float
-                         read from an empty x87 stack faults)
+                         `scalars = true` also flags a function defined returning a float and declared void (each
+                         call leaves a value on the x87 stack) and a function defined void whose result another file
+                         declares as a value: the original leaves it in $v0 or $f0, a native host has no such register
+                         (a float read from an empty x87 stack faults)
               word-alias `symbols` (a file of `NAME = 0xADDRESS;` lines per tree, relative to the tree), `array`
                          (regex, named group `datum`: the word arrays a data unit defines; the unit's address is the
                          hex in its file name, arrays follow each other) and `narrow` (regex, named group `datum`: a
@@ -94,6 +95,7 @@ _NOT_FUNCTIONS = frozenset({"if", "while", "for", "switch", "return", "sizeof", 
 
 
 _QUALIFIERS = frozenset({"extern", "static", "inline", "const", "volatile", "register", "struct", "enum", "union"})
+_FLOATS = frozenset({"f32", "f64", "float", "double"})
 _SCALARS = frozenset(
     {
         "void",
@@ -500,6 +502,7 @@ class Sweep:
         by_value: dict[str, tuple[str, int | None, str]] = {}  # name -> (type, parameter count, where)
         other: dict[str, str] = {}  # names defined with any other return spelling
         voids: dict[str, str] = {}  # names defined void
+        floats: dict[str, str] = {}  # names defined returning a float
         for src in self.selected(rule, rule.declare_paths):
             for m in _DEF.finditer(src.text):
                 name = m["name"]
@@ -514,6 +517,8 @@ class Sweep:
                     other.setdefault(name, where)
                     if words == ["void"]:
                         voids.setdefault(name, where)
+                    elif words and words[-1] in _FLOATS and "*" not in words:
+                        floats.setdefault(name, where)
         mixed = {n for n in by_value if n in other}
         hits = []
         for src in self.selected(rule):
@@ -589,6 +594,26 @@ class Sweep:
                                 fn=name,
                                 declared=voids[name],
                                 detail=f"{name} is defined void ({voids[name]}); declared returning {' '.join(words)}",
+                            )
+                        )
+            if rule.scalars:
+                for m in _DECL.finditer(src.text):
+                    name = m["name"]
+                    if name not in floats or name in voids or name in by_value:
+                        continue
+                    words = [w for w in re.split(r"[\s]+", m["head"].replace("*", " * ")) if w and w not in _QUALIFIERS]
+                    if words == ["void"]:
+                        hits.append(
+                            self.hit(
+                                rule,
+                                src,
+                                src.line_of(m.start("name")),
+                                fn=name,
+                                declared=floats[name],
+                                detail=(
+                                    f"{name} returns a float ({floats[name]}); declared void, so each call leaves"
+                                    " the result on the x87 stack"
+                                ),
                             )
                         )
         return hits
