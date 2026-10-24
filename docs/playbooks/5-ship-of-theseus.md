@@ -25,7 +25,10 @@ timing), so the first planks are chosen from numbers.
 
 ## The reference build
 The R4 build is frozen as the reference: the decompiled C on the console-compatibility layer, 32-bit, original frame
-rate. It stays buildable for as long as the port exists and is the oracle for every plank. Comparison is by game state
+rate. It lives on a permanent side branch of the port repository (named in the project config, e.g. `reference-r4`),
+created when R4 is declared and never deleted. Main moves on with the planks; the branch takes only fixes that keep it
+buildable on the target list (toolchain, packaging) and decompilation fixes, never planks. It stays buildable for as long
+as the port exists and is the oracle for every plank. Comparison is by game state
 per tick through the type information, not by memory addresses, so planks that change memory layout can still be
 compared.
 
