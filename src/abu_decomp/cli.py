@@ -1052,6 +1052,8 @@ def _run_claims(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dic
 
 
 def _phase_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("action", nargs="?", choices=["timelapse"], help="timelapse: make the version mp4")
+    parser.add_argument("--fps", type=int, default=12, help="timelapse frame rate (default 12)")
     parser.add_argument("--game", help="only this game of phase.games")
     parser.add_argument("--version", help="only this version (default: the focus version, else the game's first)")
     parser.add_argument("--refresh", action="store_true", help="write phase.out and append a phase.history line")
@@ -1060,6 +1062,14 @@ def _phase_arguments(parser: argparse.ArgumentParser) -> None:
 def _run_phase(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import phase
 
+    if args.action == "timelapse":
+        from abu_decomp import tas, tas_phasemap, tas_timelapse
+
+        profile = _profile(args.profile)
+        version = args.version or tas_phasemap.Phase(profile, tas.settings(profile), None, None).focus()
+        if not version:
+            raise DecompError("phase.version", "pass --version (the profile has no phase focus)")
+        return tas_timelapse.make(tas.settings(profile)["runs"], version, args.fps), 0, []
     result, findings = phase.run(_profile(args.profile), args.game, args.version, args.refresh)
     return result, 0, findings
 
