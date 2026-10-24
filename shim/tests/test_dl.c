@@ -480,6 +480,28 @@ static void test_draw_trace(void)
     CHECK(strstr(text, "img=0x00002000 imgfmt=CI/4b imgwidth=32") && strstr(text, "pal=3") && strstr(text, "texels=32x32"));
     CHECK(strstr(text, "prim=11223344") && strstr(text, "cc=127e24:fffffe38"));
 }
+/* Adjacent binary32 coordinates must remain distinct in diagnostic output. */
+static void test_draw_trace_precision(void)
+{
+    N64cTraceVtx v = { .loaded = 1, .clip_known = 1,
+                      .clip = {1.0f, 1.00000011920928955078125f, -0.0f, 0.5f}, .st = {1, 3} };
+    float mv[16] = {0};
+    mv[1] = v.clip[1]; /* retain off-diagonal matrix entries too */
+    FILE *f = tmpfile();
+    CHECK(f != NULL);
+    if (!f)
+        return;
+    n64c_dltrace_begin(f);
+    n64c_dltrace_tris(0x05000000, 1, &v, mv);
+    n64c_dltrace_begin(NULL);
+    rewind(f);
+    char text[2048] = "";
+    text[fread(text, 1, sizeof text - 1, f)] = 0;
+    fclose(f);
+    CHECK(strstr(text, "clip=1,1.00000012,-0,0.5"));
+    CHECK(strstr(text, "mv=(0,1.00000012,0,"));
+    CHECK(strstr(text, "st=0.03125,0.09375"));
+}
 /* Pixel-byte golden: four rows of distinct texels, including a partial final
  * row. Odd rows in the input are already in TMEM's exchanged-word layout. This
  * is the title's CI16-load/CI8-render contract, also exercised as CI4 and RGBA16. */
@@ -660,6 +682,7 @@ int main(void)
 {
     test_host_extension_boundary();
     test_draw_trace();
+    test_draw_trace_precision();
     test_texrect_point();
     test_line();
     test_modify_vertex();

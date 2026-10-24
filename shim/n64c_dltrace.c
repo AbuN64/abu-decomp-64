@@ -180,7 +180,7 @@ void n64c_dltrace_cmd(uint32_t w0, uint32_t w1, uint32_t timg_phys, uint32_t hal
     case OP_TEXRECT:
     case OP_TEXRECTFLIP: {
         const int t = (int)(w1 >> 24 & 7);
-        fprintf(out, "draw %ld %s rect=(%.2f,%.2f)-(%.2f,%.2f) s=%.2f t=%.2f dsdx=%.4f dtdy=%.4f", draws++, name(op),
+        fprintf(out, "draw %ld %s rect=(%.2f,%.2f)-(%.2f,%.2f) s=%.2f t=%.2f dsdx=%.9g dtdy=%.9g", draws++, name(op),
                 (w1 >> 12 & 0xFFF) / 4.0, (w1 & 0xFFF) / 4.0, (w0 >> 12 & 0xFFF) / 4.0, (w0 & 0xFFF) / 4.0,
                 (int16_t)(half1 >> 16) / 32.0, (int16_t)(half1 & 0xFFFF) / 32.0, (int16_t)(half2 >> 16) / 1024.0,
                 (int16_t)(half2 & 0xFFFF) / 1024.0);
@@ -200,9 +200,9 @@ static void print_vertex(const N64cTraceVtx *v)
         fprintf(out, " v=unloaded");
         return;
     }
-    fprintf(out, " v=(%d,%d,%d st=%.2f,%.2f", v->ob[0], v->ob[1], v->ob[2], v->st[0] / 32.0, v->st[1] / 32.0);
+    fprintf(out, " v=(%d,%d,%d st=%.9g,%.9g", v->ob[0], v->ob[1], v->ob[2], v->st[0] / 32.0, v->st[1] / 32.0);
     if (v->clip_known)
-        fprintf(out, " clip=%.1f,%.1f,%.1f,%.1f", v->clip[0], v->clip[1], v->clip[2], v->clip[3]);
+        fprintf(out, " clip=%.9g,%.9g,%.9g,%.9g", v->clip[0], v->clip[1], v->clip[2], v->clip[3]);
     fputc(')', out);
 }
 
@@ -211,8 +211,12 @@ void n64c_dltrace_tris(uint32_t w0, int count, const N64cTraceVtx *v, const floa
     if (!n64c_dltrace_active())
         return;
     fprintf(out, "draw %ld %s", draws++, name(w0 >> 24));
-    if (mv)
-        fprintf(out, " mv=scale(%.4g,%.4g,%.4g) move(%.4g,%.4g,%.4g)", mv[0], mv[5], mv[10], mv[12], mv[13], mv[14]);
+    if (mv) {
+        fputs(" mv=(", out);
+        for (int i = 0; i < 16; i++)
+            fprintf(out, "%s%.9g", i ? "," : "", mv[i]);
+        fputc(')', out);
+    }
     if (tex_on) {
         fprintf(out, " texscale=%u,%u", tex_s, tex_t);
         print_texture(cur_tile);
