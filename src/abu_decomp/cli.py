@@ -556,7 +556,7 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         if report is None:
             raise DecompError("tas.coverage", "the profile has no tas.coverage section")
         print(tas_coverage.line(report), file=sys.stderr)
-        return tas_coverage.lists(report, 25), 0, []
+        return tas_coverage.lists(report, 25), (5 if report.get("refused") else 0), []
     if args.action == "triage":
         return _run_triage(profile, args)
     if args.action == "corpus":

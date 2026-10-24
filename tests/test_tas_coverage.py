@@ -211,6 +211,50 @@ class RunReportTests(unittest.TestCase):
         with self.assertRaises(cov.DecompError):
             cov.run_report(self.profile, self.cfg, self.run)
 
+    def test_orphan_notes_of_vanished_units_are_dropped_with_their_counters(self):
+        (self.build / "ragewars-decomp" / "src").mkdir()
+        (self.build / "ragewars-decomp" / "src" / "A.CPP").write_text("code")
+        gone = self.build / "decomp" / "src" / "Gone.CPP"
+        gone.with_suffix(".CPP.gcno").write_text("n")
+        gone.with_suffix(".CPP.gcda").write_text("c")
+        self.assertEqual(cov.drop_orphan_notes(self.build), 1)
+        self.assertTrue((self.build / "decomp" / "src" / "A.CPP.gcno").is_file())
+        self.assertEqual(list((self.build / "decomp" / "src").glob("Gone*")), [])
+
+    def test_a_union_covering_fewer_functions_is_written_beside_the_report(self):
+        runs = self.cfg["runs"]
+        (runs / "coverage").mkdir(parents=True)
+        (runs / "coverage" / "index.html").write_text("old")
+        (runs / "coverage-summary.json").write_text("{}")
+        (runs / "coverage-table.json").write_text(json.dumps({"gcovr": {"function_covered": 50}}))
+        run = runs / "plays" / "r2"
+        run.mkdir()
+        (run / "coverage.json").write_text("{}")
+
+        def fake_gcovr(args, _cwd):
+            Path(args[args.index("--html-details") + 1]).write_text("new")
+            Path(args[args.index("--json-summary") + 1]).write_text(json.dumps({"function_covered": 3}))
+
+        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None}
+        with (
+            mock.patch.object(cov, "settings", return_value=cov_cfg),
+            mock.patch.object(cov, "latest_runs", return_value={"m": run}),
+            mock.patch.object(cov, "baseline", return_value=runs / "b.json"),
+            mock.patch.object(cov, "gcovr", side_effect=fake_gcovr),
+            mock.patch.object(cov, "universe", return_value=([], {})),
+            mock.patch.object(cov, "union", return_value={"covered": [[]], "summary": {}}),
+            mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
+            mock.patch.object(cov, "oracle_bracket", return_value=None),
+            mock.patch.object(cov, "read_oracle", return_value=None),
+            mock.patch("abu_decomp.tas.read_record", return_value={}),
+        ):
+            report = cov.build(self.profile, self.cfg, oracle=False, jobs=1)
+        self.assertIn("covers 3 functions", report["refused"])
+        self.assertEqual((runs / "coverage" / "index.html").read_text(), "old")
+        self.assertEqual(cov.covered_functions(cov.read_table(self.cfg)), 50)
+        self.assertTrue((runs / "coverage-table.refused.json").is_file())
+        self.assertFalse((runs / "coverage.new").exists())
+
     def test_no_section_no_report(self):
         self.profile.section.return_value = {}
         self.assertIsNone(cov.run_report(self.profile, self.cfg, self.run))

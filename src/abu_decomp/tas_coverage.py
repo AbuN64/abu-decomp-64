@@ -439,6 +439,23 @@ def run_report(profile: Profile, cfg: dict[str, Any], run: Path) -> Path | None:
     return out
 
 
+def drop_orphan_notes(build: Path) -> int:
+    """Delete every .gcno (and its .gcda) under build/decomp whose unit source is gone from the build's source link
+    (units a pin bump renamed or merged): gcovr dies reading a missing source. Returns how many were dropped."""
+    link, dropped = build / "ragewars-decomp", 0
+    if not link.exists():  # not a coverage build: nothing says which notes are orphans
+        return 0
+    for note in (build / "decomp").rglob("*.gcno"):
+        unit = note.relative_to(build / "decomp").with_suffix("")
+        if unit.suffix == ".stubs":
+            unit = unit.with_suffix("")
+        if not (link / unit).exists():
+            note.unlink(missing_ok=True)
+            note.with_suffix(".gcda").unlink(missing_ok=True)
+            dropped += 1
+    return dropped
+
+
 def baseline(cfg: dict[str, Any]) -> Path:
     """runs/coverage-baseline-<build>.json: the build's every unit with zero counts (gcovr reads the .gcno notes
     alone), so files no movie loads still show in the union. One per port build, made once."""
@@ -482,6 +499,7 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
     if cov is None:
         return None
     runs = latest_runs(cfg)
+    drop_orphan_notes(build_dir(cfg))
 
     def one(item: tuple[str, Path]) -> dict[str, Any]:
         name, run = item
@@ -507,10 +525,10 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
         collected = list(pool.map(one, sorted(runs.items())))
     build_tree = build_dir(cfg)
     tracefiles = [baseline(cfg)] + [p for p in (run / COVERAGE for run in runs.values()) if p.is_file()]
-    page = cfg["runs"] / HTML
+    final_page, final_summary = cfg["runs"] / HTML, cfg["runs"] / "coverage-summary.json"
+    page, summary_file = cfg["runs"] / (HTML + ".new"), cfg["runs"] / "coverage-summary.new.json"
     shutil.rmtree(page, ignore_errors=True)
     page.mkdir(parents=True)
-    summary_file = cfg["runs"] / "coverage-summary.json"
     args = [
         *_gcovr_base(build_tree),
         "--html-details",
@@ -549,10 +567,27 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
     except (OSError, ValueError):
         report["gcovr"] = None
     path = cfg["runs"] / TABLE
+    old = covered_functions(read_table(cfg))
+    new = covered_functions(report)
+    if new < old:  # never replace a report with one covering fewer functions: the new one lands beside it
+        report["refused"] = f"covers {new} functions, the report in place {old}"
+        side = path.with_name("coverage-table.refused.json")
+        side.write_text(json.dumps(report, sort_keys=True) + "\n")
+        shutil.rmtree(page, ignore_errors=True)
+        summary_file.unlink(missing_ok=True)
+        return report
+    shutil.rmtree(final_page, ignore_errors=True)
+    page.replace(final_page)
+    summary_file.replace(final_summary)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(report, sort_keys=True) + "\n")
     tmp.replace(path)
     return report
+
+
+def covered_functions(report: dict[str, Any] | None) -> int:
+    """Functions gcovr counted as covered in a coverage table (0 for none or an unreadable one)."""
+    return int(((report or {}).get("gcovr") or {}).get("function_covered") or 0)
 
 
 def read_table(cfg: dict[str, Any]) -> dict[str, Any] | None:
@@ -567,6 +602,8 @@ def line(report: dict[str, Any]) -> str:
     s = report["summary"]
     g = report.get("gcovr") or {}
     states = s["states"]
+    if report.get("refused"):
+        return f"coverage report NOT replaced: new union {report['refused']} (beside it: coverage-table.refused.json)"
     pct = lambda key: f"{g[key]:.1f}%" if g.get(key) is not None else "?"  # noqa: E731
     return (
         f"coverage {s['version']} gcov: lines {pct('line_percent')}, branches {pct('branch_percent')}, functions "
