@@ -2,8 +2,8 @@
 # Consumer contract: n64c_dep (defined here unless the consumer has its own; cmake/deps.cmake), the
 # SDL3::SDL3-static target, N64C_M32 and the n64compat target (cmake/n64compat.cmake).
 # Fast3D renderer (LUS c6ecfdb, Emill MIT lineage) built from the pinned sources against the
-# clean interface headers in fast3d/ (AUDIT.md). No LUS file is copied or
-# forked: the clean headers come first on the include path and every grey LUS header is
+# clean interface headers in fast3d/ (AUDIT.md). A checked compile view repairs the
+# texture address contract without changing pinned sources. Clean headers come first; every grey LUS header is
 # replaced by a stub that stops the build if anything still includes it.
 get_filename_component(N64C_SHIM_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 if(NOT COMMAND n64c_dep)
@@ -158,6 +158,33 @@ if(WIN32)
     string(REPLACE "|WasapiAudioPlayer" "" fast3d_excluded "${fast3d_excluded}")
 endif()
 list(FILTER fast3d_sources EXCLUDE REGEX "${fast3d_excluded}")
+# SegAddr marks segmented addresses with bit zero; small even host pointers are
+# valid. The upstream magnitude/module heuristic drops ordinary Win32 heap views.
+file(READ "${lus_src}/fast/interpreter.cpp" fast3d_interpreter)
+set(texture_guard_begin "    // If the resolved address is still in the N64 segmented range")
+set(texture_guard_end "    gfx->GfxDpSetTextureImage(C0(21, 3)")
+string(FIND "${fast3d_interpreter}" "${texture_guard_begin}" guard_begin)
+string(FIND "${fast3d_interpreter}" "${texture_guard_end}" guard_end)
+if(guard_begin LESS 0 OR guard_end LESS guard_begin)
+    message(FATAL_ERROR "Fast3D texture address contract changed; review the pinned source")
+endif()
+math(EXPR guard_length "${guard_end} - ${guard_begin}")
+string(SUBSTRING "${fast3d_interpreter}" ${guard_begin} ${guard_length} old_guard)
+string(REPLACE "${old_guard}" "" fast3d_interpreter "${fast3d_interpreter}")
+set(texture_resolve "    uintptr_t i = (uintptr_t)gfx->SegAddr(cmd->words.w1);")
+string(FIND "${fast3d_interpreter}" "${texture_resolve}" texture_resolve_at)
+if(texture_resolve_at LESS 0)
+    message(FATAL_ERROR "Fast3D texture resolver changed; review the pinned source")
+endif()
+string(REPLACE "${texture_resolve}" "${texture_resolve}
+    if (!N64c::TextureAddressValid(cmd->words.w1, i)) return false;"
+    fast3d_interpreter "${fast3d_interpreter}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fast3d-generated/interpreter.cpp.in"
+    "#include \"${fast3d_dir}/f3d_address.h\"\n${fast3d_interpreter}")
+configure_file("${CMAKE_CURRENT_BINARY_DIR}/fast3d-generated/interpreter.cpp.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/fast3d-generated/interpreter.cpp" COPYONLY)
+list(REMOVE_ITEM fast3d_sources "${lus_src}/fast/interpreter.cpp")
+list(APPEND fast3d_sources "${CMAKE_CURRENT_BINARY_DIR}/fast3d-generated/interpreter.cpp")
 configure_file("${lus_src}/ship/install_config.h.in" "${CMAKE_CURRENT_BINARY_DIR}/fast3d-config/ship/install_config.h" @ONLY)
 include("${lus_SOURCE_DIR}/cmake/cvars.cmake")
 add_library(rage_fast3d STATIC ${fast3d_sources})
@@ -229,3 +256,7 @@ add_test(NAME n64c_f3d_context COMMAND n64c_test_f3d_context)
 add_executable(n64c_test_f3d_surface "${fast3d_dir}/../tests/test_f3d_surface.cpp")
 target_compile_options(n64c_test_f3d_surface PRIVATE -Wall -Wextra -Werror)
 add_test(NAME n64c_f3d_surface COMMAND n64c_test_f3d_surface)
+
+add_executable(n64c_test_f3d_address "${fast3d_dir}/../tests/test_f3d_address.cpp")
+target_compile_options(n64c_test_f3d_address PRIVATE -Wall -Wextra -Werror)
+add_test(NAME n64c_f3d_address COMMAND n64c_test_f3d_address)
