@@ -46,4 +46,6 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 
 # The lane runner and steer are hand moves of the orchestration scripts; their style rules wait for a rewrite.
 [tool.ruff.lint.per-file-ignores]
+"src/abu_decomp/data/*.py" = ["E501", "UP031"]  # report rows and evidence strings read better unwrapped
+"tests/test_data_*.py" = ["E501"]
 "src/abu_decomp/lanes/{runner,steer}.py" = ["E401", "E402", "E501", "E741", "I001", "RUF005", "RUF059", "SIM105", "SIM108", "SIM115", "UP017", "UP031"]

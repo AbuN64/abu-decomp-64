@@ -963,6 +963,18 @@ def _run_arity(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
     return result, (1 if findings else 0), findings
 
 
+def _data_arguments(parser: argparse.ArgumentParser) -> None:
+    from abu_decomp.data import command
+
+    command.arguments(parser)
+
+
+def _run_data(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp.data import command
+
+    return command.run(args)
+
+
 def _owes_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", type=Path, help="project tree (default: the profile's)")
     parser.add_argument(
@@ -1136,6 +1148,11 @@ COMMANDS: dict[str, Command] = {
         "census of every function's parameter list: definition vs declarations, calls and the original's assembly",
         _arity_arguments,
         _run_arity,
+    ),
+    "data": Command(
+        "data typing of raw globals: census (classes + work queue), probe, rewrite, check, gate",
+        _data_arguments,
+        _run_data,
     ),
     "owes": Command(
         "functions that owe a match (NON_MATCHING bodies, reached INCLUDE_ASM) by evidence level, most reached first",
