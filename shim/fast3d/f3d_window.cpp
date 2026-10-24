@@ -38,6 +38,12 @@ void F3dWindow::Init(const char* gameName, const char*, bool startFullScreen, ui
         std::exit(1);
     }
     SDL_GL_MakeCurrent(mWindow, mContext);
+    // Which GPU or software rasterizer serves the picture is part of every run log (perf and bug reports need it).
+    if (auto getString = reinterpret_cast<const unsigned char *(*)(unsigned)>(SDL_GL_GetProcAddress("glGetString"))) {
+        const char *renderer = reinterpret_cast<const char *>(getString(0x1F01));
+        const char *version = reinterpret_cast<const char *>(getString(0x1F02));
+        std::fprintf(stderr, "boot-gl: renderer=%s version=%s\n", renderer ? renderer : "?", version ? version : "?");
+    }
     // The port's VI paces presentation; a vsync wait per flip would hold back the guest clock.
     mVsyncEnabled = false;
     SDL_GL_SetSwapInterval(0);
