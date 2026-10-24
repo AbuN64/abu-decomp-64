@@ -96,7 +96,8 @@ def failures(b: Builder, version: str, units: list[str], log: str) -> dict[str, 
     out: dict[str, str] = {}
     for unit in units:
         obj = b.cfg.object.format(v=version, unit=unit)
-        if not any(obj in line and "Error" in line for line in log.splitlines()):
+        # make names the failed rule, which is the object or one of its intermediates (`<unit>.i.ok`): the unit path is enough
+        if not any("***" in line and "Error" in line and (obj in line or unit in line) for line in log.splitlines()):
             continue
         mine = [x for x in log.splitlines() if unit in x and re.search(r"error", x, re.I)]
         out[unit] = (mine or [x for x in log.splitlines() if re.search(r"error", x, re.I)] or ["build failed"])[
@@ -105,10 +106,12 @@ def failures(b: Builder, version: str, units: list[str], log: str) -> dict[str, 
     return out
 
 
-def check(b: Builder, version: str, units: list[str] | None = None) -> dict:
+def check(b: Builder, version: str, units: list[str] | None = None, baseline: dict[str, str] | None = None) -> dict:
     """Rebuild the units a working diff reaches in VERSION (changed units, includers of changed headers, and every unit
     naming a changed data symbol) with `make -k`: a unit that fails to compile is listed with its own error and does not
-    hide the rest; the exact functions of the units that built are scored."""
+    hide the rest; the exact functions of the units that built are scored. A unit whose error equals its entry in
+    BASELINE (unit -> first error, recorded on a clean tree by `--write-baseline`) already failed before the change:
+    it is listed as `preexisting` and neither fails the check nor is scored."""
     if units is None:
         units = changed_units(b.tree, b.run, version)
         units = sorted(set(units) | set(referencing_units(b.cfg, b.tree, changed_symbols(b.cfg, b.tree, b.run), b.run)))
@@ -117,16 +120,22 @@ def check(b: Builder, version: str, units: list[str] | None = None) -> dict:
         return {"version": version, "units": 0, "built": True, "broken": []}
     rc, log = b.objects(version, units, keep_going=True)
     failed = failures(b, version, units, log)
-    if rc and not failed:  # make failed with no unit named (a missing rule, a toolchain error): nothing can be judged
+    old = {u: why for u, why in failed.items() if baseline and baseline.get(u) == why}
+    failed = {u: why for u, why in failed.items() if u not in old}
+    if (
+        rc and not failed and not old
+    ):  # make failed with no unit named (a missing rule, a toolchain error): nothing can be judged
         errs = [x for x in log.splitlines() if re.search(r"error", x, re.I)][:5]
         return {"version": version, "units": len(units), "built": False, "broken": [], "errors": errs}
-    bad = broken(b, version, [u for u in units if u not in failed])
+    bad = broken(b, version, [u for u in units if u not in failed and u not in old])
     return {
         "version": version,
         "units": len(units),
         "built": not failed,
         "broken": [list(x) for x in bad],
         "failed": [[u, why] for u, why in sorted(failed.items())],
+        "preexisting": [[u, why] for u, why in sorted(old.items())],
+        "all_failed": {**old, **failed},
         **({"errors": [f"{u}: {why}" for u, why in sorted(failed.items())][:8]} if failed else {}),
     }
 

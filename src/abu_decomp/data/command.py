@@ -59,6 +59,12 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     k.add_argument("--tree", type=Path, required=True)
     k.add_argument("--version", action="append", default=[], help="repeat; default every version of the config")
     k.add_argument("--unit", action="append", default=[])
+    k.add_argument(
+        "--baseline", type=Path, help="JSON {version: {unit: first error}}: units failing the same way are preexisting"
+    )
+    k.add_argument(
+        "--write-baseline", action="store_true", help="run on a clean tree: record every failing unit into --baseline"
+    )
     g = sub.add_parser(
         "gate", help="refuse a diff that re-adds a raw member extern or a kind-conflicting decl; tree ratchet"
     )
@@ -86,7 +92,18 @@ def run(args: argparse.Namespace) -> Result:
         return _rewrite(args, cfg)
     if verb == "check":
         b = trial.Builder(cfg, args.tree)
-        results = [check_mod.check(b, v, args.unit or None) for v in (args.version or list(cfg.versions))]
+        known = (
+            json.loads(args.baseline.read_text())
+            if args.baseline and args.baseline.is_file() and not args.write_baseline
+            else {}
+        )
+        results = [check_mod.check(b, v, args.unit or None, known.get(v)) for v in (args.version or list(cfg.versions))]
+        if args.write_baseline:
+            if not args.baseline:
+                raise DecompError("data.baseline", "--write-baseline needs --baseline FILE")
+            args.baseline.write_text(
+                json.dumps({r["version"]: r.get("all_failed", {}) for r in results}, indent=1, sort_keys=True)
+            )
         findings = [
             {"key": "data.check", "blocking": True, "message": f"{r['version']}: {u} {fn} {why}"}
             for r in results for u, fn, why in r["broken"]

@@ -60,3 +60,30 @@ def test_a_failing_unit_is_named_with_its_error_and_the_rest_still_scored(tmp_pa
         ["src/a/bad.CPP", "src/a/bad.CPP:3: error: conflicting types for 'D_1'"]
     ]
     assert res["broken"] == []  # f2 is in the failed unit: not scored; f1 built and matches
+
+
+def test_a_unit_failing_as_it_did_before_the_change_is_preexisting(tmp_path):
+    (tmp_path / "docs").mkdir()
+    rows = [["f1", 0, 0, 100, "src/a/ok.CPP"], ["f2", 0, 0, 100, "src/a/old.CPP"], ["f3", 0, 0, 100, "src/a/new.CPP"]]
+    (tmp_path / "docs/map-a.json").write_text(json.dumps({"fns": rows}))
+    log = "src/a/old.CPP:1: error: old\nmake: *** [Makefile:1: build/a/src/a/old.CPP.o] Error 1\n"
+    log += "src/a/new.CPP:3: error: mine\nmake: *** [Makefile:1: build/a/src/a/new.CPP.o] Error 1\n"
+    builder = SimpleNamespace(
+        cfg=CFG,
+        tree=tmp_path,
+        run=lambda *a, **k: done(),
+        objects=lambda v, u, keep_going=False: (2, log),
+        score=lambda v, fn, unit: 0,
+    )
+    base = {"src/a/old.CPP": "src/a/old.CPP:1: error: old", "src/a/new.CPP": "src/a/new.CPP:3: error: other"}
+    res = check.check(builder, "a", ["src/a/ok.CPP", "src/a/old.CPP", "src/a/new.CPP"], base)
+    assert res["preexisting"] == [["src/a/old.CPP", "src/a/old.CPP:1: error: old"]]
+    assert [u for u, _ in res["failed"]] == ["src/a/new.CPP"] and res["built"] is False
+    assert set(res["all_failed"]) == {"src/a/old.CPP", "src/a/new.CPP"}
+
+
+def test_a_failed_intermediate_rule_still_names_its_unit():
+    log = "src/a/bad.CPP:477:2: error: #error x\nmake: *** [Makefile:446: build/a/src/a/bad.CPP.i.ok] Error 1\n"
+    assert check.failures(SimpleNamespace(cfg=CFG), "a", ["src/a/bad.CPP", "src/a/ok.CPP"], log) == {
+        "src/a/bad.CPP": "src/a/bad.CPP:477:2: error: #error x"
+    }
