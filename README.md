@@ -35,6 +35,8 @@ helper), its globals and callees. See [CONTRACTS.md](CONTRACTS.md), module `beha
 
 Every command prints one JSON result. `decomp mcp` serves the same commands as MCP tools ([docs/mcp.md](docs/mcp.md)). `decomp --help` lists the rest.
 
+Phase playbooks (what each of the four phases and the naming/real-C track is for, its measurement and order of attack): [docs/playbooks](docs/playbooks/README.md).
+
 ## Development
 
 ```sh

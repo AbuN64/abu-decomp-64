@@ -95,3 +95,5 @@ This is the one rule that keeps experiment work from interfering with the offici
 - `tools/call` runs the current CLI in a fresh interpreter, so edits to decomp take effect on the next call with no reinstall and no restart.
 - After each call the shim re-derives the list; if it changed, it sends `notifications/tools/list_changed`.
 - Only a change to `mcp.py` itself (the protocol handling) needs the client to restart the server.
+
+Phase playbooks (generic, one per phase plus the names/real-C track): [docs/playbooks](docs/playbooks/README.md). Tool-side lane steering: [Playbooks](Playbooks/README.md).

@@ -24,3 +24,5 @@ Rules every playbook shares:
   lane-local script.
 - Project facts (paths, addresses, titles, ROM names) live in the seat profile
   and the port spec, never in a playbook.
+
+The four phases and the naming/real-C track are in [../docs/playbooks](../docs/playbooks/README.md).
