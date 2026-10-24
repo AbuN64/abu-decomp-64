@@ -321,6 +321,12 @@ class HttpTests(Base):
         except urllib.error.HTTPError as error:
             return error.code
 
+    def test_slot_pool_endpoint_answers_on_a_real_server(self):
+        status, _, body = self.get("/api/pool")
+        data = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertTrue({"capacity", "used", "queue", "holders", "landings"} <= set(data))
+
     def test_page_state_frame_and_log(self):
         status, kind, body = self.get("/")
         self.assertEqual((status, kind), (200, "text/html; charset=utf-8"))

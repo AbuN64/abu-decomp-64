@@ -286,7 +286,7 @@ class Server:
             "triage": self.triage.view(),
         }
 
-    def pool(self) -> dict[str, Any]:
+    def slot_pool(self) -> dict[str, Any]:
         """The host slot pool (module slots): who holds which slots, who waits, and the last landed->live seconds
         (page-port.py's landings.jsonl beside the runs folder)."""
         from abu_decomp import slots
@@ -1030,7 +1030,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 elif path == "/api/coverage":
                     self.json(server.coverage())
                 elif path == "/api/pool":
-                    self.json(server.pool())
+                    self.json(server.slot_pool())
                 elif path == "/api/corpus":
                     self.json(server.corpus())
                 elif path == "/api/points":
