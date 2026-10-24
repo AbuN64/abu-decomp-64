@@ -19,6 +19,9 @@ The engine is generic and names no project: the rules are project facts, TOML fi
                          original mixes both; a native 32-bit host pops the hidden pointer in the callee (ret $4), so
                          the other spelling leaves the stack 4 bytes off. The reverse (a declaration by value of a
                          function defined with a result pointer) is a hit too
+                         `scalars = true` also flags a function defined void whose result another file declares as a
+                         value: the original leaves it in $v0 or $f0, a native host has no such register (a float
+                         read from an empty x87 stack faults)
               word-alias `symbols` (a file of `NAME = 0xADDRESS;` lines per tree, relative to the tree), `array`
                          (regex, named group `datum`: the word arrays a data unit defines; the unit's address is the
                          hex in its file name, arrays follow each other) and `narrow` (regex, named group `datum`: a
@@ -72,6 +75,7 @@ _KEYS = frozenset(
         "callee",
         "mode",
         "returns",
+        "scalars",
         "symbols",
         "array",
         "narrow",
@@ -237,6 +241,7 @@ class Rule:
             self.declare = re.compile(table["declare"]) if "declare" in table else None
             self.use = re.compile(table["use"]) if "use" in table else None
             self.callee = re.compile(str(table.get("callee", r"\w+")))
+            self.scalars = bool(table.get("scalars", False))
             self.returns = re.compile(str(table.get("returns", r"[A-Z]\w*")))
             self.array = re.compile(table["array"], re.M) if "array" in table else None
             self.narrow = re.compile(table["narrow"], re.M) if "narrow" in table else None
@@ -494,6 +499,7 @@ class Sweep:
     def _return_spelling(self, rule: Rule) -> list[dict[str, Any]]:
         by_value: dict[str, tuple[str, int | None, str]] = {}  # name -> (type, parameter count, where)
         other: dict[str, str] = {}  # names defined with any other return spelling
+        voids: dict[str, str] = {}  # names defined void
         for src in self.selected(rule, rule.declare_paths):
             for m in _DEF.finditer(src.text):
                 name = m["name"]
@@ -506,6 +512,8 @@ class Sweep:
                     by_value.setdefault(name, (kind, _count_params(m["params"]), where))
                 else:
                     other.setdefault(name, where)
+                    if words == ["void"]:
+                        voids.setdefault(name, where)
         mixed = {n for n in by_value if n in other}
         hits = []
         for src in self.selected(rule):
@@ -564,6 +572,23 @@ class Sweep:
                                     f"{name} is defined with a result pointer ({other[name]});"
                                     f" declared returning {kind} by value"
                                 ),
+                            )
+                        )
+            if rule.scalars:
+                for m in _DECL.finditer(src.text):
+                    name = m["name"]
+                    if name not in voids or name in by_value:
+                        continue
+                    words = [w for w in re.split(r"[\s]+", m["head"].replace("*", " * ")) if w and w not in _QUALIFIERS]
+                    if words and words != ["void"] and not m["head"].rstrip().endswith(("=", ",")):
+                        hits.append(
+                            self.hit(
+                                rule,
+                                src,
+                                src.line_of(m.start("name")),
+                                fn=name,
+                                declared=voids[name],
+                                detail=f"{name} is defined void ({voids[name]}); declared returning {' '.join(words)}",
                             )
                         )
         return hits
