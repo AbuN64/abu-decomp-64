@@ -56,7 +56,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, statetypes, tas_findings, tas_oracle
+from abu_decomp import DecompError, procguard, statetypes, tas_findings, tas_oracle
 from abu_decomp.config import Profile
 
 SCHEMA = 2
@@ -649,7 +649,7 @@ def _dump_pass(session: Session, polls: list[int], profile: Profile) -> dict[int
             stdin=subprocess.DEVNULL,
             stdout=output,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            **procguard.owned(),
             cwd=port_dir,
         )
         tas._wait(process, cfg["timeout_seconds"])

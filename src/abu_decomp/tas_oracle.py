@@ -36,7 +36,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError
+from abu_decomp import DecompError, procguard
 from abu_decomp.config import Profile, check_keys
 
 _KEYS = frozenset({"host", "env", "shot_every", "pictures", "timeout_seconds", "rebuild", "pins", "pins_repo"})
@@ -169,7 +169,7 @@ def start(
             stdin=subprocess.DEVNULL,
             stdout=output,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            **procguard.owned(),
             cwd=run,
         )
 

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from abu_decomp import procguard
 from abu_decomp.files import atomic_json, sha256_file
 from abu_decomp.inotify import ATTRIB, CREATE, DELETE, MOVED_TO, Watcher
 
@@ -249,7 +250,7 @@ class Supervisor:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
-                    start_new_session=True,
+                    **procguard.owned(),
                 )
             except OSError as error:
                 self.lines.append("[launch] " + str(error))

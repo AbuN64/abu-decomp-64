@@ -6,10 +6,13 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import signal
 import sys
 from contextlib import suppress
 from pathlib import Path
+
+from abu_decomp import procguard
 
 
 def decode_stream(record):
@@ -157,6 +160,13 @@ class Bridge:
                 (self.run_dir / "signal-context.txt").write_text("\n".join(self.full_stack_lines) + "\n")
         print("C_STACK_END " + label, flush=True)
 
+    @staticmethod
+    def wrapper_args() -> list[str]:
+        """The game gdb launches dies with gdb: PDEATHSIG survives the exec, so no tracee outlives it."""
+        if not shutil.which("setpriv"):
+            return []
+        return ["-iex", "set exec-wrapper " + " ".join(procguard.wrap([]))]
+
     async def run(self):
         loop = asyncio.get_running_loop()
         task = asyncio.current_task()
@@ -176,13 +186,14 @@ class Bridge:
             "--interpreter=mi2",
             "--quiet",
             "--nx",
+            *self.wrapper_args(),
             "--args",
             *self.argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=env,
-            start_new_session=True,
+            **procguard.owned(),
         )
         reader = asyncio.create_task(self.read_output())
         try:

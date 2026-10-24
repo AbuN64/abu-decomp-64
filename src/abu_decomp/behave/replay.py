@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas, tas_coverage, tas_oracle
+from abu_decomp import DecompError, procguard, tas, tas_coverage, tas_oracle
 from abu_decomp.behave import prototype
 from abu_decomp.config import Profile
 
@@ -630,7 +630,7 @@ def run_port(
     began = time.monotonic()
     with (run / f"port-{pak}.txt").open("w") as output:
         process = subprocess.Popen(
-            argv, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, start_new_session=True
+            argv, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, **procguard.owned()
         )
         code, cpu = tas._wait(process, max(60.0, 0.5 * len(cases)))
     timing = {"wall_seconds": round(time.monotonic() - began, 1), "cpu_seconds": cpu, "exit": code}

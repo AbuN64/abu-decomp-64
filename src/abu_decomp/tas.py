@@ -68,6 +68,7 @@ from typing import Any
 
 from abu_decomp import (
     DecompError,
+    procguard,
     tas_coverage,
     tas_fault,
     tas_findings,
@@ -1350,7 +1351,7 @@ def play(
                     stdin=subprocess.PIPE,
                     stdout=output,
                     stderr=subprocess.STDOUT,
-                    start_new_session=True,
+                    **procguard.owned(),
                 )
                 children.append(process)
                 record["pgid"] = process.pid
