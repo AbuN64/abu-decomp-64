@@ -408,11 +408,34 @@ function btn(label, fn, cls, key, title) {
 }
 
 /* ---------- data: /api/state (live), /api/board (slow side), /api/coverage, /api/runs (history pages) ---------- */
+/* A conditional GET: the ETag of the last body goes back as If-None-Match, so an unchanged body is a 304 with no payload
+   (the server also gzips). Returns { data, same } or null when the request failed. */
+const tags = new Map();
+async function getJ(url) {
+  const had = tags.get(url);
+  const r = await fetch(url, { cache: "no-store", headers: had ? { "If-None-Match": had.tag } : {} });
+  if (r.status === 304 && had) return { data: had.data, same: true, r };
+  if (!r.ok) return { data: null, same: false, r };
+  const data = await r.json(), tag = r.headers.get("ETag");
+  if (tag) tags.set(url, { tag, data }); else tags.delete(url);
+  return { data, same: false, r };
+}
+/* Lazy data: a feed is fetched only while the pane that shows it is on screen (the phone shows one view at a time). */
+const paneOn = k => ui.tab === k && document.body.dataset.top !== "maze" && (!isPhone() || ui.view === k);
+const WANT = { board: () => paneOn("work") || paneOn("decomp"), corpus: () => paneOn("work"), coverage: () => paneOn("work"), map: () => paneOn("map") };
+function kick() {  // a pane just opened: load what it needs at once instead of at the next poll
+  if (WANT.board() && !BD && !FEED.board) loadBoard();
+  if (WANT.corpus() && !CP && !FEED.corpus) loadCorpus();
+  if (WANT.coverage() && !CV && !FEED.coverage) loadCoverage();
+  if (WANT.map() && !PH.map && !PH.gone && !FEED.map) loadMap();
+}
+const FEED = {};
 async function poll() {
   try {
-    const r = await fetch("/api/state", { cache: "no-store" });
-    if (!r.ok) throw new Error(r.status);
-    S = await r.json();
+    const got = await getJ("/api/state");
+    if (!got.r.ok && !got.same) throw new Error(got.r.status);
+    S = got.same ? { ...got.data, now: +got.r.headers.get("X-Now") || got.data.now } : got.data;
+    if (got.same) tags.get("/api/state").data = S;
     skew = S.now - Date.now() / 1000;
     $("conn").className = "dot ok"; $("conn").title = "connected";
   } catch (e) {
@@ -421,27 +444,42 @@ async function poll() {
   if (S) render();
   setTimeout(poll, S && S.runs.some(r => r.status !== "done") ? 500 : 1500);
 }
+async function loadBoard() {
+  FEED.board = true;
+  try { const g = await getJ("/api/board"); if (g.data) { const was = BD; BD = g.data; if (!g.same || !was) { if (S) renderPanes(); } } } catch (e) {}
+  FEED.board = false;
+}
+async function loadCorpus() {
+  FEED.corpus = true;
+  try { const g = await getJ("/api/corpus"); if (g.data) { const was = CP; CP = g.data; if (!g.same || !was) { if (S) renderPanes(); } } } catch (e) {}
+  FEED.corpus = false;
+}
+async function loadCoverage() {
+  FEED.coverage = true;
+  try { const g = await getJ("/api/coverage"); if (g.data) { const was = CV; CV = g.data; if (!g.same || !was) { if (S) renderPanes(); } } } catch (e) {}
+  FEED.coverage = false;
+}
+/* each pane's feed polls only while that pane is on screen; an idle one just re-checks cheaply (no request) */
 async function pollBoard() {
-  try { const r = await fetch("/api/board", { cache: "no-store" }); if (r.ok) BD = await r.json(); } catch (e) {}
-  if (S) renderPanes();
-  setTimeout(pollBoard, BD && BD.work && BD.work.rows == null ? 4000 : 15000);
+  if (WANT.board()) await loadBoard();
+  setTimeout(pollBoard, !WANT.board() ? 500 : BD && BD.work && BD.work.rows == null ? 4000 : 15000);
 }
 async function pollCorpus() {
-  try { const r = await fetch("/api/corpus", { cache: "no-store" }); if (r.ok) CP = await r.json(); } catch (e) {}
-  setTimeout(pollCorpus, CP && CP.gating ? 5000 : 30000);
+  if (WANT.corpus()) await loadCorpus();
+  setTimeout(pollCorpus, !WANT.corpus() ? 500 : CP && CP.gating ? 5000 : 30000);
 }
 async function pollCoverage() {
-  try { const r = await fetch("/api/coverage", { cache: "no-store" }); if (r.ok) CV = await r.json(); } catch (e) {}
-  setTimeout(pollCoverage, 30000);
+  if (WANT.coverage()) await loadCoverage();
+  setTimeout(pollCoverage, !WANT.coverage() ? 500 : 30000);
 }
 async function loadHistory(older) {
   if (H.busy) return;
   H.busy = true; H.at = Date.now();
   try {
     const last = older && H.rows.length ? H.rows[H.rows.length - 1].started : null;
-    const r = await fetch("/api/runs?limit=60" + (last != null ? `&before=${last}` : ""), { cache: "no-store" });
-    if (r.ok) {
-      const d = await r.json();
+    const g = await getJ("/api/runs?limit=60" + (last != null ? `&before=${last}` : ""));
+    if (g.data) {
+      const d = g.data;
       if (older) H.rows = H.rows.concat(d.runs);
       else { const keep = H.rows.slice(d.runs.length); const ids = new Set(d.runs.map(x => x.id)); H.rows = d.runs.concat(keep.filter(x => !ids.has(x.id))); }
       if (older || !H.loaded) H.more = d.more;
@@ -767,11 +805,19 @@ function makeTile(r, still) {
   node.append(pics, el("div", "cap", name), meta, sub, bar);
   const t = { node, canvas, g: canvas.getContext("2d"), pics, name, meta, sub, fill, run: r, timer: 0, still, orig: null, og: null };
   node.onclick = () => focusRun(t.run.id);
+  t.vis = !seen; node.tile = t; if (seen) seen.observe(node);
   setTimeout(() => thumb(t), 0);
   return t;
 }
+/* thumbs load while their tile is on screen; an off-screen one waits (and a live one stops refreshing) */
+const seen = "IntersectionObserver" in window ? new IntersectionObserver(es => es.forEach(e => {
+  const t = e.target.tile; if (!t) return;
+  t.vis = e.isIntersecting;
+  if (t.vis && t.waiting) { t.waiting = false; thumb(t); }
+}), { rootMargin: "200px" }) : null;
 async function thumb(t) {
   if (![...tiles.values()].includes(t)) return;
+  if (seen && !t.vis) { t.waiting = true; return; }
   const pull = async (url, g) => {
     try { const r = await fetch(`${url}?n=${Date.now()}`, { cache: "no-store" }); if (r.ok) g.drawImage(await createImageBitmap(await r.blob()), 0, 0, 320, 240); } catch (e) {}
   };
@@ -804,23 +850,24 @@ function xy2d(n, x, y) {
   }
   return d;
 }
-async function pollPhase() {
-  let rows = PH.phase;
+async function pollPhase() {  // the phase summary is small and always loaded; the map (large) only while its pane is open
   try {
-    const r = await fetch("/api/phase", { cache: "no-store" });
-    if (r.ok) { PH.phase = await r.json(); PH.gone = false; PH.version = PH.phase.focus && PH.phase.focus.version || PH.version; }
+    const g = await getJ("/api/phase");
+    if (g.data) { PH.phase = g.data; PH.gone = false; PH.version = PH.phase.focus && PH.phase.focus.version || PH.version; }
     else { PH.gone = true; PH.phase = null; }
   } catch (e) { PH.gone = true; }
-  if (!PH.gone) {
-    try {
-      const h = PH.etag ? { "If-None-Match": PH.etag } : {};
-      const r = await fetch("/api/phase/map" + (PH.version ? `?version=${encodeURIComponent(PH.version)}` : ""), { cache: "no-store", headers: h });
-      if (r.status === 200) { PH.etag = r.headers.get("ETag"); PH.map = await r.json(); prepMap(); }
-      else if (r.status === 404) PH.gone = true;
-    } catch (e) {}
-  }
+  if (!PH.gone && S && (WANT.map() || PH.map) && !FEED.map) await loadMap();  // after the first paint of the wall
   drawMap(); renderMapGates();
   setTimeout(pollPhase, 30000);
+}
+async function loadMap() {
+  FEED.map = true;
+  try {
+    const g = await getJ("/api/phase/map" + (PH.version ? `?version=${encodeURIComponent(PH.version)}` : ""));
+    if (g.data && !g.same) { PH.map = g.data; prepMap(); drawMap(); renderMapGates(); }
+    else if (g.r.status === 404) PH.gone = true;
+  } catch (e) {}
+  FEED.map = false;
 }
 function prepMap() {
   const m = PH.map;
@@ -990,6 +1037,7 @@ function showView(v) {
 }
 function renderPanes() {
   if (!S) return;
+  kick();
   for (const [k] of TABS) $("p-" + k).classList.toggle("on", ui.tab === k);
   ({ map: renderMapPane, work: renderWork, decomp: renderDecomp, lanes: renderLanes, runs: renderRuns })[ui.tab]();
 }
@@ -1486,7 +1534,7 @@ $("cpak").checked = store.get("tas.cpak", "on") === "on";
 $("fps").checked = store.get("tas.fps", "off") === "on";
 $("fps").onchange = () => store.set("tas.fps", $("fps").checked ? "on" : "off");
 $("pak").onchange = () => store.set("tas.pak", $("pak").checked ? "on" : "off");
-(async function fillPoints() {
+setTimeout(async function fillPoints() {
   try {
     const pts = await (await fetch("/api/points")).json();
     for (const p of pts.points || []) {
@@ -1498,7 +1546,7 @@ $("pak").onchange = () => store.set("tas.pak", $("pak").checked ? "on" : "off");
     const saved = store.get("tas.start", "");
     if ([...$("startpt").options].some(o => o.value === saved)) $("startpt").value = saved;
   } catch (e) { /* no points: power-on only */ }
-})();
+}, 2500);
 $("startpt").onchange = () => store.set("tas.start", $("startpt").value);
 $("cpak").onchange = () => store.set("tas.cpak", $("cpak").checked ? "on" : "off");
 $("orig").onchange = () => { O.on = $("orig").checked; store.set("tas.oracle", O.on ? "on" : "off"); };
@@ -1558,8 +1606,7 @@ function setTop(t) { document.body.dataset.top = t || ""; if (t === "maze") { po
 async function pollMaze() {
   if (document.body.dataset.top !== "maze") return;
   try {
-    const r = await fetch("/api/maze", { cache: "no-store" });
-    const d = await r.json();
+    const d = (await getJ("/api/maze")).data;
     if (d && d.modules && (!MZ.data || MZ.data.generated !== d.generated)) { MZ.data = d; prepMaze(); }
   } catch (e) {}
   renderMaze();

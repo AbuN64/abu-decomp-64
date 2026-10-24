@@ -277,6 +277,50 @@ class HttpTests(Base):
         self.assertEqual(self.status("/frame/..%2Fx"), 404)
         self.assertEqual(self.status("/audio/r1"), 404)  # turbo runs have no sound
 
+    def fetch(self, path, **headers):
+        request = urllib.request.Request(self.base + path, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=10) as reply:
+                return reply.status, reply.headers, reply.read()
+        except urllib.error.HTTPError as error:
+            return error.code, error.headers, error.read()
+
+    def test_text_replies_gzip_and_answer_a_matching_etag_with_304(self):
+        import gzip
+
+        self.make_run("r1", movie="boot-idle", status="done", speed=0, started=1.0, outcome="ok")
+        status, head, plain = self.fetch("/api/state")
+        self.assertEqual((status, head.get("Content-Encoding")), (200, None))
+        status, head, packed = self.fetch("/api/state", **{"Accept-Encoding": "gzip"})
+        self.assertEqual((status, head["Content-Encoding"], head["Vary"]), (200, "gzip", "Accept-Encoding"))
+        self.assertLess(len(packed), len(plain))
+        self.assertEqual(json.loads(gzip.decompress(packed))["runs"], json.loads(plain)["runs"])
+        tag = head["ETag"]
+        status, head, body = self.fetch("/api/state", **{"If-None-Match": tag, "Accept-Encoding": "gzip"})
+        self.assertEqual((status, body), (304, b""))  # the clock moved, the state did not
+        self.assertIn("X-Now", head)
+        self.assertEqual(self.fetch("/api/state", **{"If-None-Match": f'W/{tag}, "x"'})[0], 304)
+        self.make_run("r2", movie="model-preview", status="done", speed=0, started=2.0, outcome="ok")
+        self.assertEqual(self.fetch("/api/state", **{"If-None-Match": tag})[0], 200)  # a changed state is sent again
+        status, head, _ = self.fetch("/")
+        self.assertEqual(self.fetch("/", **{"If-None-Match": head["ETag"]})[0], 304)
+        self.assertEqual(self.fetch("/frame/r1")[0], 404)
+
+    def test_images_are_never_compressed_or_tagged(self):
+        run = self.make_run("r1", movie="boot-idle", status="done", speed=0, started=1.0, outcome="ok")
+        (run / "view.bmp").write_bytes(b"BM" * 2000)
+        status, head, body = self.fetch("/frame/r1", **{"Accept-Encoding": "gzip"})
+        self.assertEqual((status, head.get("Content-Encoding"), head.get("ETag"), len(body)), (200, None, None, 4000))
+
+    def test_run_records_are_reread_only_when_they_change(self):
+        run = self.make_run("r1", movie="boot-idle", status="done", speed=0, started=1.0, outcome="ok")
+        self.assertEqual(tas.read_record(run)["outcome"], "ok")
+        with mock.patch.object(Path, "read_text", side_effect=AssertionError("re-read")):
+            self.assertEqual(tas.read_record(run)["outcome"], "ok")
+        record = run / tas.RECORD
+        record.write_text(json.dumps({**json.loads(record.read_text()), "outcome": "fault"}) + "\n")
+        self.assertEqual(tas.read_record(run)["outcome"], "fault")
+
     def test_audio_streams_the_growing_pcm_of_a_1x_run_as_wav(self):
         run = self.make_run("r2", movie="boot-idle", status="running", speed=1, started=1.0, pid=os.getpid())
         (run / "audio.pcm").write_bytes(b"\x01\x00\x02\x00" * 10)

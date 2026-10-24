@@ -22,6 +22,7 @@ latest picture (/oracle/<id>), both sides' pictures at each compared poll (/shot
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import signal
@@ -31,6 +32,7 @@ import subprocess
 import threading
 import time
 import urllib.parse
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -75,6 +77,9 @@ HISTORY_PAGE = 60  # runs per /api/runs page
 INBOX_SHOWN = 12
 TRIAGE_ROWS = 30  # buckets in /api/board `triage`
 CACHE_SECONDS = 30.0
+GZIP_MIN = 1024  # smaller bodies go out as they are
+GZIP_KEPT = 16  # compressed bodies kept by tag, so a repeat fetch of an unchanged body costs no compression
+TEXT_KINDS = ("application/json", "text/html", "text/css", "text/javascript")
 ARCHIVE_SECONDS = 3600.0  # how often old runs are archived
 GATE_CHECK_SECONDS = 60.0  # how often serve looks for a port build the regression corpus has not been gated on
 STOP_GRACE = 3.0  # seconds a stopped run gets before its process group is killed
@@ -132,16 +137,30 @@ class Server:
         self.queued: dict[str, dict[str, Any]] = {}  # id -> placeholder row until the run writes its record
         self.cache: dict[Any, tuple[float, Any]] = {}
         self.gating = False
+        self.gz: dict[str, bytes] = {}
 
     # --- cached facts ---
 
-    def _cached(self, key: Any, make: Any) -> Any:
+    def _cached(self, key: Any, make: Any, seconds: float = CACHE_SECONDS) -> Any:
         hit = self.cache.get(key)
-        if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
+        if hit and time.monotonic() - hit[0] < seconds:
             return hit[1]
         value = make()
         self.cache[key] = (time.monotonic(), value)
         return value
+
+    def gzipped(self, tag: str, body: bytes) -> bytes:
+        """`body` compressed, kept under its tag (the newest few) so an unchanged body is compressed once."""
+        with self.lock:
+            hit = self.gz.get(tag)
+        if hit is None:
+            packer = zlib.compressobj(5, zlib.DEFLATED, 31)
+            hit = packer.compress(body) + packer.flush()
+            with self.lock:
+                self.gz[tag] = hit
+                while len(self.gz) > GZIP_KEPT:
+                    del self.gz[next(iter(self.gz))]
+        return hit
 
     def pin_sha(self) -> str | None:
         def read() -> str | None:
@@ -191,7 +210,9 @@ class Server:
                 "at": int(at) if at.isdigit() else None,
             }
 
-        return self._cached(("movie", str(path), path.stat().st_mtime_ns), read)
+        return self._cached(
+            ("movie", str(path), path.stat().st_mtime_ns), read, float("inf")
+        )  # the key holds the mtime
 
     def ranked(self) -> list[dict[str, Any]]:
         """The ranked open-work list over the recorded standing (what `tas play --all` ended with)."""
@@ -843,6 +864,15 @@ class Server:
                 os.killpg(group, signal.SIGKILL)
 
 
+def body_tag(body: bytes) -> str:
+    return '"' + hashlib.blake2b(body, digest_size=10).hexdigest() + '"'
+
+
+def tag_matches(header: str | None, tag: str) -> bool:
+    """An If-None-Match header (a list, weak tags allowed) names `tag`."""
+    return bool(header) and any(part.strip().removeprefix("W/") in (tag, "*") for part in str(header).split(","))
+
+
 def handler(server: Server) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -850,16 +880,51 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
         def log_message(self, *args: Any) -> None:
             pass
 
-        def reply(self, body: bytes, kind: str, status: int = HTTPStatus.OK) -> None:
+        def reply(
+            self,
+            body: bytes,
+            kind: str,
+            status: int = HTTPStatus.OK,
+            tag: str | None = None,
+            extra: dict[str, str] | None = None,
+        ) -> None:
+            """Send a body. Text kinds carry an ETag (`tag`, else a hash of the body): a matching If-None-Match gets
+            a 304 with no body, and a client that accepts gzip gets the compressed body. Others are sent as they are."""
+            headers = dict(extra or {})
+            text = kind.split(";")[0] in TEXT_KINDS and status == HTTPStatus.OK
+            if text:
+                tag = tag or body_tag(body)
+                headers["ETag"] = tag
+                headers["Vary"] = "Accept-Encoding"
+                if tag_matches(self.headers.get("If-None-Match"), tag):
+                    self.send_response(HTTPStatus.NOT_MODIFIED)
+                    for name, value in headers.items():
+                        self.send_header(name, value)
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    return
+                if len(body) >= GZIP_MIN and "gzip" in self.headers.get("Accept-Encoding", ""):
+                    body = server.gzipped(tag, body)
+                    headers["Content-Encoding"] = "gzip"
             self.send_response(status)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", "no-cache" if text else "no-store")
+            for name, value in headers.items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 
-        def json(self, value: Any, status: int = HTTPStatus.OK) -> None:
-            self.reply(json.dumps(value).encode(), "application/json", status)
+        def json(self, value: Any, status: int = HTTPStatus.OK, volatile: tuple[str, ...] = ()) -> None:
+            """`volatile` keys (a clock) stay out of the ETag, so an unchanged value is a 304; each is also sent as
+            X-<Key> for the client to read on that 304."""
+            body = json.dumps(value).encode()
+            tag = None
+            extra: dict[str, str] = {}
+            if volatile and isinstance(value, dict):
+                tag = body_tag(json.dumps({k: v for k, v in value.items() if k not in volatile}).encode())
+                extra = {f"X-{k.title()}": str(value[k]) for k in volatile if k in value}
+            self.reply(body, "application/json", status, tag, extra)
 
         def missing(self) -> None:
             self.json({"error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -871,7 +936,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 if path == "/":
                     self.reply(PAGE().encode(), "text/html; charset=utf-8")
                 elif path == "/api/state":
-                    self.json(server.state())
+                    self.json(server.state(), volatile=("now",))
                 elif path == "/api/coverage":
                     self.json(server.coverage())
                 elif path == "/api/corpus":
@@ -923,20 +988,16 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
         def phase_map(self, query: str) -> None:
             version = dict(p.partition("=")[::2] for p in query.split("&") if p).get("version") or server.phase.focus()
             tag = server.phase.etag(version) if version else None
-            if tag and self.headers.get("If-None-Match") == tag:
+            body, status = ({"error": "no version"}, 404) if not version else (None, 200)
+            if tag and tag_matches(self.headers.get("If-None-Match"), tag):
                 self.send_response(HTTPStatus.NOT_MODIFIED)
                 self.send_header("ETag", tag)
+                self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 return
-            body, status = server.phase.map(version) if version else ({"error": "no version"}, 404)
-            payload = json.dumps(body).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            if status == HTTPStatus.OK and tag:
-                self.send_header("ETag", tag)
-            self.end_headers()
-            self.wfile.write(payload)
+            if version:
+                body, status = server.phase.map(version)
+            self.reply(json.dumps(body).encode(), "application/json", status, tag if status == HTTPStatus.OK else None)
 
         def phase_shot(self, query: str) -> None:
             platform = dict(p.partition("=")[::2] for p in query.split("&") if p).get("platform") or ""

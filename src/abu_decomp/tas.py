@@ -732,12 +732,25 @@ def new_run_id(cfg: dict[str, Any], name: str, now: datetime | None = None) -> s
     return run_id
 
 
+# record path -> (mtime_ns, size, parsed): a listing re-reads only the records that changed
+_RECORDS: dict[str, tuple[int, int, dict[str, Any]]] = {}
+
+
 def read_record(run: Path) -> dict[str, Any] | None:
+    path = run / RECORD
+    key = str(path)
     try:
-        row = json.loads((run / RECORD).read_text())
+        info = path.stat()
+        hit = _RECORDS.get(key)
+        if hit and hit[0] == info.st_mtime_ns and hit[1] == info.st_size:
+            return dict(hit[2])
+        row = json.loads(path.read_text())
     except (OSError, ValueError):
         return None
-    return row if isinstance(row, dict) else None
+    if not isinstance(row, dict):
+        return None
+    _RECORDS[key] = (info.st_mtime_ns, info.st_size, row)
+    return dict(row)
 
 
 def _write_record(run: Path, row: dict[str, Any]) -> None:
