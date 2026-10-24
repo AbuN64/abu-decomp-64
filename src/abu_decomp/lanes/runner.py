@@ -1030,7 +1030,7 @@ def record_rig_jobs():
 
 
 def continue_lane(terminal):
-    """Continue this lane when it closed on an unfinished RESULT.md or a context handoff (abu_decomp.lanes.relaunch)."""
+    """Continue every unfinished, non-cancelled lane under the budget rule in abu_decomp.lanes.relaunch."""
     if not a.profile:
         return
     from pathlib import Path
@@ -1066,6 +1066,8 @@ def continue_lane(terminal):
             control.announce(profile, row, "passed", "%s ended without a continuation: %s" % (a.name, why))
             return
         if action == "blocked":
+            print("ContinuationBlocked: %s: %s" % (a.name, why), file=sys.stderr, flush=True)
+            control.mark_continue_failed(profile, directory, why)
             control.announce(profile, row, "blocked", "%s not continued: %s" % (a.name, why))
             return
         successor = relaunch.next_name(a.name, relaunch.taken_names(directory, control.registered_names(profile)))

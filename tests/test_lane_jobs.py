@@ -135,7 +135,7 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(jobs.adopt_text(directory, run=self.run_ssh), "")
 
     def test_a_link_waiting_on_its_own_job_is_not_ended_and_spends_no_budget(self):
-        self.assertEqual(relaunch.plan("result", 2, "", False, False, False)[0], "none")
+        self.assertEqual(relaunch.plan("result", 2, "", False, False, False)[0], "continue")
         action, why = relaunch.plan("result", 0, "", False, False, False, "", waiting=2)
         self.assertEqual(action, "continue")
         self.assertIn("2 rig job", why)

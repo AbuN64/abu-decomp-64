@@ -1,6 +1,6 @@
 """The runner's own continuation: when a closing lane is continued without the orchestrator.
 
-A lane that ends with an unfinished RESULT.md or a context handoff is continued by `decomp lane continue`, so the
+A lane that ends without a completed RESULT.md is continued by `decomp lane continue`, so the
 registry, the ladder and the overlap guard apply exactly as for any launch. A lane whose RESULT.md says DONE ends.
 """
 
@@ -22,7 +22,7 @@ DONE_MARKER = "DONE"
 DONE_RULE = (
     "Finished-lane contract: a lane that finished its whole task writes RESULT.md whose FIRST line is "
     f"exactly `{DONE_MARKER}`, the summary after it. No other wording ends a lane, so any RESULT.md without that first "
-    "line is continued; an unfinished lane must not write it."
+    "line, including a missing RESULT.md, uses the continuation budget; an unfinished lane must not write it."
 )
 TRAILING = re.compile(r"(\d+)$")
 
@@ -129,10 +129,10 @@ def plan(
     progressed: str = "",
     waiting: int = 0,
 ) -> tuple[str, str]:
-    """(action, why): `none` (not a closing we continue), `end` (done), `blocked` (no budget) or `continue`.
+    """(action, why): `none` (cancelled), `end` (done), `blocked` (no budget) or `continue`.
 
-    A link closing while its `waiting` rig jobs still run continues whatever RESULT.md and HANDOFF say,
-    and spends no budget (its successor adopts the jobs).
+    Every unfinished link is eligible, even without RESULT.md or a context handoff. An unfinished link closing
+    while its `waiting` rig jobs still run spends no budget (its successor adopts the jobs).
 
     A link that progressed (`progressed` names the evidence) spends no budget and continues; a link without progress
     spends one, and at 0 the chain stops: "budget spent".
@@ -143,9 +143,7 @@ def plan(
         return "end", "RESULT.md is DONE"
     if waiting:
         return "continue", f"waiting on {waiting} rig job(s) it started; budget kept at {continues}"
-    if not said.strip() and not (context and handoff):
-        return "none", "no RESULT.md and no context handoff"
-    what = "context handoff" if context and handoff else "unfinished RESULT.md"
+    what = "context handoff" if context and handoff else "unfinished RESULT.md" if said.strip() else "missing RESULT.md"
     if progressed:
         return "continue", f"{what}; progressed ({progressed}), budget kept at {continues}"
     if continues <= 0:

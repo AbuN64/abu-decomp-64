@@ -77,14 +77,14 @@ class RelaunchRuleTests(unittest.TestCase):
         for said in ("Status: COMPLETE\nall finished", "RESULT: DONE", "summary\nDONE", "All work is done", "DONEx"):
             self.assertEqual(plan("result", 5, said, False, False, False)[0], "continue", said)
 
-    def test_plan_ends_on_explicit_done_and_ignores_other_closings(self):
+    def test_plan_ends_on_explicit_done_and_ignores_only_cancellation(self):
         plan = relaunch.plan
         self.assertEqual(plan("result", 5, "DONE\nlanded abc", False, False, False)[0], "end")
         self.assertEqual(plan("result", 5, "\nDONE: landed abc", True, True, False)[0], "end")
         self.assertEqual(plan("identical", 5, "function is identical to base", False, False, False)[0], "end")
         self.assertEqual(plan("result", 5, "UNDONE", False, False, False)[0], "continue")
-        self.assertEqual(plan("result", 5, "", False, False, False)[0], "none")
-        self.assertEqual(plan("result", 5, "", False, True, False)[0], "none")  # cap requested, no HANDOFF.md
+        self.assertEqual(plan("result", 5, "", False, False, False)[0], "continue")
+        self.assertEqual(plan("result", 5, "", False, True, False)[0], "continue")  # cap requested, no HANDOFF.md
         self.assertEqual(plan("result", 5, "partial", True, True, True)[0], "none")  # cancelled
 
     def test_progress_keeps_the_budget_and_no_progress_spends_it(self):
