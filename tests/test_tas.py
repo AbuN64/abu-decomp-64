@@ -235,6 +235,7 @@ class MovieTests(unittest.TestCase):
 
     def port(self, hashes, seen):
         """A port stand-in: writes the hash lines it is given and its picture, then ends cleanly."""
+        seen_argv = self.argv = []
 
         class Port:
             pid = 1
@@ -243,7 +244,12 @@ class MovieTests(unittest.TestCase):
             def __init__(self, argv, env, stdout, **kwargs):
                 self.returncode = None
                 seen.append(env)
-                run = Path(argv[argv.index("--run-dir") + 1])
+                seen_argv.append(argv)
+                run = (
+                    Path(argv[argv.index("--run-dir") + 1])
+                    if "--run-dir" in argv
+                    else Path(env["N64C_TAS_HASH"]).parent
+                )
                 seen.append(json.loads((run / "run.json").read_text()))
                 Path(env["N64C_TAS_HASH"]).write_text(hashes)
                 Path(env["N64C_VIEW"]).write_bytes(b"BM")
@@ -274,6 +280,14 @@ class MovieTests(unittest.TestCase):
         )
         with self.assertRaises(DecompError):
             tas.check_inspect(-1, None, None)
+
+    def test_a_first_pass_runs_the_port_without_the_bridge(self):
+        self.movie()
+        with self.port("1 aa\n", []):
+            result = tas.play(self.profile, "m", now=T0, supervise=False, first_pass=True)
+        self.assertEqual(result["outcome"], "ok")
+        self.assertNotIn("abu_decomp.supervisor.gdb", self.argv[0])
+        self.assertNotIn("--run-dir", self.argv[0])
 
     def test_a_plain_play_sets_no_inspection_variables(self):
         self.movie()

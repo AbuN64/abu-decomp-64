@@ -593,7 +593,7 @@ def latest_runs(cfg: dict[str, Any]) -> dict[str, Path]:
     return newest
 
 
-def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: int = 4) -> dict[str, Any] | None:
+def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: int = 0) -> dict[str, Any] | None:
     """Union the newest run of every movie: runs/coverage/ (gcovr `--html-details` over the baseline and every
     run's JSON), runs/coverage-table.json (the function table with the oracle). None without a `tas.coverage`
     section. With `oracle`, a run with no oracle trace yet is replayed in the oracle first."""
@@ -628,7 +628,7 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
             "build": str(record.get("build") or "unknown"),
         }
 
-    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, jobs or slots.capacity())) as pool:
         collected = list(pool.map(one, sorted(runs.items())))
     build_tree = build_dir(cfg)
     # One build per movie (its newest run). The runs of each port build merge once (cached); a build other than the

@@ -78,6 +78,7 @@ from abu_decomp import (
     tas_points,
     tas_rank,
     tas_sanitize,
+    tas_select,
     tas_statediff,
     tas_symbolize,
 )
@@ -122,6 +123,7 @@ _KEYS = frozenset(
         "oracle",
         "coverage",
         "sanitizer",
+        "select",
     }
 )
 _REQUIRED = frozenset({"movies", "runs", "port", "args", "rom"})
@@ -774,6 +776,14 @@ def alive(pid: Any) -> bool:
     return True
 
 
+class NeedsSupervisor(Exception):
+    """A first pass without the gdb bridge ended in anything but ok: replay under the bridge for the full outcome."""
+
+    def __init__(self, run: Path) -> None:
+        super().__init__(f"{run.name} did not end ok")
+        self.run = run
+
+
 class PlayInterrupted(KeyboardInterrupt):
     """Cancellation shared by the CLI's parallel plays; never swallowed as a tool error."""
 
@@ -1148,6 +1158,8 @@ def play(
     take: bool = False,
     state_diff: bool = True,
     sanitize: bool = False,
+    supervise: bool = True,
+    first_pass: bool = False,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
@@ -1173,6 +1185,9 @@ def play(
     A movie run also compares the game state with the original's, region by region (module tas_statediff): the result's
     `state_diff` counts the divergent regions, RUN/state-diff.json names each one's first differing field, and the
     findings go to `<tas.runs>/findings.jsonl`; `state_diff=False` skips it.
+    `supervise` False runs the port without the gdb bridge (no stacks, no stop subject: about the cost of the port
+    alone); `first_pass` then raises NeedsSupervisor, after deleting the run, for any outcome but ok, so the caller
+    replays that movie under the bridge and gets the full classification (`play --all` does this).
     `sanitize` runs the sanitizer port (profile tas.sanitizer.port, or `port`): reports become findings.jsonl lines
     (module tas_sanitize) and the result's `sanitizer` counts them; the run is tagged `sanitizer` on the page."""
     cfg = settings(profile)
@@ -1326,6 +1341,8 @@ def play(
         "fps_unlock": bool(fps_unlock),
         "sanitizer": sanitize or None,
     }
+    if (pins := tas_select.read_pins(cfg)) is not None:
+        record[tas_select.PINS] = pins  # what the port was built from: the next selective replay diffs against it
     if pads > 1:
         record["pads"] = pads
     if started[0]:
@@ -1365,13 +1382,14 @@ def play(
             reapers.append(oracle_waiter)
         _write_record(run, record)
         _check_play_signal()
-        argv = supervised(cfg, run, _argv(cfg, user_dir, pak, card, fps_unlock))
+        argv = _argv(cfg, user_dir, pak, card, fps_unlock)
+        argv = supervised(cfg, run, argv) if supervise else argv
         with (run / "output.txt").open("w") as output:
             with _starting_play_process():
                 process = subprocess.Popen(
                     argv,
                     env=env,
-                    stdin=subprocess.PIPE,
+                    stdin=subprocess.PIPE if supervise else subprocess.DEVNULL,
                     stdout=output,
                     stderr=subprocess.STDOUT,
                     **procguard.owned(),
@@ -1380,7 +1398,8 @@ def play(
                 record["pgid"] = process.pid
                 _write_record(run, record)
             # The bridge holds a stopped port until its stdin says "continue"; a closed pipe ends it after the stacks.
-            process.stdin.close()
+            if supervise:
+                process.stdin.close()
             code, cpu = _wait(process, timeout, run)
         text = (run / "output.txt").read_text(errors="replace")
         reached = len(parse_raw((run / "polls.raw").read_text())) if (run / "polls.raw").is_file() else 0
@@ -1465,6 +1484,8 @@ def play(
                 "fps": round(polls / wall, 1) if wall else None,
             }
             result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
+        if first_pass and result["outcome"] != "ok":
+            raise NeedsSupervisor(run)
         final = {
             **record,
             **{k: result.get(k) for k in keep},
@@ -1554,6 +1575,8 @@ def table(result: dict[str, Any]) -> str:
             f"  stale: {build['stale']}; next: {build.get('rebuild', '')}"
             + (f"; then: {build['then']}" if build.get("then") else "")
         )
+    if result.get("selected"):
+        lines.append(f"  selective replay: {result['selected']['why']}")
     head = ("movie", "outcome", "polls", "vs recorded", "same_twice", "wall/cpu s", "next")
     rows = [
         (
@@ -1583,10 +1606,12 @@ def table(result: dict[str, Any]) -> str:
 def play_all(
     profile: Profile,
     *,
-    jobs: int = 4,
+    jobs: int = 0,
     now: datetime | None = None,
     twice: bool = False,
     run_ids: dict[str, str] | None = None,
+    changed: bool = False,
+    gdb_all: bool = False,
     **options: Any,
 ) -> tuple[dict[str, Any], int]:
     """Replay every saved movie in parallel at turbo, block until done, one row per movie against its recorded
@@ -1595,12 +1620,33 @@ def play_all(
     fps_unlock and the inspection options), applied to every movie.
 
     The recorded standing is the best row so far in `runs/standing.json`, moved only when a movie is not worse, so a
-    regression stays `worse` until fixed. Exit status 1 when any movie is worse."""
+    regression stays `worse` until fixed. Exit status 1 when any movie is worse.
+    Speed: `jobs` 0 (the default) is the host's slot pool capacity (module slots; every replay still waits for its
+    slot, so other work is never starved). A movie first runs without the gdb bridge; one that does not end ok is
+    deleted and replayed under the bridge, so every outcome, subject and stack is the bridge's (`gdb_all` runs every
+    movie under it as before). `changed` replays only the movies the sources changed since their last good run can
+    have touched (module tas_select); the others keep their recorded standing and say `skipped` with that run."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     cfg = settings(profile)
     names = sorted(p.stem for p in cfg["movies"].glob("*.tas")) if cfg["movies"].is_dir() else []
     health = tas_health.read(cfg, profile)
+    skipped: dict[str, tuple[Path, dict[str, Any]]] = {}
+    why_skipped = ""
+    if changed:
+        newest: dict[str, tuple[Path, dict[str, Any]]] = {}
+        for run, row in run_rows(cfg):  # oldest first: the newest good plain movie run of each movie wins
+            if (
+                row.get("input") == "movie"
+                and row.get("status") == "done"
+                and row.get("outcome")
+                and not (row.get("stopped") or row.get("taken") or row.get("sanitizer") or row.get("start"))
+            ):
+                newest[row["movie"]] = (run, row)
+        names_to_run, skipped, why_skipped = tas_select.plan(profile, cfg, names, newest)
+    else:
+        names_to_run = names
+    jobs = jobs or slots.capacity()
     options.setdefault("slot_class", "batch")
     options.setdefault("batch", _stamp(now) + "-all")  # the findings of this run share one batch id
     began, cpu0 = time.monotonic(), resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -1610,6 +1656,20 @@ def play_all(
             if twice:
                 play(profile, name, now=now, health=health, **options)
             run_id = (run_ids or {}).get(name) if not twice else None
+            if not twice and not gdb_all and not options.get("sanitize"):
+                try:
+                    return play(
+                        profile,
+                        name,
+                        now=now,
+                        health=health,
+                        run_id=run_id,
+                        supervise=False,
+                        first_pass=True,
+                        **options,
+                    )
+                except NeedsSupervisor as failed:
+                    shutil.rmtree(failed.run, ignore_errors=True)  # the bridge's replay takes its place
             return play(profile, name, now=now, health=health, run_id=run_id, **options)
         except DecompError as error:
             return {"movie": name, "outcome": "refused", "subject": str(error), "polls_reached": 0}
@@ -1624,8 +1684,19 @@ def play_all(
         sys.stderr.flush()
 
     done: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=max(1, min(jobs, len(names) or 1))) as pool:
-        for future in as_completed([pool.submit(one, name) for name in names]):
+    for name, (run, last) in skipped.items():  # unaffected: the last good run stands
+        done[name] = {
+            "movie": name,
+            "outcome": last["outcome"],
+            "polls_reached": last.get("polls_reached", 0),
+            "polls": last.get("polls", 0),
+            "run": str(run),
+            "skipped": run.name,
+            "wall_seconds": 0,
+            "cpu_seconds": 0,
+        }
+    with ThreadPoolExecutor(max_workers=max(1, min(jobs, len(names_to_run) or 1))) as pool:
+        for future in as_completed([pool.submit(one, name) for name in names_to_run]):
             row = future.result()
             progress(row)  # one row per movie as each finishes; the table and JSON below are unchanged
             done[row["movie"]] = row
@@ -1657,6 +1728,7 @@ def play_all(
                 "next": result.get("next", ""),
                 "owner": result.get("owner", ""),
                 "run": result.get("run", ""),
+                "skipped": result.get("skipped"),
                 "same_twice": result.get("same_twice"),
                 "fn": result.get("fn"),
                 "frame": result.get("frame", ""),
@@ -1674,6 +1746,8 @@ def play_all(
     timing = {"wall_seconds": round(time.monotonic() - began, 1), "cpu_seconds": cpu}
     ranked = ranked_work(profile, cfg, health, rows)
     result = {"build": tas_health.header(health), "movies": rows, "worse": worse, **timing, "ranked": ranked}
+    if changed:
+        result["selected"] = {"replayed": len(names_to_run), "skipped": len(skipped), "why": why_skipped}
     try:  # the unioned coverage never fails a replay
         report = None if sanitize else tas_coverage.build(profile, cfg, jobs=jobs)
         if report:

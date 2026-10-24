@@ -46,7 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas, tas_coverage, tas_health, tas_oracle
+from abu_decomp import DecompError, slots, tas, tas_coverage, tas_health, tas_oracle
 from abu_decomp.config import Profile
 
 CORPUS, GATE = "corpus.json", "corpus-gate.json"
@@ -462,7 +462,7 @@ def drop(profile: Profile, movie: str) -> dict[str, Any]:
     return {"dropped": movie}
 
 
-def seed(profile: Profile, jobs: int = 4) -> dict[str, Any]:
+def seed(profile: Profile, jobs: int = 0) -> dict[str, Any]:
     """Offer every movie: its newest run on this build (replayed when it has none) joins as a candidate, then the
     corpus is minimised over all of them. Existing entries stay candidates; pinned ones always stay."""
     cfg = tas.settings(profile)
@@ -475,7 +475,7 @@ def seed(profile: Profile, jobs: int = 4) -> dict[str, Any]:
         with contextlib.suppress(DecompError):
             tas.play(profile, name, label=SPOT_LABEL, health=health)
 
-    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, jobs or slots.capacity())) as pool:
         list(pool.map(replay, missing))
     with locked(cfg):
         data = load(cfg)
@@ -663,7 +663,7 @@ def made_reference(profile: Profile, cfg: dict[str, Any], run: Path) -> str | No
 
 
 def gate(
-    profile: Profile, *, port: Path | str | None = None, jobs: int = 4, oracle: bool = True
+    profile: Profile, *, port: Path | str | None = None, jobs: int = 0, oracle: bool = True
 ) -> tuple[dict[str, Any], int]:
     """Replay every corpus entry at turbo and judge it against its baseline; exit status 1 on any fail. On the
     profile's own port the non-failed entries' baselines move to this gate's runs and the corpus is minimised. With
@@ -711,7 +711,7 @@ def _gate(
         row = compare(cfg, {**entry, "oracle": reference}, _run(cfg, entry.get("baseline")), run, judged)
         return {"movie": movie, "oracle": reference, **row}
 
-    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, jobs or slots.capacity())) as pool:
         rows = list(pool.map(one, sorted(data["entries"])))
     counts: dict[str, int] = {}
     for row in rows:

@@ -376,7 +376,9 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         "coverage", help="union the newest run of every movie into the game-code coverage table"
     )
     coverage.add_argument("--no-oracle", action="store_true", help="do not replay runs that lack an oracle trace")
-    coverage.add_argument("--jobs", type=int, default=4, help="parallel oracle replays (default 4)")
+    coverage.add_argument(
+        "--jobs", type=int, default=0, help="parallel oracle replays (default 0: the host slot pool capacity)"
+    )
     actions.add_parser("serve", help="serve the TAS page: every replay's picture, sound, log and the cycle state")
     triage = actions.add_parser(
         "triage", help="the findings of batch runs, sweeps and checks grouped by root cause, strongest bucket first"
@@ -406,7 +408,7 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         "gate", help="replay every entry at turbo and judge it against its baseline; exit 1 on a fail"
     )
     gate.add_argument("--port", type=Path, help="gate this build's executable (a lane's own; baselines never move)")
-    gate.add_argument("--jobs", type=int, default=4, help="parallel replays (default 4)")
+    gate.add_argument("--jobs", type=int, default=0, help="parallel replays (default 0: the host slot pool capacity)")
     gate.add_argument(
         "--no-oracle", action="store_true", help="do not replay the original for entries without a reference"
     )
@@ -438,7 +440,20 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="replay every saved movie in parallel; exit 1 if any is worse (the other options apply to each movie)",
     )
-    play.add_argument("--jobs", type=int, default=4, help="parallel replays with --all (default 4)")
+    play.add_argument(
+        "--jobs", type=int, default=0, help="parallel replays with --all (default 0: the host's slot pool capacity)"
+    )
+    play.add_argument(
+        "--changed",
+        action="store_true",
+        help="with --all: replay only the movies the sources changed since their last good run can have touched "
+        "(profile tas.select); the others keep their recorded standing",
+    )
+    play.add_argument(
+        "--gdb-all",
+        action="store_true",
+        help="with --all: every movie under the gdb bridge (default: only one not ending ok is replayed under it)",
+    )
     play.add_argument(
         "--fps-unlock",
         action="store_true",
@@ -590,7 +605,9 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         "sanitize": args.sanitize,
     }
     if args.all:  # every play option applies to every movie
-        result, code = tas.play_all(profile, jobs=args.jobs, twice=args.twice, **options, **inspect)
+        result, code = tas.play_all(
+            profile, jobs=args.jobs, twice=args.twice, changed=args.changed, gdb_all=args.gdb_all, **options, **inspect
+        )
         print(tas.table(result), file=sys.stderr)
         return result, code, []
     if args.twice:
@@ -938,7 +955,9 @@ def _arity_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("symbol", nargs="?", help="show: the function name")
     parser.add_argument("--project", type=Path, help="project tree (default: the profile's)")
     parser.add_argument("--base", help="gate: git revision the tree is compared with (default HEAD)")
-    parser.add_argument("--top", type=int, default=20, help="census: how many symbols to list (default 20)")
+    parser.add_argument(
+        "--top", type=int, default=20, help="census: how many symbols to list (default 20; 0 = every offender)"
+    )
 
 
 def _run_arity(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
