@@ -16,7 +16,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
@@ -200,7 +201,23 @@ def timeout_of(profile: Profile) -> float:
     return float(timeout)
 
 
+_TASTE_OVERRIDE: Path | None = None
+
+
+@contextmanager
+def taste_profile_override(path: Path) -> Iterator[None]:
+    """Every Taste call inside the block runs on `path` (a copy of the seat's Taste profile aimed at another tree)."""
+    global _TASTE_OVERRIDE
+    before, _TASTE_OVERRIDE = _TASTE_OVERRIDE, path
+    try:
+        yield
+    finally:
+        _TASTE_OVERRIDE = before
+
+
 def taste_profile_of(profile: Profile) -> Path | None:
+    if _TASTE_OVERRIDE is not None:
+        return _TASTE_OVERRIDE
     table = _table(profile)
     return profile.path("tools.taste_profile", table["taste_profile"]) if "taste_profile" in table else None
 

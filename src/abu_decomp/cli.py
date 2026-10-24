@@ -918,14 +918,24 @@ def _run_behave(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dic
             raise DecompError(
                 "behave.arguments", "--precapture takes its functions from LIST, no --function/--candidate"
             )
-        return precapture.run(
-            _profile(args.profile),
-            Options(
-                "", None, args.version, args.cases, args.seed, args.project, args.host, args.depth, hit=args.capture_hit
-            ),
-            args.precapture,
-            args.cpu_budget or precapture.CPU_BUDGET,
-        )
+        profile = _profile(args.profile)
+        with _rekeyed(profile, args):
+            return precapture.run(
+                profile,
+                Options(
+                    "",
+                    None,
+                    args.version,
+                    args.cases,
+                    args.seed,
+                    args.project,
+                    args.host,
+                    args.depth,
+                    hit=args.capture_hit,
+                ),
+                args.precapture,
+                args.cpu_budget or precapture.CPU_BUDGET,
+            )
     if not args.function or len(args.function) != 1:
         raise DecompError("behave.arguments", "behave takes exactly one --function (--replay takes any number)")
     options = Options(
@@ -942,7 +952,19 @@ def _run_behave(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dic
         lenient=bool(args.lenient_reason),
         lenient_reason=args.lenient_reason,
     )
-    return run(_profile(args.profile), options)
+    profile = _profile(args.profile)
+    with _rekeyed(profile, args):
+        return run(profile, options)
+
+
+def _rekeyed(profile: Profile, args: argparse.Namespace) -> Any:
+    """Taste's generated boundaries made from the tree behave acts on (behave/rekey.py)."""
+    from abu_decomp.behave import rekey
+    from abu_decomp.behave.run import _project_version
+    from abu_decomp.tools import settings
+
+    project = settings(profile, args.project, args.host).project
+    return rekey.rekeyed(profile, project, args.version or _project_version(project))
 
 
 def _arity_arguments(parser: argparse.ArgumentParser) -> None:

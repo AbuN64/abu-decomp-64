@@ -13,6 +13,7 @@ from abu_decomp.data import check as check_mod
 from abu_decomp.data import config as config_mod
 from abu_decomp.data import gate as gate_mod
 from abu_decomp.data import rewrite as rewrite_mod
+from abu_decomp.data import stamp as stamp_mod
 from abu_decomp.data import trial
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
@@ -65,12 +66,20 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     k.add_argument(
         "--write-baseline", action="store_true", help="run on a clean tree: record every failing unit into --baseline"
     )
+    k.add_argument("--diff", type=Path, help="the train diff made from TREE: a pass over every version stamps its hash")
+    k.add_argument(
+        "--stamps", type=Path, help="stamp directory (default $DECOMP_DATA_STAMPS, then <config dir>/stamps)"
+    )
+    st = sub.add_parser("stamp", help="refuse a diff that touches declarations or data without a passing check stamp")
+    st.add_argument("--diff", type=Path, required=True)
+    st.add_argument("--stamps", type=Path)
     g = sub.add_parser(
         "gate", help="refuse a diff that re-adds a raw member extern or a kind-conflicting decl; tree ratchet"
     )
     g.add_argument("--census", type=Path, required=True)
     g.add_argument("--diff", type=Path)
     g.add_argument("--tree", type=Path)
+    g.add_argument("--stamps", type=Path, help="with --diff: also require a check stamp when the diff touches data")
     g.add_argument("--baseline", type=Path)
     g.add_argument("--write-baseline", action="store_true")
 
@@ -114,8 +123,32 @@ def run(args: argparse.Namespace) -> Result:
             {"key": "data.build", "blocking": True, "message": f"{r['version']}: build failed: {'; '.join(r.get('errors', []))}"}
             for r in results if not r["built"] and not r.get("failed")
         ]  # fmt: skip
-        return {"results": results}, 1 if findings else 0, findings
+        out: dict[str, Any] = {"results": results}
+        if args.diff and not findings:
+            out["stamp"] = _stamp(args, cfg)
+        return out, 1 if findings else 0, findings
+    if verb == "stamp":
+        text = args.diff.read_text(errors="replace")
+        bad = stamp_mod.missing(cfg, stamp_mod.stamp_dir(args.stamps, args.config), text, args.diff)
+        return (
+            {"violations": bad},
+            1 if bad else 0,
+            [{"key": "data.stamp", "blocking": True, "message": m} for m in bad],
+        )
     return _gate(args, cfg)
+
+
+def _stamp(args: argparse.Namespace, cfg) -> str:
+    """Write the stamp of --diff after a clean check; the reason it was not written otherwise."""
+    import subprocess
+
+    if args.version or args.unit:
+        return "not stamped: --version/--unit narrowed the check; a stamp needs every version"
+    text = args.diff.read_text(errors="replace")
+    done = subprocess.run(["git", "-C", str(args.tree), "diff", "--name-only"], capture_output=True, text=True)
+    if sorted(done.stdout.split()) != stamp_mod.files_of(text):
+        return "not stamped: the trees changed files are not the diffs files (check the tree the diff was made from)"
+    return str(stamp_mod.write(stamp_mod.stamp_dir(args.stamps, args.config), text))
 
 
 def _probe(args: argparse.Namespace, cfg) -> Result:
@@ -183,7 +216,10 @@ def _gate(args: argparse.Namespace, cfg) -> Result:
     bad: list[str] = []
     result: dict[str, Any] = {}
     if args.diff:
-        bad += gate_mod.check_diff(cfg, args.census, args.diff.read_text(errors="replace"))
+        text = args.diff.read_text(errors="replace")
+        bad += gate_mod.check_diff(cfg, args.census, text)
+        if args.stamps:
+            bad += stamp_mod.missing(cfg, args.stamps, text, args.diff)
     if args.tree:
         n = gate_mod.count_tree(cfg, args.census, args.tree)
         result["raw_member_scalar_decls"] = n
