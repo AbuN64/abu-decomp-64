@@ -41,10 +41,16 @@ def from_threads(text: str) -> dict[str, Any] | None:
     return None
 
 
-def from_stack(text: str) -> dict[str, Any] | None:
-    """A debugger signal stop is already on the faulting thread, before a handler runs."""
-    pcs = [m[1] for line in text.splitlines() if (m := _FRAME.match(line)) and m[1]]
-    return {"source": "gdb", "eip": "0x" + pcs[0], "frames": ["0x" + p for p in pcs[1:]]} if pcs else None
+def from_stack(text: str, pc: int | None = None) -> dict[str, Any] | None:
+    """The stopped PC owns the fault; an addressless frame zero never promotes its caller."""
+    frames = [(line, m[1]) for line in text.splitlines() if (m := _FRAME.match(line))]
+    top = next((address for line, address in frames if re.match(r"^#0\s", line)), None)
+    if pc is None:
+        if top is None:
+            return None
+        pc = int(top, 16)
+    callers = ["0x" + address for line, address in frames if address and not re.match(r"^#0\s", line)]
+    return {"source": "gdb", "eip": f"{pc:#010x}", "frames": callers}
 
 
 def fp_exception(registers: dict[str, int], instruction: str) -> dict[str, Any] | None:
@@ -87,11 +93,16 @@ def fp_exception(registers: dict[str, int], instruction: str) -> dict[str, Any] 
 
 def capture(run: Path, port: Path | str) -> dict[str, Any] | None:
     """The run's fault record with its addresses named, and `failure-fault.txt` written; None when the run left none."""
+    context = run / "signal-context.txt"
+    text = context.read_text(errors="replace") if context.is_file() else ""
+    registers = {
+        m[1]: int(m[2], 16) for m in re.finditer(r"(?m)^(eip|ebp|esp|mxcsr|fctrl|fstat)\s+0x([0-9a-fA-F]+)", text)
+    }
     try:
         record: dict[str, Any] | None = {**json.loads((run / FILE).read_text()), "source": "shim"}
     except (OSError, ValueError):
         stack = run / "signal-stack.txt"
-        record = from_stack(stack.read_text(errors="replace")) if stack.is_file() else None
+        record = from_stack(stack.read_text(errors="replace") if stack.is_file() else "", registers.get("eip"))
         for name in ("failure-threads.txt", "signal-threads.txt"):
             threads = run / name
             if record is None and threads.is_file():
@@ -106,12 +117,7 @@ def capture(run: Path, port: Path | str) -> dict[str, Any] | None:
     pc = int(record["eip"], 16)
     record["instruction"] = tas_symbolize.instruction_of(port, pc)
     record["source_line"] = tas_symbolize.line_of(port, pc)
-    context = run / "signal-context.txt"
     if record["source"] == "gdb" and context.is_file():
-        text = context.read_text(errors="replace")
-        registers = {
-            m[1]: int(m[2], 16) for m in re.finditer(r"(?m)^(eip|ebp|esp|mxcsr|fctrl|fstat)\s+0x([0-9a-fA-F]+)", text)
-        }
         record["registers"] = registers
         if fp := fp_exception(registers, record["instruction"] or ""):
             record["fcsr"] = fp

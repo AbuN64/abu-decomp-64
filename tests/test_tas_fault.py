@@ -51,6 +51,31 @@ class FaultTests(unittest.TestCase):
         got = tas_fault.capture(self.run_dir, "/p/port")
         self.assertEqual((got["source"], got["tid"], got["at"]), ("gdb", 4150, "func_80208000_de+0x313"))
 
+    def test_an_addressless_top_frame_never_promotes_its_caller(self):
+        stack = "#0  draw () at rect.CPP:291\n#1  0x08124630 in caller ()\n"
+        self.assertIsNone(tas_fault.from_stack(stack))
+        got = tas_fault.from_stack(stack, 0x0812F313)
+        self.assertEqual((got["eip"], got["frames"]), ("0x0812f313", ["0x08124630"]))
+
+    def test_stopped_register_pc_takes_precedence_over_a_stack_address(self):
+        got = tas_fault.from_stack("#0  0x08124000 in draw ()\n#1  0x08124630 in caller ()\n", 0x0812F313)
+        self.assertEqual((got["eip"], got["frames"]), ("0x0812f313", ["0x08124630"]))
+
+    def test_a_null_stopped_pc_is_still_a_fault(self):
+        got = tas_fault.from_stack("#0  0x00000000 in ?? ()\n#1  0x08124630 in caller ()\n", 0)
+        self.assertEqual((got["eip"], got["frames"]), ("0x00000000", ["0x08124630"]))
+
+    def test_signal_context_without_a_stack_still_names_the_actual_pc(self):
+        (self.run_dir / "signal-context.txt").write_text("eip 0x0812f313\n")
+        got = tas_fault.capture(self.run_dir, "/p/port")
+        self.assertEqual((got["at"], got["callers"]), ("func_80208000_de+0x313", []))
+
+    def test_shim_fault_keeps_ownership_when_a_signal_context_is_also_present(self):
+        (self.run_dir / "fault-frame.json").write_text(json.dumps({"eip": "0x0812f313", "frames": []}))
+        (self.run_dir / "signal-context.txt").write_text("eip 0x08124000\n")
+        got = tas_fault.capture(self.run_dir, "/p/port")
+        self.assertEqual((got["source"], got["eip"]), ("shim", "0x0812f313"))
+
     def test_a_run_with_no_fault_leaves_nothing(self):
         self.assertIsNone(tas_fault.capture(self.run_dir, "/p/port"))
         self.assertFalse((self.run_dir / "failure-fault.txt").exists())

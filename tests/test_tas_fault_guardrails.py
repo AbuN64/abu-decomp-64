@@ -26,7 +26,7 @@ class FaultGuardrails(unittest.TestCase):
 
     def test_signal_stack_and_context_feed_the_same_symbolizer_and_triage(self):
         (self.root / "signal-stack.txt").write_text(
-            f"#0  0x08246de0 in {self.fn} ()\n#1  0x082470b3 in Gfx_DrawRect ()\n"
+            f"#0  {self.fn} () at rect.CPP:291\n#1  0x082470b3 in Gfx_DrawRect ()\n"
         )
         (self.root / "signal-context.txt").write_text(
             "eip 0x08246de0\nebp 0xff001000\nmxcsr 0x1d84 [ ZE ]\n"
@@ -49,6 +49,8 @@ class FaultGuardrails(unittest.TestCase):
             fault = tas_fault.capture(self.root, "/port")
             result = {"movie": "crasher", "id": "run1", "outcome": "crash", "subject": "SIGFPE", "fault": fault}
             result.update(tas_symbolize.claim(self.profile, result, health={}))
+        self.assertEqual(fault["eip"], "0x08246de0")
+        self.assertEqual(fault["callers"], ["Gfx_DrawRect+0x43"])
         self.assertEqual(tas.fn_of(result), self.fn)
         self.assertEqual(result["kind"], "guest FP exception")
         self.assertEqual(result["source"], "src/rect.CPP:255")
