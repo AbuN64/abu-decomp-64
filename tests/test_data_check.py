@@ -87,3 +87,16 @@ def test_a_failed_intermediate_rule_still_names_its_unit():
     assert check.failures(SimpleNamespace(cfg=CFG), "a", ["src/a/bad.CPP", "src/a/ok.CPP"], log) == {
         "src/a/bad.CPP": "src/a/bad.CPP:477:2: error: #error x"
     }
+
+
+def test_since_judges_a_committed_diff_not_the_index(tmp_path):
+    seen = []
+
+    def run(cmd, **kw):
+        seen.append(cmd)
+        return done("+int y = D_800C1234_de;\n" if "-U0" in cmd else "src/a/u1.CPP\n")
+
+    assert check.changed_symbols(CFG, tmp_path, run, base="abc") == ["D_800C1234_de"]
+    assert seen[0][-1] == "abc"
+    assert check.changed_units(tmp_path, run, "", "abc") == ["src/a/u1.CPP"]
+    assert seen[1][-1] == "abc"

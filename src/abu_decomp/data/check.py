@@ -29,9 +29,12 @@ def expand_units(tree: Path, version: str, files: list[str], run=subprocess.run)
     return sorted(set(units) | set(header_dependents(tree, version, heads, run)))
 
 
-def changed_symbols(cfg: DataConfig, tree: Path, run=subprocess.run) -> list[str]:
-    """Data symbols named on a changed line of the working diff (a declaration retyped, a use rewritten)."""
-    diff = run(["git", "-C", str(tree), "diff", "-U0"], capture_output=True, text=True).stdout
+def changed_symbols(cfg: DataConfig, tree: Path, run=subprocess.run, base: str | None = None) -> list[str]:
+    """Data symbols named on a changed line of the working diff (a declaration retyped, a use rewritten); with BASE, of
+    everything since that revision (a diff applied and committed, as the train holds it)."""
+    diff = run(
+        ["git", "-C", str(tree), "diff", "-U0", *([base] if base else [])], capture_output=True, text=True
+    ).stdout
     token = re.compile(r"\b" + cfg.symbol_token)
     lines = [x[1:] for x in diff.splitlines() if x[:1] in "+-" and x[:3] not in ("+++", "---")]
     return sorted({m.group(0) for line in lines for m in token.finditer(line)})
@@ -62,8 +65,10 @@ def in_version(cfg: DataConfig, tree: Path, version: str, units: list[str]) -> l
     return [u for u in units if u in held]
 
 
-def changed_units(tree: Path, run=subprocess.run, version: str = "") -> list[str]:
-    out = run(["git", "-C", str(tree), "diff", "--name-only"], capture_output=True, text=True).stdout.split()
+def changed_units(tree: Path, run=subprocess.run, version: str = "", base: str | None = None) -> list[str]:
+    out = run(
+        ["git", "-C", str(tree), "diff", "--name-only", *([base] if base else [])], capture_output=True, text=True
+    ).stdout.split()
     return expand_units(tree, version, out, run) if version else [u for u in out if u.startswith("src/")]
 
 
@@ -113,8 +118,10 @@ def check(b: Builder, version: str, units: list[str] | None = None, baseline: di
     BASELINE (unit -> first error, recorded on a clean tree by `--write-baseline`) already failed before the change:
     it is listed as `preexisting` and neither fails the check nor is scored."""
     if units is None:
-        units = changed_units(b.tree, b.run, version)
-        units = sorted(set(units) | set(referencing_units(b.cfg, b.tree, changed_symbols(b.cfg, b.tree, b.run), b.run)))
+        base = getattr(b, "diff_base", None)
+        units = changed_units(b.tree, b.run, version, base)
+        syms = changed_symbols(b.cfg, b.tree, b.run, base)
+        units = sorted(set(units) | set(referencing_units(b.cfg, b.tree, syms, b.run)))
     units = in_version(b.cfg, b.tree, version, units)
     if not units:
         return {"version": version, "units": 0, "built": True, "broken": []}

@@ -66,10 +66,16 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     k.add_argument(
         "--write-baseline", action="store_true", help="run on a clean tree: record every failing unit into --baseline"
     )
+    k.add_argument(
+        "--since", help="REV the diff was committed on top of: judge everything changed since REV, not the index"
+    )
     k.add_argument("--diff", type=Path, help="the train diff made from TREE: a pass over every version stamps its hash")
     k.add_argument(
         "--stamps", type=Path, help="stamp directory (default $DECOMP_DATA_STAMPS, then <config dir>/stamps)"
     )
+    u = sub.add_parser("units", help="list every source unit that names a data symbol the tree changed since REV")
+    u.add_argument("--tree", type=Path, required=True)
+    u.add_argument("--since", help="REV the change was committed on top of (default: the working diff)")
     st = sub.add_parser("stamp", help="refuse a diff that touches declarations or data without a passing check stamp")
     st.add_argument("--diff", type=Path, required=True)
     st.add_argument("--stamps", type=Path)
@@ -101,6 +107,7 @@ def run(args: argparse.Namespace) -> Result:
         return _rewrite(args, cfg)
     if verb == "check":
         b = trial.Builder(cfg, args.tree)
+        b.diff_base = args.since
         known = (
             json.loads(args.baseline.read_text())
             if args.baseline and args.baseline.is_file() and not args.write_baseline
@@ -127,6 +134,9 @@ def run(args: argparse.Namespace) -> Result:
         if args.diff and not findings:
             out["stamp"] = _stamp(args, cfg)
         return out, 1 if findings else 0, findings
+    if verb == "units":
+        syms = check_mod.changed_symbols(cfg, args.tree, base=args.since)
+        return {"symbols": syms, "units": check_mod.referencing_units(cfg, args.tree, syms)}, 0, []
     if verb == "stamp":
         text = args.diff.read_text(errors="replace")
         bad = stamp_mod.missing(cfg, stamp_mod.stamp_dir(args.stamps, args.config), text, args.diff)
@@ -145,7 +155,11 @@ def _stamp(args: argparse.Namespace, cfg) -> str:
     if args.version or args.unit:
         return "not stamped: --version/--unit narrowed the check; a stamp needs every version"
     text = args.diff.read_text(errors="replace")
-    done = subprocess.run(["git", "-C", str(args.tree), "diff", "--name-only"], capture_output=True, text=True)
+    done = subprocess.run(
+        ["git", "-C", str(args.tree), "diff", "--name-only", *([args.since] if args.since else [])],
+        capture_output=True,
+        text=True,
+    )
     if sorted(done.stdout.split()) != stamp_mod.files_of(text):
         return "not stamped: the trees changed files are not the diffs files (check the tree the diff was made from)"
     return str(stamp_mod.write(stamp_mod.stamp_dir(args.stamps, args.config), text))
