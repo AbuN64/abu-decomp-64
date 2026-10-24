@@ -60,6 +60,33 @@ def line_of(port: Path | str, pc: int) -> str | None:
     return None if not out or out.startswith("??") else out
 
 
+def disassembly(port: Path | str, pc: int, size: int) -> str:
+    try:
+        return subprocess.run(
+            ["objdump", "-d", "--no-show-raw-insn", f"--start-address={pc}", f"--stop-address={pc + size}", str(port)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def instruction_of(port: Path | str, pc: int) -> str | None:
+    for line in disassembly(port, pc, 16).splitlines():
+        if re.match(rf"\s*0*{pc:x}:\s", line):
+            found = resolve(port, pc)
+            name = f" <{found[0]}+{found[1]:#x}>" if found else ""
+            return f"{pc:#x}{name}: {line.split(':', 1)[1].strip()}"
+    return None
+
+
+def frame_pointer(port: Path | str, pc: int) -> bool:
+    text = disassembly(port, pc, 12)
+    return bool(re.search(r"push\s+%ebp\s*\n\s*[0-9a-f]+:\s*mov\s+%esp,%ebp", text))
+
+
 def level_of(project: Path | None, name: str) -> str:
     """The function's evidence rung from its source: asm, C unproven (guarded body) or matches."""
     site = tas_triage.definition_site(project, name) or tas_triage.include_asm_site(project, name)
@@ -85,23 +112,37 @@ def overlay(profile: Any, outcome: dict[str, Any], out: dict[str, Any]) -> dict[
     if not named:
         return out
     first = named[0][1]
-    game = next(((a, found) for a, found in named if _GAME.fullmatch(found[0])), None)
-    frame = f"{first[0]}+{first[1]:#x}"
     project = tas_triage._project(profile)
+    game = next(
+        (
+            (a, found)
+            for a, found in named
+            if _GAME.fullmatch(found[0]) or tas_triage.definition_site(project, found[0])
+        ),
+        None,
+    )
+    frame = f"{first[0]}+{first[1]:#x}"
     out["frame"] = frame
+    out["instruction"] = fault.get("instruction") or (instruction_of(port, addresses[0]) if port else None)
+    out["source"] = fault.get("source_line") or (line_of(port, addresses[0]) if port else None)
+    if outcome.get("subject") == "SIGFPE":
+        out["fcsr"] = fault.get("fcsr")
+        if out["fcsr"] and out["fcsr"].get("exceptions"):
+            out["kind"] = "guest FP exception"
     if game is None:
         out["note"] = f"{frame} is a port/shim frame and no game function is on its return chain"
         return out
     if game[1] != first:
         out["note"] = f"{frame} is a port/shim frame called from {game[1][0]}+{game[1][1]:#x}"
-    pc, (name, offset) = game
+    _pc, (name, offset) = game
     out["frame"] = frame = f"{name}+{offset:#x}"
     site = tas_triage.definition_site(project, name) or tas_triage.include_asm_site(project, name)
     out["owner"] = f"{frame} at {site}" if site else frame
     out["evidence"] = level_of(project, name)
-    src = line_of(port, pc) if port else None
-    if src:
-        out["source"] = src
+    out["function"] = name
+    if not out.get("source") and site:
+        out["source"] = site
+        out["source_precision"] = "function definition; executable has no fault-PC line information"
     notes = [n for n in arity.notes(profile, [name]) if n.get("function") == name]
     kept = [n for n in out.get("arity", []) if n.get("function") != name]
     out["arity"] = notes + kept
@@ -110,9 +151,16 @@ def overlay(profile: Any, outcome: dict[str, Any], out: dict[str, Any]) -> dict[
     else:
         out["next"] = arity.next_command(getattr(profile, "source_file", None), name, [])
     out["claim"] = (
-        f"host fault: {outcome.get('subject')} = {frame}; blocking=true; {out['cannot_help']}; owner {out['owner']}; "
+        f"{out['kind']}: {outcome.get('subject')} = {frame}; blocking=true; {out['cannot_help']}; "
+        f"owner {out['owner']}; "
         f"evidence {out['evidence']}" + (f"; arity {notes[0]['summary']}" if notes else "") + f"; next: {out['next']}"
     )
+    out["claim"] += f"; source {out['source']}" if out.get("source") else "; fault source unavailable"
+    out["claim"] += f"; instruction {out['instruction']}" if out.get("instruction") else "; instruction unavailable"
+    if out.get("fcsr") and out["fcsr"].get("message"):
+        out["claim"] += "; " + out["fcsr"]["message"]
+    elif outcome.get("subject") == "SIGFPE":
+        out["claim"] += "; guest FCSR cause unavailable (no captured active FP trap)"
     return out
 
 

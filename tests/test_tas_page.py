@@ -1,5 +1,6 @@
 """The TAS page against the page contract (orch TAS-PAGE-CONTRACT.md), served by a stub with mock state."""
 
+import html
 import json
 import re
 import shutil
@@ -623,7 +624,7 @@ class PageTests(unittest.TestCase):
                     [*argv, "--dump-dom", stub.url + f"#{tab}"], capture_output=True, text=True, timeout=60
                 ).stdout
             for text in texts:
-                self.assertIn(text, dom, f"{tab}: {text}")
+                self.assertIn(html.escape(text), dom, f"{tab}: {text}")
 
     def _dom(self, stub, hash_, size="1600,1000"):
         chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")

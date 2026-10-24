@@ -105,7 +105,7 @@ def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None
             cannot_help="more input is useless unless the picture shows the game waiting for a button",
             next=look,
         )
-    elif _FAULT.match(subject):
+    elif _FAULT.match(subject) or (what == "crash" and subject.startswith("SIG")):
         owner_fn = next(iter(frames), None)
         out.update(
             kind="host fault",

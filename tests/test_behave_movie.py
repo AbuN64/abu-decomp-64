@@ -69,7 +69,7 @@ class MovieTests(unittest.TestCase):
         self.assertIn("7 movies", finding["message"])
 
     def test_what_the_table_cannot_say_leaves_the_fixed_script_alone(self):
-        self.assertEqual(self.choose("Unlisted"), (None, None))
+        self.assertEqual(self.choose("Unlisted")[1]["key"], movie.NO_MOVIE)
         self.assertEqual(self.choose("Other"), (None, None))  # not a function of this version
         self.assertEqual(self.choose("Never", version="v2"), (None, None))  # the table is for another version
         self.table = None

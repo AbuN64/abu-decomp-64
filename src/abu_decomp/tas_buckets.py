@@ -126,7 +126,7 @@ def build(
             "kinds": dict(Counter(m["kind"] for m in members)),
             "offsets": sorted({int(m["offset"]) for m in members if isinstance(m.get("offset"), int)}),
         }
-        for field in ("fn", "callers", "datum", "field"):
+        for field in ("fn", "callers", "datum", "field", "source", "source_precision", "instruction", "fcsr"):
             value = next((m[field] for m in members if m.get(field)), None)
             if value:
                 bucket[field] = value
@@ -134,7 +134,19 @@ def build(
         bucket["members"] = [
             {
                 k: m.get(k)
-                for k in ("kind", "movie", "poll", "run", "evidence", "outcome", "subject", "text")
+                for k in (
+                    "kind",
+                    "movie",
+                    "poll",
+                    "run",
+                    "evidence",
+                    "outcome",
+                    "subject",
+                    "text",
+                    "source",
+                    "instruction",
+                    "fcsr",
+                )
                 if m.get(k) is not None
             }
             for m in members[:MEMBERS]
@@ -199,6 +211,14 @@ def render(buckets: list[dict[str, Any]]) -> str:
                     x for x in (f"fn {b['fn']}" if b.get("fn") else "", f"at {b['site']}" if b.get("site") else "") if x
                 )
             )
+        if b.get("source"):
+            lines.append(
+                f"     source {b['source']}" + (f" ({b['source_precision']})" if b.get("source_precision") else "")
+            )
+        if b.get("instruction"):
+            lines.append(f"     instruction {b['instruction']}")
+        if b.get("fcsr", {}).get("message"):
+            lines.append(f"     {b['fcsr']['message']}")
         for m in b["members"][:4]:
             who = m.get("movie") or m.get("evidence") or ""
             lines.append(f"       - {m['kind']} {who}" + (f" @{m['poll']}" if m.get("poll") is not None else ""))

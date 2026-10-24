@@ -900,6 +900,8 @@ def save_taken(
 
 def fn_of(result: dict[str, Any]) -> str | None:
     """The function a non-clean outcome names: its subject (`func_X` or `func_X+0x10`), else the owner of the fault."""
+    if result.get("function"):
+        return str(result["function"])
     for text in (str(result.get("subject") or ""), str(result.get("owner") or "")):
         match = re.match(r"(func_[0-9A-Fa-f]{8}\w*?)(?:\+0x[0-9a-fA-F]+)?(?:\s|$)", text)
         if match:
@@ -1231,7 +1233,23 @@ def play(
             saved=save_taken(profile, cfg, run, name, human or bool(retry and retry.get("fresh")), pak, mode, *started),
         )
     keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
-    keep += ("taken", "saved", "coverage", "frame", "fault", "shown", "state_diff", "sanitizer")
+    keep += (
+        "taken",
+        "saved",
+        "coverage",
+        "frame",
+        "fault",
+        "shown",
+        "state_diff",
+        "sanitizer",
+        "function",
+        "source",
+        "source_precision",
+        "instruction",
+        "fcsr",
+        "claim",
+        "owner",
+    )
     if state:
         try:
             result["state_diff"] = tas_statediff.finish(state, profile, name, {**record, "batch": batch})

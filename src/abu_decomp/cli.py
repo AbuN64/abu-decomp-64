@@ -495,7 +495,8 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
 def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import tas
 
-    profile = _profile(args.profile)
+    default = os.environ.get("DECOMP_TAS_PROFILE")
+    profile = _profile(args.profile if args.profile is not None else Path(default) if default else None)
     if args.action == "save":
         saved = tas.save(
             profile, args.name, source=args.source, note=args.note, replace=args.replace, pak=args.pak, cpak=args.cpak

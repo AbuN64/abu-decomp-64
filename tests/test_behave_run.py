@@ -28,7 +28,7 @@ def fake_cases(request, delta):
     for case in request["cases"]:
         regs = case["registers"]
         region = int(str(case["memory"][0]["addr"]), 0) if case.get("memory") else 0
-        a0, a1 = regs.get("a0", 0), regs.get("a1", 0)
+        a0, a1 = (int(str(regs.get(k, 0)), 0) for k in ("a0", "a1"))
         ok = a0 != 0
         row = {
             "name": case["name"],
@@ -110,6 +110,25 @@ class RunTests(unittest.TestCase):
         ):
             code = main(["--profile", str(self.seat), "behave", "--function", "f", *args])
         return code, json.loads(stdout.getvalue())
+
+    def test_missing_coverage_uses_fault_arguments_in_the_public_command(self):
+        from abu_decomp.behave import crash
+
+        missing = {"key": "behave.no_movie", "blocking": False, "message": "no recorded movie reaches f"}
+        record = {"function": "f", "abi": "i386-cdecl", "words": [0x08100000, 0], "movie": "crash", "poll": 42}
+        with (
+            mock.patch.object(run, "capture_movie", return_value=(None, missing)),
+            mock.patch.object(crash, "arguments", return_value=(record, "crash at poll 42")),
+        ):
+            code, envelope = self.invoke("--cases", "6")
+        self.assertEqual(code, 0)
+        result = envelope["result"]
+        self.assertGreater(result["sources"]["crash_cases"], 0)
+        self.assertEqual(result["crash_seed"]["movie"], "crash")
+        originals = [req for name, req in self.probes if name == "original"]
+        self.assertEqual(originals[-1]["cases"][0]["name"], "crash-arguments")
+        self.assertEqual(originals[-1]["cases"][0]["registers"]["a1"], 0)
+        self.assertIn("no recorded movie reaches f", envelope["findings"][0]["message"])
 
     def test_describe_without_a_candidate_reports_the_fields_and_the_prototype(self):
         code, envelope = self.invoke("--cases", "6")

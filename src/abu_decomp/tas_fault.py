@@ -41,13 +41,61 @@ def from_threads(text: str) -> dict[str, Any] | None:
     return None
 
 
+def from_stack(text: str) -> dict[str, Any] | None:
+    """A debugger signal stop is already on the faulting thread, before a handler runs."""
+    pcs = [m[1] for line in text.splitlines() if (m := _FRAME.match(line)) and m[1]]
+    return {"source": "gdb", "eip": "0x" + pcs[0], "frames": ["0x" + p for p in pcs[1:]]} if pcs else None
+
+
+def fp_exception(registers: dict[str, int], instruction: str) -> dict[str, Any] | None:
+    """Reconstruct FCSR enable/cause bits from native trap state, using the shim's mapping.
+
+    The native shim has no guest FCSR store. Denormal-operand is host-only, not a guest cause.
+    """
+    x87 = bool(re.search(r"\b(?:fdiv\w*|fmul\w*|fadd\w*|fsub\w*|fsqrt|fist\w*)\b", instruction))
+    if x87:
+        if not {"fctrl", "fstat"} <= registers.keys():
+            return None
+        masks, status, origin = registers["fctrl"], registers["fstat"], "x87 control/status"
+    else:
+        if "mxcsr" not in registers:
+            return None
+        status, origin = registers["mxcsr"], "MXCSR"
+        masks = status >> 7
+    enables = causes = 0
+    active = []
+    for guest, (native, name) in enumerate(
+        ((5, "inexact"), (4, "underflow"), (3, "overflow"), (2, "divide-by-zero"), (0, "invalid operation"))
+    ):
+        enabled, raised = not masks & (1 << native), bool(status & (1 << native))
+        enables |= int(enabled) << (7 + guest)
+        causes |= int(raised) << (12 + guest)
+        if enabled and raised:
+            active.append({"exception": name, "enable_bit": 7 + guest, "cause_bit": 12 + guest})
+    return {
+        "source": origin,
+        "reconstructed": True,
+        "enable_bits": enables,
+        "cause_bits": causes,
+        "exceptions": active,
+        "message": "; ".join(
+            f"guest FP exception: {e['exception']}, enabled by FCSR bit {e['enable_bit']} (cause bit {e['cause_bit']})"
+            for e in active
+        ),
+    }
+
+
 def capture(run: Path, port: Path | str) -> dict[str, Any] | None:
     """The run's fault record with its addresses named, and `failure-fault.txt` written; None when the run left none."""
     try:
         record: dict[str, Any] | None = {**json.loads((run / FILE).read_text()), "source": "shim"}
     except (OSError, ValueError):
-        threads = run / "failure-threads.txt"
-        record = from_threads(threads.read_text(errors="replace")) if threads.is_file() else None
+        stack = run / "signal-stack.txt"
+        record = from_stack(stack.read_text(errors="replace")) if stack.is_file() else None
+        for name in ("failure-threads.txt", "signal-threads.txt"):
+            threads = run / name
+            if record is None and threads.is_file():
+                record = from_threads(threads.read_text(errors="replace"))
     if not record or "eip" not in record:
         return None
     named = []
@@ -55,5 +103,44 @@ def capture(run: Path, port: Path | str) -> dict[str, Any] | None:
         found = tas_symbolize.resolve(port, int(address, 16))
         named.append(f"{found[0]}+{found[1]:#x}" if found else address)
     record["at"], record["callers"], record["port"] = named[0], named[1:], str(port)
+    pc = int(record["eip"], 16)
+    record["instruction"] = tas_symbolize.instruction_of(port, pc)
+    record["source_line"] = tas_symbolize.line_of(port, pc)
+    context = run / "signal-context.txt"
+    if record["source"] == "gdb" and context.is_file():
+        text = context.read_text(errors="replace")
+        registers = {
+            m[1]: int(m[2], 16) for m in re.finditer(r"(?m)^(eip|ebp|esp|mxcsr|fctrl|fstat)\s+0x([0-9a-fA-F]+)", text)
+        }
+        record["registers"] = registers
+        if fp := fp_exception(registers, record["instruction"] or ""):
+            record["fcsr"] = fp
+        # Require an i386 frame-pointer prologue before interpreting ebp+8 as argument slots.
+        found = tas_symbolize.resolve(port, pc)
+        if "pointer_bytes=4" in text and found and tas_symbolize.frame_pointer(port, pc - found[1]):
+            words = [
+                int(w, 16)
+                for line in text.splitlines()
+                if re.match(r"^0x[0-9a-fA-F]+(?: <[^>]+>)?:", line)
+                for w in re.findall(r"0x[0-9a-fA-F]+", line.partition(":")[2])
+            ]
+            if words:
+                record["arguments"] = {
+                    "abi": "i386-cdecl",
+                    "function": found[0],
+                    "words": words,
+                    "at": "fault",
+                    "note": "stack argument slots at the stop; may have been modified",
+                }
+    if record["source"] == "shim" and record.get("args"):
+        found = tas_symbolize.resolve(port, pc)
+        if found and tas_symbolize.frame_pointer(port, pc - found[1]):
+            record["arguments"] = {
+                "abi": "i386-cdecl",
+                "function": found[0],
+                "words": [int(w, 16) for w in record["args"]],
+                "at": "fault",
+                "note": "stack argument slots at the stop; may have been modified",
+            }
     (run / STACK).write_text("".join(f"#{i}  {name}\n" for i, name in enumerate(named)))
     return record

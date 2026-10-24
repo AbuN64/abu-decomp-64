@@ -7,8 +7,8 @@ runs/coverage-table.json) already says, per function, which movie the original e
 module turns that row into the capture's own run: the movie (with its start point's polls, Expansion Pak and card)
 written content-addressed beside the behave work, the oracle host's variables that replay it, and a time limit that
 follows the poll. One rule for every function; the movie, the poll and the host's variables come from the profile
-and the table. A function no movie reaches gets the named verdict `behave.no_movie` and no capture at all (the
-fixed script could not reach it either, and the time limit is not spent).
+and the table. A function no movie reaches gets the named verdict `behave.no_movie` and uses saved port crash
+arguments when available. No oracle capture time is spent on an unproven reach.
 """
 
 from __future__ import annotations
@@ -50,15 +50,15 @@ def choose(
     if not table or oracle is None or table.get("summary", {}).get("version") != version:
         return None, None
     row = next((r for r in table["functions"] if r["name"] == function), None)
-    if row is None or not row["in_version"]:
+    if row is not None and not row["in_version"]:
         return None, None
-    if not row["oracle"]["hit"]:
+    if row is None or not row["oracle"]["hit"]:
         return None, {
             "key": NO_MOVIE,
             "blocking": False,
             "message": f"no recorded movie reaches {function} in the original (coverage table, "
-            f"{table['summary']['movies']} movies, state {row['state']}): "
-            "its cases stay synthetic; record a movie that calls it, then run `decomp tas coverage`",
+            f"{table['summary']['movies']} movies, state {row['state'] if row else 'unlisted'}): "
+            "use captured crash arguments when available; oracle reach is not established",
         }
     name, poll = row["oracle"]["movie"], int(row["oracle"]["poll"] or 0)
     try:

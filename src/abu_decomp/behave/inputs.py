@@ -421,6 +421,8 @@ def around(entry: dict[str, Any], proto: Prototype, limit: int) -> list[dict[str
         if kind in ("pointer", "funcptr", "struct") or len(slot.where) != 1 or place.startswith("stack:"):
             continue
         name = _ARG_REGISTER.get(place, place)
+        if name not in registers and place in registers:
+            name = place
         if name not in registers:
             continue
         rows = []
@@ -430,7 +432,7 @@ def around(entry: dict[str, Any], proto: Prototype, limit: int) -> list[dict[str
                     **entry,
                     "name": f"{entry['name']}-{slot.param.name}-{label}",
                     "registers": {**registers, name: f"{value:#x}"},
-                    "labels": {"seed": entry["name"], slot.param.name: label},
+                    "labels": {**entry.get("labels", {}), "seed": entry["name"], slot.param.name: label},
                 }
             )
         per_argument.append(rows)

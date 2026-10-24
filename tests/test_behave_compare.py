@@ -205,7 +205,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(got["verdict"], c.UNTESTABLE)
         self.assertIn("only 2 of 8 cases compared", got["reason"])
         self.assertEqual((got["compared"], got["total"]), (2, 8))
-        self.assertEqual(c.overall(self.rows(*v), [{}] * 8, min_compared=2)["verdict"], c.SAME)
+        self.assertEqual(c.overall(self.rows(*v), [{}] * 8, min_compared=2)["verdict"], c.UNTESTABLE)
 
     def test_minimum_is_capped_at_the_case_count(self):
         self.assertEqual(c.overall(self.rows(c.SAME, c.SAME), [{}] * 2)["verdict"], c.SAME)
@@ -231,3 +231,18 @@ class Immutable(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShareTests(unittest.TestCase):
+    def test_fifty_percent_is_a_hard_floor_independent_of_configured_minimum(self):
+        for compared, verdict in ((8, c.UNTESTABLE), (29, c.UNTESTABLE), (30, c.SAME), (60, c.SAME)):
+            rows = OverallTests.rows(self, *([c.SAME] * compared + [c.UNTESTABLE] * (60 - compared)))
+            got = c.overall(rows, [{}] * 60, min_compared=1)
+            self.assertEqual((got["verdict"], got["compared"], got["testable"]), (verdict, compared, 60))
+            self.assertEqual(got["compared_share"], compared / 60)
+        self.assertEqual(c.overall([], [], min_compared=0)["verdict"], c.UNTESTABLE)
+
+    def test_original_untestable_cases_do_not_inflate_the_denominator(self):
+        rows = OverallTests.rows(self, *([c.SAME] * 30 + [c.UNTESTABLE] * 34))
+        got = c.overall(rows, [{}] * 64, testable=60)
+        self.assertEqual((got["verdict"], got["compared_share"], got["testable"], got["total"]), (c.SAME, 0.5, 60, 64))

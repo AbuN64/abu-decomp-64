@@ -141,6 +141,20 @@ class Bridge:
             self.stack_mode = None
             threads = self.run_dir / ("failure-threads.txt" if label == self.breakpoint else "signal-threads.txt")
             threads.write_text("\n".join(self.full_stack_lines) + "\n")
+            if label != self.breakpoint:
+                # Read the stopped thread without calling into an inferior with a pending FP trap.
+                self.full_stack_lines = []
+                self.stack_mode = "artifact"
+                for command in (
+                    "frame 0",
+                    "info registers eip ebp esp mxcsr fctrl fstat",
+                    "x/i $pc",
+                    'printf "pointer_bytes=%d\\n", sizeof(void*)',
+                    "x/16wx $ebp+8",
+                ):
+                    await self.cli(command)
+                self.stack_mode = None
+                (self.run_dir / "signal-context.txt").write_text("\n".join(self.full_stack_lines) + "\n")
         print("C_STACK_END " + label, flush=True)
 
     async def run(self):

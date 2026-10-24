@@ -76,6 +76,7 @@ class Options:
     lenient: bool = False  # unmapped reads answer zero and calls outside the closure are stubs (set when no case ran)
     deepened: bool = False  # depth was raised by this command (not given), so it may be raised again
     capture: bool = True  # seed every comparison with the oracle's real entry state (profile repro.capture)
+    fault_arguments: dict[str, Any] | None = None  # retained through lenient/depth retries
     hit: int = 1  # which entry of the function the capture stops at
     recaptured: bool = False  # the capture was repeated for this probe's stubs (once per run: no loop)
     seeded: dict[str, Any] | None = None  # the capture's seed (see capture_seed): RDRAM image, sp, entry case
@@ -406,6 +407,18 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
     layout = inputs.Layout(config["arena_base"], 0x1000, config["region_bytes"])
     work = work_dir(config)
     question = f"Behaviour of {options.function} over {count} input combinations"
+    own, no_movie = (
+        capture_movie(profile, config, options.function, version)
+        if options.capture and options.seeded is None
+        else (None, None)
+    )
+    crash = options.fault_arguments
+    if no_movie:
+        from abu_decomp.behave import crash as crash_inputs
+
+        crash, why = crash_inputs.arguments(profile, options.function)
+        findings.append({**no_movie, "message": no_movie["message"] + "; " + why})
+        options = replace(options, capture=False, fault_arguments=crash)
 
     # 1. short probes of the original show which offsets of each pointed-to region it touches, and which
     #    fields it dereferences (those get a region of their own); repeated while it finds new ones
@@ -445,6 +458,15 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
             break
     mark = lap("learn", mark)
     cases, regions = inputs.seeded_cases(proto, count, options.seed, layout, learned)
+    crash_used = None
+    if crash and cases:
+        from abu_decomp.behave import crash as crash_inputs
+
+        entry, crash_used = crash_inputs.case(proto, cases[0], crash)
+        if entry is not None:
+            cases = [entry, *cases, *inputs.around(entry, proto, max(1, count // 8))]
+        else:
+            findings.append({"key": "behave.crash_arguments", "blocking": False, "message": crash_used["reason"]})
     if options.seeded:  # the registers the real game entered the function with, over the captured memory, and the
         # same entry with one argument moved off its real value at a time
         entry = options.seeded["case"]
@@ -537,7 +559,6 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         # and both bodies run again over that memory, with its entry registers (and variations around them) as more
         # cases. Only when that is not available do the static image and, for a starved case, the lenient memory below
         # stand in, under a named finding.
-        own, no_movie = capture_movie(profile, config, options.function, version)
         seed, why, key = (
             (None, "", "")
             if no_movie  # nothing recorded reaches it: the cases stay synthetic and the time limit is not spent
@@ -646,6 +667,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         "cases": len(cases),
         **({"synthetic": swapped} if swapped else {}),
         "sources": sources(cases, original["cases"]),
+        **({"crash_seed": crash_used} if crash_used else {}),
         "seed": options.seed,
         "depth": depth,
         "probe": {k: record[k] for k in PROBE_KEYS if k in record},
@@ -703,7 +725,12 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         for a, b in zip(original["cases"], changed["cases"], strict=True)
     ]
     labels = [c["labels"] for c in cases]
-    summary = compare.overall(rows, labels, int(config["min_compared"]))
+    summary = compare.overall(
+        rows,
+        labels,
+        int(config["min_compared"]),
+        testable=sum(c["status"] == "ok" or out_of_budget(c) for c in original["cases"]),
+    )
     notes = sorted({n for row in rows for n in row["notes"]})
     shown = [dict(r, inputs=labels[i]) for i, r in enumerate(rows) if r["verdict"] != compare.SAME][:12]
     classification = classify.classify(
@@ -747,10 +774,20 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
 def sources(cases: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[str, int]:
     """Where the cases come from and how many ran: real call states (entries the game made, in the covering movie, and
     the first entry with one argument moved), synthetic ones (generated), and how many of each did not run."""
-    real = [r for c, r in zip(cases, results, strict=True) if "seed" in c["labels"]]
-    synthetic = [r for c, r in zip(cases, results, strict=True) if "seed" not in c["labels"]]
-    entries = [c for c in cases if "seed" in c["labels"] and set(c["labels"]) <= {"seed", "hit"}]
+    real = [r for c, r in zip(cases, results, strict=True) if "seed" in c["labels"] and "crash" not in c["labels"]]
+    crashes = [r for c, r in zip(cases, results, strict=True) if "crash" in c["labels"]]
+    synthetic = [
+        r for c, r in zip(cases, results, strict=True) if "seed" not in c["labels"] and "crash" not in c["labels"]
+    ]
+    entries = [
+        c for c in cases if "seed" in c["labels"] and "crash" not in c["labels"] and set(c["labels"]) <= {"seed", "hit"}
+    ]
     return {
+        **(
+            {"crash_cases": len(crashes), "crash_untestable": sum(r["status"] != "ok" for r in crashes)}
+            if crashes
+            else {}
+        ),
         "real_entries": len(entries),
         "real_cases": len(real),
         "real_untestable": sum(r["status"] != "ok" for r in real),

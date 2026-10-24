@@ -198,6 +198,9 @@ def from_run(
         "subject": record.get("subject"),
         "evidence": str(run) if run else None,
     }
+    for key in ("source", "source_precision", "instruction", "fcsr", "claim"):
+        if record.get(key) is not None:
+            row[key] = record[key]
     if batch:
         row["batch"] = batch
     fault = record.get("fault") if isinstance(record.get("fault"), dict) else None

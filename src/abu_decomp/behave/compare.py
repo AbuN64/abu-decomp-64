@@ -258,15 +258,21 @@ def reason_key(reason: str | None) -> str:
     return f"{head} {detail.split()[0]}" if detail.split() and head.endswith("fatal") else head
 
 
-MIN_COMPARED = 8  # default `behave.min_compared`: a quarter of the default 48 cases, enough for a baseline + sweeps
+MIN_COMPARED = 8  # absolute floor; the compared share must also be at least one half
 
 
 def overall(
-    cases: list[dict[str, Any]], inputs: list[dict[str, str]], min_compared: int = MIN_COMPARED
+    cases: list[dict[str, Any]],
+    inputs: list[dict[str, str]],
+    min_compared: int = MIN_COMPARED,
+    *,
+    testable: int | None = None,
 ) -> dict[str, Any]:
     """The verdict over every case: differs when any does (first one named with its inputs); same only when at least
-    `min_compared` cases (capped at the number of cases) actually compared and none differ; else untestable, with
+    `min_compared` cases (capped at the number of cases) and at least 50% of original-testable cases actually compared
+    and none differ; else untestable, with
     "only N of M cases compared" and the top untestable reasons. A verdict over no evidence is never `same`."""
+    testable = len(cases) if testable is None else testable
     counts = {SAME: 0, DIFFERS: 0, UNTESTABLE: 0}
     for case in cases:
         counts[case["verdict"]] += 1
@@ -278,10 +284,15 @@ def overall(
     if first:
         given = " ".join(f"{k}={v}" for k, v in first[1].items())
         verdict, reason = DIFFERS, f"{first[0]['name']} ({given}): {first[0]['reason']}"
-    elif counts[SAME] < max(1, min(min_compared, len(cases))):
+    elif counts[SAME] < max(1, min(min_compared, len(cases)), (testable + 1) // 2):
         top = ", ".join(f"{k} x{n}" for k, n in sorted(reasons.items(), key=lambda kv: -kv[1])[:3]) or "no cases"
         verdict = UNTESTABLE
-        reason = f"only {counts[SAME]} of {len(cases)} cases compared; most common: {top}"
+        reason = (
+            f"only {counts[SAME]} of {len(cases)} cases compared "
+            f"({counts[SAME]}/{testable} compared/testable; requires at least 50%); most common: {top}"
+            if cases
+            else "no testable cases; no comparison evidence"
+        )
     else:
         verdict, reason = SAME, None
     return {
@@ -290,6 +301,10 @@ def overall(
         "counts": counts,
         "compared": counts[SAME] + counts[DIFFERS],
         "total": len(cases),
+        "testable": testable,
+        "compared_share": (counts[SAME] + counts[DIFFERS]) / testable if testable else 0.0,
+        "required_share": 0.5,
+        "testable_basis": "original completed or ran to the event budget",
         "min_compared": min_compared,
         "untestable_reasons": reasons,
         **({"bounded": bounded} if (bounded := sum("ran" in c for c in cases)) else {}),
