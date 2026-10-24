@@ -276,6 +276,7 @@
 <header class="top">
   <span class="brand">TAS</span>
   <span id="build" class="mono dim ell wide"></span>
+  <span id="pool" class="mono dim ell wide" title="host slot pool: heavy jobs hold slots, the rest queue"></span>
   <button id="mazebtn" class="toplink wide" title="Game code coverage maze">Maze</button>
   <form id="fnfind" title="Open the per-function page"><input id="fnq" placeholder="function name" autocomplete="off" spellcheck="false" aria-label="function name"></form>
   <span class="grow"></span>
@@ -1658,6 +1659,19 @@ document.addEventListener("keydown", e => {
 });
 document.addEventListener("click", e => { if (e.target.tagName === "BUTTON") e.target.blur(); });
 window.addEventListener("resize", () => { if (S) renderStage(); });
+/* Slot pool strip: used/capacity, the queue, load, and the last landed->live seconds; the tooltip names every holder */
+async function renderPool() {
+  try {
+    const { data: p } = await getJ("/api/pool");
+    if (!p) return;
+    const last = (p.landings || []).slice(-1)[0], span = $("pool");
+    span.textContent = "slots " + p.used + " of " + p.capacity + " \u00b7 queue " + p.queue.length + " \u00b7 load " + p.load1.toFixed(0) + " of " + p.cores +
+      (last ? " \u00b7 landed\u2192live " + last.landed_to_live_s + "s" : "");
+    span.title = [...p.holders.map(h => h.class + " x" + h.slots.length + " " + h.label + " (" + h.age + "s)"),
+      ...p.queue.map(q => "waiting " + q.class + " x" + q.weight + " " + q.label + " (" + q.age + "s)")].join("\n") || "pool idle";
+  } catch (e) { /* the pool is advisory */ }
+}
+renderPool(); setInterval(renderPool, 5000);
 setInterval(() => { if (S) { renderStage(); const b = S.build || {}; if (b.pin) $("build").textContent = `port of RW ${String(b.pin).slice(0, 9)} · built ${ago(b.built)} · ${fmtText(b)}`; } }, 1000);
 (function fromHash() {  // #work, #decomp, #lanes, #runs or #watch: open that view (links from elsewhere, bookmarks)
   const h = location.hash.slice(1);

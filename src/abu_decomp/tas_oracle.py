@@ -39,7 +39,7 @@ from typing import Any
 from abu_decomp import DecompError, procguard
 from abu_decomp.config import Profile, check_keys
 
-_KEYS = frozenset({"host", "env", "shot_every", "pictures", "timeout_seconds", "rebuild", "pins", "pins_repo"})
+_KEYS = frozenset({"host", "env", "shot_every", "pictures", "timeout_seconds", "rebuild", "lock", "pins", "pins_repo"})
 VIEW, LOG, DIFF = "oracle.bmp", "oracle.txt", "diff.json"
 AUDIO = "audio-oracle.pcm"  # the original's sound, as the port's audio.pcm (+ ".rate")
 PORT_TRACE, ORACLE_TRACE = "port-trace.txt", "oracle-trace.txt"
@@ -67,7 +67,8 @@ def settings(profile: Profile) -> dict[str, Any] | None:
     every = int(table.get("shot_every", 25))
     if every < 1:
         raise DecompError("tas.oracle", f"shot_every is a poll count >= 1, not {every}")
-    stamp = {key: profile.path(f"tas.oracle.{key}", table[key]) for key in ("pins", "pins_repo") if key in table}
+    keys = ("pins", "pins_repo", "lock")
+    stamp = {key: profile.path(f"tas.oracle.{key}", table[key]) for key in keys if key in table}
     return {
         **stamp,
         "rebuild": str(table.get("rebuild", "")),

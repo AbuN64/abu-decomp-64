@@ -69,6 +69,7 @@ from typing import Any
 from abu_decomp import (
     DecompError,
     procguard,
+    slots,
     tas_coverage,
     tas_fault,
     tas_findings,
@@ -164,7 +165,7 @@ def _build(profile: Profile, table: Any) -> dict[str, Any]:
         return {}
     check_keys(profile.source_file, "tas.build", table, frozenset(), tas_health.BUILD_KEYS)
     out = {"rebuild": str(table.get("rebuild", ""))}
-    for key in ("units", "sources", "pins", "pins_repo"):
+    for key in ("units", "sources", "pins", "pins_repo", "lock"):
         if key in table:
             out[key] = profile.path(f"tas.build.{key}", table[key])
     return out
@@ -1099,7 +1100,29 @@ def inspect_files(run: Path, shots_every: int, dump_ram_at: int | None, trace_dr
     return found
 
 
+slots.CANCEL = lambda: _check_play_signal()
+
+
+def _admitted(fn):
+    """Hold the host slot pool while a play runs (module slots): the owner's watched play (no movie, a retry or a
+    take) is class owner and always gets a slot, `slot_class` (play_all passes batch) or ABU_SLOT_CLASS names the
+    rest, a lane's own play is interactive; the oracle beside the port takes a second slot."""
+
+    @functools.wraps(fn)
+    def inner(profile, name, *args, **kwargs):
+        klass = kwargs.pop("slot_class", None)
+        if name is None or kwargs.get("take") or kwargs.get("source") is not None or kwargs.get("label") == HUMAN_LABEL:
+            klass = "owner"
+        weight = 2 if kwargs.get("oracle") else 1
+        what = name or kwargs.get("start") or "human"
+        with slots.hold(klass or "interactive", weight, f"play {what}"):
+            return fn(profile, name, *args, **kwargs)
+
+    return inner
+
+
 @_play_signals
+@_admitted
 def play(
     profile: Profile,
     name: str | None,
@@ -1578,6 +1601,7 @@ def play_all(
     cfg = settings(profile)
     names = sorted(p.stem for p in cfg["movies"].glob("*.tas")) if cfg["movies"].is_dir() else []
     health = tas_health.read(cfg, profile)
+    options.setdefault("slot_class", "batch")
     options.setdefault("batch", _stamp(now) + "-all")  # the findings of this run share one batch id
     began, cpu0 = time.monotonic(), resource.getrusage(resource.RUSAGE_CHILDREN)
 

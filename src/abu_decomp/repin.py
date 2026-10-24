@@ -159,9 +159,9 @@ def checkout_fetched(run: Run, pin: dict[str, Any], sha: str) -> str | None:
 
 
 def rebuild_page(profile: Profile, run: Run, tree: Path) -> dict[str, Any] | None:
-    """The page port's incremental rebuild (`tas.build.rebuild`) when no replay is live; {"skipped": why} otherwise.
-    None when the profile has no tas build command. A running replay holds the binary, so it is never rebuilt under
-    one."""
+    """The page port's incremental rebuild (`tas.build.rebuild`). None when the profile has no tas build command.
+    Live replays are never in the way: the rebuild publishes by an atomic swap (page-port.py), running plays keep
+    their binary and new plays use the previous one until the swap."""
     from abu_decomp import tas
     from abu_decomp.config import ConfigError
 
@@ -172,9 +172,6 @@ def rebuild_page(profile: Profile, run: Run, tree: Path) -> dict[str, Any] | Non
     command = cfg["build"].get("rebuild")
     if not command:
         return None
-    live = [row["id"] for _, row in tas.run_rows(cfg) if row.get("status") == "running"]
-    if live:
-        return {"skipped": f"replay live ({', '.join(live[:3])}); rerun this verb when it ends", "command": command}
     code, out, err = run(["nice", "-n", "10", *shlex.split(command)], tree, None, 900)
     result: dict[str, Any] = {"command": command, "exit": code}
     if code:

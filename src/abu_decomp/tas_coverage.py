@@ -39,7 +39,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas_oracle, tas_symbolize
+from abu_decomp import DecompError, slots, tas_oracle, tas_symbolize
 from abu_decomp.config import Profile, check_keys
 
 COVERAGE, GCOV, ORACLE_DIR, TABLE, HTML = "coverage.json", "gcov", "oracle-golden", "coverage-table.json", "coverage"
@@ -175,6 +175,7 @@ def mixed_builds(by_build: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
     return out
 
 
+@slots.admitted("background")
 def gcovr(args: list[str], cwd: Path, timeout: float = 600) -> None:
     """Run gcovr (the decomp venv's own pinned copy); a failure is a DecompError carrying its last lines.
 
@@ -287,6 +288,7 @@ def behaviour(port: dict[str, int], bracket: tuple[dict[str, int], dict[str, int
     return out
 
 
+@slots.admitted("background")
 def run_oracle(profile: Profile, cfg: dict[str, Any], run: Path, record: dict[str, Any]) -> bool:
     """Replay the run's movie in the original game (the `tas.oracle` host, as `tas play --oracle` does) with the host's
     golden dir on, so it writes RUN/oracle-golden/trace-final.tsv: every function it entered, first VI and count.

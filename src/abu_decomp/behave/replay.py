@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, procguard, tas, tas_coverage, tas_oracle
+from abu_decomp import DecompError, procguard, slots, tas, tas_coverage, tas_oracle
 from abu_decomp.behave import prototype
 from abu_decomp.config import Profile
 
@@ -150,6 +150,7 @@ def oracle_host(profile: Profile, options: Options) -> dict[str, Any]:
     return oracle
 
 
+@slots.admitted("batch")
 def record_movie(
     profile: Profile, cfg: dict[str, Any], oracle: dict[str, Any], name: str, options: Options
 ) -> dict[str, Any]:
@@ -614,6 +615,7 @@ def _source(profile: Profile, options: Options) -> Path:
     return Path(profile.section("tools")["project"])
 
 
+@slots.admitted("batch")
 def run_port(
     cfg: dict[str, Any], port: Path, run: Path, pak: str, cases: list[Case]
 ) -> tuple[dict[str, Outcome], dict[str, Any]]:

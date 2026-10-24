@@ -19,7 +19,7 @@ from typing import Any
 
 from abu_decomp import DecompError, tas_triage
 
-BUILD_KEYS = frozenset({"units", "sources", "rebuild", "pins", "pins_repo"})
+BUILD_KEYS = frozenset({"units", "sources", "rebuild", "pins", "pins_repo", "lock"})
 
 
 def failed_units(units: Path) -> list[dict[str, str]]:
@@ -47,6 +47,22 @@ def newest_source(listing: Path) -> tuple[float, str] | None:
     return newest
 
 
+def building(lock: Any) -> bool:
+    """True while page-port.py ensure holds its lock (a rebuild is in progress; it publishes the new binary by an atomic
+    swap, so plays started meanwhile use the previous one instead of being refused)."""
+    import fcntl
+
+    try:
+        with open(lock, "rb") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def pins_lag(build: dict[str, Any], key: str = "rage_ports", what: str = "page port", tree: str = "rage-ports") -> str:
     """Empty when the binary was built at its tree's HEAD (or no stamp is configured), else why not. The stamp holds
     the built sha under `key`; the page port (rage-ports) and the page oracle (cake_taste) share this check."""
@@ -62,6 +78,8 @@ def pins_lag(build: dict[str, Any], key: str = "rage_ports", what: str = "page p
     now = done.stdout.strip()
     if done.returncode or not now or built == now:
         return ""
+    if build.get("lock") and building(build["lock"]) and built:
+        return ""  # the rebuild is running: the last published binary stays valid for new plays until the swap
     return f"{what} older than pins: built at {tree} {built[:9] or 'unknown'}, pins are at {now[:9]}"
 
 

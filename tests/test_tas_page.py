@@ -21,6 +21,7 @@ CONTRACT = {
     "/api/runs",
     "/api/pin",
     "/api/coverage",
+    "/api/pool",
     "/api/maze",
     "/api/calls/",
     "/fn/",

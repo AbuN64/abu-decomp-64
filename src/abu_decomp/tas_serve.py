@@ -286,6 +286,21 @@ class Server:
             "triage": self.triage.view(),
         }
 
+    def pool(self) -> dict[str, Any]:
+        """The host slot pool (module slots): who holds which slots, who waits, and the last landed->live seconds
+        (page-port.py's landings.jsonl beside the runs folder)."""
+        from abu_decomp import slots
+
+        out = slots.status()
+        rows = []
+        try:
+            lines = (Path(self.cfg["runs"]).parent / "landings.jsonl").read_text().splitlines()[-20:]
+            rows = [json.loads(line) for line in lines if line.strip()]
+        except (OSError, ValueError, KeyError):
+            pass
+        out["landings"] = rows[-5:]
+        return out
+
     def coverage(self) -> dict[str, Any]:
         """The game-code coverage table (runs/coverage.json, written by `tas play --all` / `tas coverage`): the summary
         and the two lists that drive work. {} when no table exists yet."""
@@ -1014,6 +1029,8 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.json(server.state(), volatile=("now",))
                 elif path == "/api/coverage":
                     self.json(server.coverage())
+                elif path == "/api/pool":
+                    self.json(server.pool())
                 elif path == "/api/corpus":
                     self.json(server.corpus())
                 elif path == "/api/points":

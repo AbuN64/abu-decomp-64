@@ -203,16 +203,16 @@ class PortTreeTests(unittest.TestCase):
         self.assertEqual(self.commands, [["nice", "-n", "10", "cmake", "--build", "page", "--target", "ragewars"]])
         self.assertEqual(result["page_build"]["exit"], 0)
 
-    def test_repin_leaves_the_page_port_alone_while_a_replay_is_live(self) -> None:
+    def test_repin_rebuilds_the_page_port_while_a_replay_is_live(self) -> None:
         profile, fetched = self.page_profile()
         live = self.root / "runs" / "plays" / "r1"
         live.mkdir()
         (live / "run.json").write_text(json.dumps({"id": "r1", "status": "running", "pid": os.getpid()}))
         with mock.patch.object(tas, "read_record", return_value={"id": "r1", "status": "running", "pid": os.getpid()}):
             result, code, _ = repin.repin(profile, self.tree, None, self.runner)
-        self.assertEqual(code, 0)
-        self.assertIn("replay live", result["page_build"]["skipped"])
-        self.assertEqual(self.commands, [])
+        self.assertEqual(code, 0)  # the rebuild publishes by an atomic swap: a live replay is never in its way
+        self.assertEqual(result["page_build"]["exit"], 0)
+        self.assertEqual(self.commands, [["nice", "-n", "10", "cmake", "--build", "page", "--target", "ragewars"]])
         self.assertEqual(git(fetched, "rev-parse", "HEAD").strip(), self.pin2)
 
     def test_repin_reports_a_failed_page_rebuild_and_no_rebuild_skips_it(self) -> None:
