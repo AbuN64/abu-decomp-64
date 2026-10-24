@@ -29,6 +29,39 @@ def expand_units(tree: Path, version: str, files: list[str], run=subprocess.run)
     return sorted(set(units) | set(header_dependents(tree, version, heads, run)))
 
 
+def changed_symbols(cfg: DataConfig, tree: Path, run=subprocess.run) -> list[str]:
+    """Data symbols named on a changed line of the working diff (a declaration retyped, a use rewritten)."""
+    diff = run(["git", "-C", str(tree), "diff", "-U0"], capture_output=True, text=True).stdout
+    token = re.compile(r"\b" + cfg.symbol_token)
+    lines = [x[1:] for x in diff.splitlines() if x[:1] in "+-" and x[:3] not in ("+++", "---")]
+    return sorted({m.group(0) for line in lines for m in token.finditer(line)})
+
+
+def referencing_units(cfg: DataConfig, tree: Path, symbols: list[str], run=subprocess.run) -> list[str]:
+    """Every source unit that names one of SYMBOLS, changed or not: a declaration that changed in one file breaks an
+    unchanged unit that still declares or uses the old type (10-24 WATCH-1527: a DE unit the check never rebuilt)."""
+    if not symbols:
+        return []
+    suffixes = tuple(cfg.source_suffixes)
+    cmd = ["grep", "-rlwF", *[a for s in symbols for a in ("-e", s)], *cfg.source_dirs]
+    out = run(cmd, cwd=tree, capture_output=True, text=True).stdout.split()
+    return sorted(
+        u for u in out if u.lower().endswith(suffixes) and u.startswith("src/") and not u.lower().endswith(".h")
+    )
+
+
+def in_version(cfg: DataConfig, tree: Path, version: str, units: list[str]) -> list[str]:
+    """UNITS the version builds (rows of its map): a unit only another version holds has no rule here."""
+    try:
+        import json
+
+        rows = json.loads((tree / cfg.path(cfg.map_file, version)).read_text())["fns"]
+    except (OSError, ValueError, KeyError):
+        return units
+    held = {r[cfg.map_columns["unit"]] for r in rows}
+    return [u for u in units if u in held]
+
+
 def changed_units(tree: Path, run=subprocess.run, version: str = "") -> list[str]:
     out = run(["git", "-C", str(tree), "diff", "--name-only"], capture_output=True, text=True).stdout.split()
     return expand_units(tree, version, out, run) if version else [u for u in out if u.startswith("src/")]
@@ -58,16 +91,44 @@ def broken(b: Builder, version: str, units: list[str]) -> list[tuple[str, str, s
     return bad
 
 
+def failures(b: Builder, version: str, units: list[str], log: str) -> dict[str, str]:
+    """unit -> its first compile error, for each unit a keep-going build left without an object."""
+    out: dict[str, str] = {}
+    for unit in units:
+        obj = b.cfg.object.format(v=version, unit=unit)
+        if not any(obj in line and "Error" in line for line in log.splitlines()):
+            continue
+        mine = [x for x in log.splitlines() if unit in x and re.search(r"error", x, re.I)]
+        out[unit] = (mine or [x for x in log.splitlines() if re.search(r"error", x, re.I)] or ["build failed"])[
+            0
+        ].strip()[:300]
+    return out
+
+
 def check(b: Builder, version: str, units: list[str] | None = None) -> dict:
-    units = units if units is not None else changed_units(b.tree, b.run, version)
+    """Rebuild the units a working diff reaches in VERSION (changed units, includers of changed headers, and every unit
+    naming a changed data symbol) with `make -k`: a unit that fails to compile is listed with its own error and does not
+    hide the rest; the exact functions of the units that built are scored."""
+    if units is None:
+        units = changed_units(b.tree, b.run, version)
+        units = sorted(set(units) | set(referencing_units(b.cfg, b.tree, changed_symbols(b.cfg, b.tree, b.run), b.run)))
+    units = in_version(b.cfg, b.tree, version, units)
     if not units:
         return {"version": version, "units": 0, "built": True, "broken": []}
-    rc, log = b.objects(version, units)
-    if rc:
+    rc, log = b.objects(version, units, keep_going=True)
+    failed = failures(b, version, units, log)
+    if rc and not failed:  # make failed with no unit named (a missing rule, a toolchain error): nothing can be judged
         errs = [x for x in log.splitlines() if re.search(r"error", x, re.I)][:5]
         return {"version": version, "units": len(units), "built": False, "broken": [], "errors": errs}
-    bad = broken(b, version, units)
-    return {"version": version, "units": len(units), "built": True, "broken": [list(x) for x in bad]}
+    bad = broken(b, version, [u for u in units if u not in failed])
+    return {
+        "version": version,
+        "units": len(units),
+        "built": not failed,
+        "broken": [list(x) for x in bad],
+        "failed": [[u, why] for u, why in sorted(failed.items())],
+        **({"errors": [f"{u}: {why}" for u, why in sorted(failed.items())][:8]} if failed else {}),
+    }
 
 
 def mixed_loop(

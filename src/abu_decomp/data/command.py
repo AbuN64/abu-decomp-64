@@ -57,7 +57,7 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     r.add_argument("header", nargs="?")
     k = sub.add_parser("check", help="build the changed units and list every exact function that stopped matching")
     k.add_argument("--tree", type=Path, required=True)
-    k.add_argument("--version", action="append", default=[], help="repeat; default the reference version")
+    k.add_argument("--version", action="append", default=[], help="repeat; default every version of the config")
     k.add_argument("--unit", action="append", default=[])
     g = sub.add_parser(
         "gate", help="refuse a diff that re-adds a raw member extern or a kind-conflicting decl; tree ratchet"
@@ -86,13 +86,16 @@ def run(args: argparse.Namespace) -> Result:
         return _rewrite(args, cfg)
     if verb == "check":
         b = trial.Builder(cfg, args.tree)
-        results = [check_mod.check(b, v, args.unit or None) for v in (args.version or [cfg.reference])]
+        results = [check_mod.check(b, v, args.unit or None) for v in (args.version or list(cfg.versions))]
         findings = [
             {"key": "data.check", "blocking": True, "message": f"{r['version']}: {u} {fn} {why}"}
             for r in results for u, fn, why in r["broken"]
         ] + [
+            {"key": "data.build", "blocking": True, "message": f"{r['version']}: {u} does not compile: {why}"}
+            for r in results for u, why in r.get("failed", [])
+        ] + [
             {"key": "data.build", "blocking": True, "message": f"{r['version']}: build failed: {'; '.join(r.get('errors', []))}"}
-            for r in results if not r["built"]
+            for r in results if not r["built"] and not r.get("failed")
         ]  # fmt: skip
         return {"results": results}, 1 if findings else 0, findings
     return _gate(args, cfg)

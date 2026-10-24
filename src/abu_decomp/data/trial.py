@@ -43,17 +43,17 @@ class Builder:
         )
         return r.returncode, (r.stdout or "")[-3000:] + (r.stderr or "")[-3000:]
 
-    def objects(self, version: str, units: list[str]) -> tuple[int, str]:
+    def objects(self, version: str, units: list[str], keep_going: bool = False) -> tuple[int, str]:
         env = dict(os.environ, **{k: expand(v) for k, v in self.cfg.make_env.items()})
         objs = [self.cfg.object.format(v=version, unit=u) for u in units]
         r = self.run(
-            ["nice", *map(expand, self.cfg.make), f"-j{self.jobs()}", *objs],
+            ["nice", *map(expand, self.cfg.make), f"-j{self.jobs()}", *(["-k"] if keep_going else []), *objs],
             cwd=self.tree,
             capture_output=True,
             text=True,
             env=env,
         )
-        return r.returncode, (r.stdout or "")[-3000:] + (r.stderr or "")[-3000:]
+        return r.returncode, (r.stdout or "")[-60000:] + (r.stderr or "")[-60000:]
 
     def score(self, version: str, fn: str, unit: str) -> int | None:
         """fncmp edit count of FN's object (0 = exact), None when fncmp printed no count."""
