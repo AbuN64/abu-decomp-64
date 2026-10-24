@@ -3,6 +3,7 @@
  * original C boots from the extracted cart. Project facts and link bindings are generated from the input manifest;
  * no guest code, data layout or hardware address is inferred here. */
 #define _GNU_SOURCE
+#include "n64c_prof.h"
 #include "boot.h"
 #include "frame.h"
 #include "install/inst.h"
@@ -251,6 +252,7 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
         n64c_shutdown();
         return EXIT_RUNTIME;
     }
+    N64C_PROFILE_START();
     for (size_t i=0;i<n64c_boot_image_count;i++) {
         const N64cBootImage *part=&n64c_boot_image[i];
         void *destination=n64c_memory_ram(part->ram,part->bytes);
