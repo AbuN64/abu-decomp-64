@@ -16,7 +16,6 @@ from __future__ import annotations
 import itertools
 import random
 import re
-import struct
 from pathlib import Path
 from typing import Any
 
@@ -110,7 +109,7 @@ def _members(body: str) -> list[int]:
         label = label.strip()
         if expr.strip():
             try:
-                nxt = int(eval(expr.strip(), {"__builtins__": {}}, dict(known)))  # noqa: S307 - names/literals only
+                nxt = int(eval(expr.strip(), {"__builtins__": {}}, dict(known)))
             except Exception:
                 return values
         known[label] = nxt
@@ -121,6 +120,13 @@ def _members(body: str) -> list[int]:
 
 def _signed(value: int, bits: int) -> int:
     return value - (1 << bits) if value >= 1 << (bits - 1) else value
+
+
+def _extend(value: int, bits: int, signed: bool) -> int:
+    """A narrow value as the 32-bit register holds it (sign-extended when signed)."""
+    if not signed or bits == 32:
+        return value & 0xFFFFFFFF
+    return _signed(value & ((1 << bits) - 1), bits) & 0xFFFFFFFF
 
 
 def _mix(*groups: list[int]) -> list[int]:
@@ -139,7 +145,7 @@ def _between(seen: list[int], bits: int, signed: bool) -> list[int]:
     key = (lambda v: _signed(v, bits)) if signed else (lambda v: v)
     ordered = sorted(set(seen), key=key)
     out = []
-    for low, high in zip(ordered, ordered[1:], strict=False):
+    for low, high in itertools.pairwise(ordered):
         a, b = key(low), key(high)
         out += [(a + 1) & mask, (b - 1) & mask, ((a + b) // 2) & mask]
     return out
@@ -183,8 +189,7 @@ def _factors(real: list[dict[str, Any]], results: list[dict[str, Any]], image: _
         else:
             bits = {"int8": 8, "uint8": 8, "int16": 16, "uint16": 16}.get(kind, 32)
             signed = kind.startswith("int")
-            ext = (lambda v, b=bits, s=signed: v & 0xFFFFFFFF if not s or b == 32 else _signed(v & ((1 << b) - 1), b) & 0xFFFFFFFF)
-            domain = _mix(seen, [ext(v) for v in _integer([v & ((1 << bits) - 1) for v in seen], bits, signed,
+            domain = _mix(seen, [_extend(v, bits, signed) for v in _integer([v & ((1 << bits) - 1) for v in seen], bits, signed,
                                                           _enum_members(project, headers, slot.param.ctype))])
         out.append({"kind": "arg", "name": slot.param.name, "register": key, "domain": domain,
                     "bits": 64 if kind == "double" else 32})
@@ -260,7 +265,7 @@ def generate(
         report["mode"] = "single+pairwise"
         none = (None,) * len(factors)
         for i, domain in enumerate(domains):
-            rows += [none[:i] + (v,) + none[i + 1 :] for v in domain]
+            rows += [(*none[:i], v, *none[i + 1 :]) for v in domain]
         rng = random.Random(SEED)
         rows += [tuple(domains[i][j] for i, j in enumerate(r)) for r in inputs.pairwise(domains, rng, budget)]
     generated: list[dict[str, Any]] = []

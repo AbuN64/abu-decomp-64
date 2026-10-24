@@ -434,7 +434,8 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         if options.capture and options.seeded is None
         else (None, None)
     )
-    options = replace(options, reach=options.reach or own or ({"unreplayable": True} if no_movie and no_movie.get("reach") else None))
+    unreplayable = {"unreplayable": True} if no_movie and no_movie.get("reach") else None
+    options = replace(options, reach=options.reach or own or unreplayable)
     crash = options.fault_arguments
     if no_movie:
         from abu_decomp.behave import crash as crash_inputs

@@ -4,7 +4,6 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from typing import ClassVar
 from unittest import mock
 
 from abu_decomp import tools

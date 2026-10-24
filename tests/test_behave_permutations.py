@@ -4,10 +4,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from abu_decomp.behave import compare, permutations, prototype
+from abu_decomp.behave import permutations, prototype
 
 PROTO = prototype.Prototype(
-    "f", "int", "int32", (prototype.Param("ptr", "void *", "pointer"), prototype.Param("n", "int", "int32")), False, "t.h:1"
+    "f",
+    "int",
+    "int32",
+    (prototype.Param("ptr", "void *", "pointer"), prototype.Param("n", "int", "int32")),
+    False,
+    "t.h:1",
 )
 
 
