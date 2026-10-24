@@ -242,6 +242,8 @@ def acquire(klass: str = "batch", weight: int = 1, label: str = "", timeout: flo
 
 
 def klass_from_env(default: str) -> str:
+    if default == "owner":  # the owner's watched play is never downgraded by a lane's environment
+        return default
     value = os.environ.get("ABU_SLOT_CLASS", default)
     return value if value in CLASSES else default
 
