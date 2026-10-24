@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 from abu_decomp import DecompError, cli, sweep
 
@@ -236,6 +237,88 @@ class FindingsAndCliTests(unittest.TestCase):
         self.assertEqual((code, envelope["result"]["baseline_written"]), (1, 1))  # judged before it was written
         code, envelope, _ = call([])
         self.assertEqual((code, envelope["result"]["rules"][0]["new"]), (0, 0))
+
+
+SPELLING = """
+[[rule]]
+id = "spelling"
+kind = "return-spelling"
+why = "w"
+paths = ["**/*.c", "**/*.h"]
+"""
+ALIAS = """
+[[rule]]
+id = "alias"
+kind = "word-alias"
+why = "w"
+paths = ["**/*.c", "**/*.h"]
+declare_paths = ["data/*.c"]
+symbols = "syms.txt"
+defines = ["VERSION_X"]
+array = '^(?:unsigned int|u32)\\s+(?P<datum>\\w+)\\s*\\[(?P<count>\\d+)\\]\\s*='
+narrow = '^extern\\s+(?:u8|u16|short)\\s+(?P<datum>\\w+)'
+"""
+
+
+class ReturnSpellingTests(unittest.TestCase):
+    def hits(self, files):
+        return Tree(files).sweep(SPELLING)["hits"]
+
+    def test_a_call_with_the_result_pointer_of_a_by_value_function_is_a_hit(self):
+        hits = self.hits(
+            {
+                "def.c": "CQuatern look(char *actor) {\n  CQuatern q;\n  return q;\n}\n",
+                "use.c": "void user(void) {\n  CQuatern q;\n  q = look(a);\n  look(&q, a);\n}\n",
+            }
+        )
+        self.assertEqual([(h["line"], h["fn"], h["callers"]) for h in hits], [(4, "look", ["user"])])
+        self.assertIn("returns CQuatern by value", hits[0]["detail"])
+
+    def test_a_void_declaration_of_a_by_value_function_is_a_hit(self):
+        hits = self.hits(
+            {
+                "def.c": "CVector3 spot(float t) {\n  CVector3 v;\n  return v;\n}\n",
+                "use.h": "extern void spot(CVector3 *, float);\n",
+            }
+        )
+        self.assertEqual([(h["file"], h["line"]) for h in hits], [("use.h", 1)])
+
+    def test_a_by_value_declaration_of_an_out_pointer_function_is_a_hit(self):
+        hits = self.hits(
+            {
+                "def.c": "CQuatern *tilt(CQuatern *out, char *in) {\n  return out;\n}\n",
+                "use.c": "extern CQuatern tilt(char *);\nextern CQuatern *tilt(CQuatern *, char *);\n",
+            }
+        )
+        self.assertEqual([(h["file"], h["line"]) for h in hits], [("use.c", 1)])
+
+    def test_scalars_pointers_and_consistent_spellings_are_not_hits(self):
+        hits = self.hits(
+            {
+                "a.c": "int one(int a) {\n  return a;\n}\nCQuatern two(char *a) {\n  CQuatern q;\n  return q;\n}\n"
+                "extern CQuatern two(char *);\nextern int one(int);\n"
+                "void g(void) {\n  CQuatern q = two(a);\n  one(1);\n}\n"
+            }
+        )
+        self.assertEqual(hits, [])
+
+
+class WordAliasTests(unittest.TestCase):
+    FILES: ClassVar[dict[str, str]] = {
+        "syms.txt": "table = 0x80100000;\nhalf = 0x80100006;\nlonely = 0x80200000;\nbyte = 0x80100000;\n",
+        "data/80100000.c": "unsigned int table[4] = {\n 1, 2, 3, 4\n};\n",
+        "use.h": "extern u16 half[];\nextern u16 lonely;\nextern u8 byte;\nextern int nothing;\n",
+    }
+
+    def test_a_narrow_extern_inside_a_word_array_is_a_hit(self):
+        hits = Tree(self.FILES).sweep(ALIAS)["hits"]
+        self.assertEqual([(h["datum"], h["line"]) for h in hits], [("half", 1), ("byte", 3)])
+        self.assertIn("lies inside the word array table", hits[0]["detail"])
+
+    def test_units_for_other_versions_do_not_count(self):
+        files = dict(self.FILES)
+        files["data/80100000.c"] = "#if defined(VERSION_Y)\nunsigned int table[4] = {\n 1, 2, 3, 4\n};\n#endif\n"
+        self.assertEqual(Tree(files).sweep(ALIAS)["hits"], [])
 
 
 if __name__ == "__main__":

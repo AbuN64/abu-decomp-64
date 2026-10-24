@@ -12,6 +12,19 @@ The engine is generic and names no project: the rules are project facts, TOML fi
               call-arity `callee` (regex, default every name) selects the functions whose definition is read from the
                          paths; a call with fewer arguments than the definition has parameters (`mode = "fewer"`, or
                          `"any"` for a different count) is a hit: a dropped argument
+              return-spelling  a function defined to return a struct by value (`returns`, regex of the type names,
+                         default a capitalised name; `callee` selects the functions) and spelled the other way:
+                         a call with the hidden result pointer as an explicit first argument, or a declaration that says
+                         void or a pointer. MIPS passes the hidden pointer where a first parameter goes, so the
+                         original mixes both; a native 32-bit host pops the hidden pointer in the callee (ret $4), so
+                         the other spelling leaves the stack 4 bytes off. The reverse (a declaration by value of a
+                         function defined with a result pointer) is a hit too
+              word-alias `symbols` (a file of `NAME = 0xADDRESS;` lines per tree, relative to the tree), `array`
+                         (regex, named group `datum`: the word arrays a data unit defines; the unit's address is the
+                         hex in its file name, arrays follow each other) and `narrow` (regex, named group `datum`: a
+                         byte or halfword extern): a narrow extern whose address lies inside a word array. Big-endian
+                         reads the low bytes of a word at +1..+3, a little-endian host reads other bytes. `defines`
+                         lists the macros that count as set when the units' #if lines are evaluated
     why       one sentence: the failure this finds and where it was first seen
     severity  "report" (default) or "block"; only a new block hit fails the exit status
     trees     tree labels the rule reads (default every tree); paths / skip: globs relative to a tree root
@@ -39,7 +52,7 @@ from typing import Any
 
 from abu_decomp import DecompError
 
-KINDS = ("pattern", "decl-use", "call-arity")
+KINDS = ("pattern", "decl-use", "call-arity", "return-spelling", "word-alias")
 SEVERITIES = ("report", "block")
 _KEYS = frozenset(
     {
@@ -58,6 +71,11 @@ _KEYS = frozenset(
         "use",
         "callee",
         "mode",
+        "returns",
+        "symbols",
+        "array",
+        "narrow",
+        "defines",
     }
 )
 _COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
@@ -69,6 +87,100 @@ _DEF = re.compile(
 )
 _CALL_KEYWORDS = frozenset({"return", "else", "case", "do", "goto", "sizeof"})
 _NOT_FUNCTIONS = frozenset({"if", "while", "for", "switch", "return", "sizeof", "defined"})
+
+
+_QUALIFIERS = frozenset({"extern", "static", "inline", "const", "volatile", "register", "struct", "enum", "union"})
+_SCALARS = frozenset(
+    {
+        "void",
+        "int",
+        "long",
+        "short",
+        "char",
+        "float",
+        "double",
+        "unsigned",
+        "signed",
+        "s8",
+        "u8",
+        "s16",
+        "u16",
+        "s32",
+        "u32",
+        "s64",
+        "u64",
+        "f32",
+        "f64",
+        "bool",
+        "size_t",
+    }
+)
+_DECL = re.compile(
+    r"^(?P<head>[A-Za-z_][\w \t\*]*?)\b(?P<name>[A-Za-z_]\w*)\s*"
+    r"\((?P<params>[^;{}()]*(?:\([^;{}()]*\)[^;{}()]*)*)\)\s*;",
+    re.M,
+)
+
+
+def _value_type(words: list[str], returns: re.Pattern[str]) -> str | None:
+    """The struct type a head returns by value: its last word matches `returns`, is no scalar, and has no star."""
+    if not words or "*" in words:
+        return None
+    last = words[-1]
+    if last in _SCALARS or not returns.fullmatch(last):
+        return None
+    return last
+
+
+def _symbol_table(path: Path) -> dict[str, int]:
+    out: dict[str, int] = {}
+    try:
+        for line in path.read_text(errors="replace").splitlines():
+            m = re.match(r"\s*(\w+)\s*=\s*0x([0-9A-Fa-f]+)", line)
+            if m:
+                out[m[1]] = int(m[2], 16)
+    except OSError:
+        pass
+    return out
+
+
+def _kept_lines(text: str, defines: set[str]) -> list[str]:
+    """The text a preprocessor keeps when exactly `defines` are set, as one string per kept run of lines."""
+    stack: list[list[bool]] = []
+    kept: list[str] = []
+
+    def value(expr: str) -> bool:
+        e = re.sub(r"defined\s*\(\s*(\w+)\s*\)", lambda m: str(m[1] in defines), expr)
+        e = re.sub(r"defined\s+(\w+)", lambda m: str(m[1] in defines), e)
+        e = re.sub(r"\b(?!True\b|False\b)[A-Za-z_]\w*\b", "False", e)
+        e = e.replace("&&", " and ").replace("||", " or ").replace("!", " not ")
+        try:
+            return bool(eval(e, {"__builtins__": {}}))
+        except Exception:
+            return False
+
+    for line in text.split("\n"):
+        t = line.strip()
+        if t.startswith("#ifdef"):
+            v = t.split()[1] in defines
+            stack.append([v, v])
+        elif t.startswith("#ifndef"):
+            v = t.split()[1] not in defines
+            stack.append([v, v])
+        elif t.startswith("#if"):
+            v = value(t[3:])
+            stack.append([v, v])
+        elif t.startswith("#elif") and stack:
+            v = (not stack[-1][0]) and value(t[5:])
+            stack[-1] = [stack[-1][0] or v, v]
+        elif t.startswith("#else") and stack:
+            v = not stack[-1][0]
+            stack[-1] = [True, v]
+        elif t.startswith("#endif") and stack:
+            stack.pop()
+        elif all(x[1] for x in stack):
+            kept.append(line)
+    return ["\n".join(kept)]
 
 
 def _glob(pattern: str) -> re.Pattern[str]:
@@ -108,7 +220,13 @@ class Rule:
         self.declare_paths = [_glob(str(p)) for p in table["declare_paths"]] if "declare_paths" in table else self.paths
         self.multiline = bool(table.get("multiline", False))
         self.mode = str(table.get("mode", "fewer"))
-        needs = {"pattern": ("match",), "decl-use": ("declare", "use"), "call-arity": ()}[self.kind]
+        needs = {
+            "pattern": ("match",),
+            "decl-use": ("declare", "use"),
+            "call-arity": (),
+            "return-spelling": (),
+            "word-alias": ("symbols", "array", "narrow"),
+        }[self.kind]
         for key in needs:
             if not isinstance(table.get(key), str):
                 raise DecompError("sweep.rule", f"{origin}: rule {self.id} ({self.kind}) needs `{key}`")
@@ -119,10 +237,19 @@ class Rule:
             self.declare = re.compile(table["declare"]) if "declare" in table else None
             self.use = re.compile(table["use"]) if "use" in table else None
             self.callee = re.compile(str(table.get("callee", r"\w+")))
+            self.returns = re.compile(str(table.get("returns", r"[A-Z]\w*")))
+            self.array = re.compile(table["array"], re.M) if "array" in table else None
+            self.narrow = re.compile(table["narrow"], re.M) if "narrow" in table else None
+            self.symbols = str(table.get("symbols", ""))
+            self.defines = {str(d) for d in table.get("defines", [])}
         except re.error as error:
             raise DecompError("sweep.rule", f"{origin}: rule {self.id}: {error}") from error
         if self.kind == "decl-use":
             for name, rx in (("declare", self.declare), ("use", self.use)):
+                if rx is not None and "datum" not in rx.groupindex:
+                    raise DecompError("sweep.rule", f"{origin}: rule {self.id}: `{name}` needs a (?P<datum>...) group")
+        if self.kind == "word-alias":
+            for name, rx in (("array", self.array), ("narrow", self.narrow)):
                 if rx is not None and "datum" not in rx.groupindex:
                     raise DecompError("sweep.rule", f"{origin}: rule {self.id}: `{name}` needs a (?P<datum>...) group")
         if self.mode not in ("fewer", "any"):
@@ -317,6 +444,10 @@ class Sweep:
             return self._pattern(rule)
         if rule.kind == "decl-use":
             return self._decl_use(rule)
+        if rule.kind == "return-spelling":
+            return self._return_spelling(rule)
+        if rule.kind == "word-alias":
+            return self._word_alias(rule)
         return self._call_arity(rule)
 
     def _pattern(self, rule: Rule) -> list[dict[str, Any]]:
@@ -358,6 +489,130 @@ class Sweep:
                     if not (rule.unless and rule.unless.search(src.raw_lines[number - 1])):
                         hits.append(self.hit(rule, src, number, datum=m["datum"], declared=names[m["datum"]]))
                         break
+        return hits
+
+    def _return_spelling(self, rule: Rule) -> list[dict[str, Any]]:
+        by_value: dict[str, tuple[str, int | None, str]] = {}  # name -> (type, parameter count, where)
+        other: dict[str, str] = {}  # names defined with any other return spelling
+        for src in self.selected(rule, rule.declare_paths):
+            for m in _DEF.finditer(src.text):
+                name = m["name"]
+                if name in _NOT_FUNCTIONS or not rule.callee.fullmatch(name):
+                    continue
+                words = [w for w in re.split(r"[\s]+", m["head"].replace("*", " * ")) if w and w not in _QUALIFIERS]
+                kind = _value_type(words, rule.returns)
+                where = f"{src.rel}:{src.line_of(m.start('name'))}"
+                if kind:
+                    by_value.setdefault(name, (kind, _count_params(m["params"]), where))
+                else:
+                    other.setdefault(name, where)
+        mixed = {n for n in by_value if n in other}
+        hits = []
+        for src in self.selected(rule):
+            own = {(line, name) for line, name, _ in src.definitions()}
+            for m in _IDENT_CALL.finditer(src.text):
+                name = m[1]
+                if name not in by_value or name in mixed or not _is_call(src.text, m.start(1)):
+                    continue
+                kind, want, where = by_value[name]
+                counted = _call_args(src.text, m.end() - 1)
+                if counted is None or want is None or counted[0] != want + 1:
+                    continue
+                line = src.line_of(m.start(1))
+                if (line, name) in own:
+                    continue
+                caller = src.function_at(line)
+                hits.append(
+                    self.hit(
+                        rule,
+                        src,
+                        line,
+                        fn=name,
+                        callers=[caller] if caller else None,
+                        declared=where,
+                        detail=f"{name} returns {kind} by value ({where}); this call passes the result pointer itself",
+                    )
+                )
+            for m in _DECL.finditer(src.text):
+                name = m["name"]
+                if name in by_value and name not in mixed:
+                    kind, want, where = by_value[name]
+                    words = [w for w in re.split(r"[\s]+", m["head"].replace("*", " * ")) if w and w not in _QUALIFIERS]
+                    if _value_type(words, rule.returns) is None and not m["head"].rstrip().endswith(("=", ",")):
+                        hits.append(
+                            self.hit(
+                                rule,
+                                src,
+                                src.line_of(m.start("name")),
+                                fn=name,
+                                declared=where,
+                                detail=f"{name} returns {kind} by value ({where}); declared {' '.join(words) or 'int'}",
+                            )
+                        )
+                elif name in other and name not in by_value:
+                    words = [w for w in re.split(r"[\s]+", m["head"].replace("*", " * ")) if w and w not in _QUALIFIERS]
+                    kind = _value_type(words, rule.returns)
+                    if kind and not m["head"].rstrip().endswith(("=", ",")):
+                        hits.append(
+                            self.hit(
+                                rule,
+                                src,
+                                src.line_of(m.start("name")),
+                                fn=name,
+                                declared=other[name],
+                                detail=(
+                                    f"{name} is defined with a result pointer ({other[name]});"
+                                    f" declared returning {kind} by value"
+                                ),
+                            )
+                        )
+        return hits
+
+    def _word_alias(self, rule: Rule) -> list[dict[str, Any]]:
+        assert rule.array is not None and rule.narrow is not None
+        hits = []
+        for label in rule.trees or sorted(self.trees):
+            root = self.trees[label]
+            symbols = _symbol_table(root / rule.symbols)
+            ranges: list[tuple[int, int, str, str]] = []
+            for src in self.selected(rule, rule.declare_paths):
+                if src.tree != label:
+                    continue
+                base_match = re.search(r"([0-9A-Fa-f]{8})", Path(src.rel).name)
+                pos = int(base_match[1], 16) if base_match else None
+                for text in _kept_lines(src.text, rule.defines):
+                    for m in rule.array.finditer(text):
+                        size = int(m["count"]) if "count" in m.re.groupindex and m["count"] else 0
+                        width = 4
+                        at = symbols.get(m["datum"], pos)
+                        if at is None or not size:
+                            continue
+                        ranges.append((at, at + width * size, m["datum"], src.rel))
+                        pos = at + width * size
+            if not ranges:
+                continue
+            ranges.sort()
+            for src in self.selected(rule):
+                if src.tree != label:
+                    continue
+                for number, line in enumerate(src.lines, 1):
+                    m = rule.narrow.search(line)
+                    if not m or m["datum"] not in symbols:
+                        continue
+                    at = symbols[m["datum"]]
+                    for lo, hi, array, where in ranges:
+                        if lo <= at < hi:
+                            hits.append(
+                                self.hit(
+                                    rule,
+                                    src,
+                                    number,
+                                    datum=m["datum"],
+                                    declared=f"{where}:{array}",
+                                    detail=f"{m['datum']} at {at:08X} lies inside the word array {array} ({where})",
+                                )
+                            )
+                            break
         return hits
 
     def _call_arity(self, rule: Rule) -> list[dict[str, Any]]:
