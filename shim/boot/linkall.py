@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import hostabi  # noqa: E402
 import portdir  # noqa: E402
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
@@ -65,10 +66,10 @@ def archive(argv):
     temp = args.output.with_name(args.output.name + ".new")
     temp.unlink(missing_ok=True)
     for start in range(0, len(members), 400):
-        subprocess.run(["ar", "qcD", str(temp), *members[start:start + 400]], check=True)
+        subprocess.run([hostabi.AR, "qcD", str(temp), *members[start:start + 400]], check=True)
     if not members:
-        subprocess.run(["ar", "qcD", str(temp)], check=True)
-    subprocess.run(["ranlib", "-D", str(temp)], check=True)
+        subprocess.run([hostabi.AR, "qcD", str(temp)], check=True)
+    subprocess.run([hostabi.RANLIB, "-D", str(temp)], check=True)
     # An unchanged archive keeps its timestamp, so the boot executable is not relinked for nothing.
     if args.output.exists() and hashlib.sha256(args.output.read_bytes()).digest() == \
             hashlib.sha256(temp.read_bytes()).digest():
@@ -84,15 +85,15 @@ def symbols(paths):
     """{path: (defined names, undefined names)} of global symbols, one nm run per few hundred objects."""
     result = {str(p): (set(), set()) for p in paths}
     for start in range(0, len(paths), 400):
-        r = subprocess.run(["nm", "-g", "-A", "-P", *map(str, paths[start:start + 400])],
+        r = subprocess.run([hostabi.NM, "-g", "-A", "-P", *map(str, paths[start:start + 400])],
                            capture_output=True, text=True)
         for line in r.stdout.splitlines():
             m = NM_LINE.match(line)
             if m and m.group(1) in result:
                 if m.group(3) == "U":
-                    result[m.group(1)][1].add(m.group(2))
+                    result[m.group(1)][1].add(hostabi.strip(m.group(2)))
                 elif m.group(3) not in "uUN-?":
-                    result[m.group(1)][0].add(m.group(2))
+                    result[m.group(1)][0].add(hostabi.strip(m.group(2)))
     return result
 
 
@@ -100,11 +101,11 @@ def library_names(libs):
     """Global names the platform libraries define: the linker resolves them there, so they are never routed."""
     names = set()
     for lib in libs:
-        r = subprocess.run(["nm", "-g", "--defined-only", "-P", lib], capture_output=True, text=True)
+        r = subprocess.run([hostabi.NM, "-g", "--defined-only", "-P", lib], capture_output=True, text=True)
         for line in r.stdout.splitlines():
             fields = line.split()
             if len(fields) >= 2 and not line.endswith(":"):
-                names.add(fields[0])
+                names.add(hostabi.strip(fields[0]))
     return names
 
 
@@ -147,7 +148,7 @@ def autogen(argv):
     image_objects = lines(args.boot / "image-objects.txt")
     syms = symbols([pathlib.Path(p) for p in boot_objects + members + image_objects])
     have = set(d["data"]) | set(d["bindings"]) | set(d["stops"]) | set(d.get("rom_offsets", {}))
-    have |= {m.group(1) for m in re.finditer(r"^\s*(\w+)\s*=", (args.boot / "image.ld").read_text(), re.M)}
+    have |= {hostabi.strip(m.group(1)) for m in re.finditer(r"^\s*(\w+)\s*=", (args.boot / "image.ld").read_text(), re.M)}
     have |= set(json.loads((args.boot / "image.json").read_text()).get("function_stops", []))
     have |= library_names(args.libs)
     seeds = {d["entry"], *d["bindings"].values()}
@@ -157,7 +158,7 @@ def autogen(argv):
     # image.c is an executable source, not a closure object: its pointer words name the functions they hold.
     image_c = args.boot / "image.c"
     if image_c.exists():
-        seeds |= set(re.findall(r"\.long (\w+)", image_c.read_text()))
+        seeds |= {hostabi.strip(name) for name in re.findall(r"\.long (\w+)", image_c.read_text())}
     # An image unit's data is defined by the image (image.ld), not by an object.
     defined_by = {}
     for path in members:
@@ -215,7 +216,10 @@ def autogen(argv):
     # the unit that really defines it wins when the closure links it. Listed as data needs in the report.
     stubs = sorted(n.split(" | ")[0] for n in report["needs"])
     code = ["/* Generated: weak zeroed storage for data no unit defines and the pin does not address. */"]
-    code += [f"__attribute__((weak, aligned(16))) char {n}[4096];" for n in stubs]
+    # (A COFF weak definition is a weak external whose default section --gc-sections drops, leaving the reference undefined:
+    # on Windows the storage is plain. Nothing else defines the name, so nothing can collide with it.)
+    attributes = "aligned(16)" if hostabi.COFF else "weak, aligned(16)"
+    code += [f"__attribute__(({attributes})) char {n}[4096];" for n in stubs]
     args.output.with_name("autodata.c").write_text("\n".join(code) + "\n")
     args.output.write_text(json.dumps(trial, indent=2, sort_keys=True) + "\n")
     report.update(pulled=len(pulled), members=len(members), refused=deny)

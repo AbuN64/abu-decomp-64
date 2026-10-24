@@ -30,6 +30,7 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import addrscan
+import hostabi  # noqa: E402
 import policy  # noqa: E402
 import srcfiles  # noqa: E402
 
@@ -246,6 +247,94 @@ class Elf:
             and not self.sections[index]["flags"] & SHF_EXEC
 
 
+class Coff:
+    """A Windows/i386 object (mingw-w64) in the shape of Elf: sections (index 0 is the null section), symbols whose
+    names lose the target's underscore, and relocations as (offset, symbol index, R_386_32 or an unsupported kind).
+    COFF symbols carry no size: the code and data sections are one symbol each (-ffunction-sections -fdata-sections), so
+    a symbol runs to the next symbol of its section, or the section's end."""
+    IMAGE_SCN_CNT_CODE, IMAGE_SCN_CNT_UNINITIALIZED = 0x20, 0x80
+    IMAGE_SCN_LNK_REMOVE, IMAGE_SCN_MEM_EXECUTE = 0x800, 0x20000000
+    DIR32 = 6
+
+    def __init__(self, path):
+        data = path.read_bytes()
+        machine, count, _, symtab, symbols, optional, _ = struct.unpack_from("<HHIIIHH", data, 0)
+        if machine != 0x14C:
+            raise ValueError(f"{path}: not a Windows/i386 object")
+        strings = symtab + 18 * symbols
+
+        def string(offset):
+            start = strings + offset
+            return data[start:data.index(b"\0", start)].decode()
+
+        self.sections = [{"name": 0, "type": 0, "flags": 0, "addr": 0, "offset": 0, "size": 0, "link": 0, "info": 0,
+                          "align": 0, "entsize": 0, "label": "", "bytes": b""}]
+        raw = []
+        for index in range(count):
+            name, vsize, _, size, rawptr, relptr, _, nreloc, _, chars = struct.unpack_from(
+                "<8sIIIIIIHHI", data, 20 + optional + 40 * index)
+            label = name.rstrip(b"\0").decode()
+            if label.startswith("/"):
+                label = string(int(label[1:]))
+            bss = bool(chars & self.IMAGE_SCN_CNT_UNINITIALIZED) and not rawptr
+            flags = 0 if chars & self.IMAGE_SCN_LNK_REMOVE else SHF_ALLOC
+            if chars & (self.IMAGE_SCN_CNT_CODE | self.IMAGE_SCN_MEM_EXECUTE):
+                flags |= SHF_EXEC
+            self.sections.append({"name": 0, "type": SHT_NOBITS if bss else 1, "flags": flags, "addr": 0,
+                                  "offset": rawptr, "size": size or vsize, "link": 0, "info": 0, "align": 0,
+                                  "entsize": 0, "label": label,
+                                  "bytes": b"" if bss else data[rawptr:rawptr + size]})
+            raw.append((relptr, nreloc))
+        self.symbols, starts, index = [], {}, 0
+        while index < symbols:
+            name, value, number, kind, cls, aux = struct.unpack_from("<8sIhHBB", data, symtab + 18 * index)
+            if name[:4] == b"\0\0\0\0":
+                text = string(struct.unpack_from("<I", name, 4)[0])
+            else:
+                text = name.rstrip(b"\0").decode()
+            shndx = number if number > 0 else 0
+            section = self.sections[shndx] if shndx else None
+            if cls == 3 and shndx and text == section["label"] and value == 0:
+                stype = STT_SECTION
+            elif shndx and kind & 0xF0 == 0x20:
+                stype = STT_FUNC
+            elif shndx and cls in (2, 3):
+                stype = STT_OBJECT
+            else:
+                stype = 0
+            bind = 1 if cls == 2 else 2 if cls == 105 else 0
+            entry = {"name": hostabi.strip(text) if not text.startswith(".") else text, "value": value, "size": 0,
+                     "type": stype, "bind": bind, "shndx": shndx}
+            self.symbols.append(entry)
+            if stype in (STT_OBJECT, STT_FUNC):
+                starts.setdefault(shndx, []).append(entry)
+            for _ in range(aux):  # auxiliary records keep their place so a relocation's symbol index still lands
+                self.symbols.append({"name": "", "value": 0, "size": 0, "type": 0, "bind": 0, "shndx": 0})
+            index += 1 + aux
+        for shndx, entries in starts.items():
+            entries.sort(key=lambda e: e["value"])
+            end = self.sections[shndx]["size"]
+            for position, entry in enumerate(entries):
+                following = entries[position + 1]["value"] if position + 1 < len(entries) else end
+                entry["size"] = following - entry["value"]
+        self.relocations = {}
+        for shndx, (relptr, nreloc) in enumerate(raw, 1):
+            for slot in range(nreloc):
+                where, symbol, kind = struct.unpack_from("<IIH", data, relptr + 10 * slot)
+                self.relocations.setdefault(shndx, []).append(
+                    (where, symbol, R_386_32 if kind == self.DIR32 else 0x100 + kind))
+
+    def data_section(self, index):
+        return Elf.data_section(self, index)
+
+
+def load_object(path):
+    """Elf or Coff, by the file's own magic."""
+    with open(path, "rb") as stream:
+        magic = stream.read(2)
+    return Coff(path) if magic == b"\x4c\x01" else Elf(path)
+
+
 def build(manifest, source, objects, linked, output, rom=None):
     project = policy.load_project(manifest, source)
     ram = int(project["rdram_bytes"], 0)
@@ -255,7 +344,7 @@ def build(manifest, source, objects, linked, output, rom=None):
     claimed = set(project["data"]) | set(project["bindings"]) | set(project["stops"])
     linked_defined, linked_undefined = set(), set()
     for path in linked:
-        for symbol in Elf(path).symbols:
+        for symbol in load_object(path).symbols:
             if symbol["name"] and symbol["bind"] in (1, 2):
                 (linked_defined if symbol["shndx"] else linked_undefined).add(symbol["name"])
     resolved_names = linked_defined | set(project["bindings"]) | set(project["stops"])
@@ -267,7 +356,7 @@ def build(manifest, source, objects, linked, output, rom=None):
             continue
         section_of = next((overlays[unit] for unit in overlays if path.as_posix().endswith("/" + unit + ".o")), None)
         resident_of = next((residents[unit] for unit in residents if path.as_posix().endswith("/" + unit + ".o")), None)
-        elf = Elf(path)
+        elf = load_object(path)
         if any(s["type"] == STT_FUNC and s["shndx"] for s in elf.symbols):
             code_units.append(str(path))  # functions arrive by include; not a data unit
             continue
@@ -414,31 +503,50 @@ def build(manifest, source, objects, linked, output, rom=None):
     output.mkdir(parents=True, exist_ok=True)
     (output / "image.bin").write_bytes(bytes(blob))
     binary = (output / "image.bin").resolve()
-    asm = ['.section .rodata.n64c_boot_image,"a"', ".globl n64c_boot_image_bytes", ".balign 4",
-           "n64c_boot_image_bytes:"]
+    if hostabi.COFF:
+        asm = ['.section .rdata$n64c_boot_image,"dr"', f".globl {hostabi.add('n64c_boot_image_bytes')}", ".balign 4",
+               f"{hostabi.add('n64c_boot_image_bytes')}:"]
+    else:
+        asm = ['.section .rodata.n64c_boot_image,"a"', ".globl n64c_boot_image_bytes", ".balign 4",
+               "n64c_boot_image_bytes:"]
     cursor = 0
     for offset, name, addend in sorted(words):
         if offset > cursor:
             asm.append(f'.incbin "{binary}", {cursor}, {offset - cursor}')
-        asm.append(f".long {name}{addend:+d}" if addend else f".long {name}")
+        symbol = hostabi.add(name)
+        asm.append(f".long {symbol}{addend:+d}" if addend else f".long {symbol}")
         cursor = offset + 4
     if cursor < len(blob):
         asm.append(f'.incbin "{binary}", {cursor}, {len(blob) - cursor}')
-    asm.append(".previous")
+    # ELF returns to the section the compiler was in with .previous; COFF has no such directive, so its block is the last
+    # text of the file and ends in .text.
+    asm.append(".text" if hostabi.COFF else ".previous")
+    block = ["__asm__(", *[f'    "{line.replace(chr(34), chr(92) + chr(34))}\\n"' for line in asm], ");"]
+    # Android: the image holds pointer words, relocated in a shared library, so its section is writable (bionic refuses a
+    # library with text relocations).
+    android = ["#ifdef __ANDROID__", "/* The image holds pointer words: in a shared library they are relocated, so the section is writable",
+               "   (bionic refuses a library with text relocations). */",
+               "__asm__(", *[f'    "{line.replace(chr(34), chr(92) + chr(34))}\\n"'.replace(
+                   '.rodata.n64c_boot_image,\\"a\\"', '.data.rel.ro.n64c_boot_image,\\"aw\\"') for line in asm], ");",
+               "#else", *block, "#endif"]
     code = ["/* Generated original data image: bytes and pointer words of the fetched source objects. */",
-            '#include "boot.h"', 'extern long long n64c_boot_missing(const char *);',
-            "__asm__(", *[f'    "{line.replace(chr(34), chr(92) + chr(34))}\\n"' for line in asm], ");"]
+            '#include "boot.h"', 'extern long long n64c_boot_missing(const char *);', *([] if hostabi.COFF else android)]
     code += [f'long long {name}(void) {{ return n64c_boot_missing("{name}"); }}' for name in sorted(stops)]
-    code += [f'__attribute__((weak)) long long {name}(void) {{ return n64c_boot_missing("{name}"); }}'
-             for name in weak]
+    # (Not on Windows: a COFF weak definition does not keep its section through --gc-sections, and a plain one would collide
+    # with the stop the closure routes for the same name: the image's pointer words seed that routing, so a function stop
+    # exists either way.)
+    if not hostabi.COFF:
+        code += [f'__attribute__((weak)) long long {name}(void) {{ return n64c_boot_missing("{name}"); }}' for name in weak]
     code.append("const N64cBootImage n64c_boot_image[] = {")
     code += [f"    {{{start - 0x80000000}u, {base}u, {size}u}}," for start, base, size in extents]
     code += ["    {0u, 0u, 0u}", "};", f"const size_t n64c_boot_image_count = {len(extents)};"]
     code.append("const N64cBootRomImage n64c_boot_rom_image[] = {")
     code += [f"    {{0x{start:x}u, {base}u, {size}u}}," for start, base, size in rom_extents]
     code += ["    {0u, 0u, 0u}", "};", f"const size_t n64c_boot_rom_image_count = {len(rom_extents)};"]
+    if hostabi.COFF:
+        code += block
     (output / "image.c").write_text("\n".join(code) + "\n")
-    (output / "image.ld").write_text("".join(f"{name} = 0x{address:08x};\n" for name, address in binds.items())
+    (output / "image.ld").write_text("".join(f"{hostabi.add(name)} = 0x{address:08x};\n" for name, address in binds.items())
                                      + "SECTIONS {} INSERT AFTER .text;\n")
     report = {"symbols": imaged,
               "bytes": len(blob), "extents": len(extents), "relocated_words": len(words),

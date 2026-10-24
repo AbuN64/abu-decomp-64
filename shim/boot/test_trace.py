@@ -173,7 +173,8 @@ int main(void) { n64c_trace_init(); return real_main(); }
         objects = []
         for source, extra in [(self.path / "game.c", ["-finstrument-functions", "-fno-omit-frame-pointer"]),
                               (self.path / "driver.c", []), (ROOT / "trace.c", []),
-                              (ROOT.parent / "n64c_sched.c", []), (self.path / "out/trace_table.c", [])]:
+                              (ROOT.parent / "n64c_sched.c", []), (ROOT.parent / "os/os_posix_proc.c", []),
+                              (self.path / "out/trace_table.c", [])]:
             obj = self.path / (source.stem + ".o")
             subprocess.run([args.compiler, "-m32", "-O1", *extra, "-I" + str(ROOT), "-I" + str(ROOT.parent),
                             "-c", str(source), "-o", str(obj)], check=True, capture_output=True, text=True)

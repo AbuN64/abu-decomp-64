@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -161,6 +162,31 @@ class ImageTests(unittest.TestCase):
             command.insert(1, "-m32")
         subprocess.run(command, check=True, capture_output=True, text=True)
         return output
+
+    @unittest.skipUnless(shutil.which("i686-w64-mingw32-gcc"), "needs the mingw-w64 cross compiler")
+    def test_windows_object_reads_like_elf(self):
+        """A Windows/i386 object gives the image the same view as an ELF one: stripped names, sizes, relocations."""
+        source = self.path / "w.c"
+        source.write_text("unsigned int table[4] = {1, 2, 3, 4};\nextern int ext;\nint *pp = &ext;\nint fn(void) { return 1; }\n")
+        output = self.path / "w.o"
+        subprocess.run(["i686-w64-mingw32-gcc", "-ffunction-sections", "-fdata-sections", "-c", str(source), "-o", str(output)],
+                       check=True, capture_output=True, text=True)
+        old = image.hostabi.PREFIX
+        image.hostabi.PREFIX = "_"
+        try:
+            coff = image.load_object(output)
+        finally:
+            image.hostabi.PREFIX = old
+        by_name = {symbol["name"]: symbol for symbol in coff.symbols if symbol["name"]}
+        self.assertEqual((by_name["table"]["type"], by_name["table"]["size"]), (image.STT_OBJECT, 16))
+        self.assertEqual((by_name["pp"]["type"], by_name["pp"]["size"]), (image.STT_OBJECT, 4))
+        self.assertEqual(by_name["fn"]["type"], image.STT_FUNC)
+        self.assertEqual((by_name["ext"]["shndx"], by_name["ext"]["bind"]), (0, 1))
+        self.assertTrue(coff.data_section(by_name["table"]["shndx"]))
+        self.assertFalse(coff.data_section(by_name["fn"]["shndx"]))
+        relocations = [(where, coff.symbols[index]["name"], kind) for kind_list in coff.relocations.values()
+                       for where, index, kind in kind_list]
+        self.assertIn((0, "ext", image.R_386_32), relocations)
 
     def test_unit_that_does_not_compile_contributes_nothing(self):
         (self.source / "src" / "BAD.CPP").write_text("int broken = ;\n")

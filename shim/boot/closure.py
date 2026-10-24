@@ -29,6 +29,7 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(HERE))
+import hostabi  # noqa: E402
 import needs as needsfeed  # noqa: E402
 import policy  # noqa: E402
 import srcfiles  # noqa: E402
@@ -213,11 +214,12 @@ def host_runtime():
     """The compiler-runtime helpers (__udivdi3, __divdi3, ...) the host libgcc.a of the 32-bit link provides. The decomp
     names its libgcc2 functions by their real names, so they are not libultra to bind: the host archive links them."""
     if not _HOST_RUNTIME:
-        path = subprocess.run(["gcc", "-m32", "-print-file-name=libgcc.a"], capture_output=True, text=True).stdout.strip()
+        path = subprocess.run([hostabi.CC, "-m32", "-print-file-name=libgcc.a"], capture_output=True, text=True).stdout.strip()
         names = set()
         if pathlib.Path(path).is_absolute() and pathlib.Path(path).exists():
-            out = subprocess.run(["nm", "-g", "--defined-only", path], capture_output=True, text=True).stdout
-            names = {row.split()[-1] for row in out.splitlines() if len(row.split()) == 3 and row.split()[-1].startswith("__")}
+            out = subprocess.run([hostabi.NM, "-g", "--defined-only", path], capture_output=True, text=True).stdout
+            names = {hostabi.strip(row.split()[-1]) for row in out.splitlines()
+                     if len(row.split()) == 3 and hostabi.strip(row.split()[-1]).startswith("__")}
         _HOST_RUNTIME.append(frozenset(names))
     return _HOST_RUNTIME[0]
 

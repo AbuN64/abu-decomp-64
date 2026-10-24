@@ -9,6 +9,7 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import hostabi  # noqa: E402
 import policy  # noqa: E402
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
@@ -367,7 +368,7 @@ def generate(manifest, source, output):
         tlb_mapped = TLB_RECORD.fullmatch(symbol) and 0x10000 <= value < 0x08000000
         if not tlb_mapped and not 0x80000000 <= value <= 0x80000000 + ram:
             raise ValueError("data outside mapped RDRAM: " + symbol)
-        bindings.append(f"{symbol} = 0x{value:08x};")
+        bindings.append(f"{hostabi.add(symbol)} = 0x{value:08x};")
     # Cartridge-offset names (the game ORs them with the PI base): absolute values inside the ROM image.
     for symbol, offset in project.get("rom_offsets", {}).items():
         claim(symbol)
@@ -376,12 +377,12 @@ def generate(manifest, source, output):
             raise ValueError("symbol offset differs from pinned facts: " + symbol)
         if not value < rom_bytes:
             raise ValueError("ROM offset outside the cartridge: " + symbol)
-        bindings.append(f"{symbol} = 0x{value:08x};")
+        bindings.append(f"{hostabi.add(symbol)} = 0x{value:08x};")
     for symbol, target in project["bindings"].items():
         claim(symbol)
         # EXTERN makes the linker pull a target from an archive (host libgcc, the shim) for this script.
-        bindings.append(f"EXTERN({name(target)})" +
-                        (f" {symbol} = {name(target)};" if symbol != target else ""))
+        bindings.append(f"EXTERN({hostabi.add(name(target))})" +
+                        (f" {hostabi.add(symbol)} = {hostabi.add(name(target))};" if symbol != target else ""))
     code = ['/* Generated explicit bindings; no original game code. */', '#include "boot.h"',
             'extern long long n64c_boot_missing(const char *);']
     for symbol, evidence in project["stops"].items():
