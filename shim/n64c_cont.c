@@ -100,12 +100,16 @@ static void query(OSContStatus *s)
     }
 }
 static OSContStatus last_status[MAXCONTROLLERS];
+static OSMesgQueue *si_mq;
+OSMesgQueue *n64c_si_queue(void) { return si_mq; }
 static void done(OSMesgQueue *mq)
 {
     OSMesg m;
     m.ptr = NULL;
-    if (mq)
+    if (mq) {
+        si_mq = mq;
         osSendMesg(mq, m, OS_MESG_NOBLOCK);
+    }
 }
 s32 osContInit(OSMesgQueue *mq, u8 *bitpattern, OSContStatus *status)
 {

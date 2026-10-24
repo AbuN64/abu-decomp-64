@@ -75,6 +75,9 @@ int main(void)
     CHECK(!(st[0].status & CONT_CARD_ON)); /* no Pak, like the oracle */
     CHECK(osContStartReadData(&mq) == 0 && osRecvMesg(&mq, &m, OS_MESG_NOBLOCK) == 0);
     osContGetReadData(pad);
+    /* a controller reply wait with nothing started and no SI event pending is an idle-bus round trip, not a stop */
+    CHECK(osRecvMesg(&mq, &m, OS_MESG_BLOCK) == 0);
+    CHECK(osContStartQuery(&mq) == 0 && osRecvMesg(&mq, &m, OS_MESG_BLOCK) == 0 && mq.validCount == 0);
     CHECK(pad[0].button == 0x8000 && pad[0].stick_x == -5 && pad[0].stick_y == 7 && pad[1].errno_ == CONT_ERR_NO_CONTROLLER);
     /* EEPROM as a file */
     CHECK(osEepromProbe(&mq) == 1);

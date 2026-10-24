@@ -9,6 +9,7 @@
 #include "n64c_system.h"
 #include "os/n64c_host.h"
 #include "n64c_hook.h"
+#include "n64c_si.h"
 #include <pthread.h>
 #include <errno.h>
 #include <setjmp.h>
@@ -226,6 +227,11 @@ static s32 send(OSMesgQueue *mq, OSMesg msg, s32 flag, int jam)
 }
 s32 osSendMesg(OSMesgQueue *mq, OSMesg msg, s32 flag) { return send(mq, msg, flag, 0); }
 s32 osJamMesg(OSMesgQueue *mq, OSMesg msg, s32 flag) { return send(mq, msg, flag, 1); }
+__attribute__((weak)) OSMesgQueue *n64c_si_queue(void) { return NULL; } /* the controller adapter, when linked, names it */
+static int si_idle_wait(OSMesgQueue *mq) /* caller holds big */
+{
+    return mq == n64c_si_queue() && mq->validCount == 0 && !(pending_events & (1u << OS_EVENT_SI));
+}
 s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flag)
 {
     HostThread *cur = self();
@@ -234,6 +240,12 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flag)
         if (flag == OS_MESG_NOBLOCK || !cur) {
             pthread_mutex_unlock(&big);
             return -1;
+        }
+        if (si_idle_wait(mq)) {
+            if (msg)
+                msg->ptr = NULL;
+            pthread_mutex_unlock(&big);
+            return 0;
         }
         cur->os->state = OS_STATE_WAITING;
         thread_enqueue(&mq->mtqueue, cur->os);

@@ -19,6 +19,11 @@ int n64c_cont_pak_commit(u32 offset, u32 length);
 /* Re-scan the controller ports (reset command on every channel, then the status poll) and fill status[4]. No
  * completion message is left behind. Returns 0. */
 s32 n64c_cont_rescan(OSMesgQueue *mq, OSContStatus *status);
+/* The queue the adapter last answered a request on: the controller reply queue. A blocking receive on it that finds
+ * the queue empty and no SI event pending cannot be released by anyone: every packet exchange completes inside the
+ * call that starts it and threads switch only at blocking calls, so no exchange is half done. The wait then returns
+ * as the idle-bus round trip the console's own timing would have had outstanding. */
+OSMesgQueue *n64c_si_queue(void);
 /* n64c_si.c: forget the lock (runs with n64c_cont_reset). */
 void n64c_si_reset(void);
 #ifdef __cplusplus
