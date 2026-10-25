@@ -85,28 +85,12 @@ def exact_fns(cfg: DataConfig, tree: Path, version: str, units: list[str]) -> di
     return out
 
 
-def renamed_symbols(cfg: DataConfig, tree: Path, version: str, run=subprocess.run) -> dict[str, str]:
-    """old name -> new name for every symbol the working diff renames in the version's symbols file (the same address
-    on a removed and an added line): the map still holds the old name, the rebuilt object only the new one."""
-    path = cfg.path(cfg.symbols_file, version)
-    diff = run(["git", "-C", str(tree), "diff", "-U0", "--", path], capture_output=True, text=True).stdout
-    row = re.compile(r"^[+-]\s*(\S+)\s*=\s*(0[xX][0-9a-fA-F]+)")
-    old: dict[str, str] = {}
-    new: dict[str, str] = {}
-    for line in diff.splitlines():
-        m = row.match(line) if line[:3] not in ("+++", "---") else None
-        if m:
-            (old if line[0] == "-" else new)[m.group(2).lower()] = m.group(1)
-    return {old[a]: new[a] for a in old if a in new and old[a] != new[a]}
-
-
 def broken(b: Builder, version: str, units: list[str]) -> list[tuple[str, str, str]]:
     """[(unit, fn, why)] for every exact function of UNITS whose rebuilt object no longer scores 0."""
     bad = []
-    names = renamed_symbols(b.cfg, b.tree, version, b.run)
     for unit, fns in exact_fns(b.cfg, b.tree, version, units).items():
         for fn in fns:
-            sc = b.score(version, names.get(fn, fn), unit)
+            sc = b.score(version, fn, unit)
             if sc != 0:
                 bad.append((unit, fn, "edit=%s" % sc if sc is not None else "no-score"))
     return bad
