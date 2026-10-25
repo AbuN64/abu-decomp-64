@@ -229,6 +229,8 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
                 return {"worktree": made}, code, findings
             (tree / STATE).write_text("busy\n")
             applied = _git(tree, "apply", str(diff.resolve()))
+        if not applied.returncode:  # a file the diff creates (a module a rename moved) is tracked for sync's [file] rows
+            _git(tree, "add", "-A", "-N")
         if applied.returncode:
             msg = f"{diff.name} does not apply on {made['rev'][:9]}: {applied.stderr.strip()[:200]}"
             return {"worktree": made}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]

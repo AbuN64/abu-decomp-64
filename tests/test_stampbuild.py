@@ -368,3 +368,14 @@ def test_a_busy_pool_names_the_live_holder(tmp_path):
         stampbuild.slot(tmp_path, 1, 0),
     ):
         pass
+
+
+def test_a_file_the_diff_creates_is_tracked_after_the_apply_so_sync_sees_a_renamed_module(tmp_path, monkeypatch):
+    diff, _ = setup(tmp_path, monkeypatch, False)
+    seen = []
+    monkeypatch.setattr(
+        subprocess, "run", lambda argv, *a, **k: seen.append(list(argv)) or subprocess.CompletedProcess(argv, 0, "", "")
+    )
+    stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    git = [argv[3:] for argv in seen if argv[:1] == ["git"] and argv[1] == "-C"]
+    assert git.index(["add", "-A", "-N"]) > next(i for i, a in enumerate(git) if a[:1] == ["apply"])
