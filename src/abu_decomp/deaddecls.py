@@ -229,6 +229,24 @@ def outside_words(root: Path, exclude: set[str]) -> set[str]:
     return words
 
 
+def directive_words(text: str) -> set[str]:
+    """Every identifier on a preprocessor line of TEXT (continuation lines included), wherever the line sits: a macro
+    body or an #if condition spells names the compiler reads for some version (a `#define` swallowed into a
+    neighbouring chunk, or inside a declaration, is still a use)."""
+    words: set[str] = set()
+    lines = text.split("\n")
+    n = 0
+    while n < len(lines):
+        if lines[n].lstrip().startswith("#"):
+            end = n
+            while lines[end].rstrip().endswith("\\") and end + 1 < len(lines):
+                end += 1
+            words.update(IDENT.findall("\n".join(lines[n : end + 1])))
+            n = end
+        n += 1
+    return words - KEYWORDS
+
+
 def dead_layers(files: dict[str, list[Chunk]], outside: set[str]) -> list[list[tuple[str, Chunk]]]:
     """Layers of dead declarations: layer 0 is used by no other dead declaration, layer 1 only by layer 0, ..."""
     every = [(p, c) for p, chunks in files.items() for c in chunks]
@@ -236,6 +254,8 @@ def dead_layers(files: dict[str, list[Chunk]], outside: set[str]) -> list[list[t
     for _, c in every:
         if c.opaque:
             live |= set(IDENT.findall(c.text)) - KEYWORDS
+        else:
+            live |= directive_words(c.text)  # a directive inside a declaration chunk still uses its names
     changed = True
     while changed:
         changed = False

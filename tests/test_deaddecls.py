@@ -75,3 +75,23 @@ def test_packs_apply_in_order_and_layer_zero_is_written_with_apply(tmp_path: Pat
     final = (root / "include/COMMON/common.h").read_text()
     assert "Dead" not in final and "Vec" not in final and "the vector" not in final  # its comment goes with it
     assert "/* live externs */" in final and "enum Mode" in final
+
+
+def test_names_in_preprocessor_lines_inside_a_chunk_are_live_in_every_branch(tmp_path: Path) -> None:
+    text = (
+        "typedef struct OnlyMacro { int a; } OnlyMacro;\n"
+        "extern int gOnlyIf;\nextern int gDead;\n"
+        "DECLARE_THING(x)\n"  # no semicolon: the next lines join this chunk
+        "#if EU\n#define PICK(v) \\\n  ((v) + (int)sizeof(OnlyMacro))\n#elif defined(gOnlyIf)\n#endif\n"
+        "extern int gTail;\n"
+    )
+    (tmp_path / "include/COMMON").mkdir(parents=True)
+    (tmp_path / "include/COMMON/m.h").write_text(text)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/main.c").write_text("int main(void) { return 0; }\n")
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    found = deaddecls.run(tmp_path, "include/COMMON")
+    dead = {n for layer in found["layers"] for n in layer["names"]}
+    assert "OnlyMacro" not in dead and "gOnlyIf" not in dead
+    assert "gDead" in dead
