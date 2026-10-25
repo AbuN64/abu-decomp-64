@@ -271,3 +271,20 @@ def test_a_merged_or_renamed_source_unit_is_carried_into_the_facts(tmp_path: Pat
     (tree / "platform/port/notes.md").write_text("src/gone.c held k\n")
     _, findings = remap.remap(run_process, tree, pin, old, new, write=False)
     assert [(f["key"], "src/gone.c" in f["message"]) for f in findings] == [("remap.stale", True)]
+
+
+class LedgerMapTests(unittest.TestCase):
+    def test_a_ledger_batch_map_is_carried_into_the_tree_facts(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            (tmp / "facts.json").write_text('{"calls": ["func_80000001", "Keep_Me", "func_80000002"]}\n')
+            one, two = tmp / "batch-1.tsv", tmp / "batch-2.tsv"
+            one.write_text("func_80000001\tLevel_Open\tfunction\tfn:us-rev1:80000001\nfunc_80000002\tTmp_Name\n")
+            two.write_text("Tmp_Name\tLevel_Close\n")
+            pin = {"remap": {"facts": [], "paths": ["facts.json"]}}
+            checked = remap.from_map(tmp, pin, [one, two], write=False)
+            self.assertEqual((checked["renamed"], checked["spellings"], checked["written"]), (3, 2, False))
+            self.assertIn("func_80000001", (tmp / "facts.json").read_text())
+            remap.from_map(tmp, pin, [one, two])
+            expected = '{"calls": ["Level_Open", "Keep_Me", "Level_Close"]}\n'
+            self.assertEqual((tmp / "facts.json").read_text(), expected)

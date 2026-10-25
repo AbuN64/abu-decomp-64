@@ -316,3 +316,27 @@ def remap(
              f"{','.join(sample['lost'])} -> {','.join(sample['gained'])}); those names are not remapped"}
         )  # fmt: skip
     return result, findings
+
+
+def from_map(tree: Path, pin: dict[str, Any], maps: Sequence[Path], write: bool = True) -> dict[str, Any]:
+    """Carry the renames of name-ledger batch maps (renames/batch-K.tsv: old, new, ...) into the tree facts. The map is
+    the batch's proven token map, so no source history is read; a name the maps rename twice keeps its last spelling."""
+    config = pin.get("remap")
+    if not config:
+        raise RemapError("remap.config", "the tree's land.trees pin has no `remap` (facts, paths)")
+    ren: dict[str, str] = {}
+    for path in maps:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            cols = line.split("\t")
+            if len(cols) >= 2 and cols[0] and cols[1] and cols[0] != cols[1]:
+                ren[cols[0]] = cols[1]
+    for old in list(ren):  # a chain a -> b -> c lands on c
+        seen = {old}
+        while ren[old] in ren and ren[old] not in seen:
+            seen.add(ren[old])
+            ren[old] = ren[ren[old]]
+    done = apply(tree, config["paths"], {"renames": ren, "gone": set(), "dead_aliases": set()}, write)
+    return {
+        "tree": str(tree), "maps": [str(m) for m in maps], "renamed": len(ren), "files": done["files"],
+        "spellings": done["spellings"], "written": write,
+    }  # fmt: skip

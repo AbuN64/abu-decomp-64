@@ -123,7 +123,14 @@ def _port_arguments(parser: argparse.ArgumentParser) -> None:
     new.add_argument("destination", type=Path)
     carry = actions.add_parser("remap", help="carry the source's symbol renames since a commit into the port's facts")
     carry.add_argument("--tree", type=Path, required=True, help="the port tree (land.trees entry with pin.remap)")
-    carry.add_argument("--since", required=True, help="the source commit the tree's facts are spelled at")
+    carry.add_argument("--since", help="the source commit the tree's facts are spelled at (not with --renames)")
+    carry.add_argument(
+        "--renames",
+        type=Path,
+        nargs="+",
+        metavar="TSV",
+        help="carry name-ledger batch maps (renames/batch-K.tsv) instead",
+    )
     carry.add_argument("--to", help="the source commit or ref the renames run to (default: the pin config's ref)")
     carry.add_argument("--check", action="store_true", help="report what would change and write nothing")
 
@@ -137,6 +144,11 @@ def _run_port(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
         pin = land.settings(profile, tree)["pin"]
         if pin is None:
             raise remap.RemapError("remap.config", f"land.trees has no pin for {tree}")
+        if args.renames:
+            result = remap.from_map(tree, pin, [m.expanduser() for m in args.renames], write=not args.check)
+            return result, 0, []
+        if not args.since:
+            raise remap.RemapError("remap.config", "remap needs --since COMMIT, or --renames TSV...")
         old = repin.commit(land.run_process, pin["source"], args.since)
         new = repin.commit(land.run_process, pin["source"], args.to or pin["ref"])
         result, findings = remap.remap(land.run_process, tree, pin, old, new, write=not args.check)
