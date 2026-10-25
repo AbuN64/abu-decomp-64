@@ -287,7 +287,9 @@ def route(d, sym, facts, deny, pin, frontier, fresh):
         # shim maps for real when the game maps it (an access before that is the game's TLB miss).
         d["data"][sym] = addrs[sym][0]
         return "routed", "data (TLB-mapped) " + addrs[sym][0]
-    if sym.startswith("D_") and sym in addrs and undefined_here and int(addrs[sym][0], 16) >= 0x80000000:
+    # Data named cleanly (rspbootTextEnd, no D_ prefix) is pinned data like any D_ name: a fact without type:func.
+    if (sym.startswith("D_") or "type:func" not in addrs.get(sym, ("", ""))[1]) and sym in addrs and undefined_here \
+            and int(addrs[sym][0], 16) >= 0x80000000:
         d["data"][sym] = addrs[sym][0]
         return "routed", "data " + addrs[sym][0]
     why = next((deny[h] for h in found if h in deny), None)
