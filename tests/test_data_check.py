@@ -182,3 +182,29 @@ def test_a_fn_that_moved_to_another_unit_is_scored_by_symbol(tmp_path):
     )
     bad = check.broken(builder, "a", ["src/a/asm_unit.CPP", "src/a/c_unit.CPP"])
     assert bad == [("src/a/asm_unit.CPP", "f2", "edit=5")]  # f1 matched by symbol; f2 is really broken, not "no-score"
+
+
+def test_a_rename_already_staged_in_the_tree_is_still_the_diffs_rename(tmp_path):
+    """`git diff` alone shows only unstaged changes: a lane that staged part of its rename (REV1-ONE-30: MM files) had
+    that part scored under the old names (func_80274098_de edit=67). The working diff is against HEAD."""
+    import subprocess as sp
+
+    def git(*a):
+        sp.run(
+            ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", *a],
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q")
+    (tmp_path / "versions").mkdir()
+    sym = tmp_path / "versions/symbol_addrs.txt"
+    sym.write_text("func_80001000 = 0x80001000;\nfunc_80002000 = 0x80002000;\n")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    sym.write_text("Math_Sqrtf = 0x80001000;\nfunc_80002000 = 0x80002000;\n")
+    git("add", "-A")  # staged
+    sym.write_text("Math_Sqrtf = 0x80001000;\nOther_Name = 0x80002000;\n")  # and one more unstaged
+    builder = SimpleNamespace(tree=tmp_path)
+    assert check.renamed(builder) == {"func_80001000": "Math_Sqrtf", "func_80002000": "Other_Name"}
+    assert check.changed_files(tmp_path) == ["versions/symbol_addrs.txt"]

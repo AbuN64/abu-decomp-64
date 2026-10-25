@@ -89,7 +89,9 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     )
     k.add_argument("--diff", type=Path, help="the train diff made from TREE: a pass over every version stamps its hash")
     k.add_argument(
-        "--stamps", type=Path, help="stamp directory (default $DECOMP_DATA_STAMPS, then <config dir>/stamps, else ~/.local/state/decomp-data/stamps; never the cwd)"
+        "--stamps",
+        type=Path,
+        help="stamp directory (default $DECOMP_DATA_STAMPS, then <config dir>/stamps, else ~/.local/state/decomp-data/stamps; never the cwd)",
     )
     u = sub.add_parser("units", help="list every source unit that names a data symbol the tree changed since REV")
     u.add_argument("--tree", type=Path, required=True)
@@ -103,7 +105,8 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     st.add_argument("--tree", type=Path, help="--build: the shared tree the fresh tree is seeded from")
     st.add_argument("--at", help="--build: the commit the diff applies on (default: the shared tree's branch tip)")
     pl = sub.add_parser(
-        "place", help="place a function's literal pool in the unit that compiles it, in every version (unbake sync --place)"
+        "place",
+        help="place a function's literal pool in the unit that compiles it, in every version (unbake sync --place)",
     )
     pl.add_argument("--tree", type=Path, required=True)
     pl.add_argument("--check", action="store_true", help="list the rows and files it would write, write nothing")
@@ -285,9 +288,11 @@ def _place(args: argparse.Namespace) -> Result:
     ]
     if not called.ok and not findings:
         findings = [{"key": "data.place", "blocking": True, "message": "unbake sync --place failed"}]
-    return {"lines": lines, "placed": placed, "written": result.get("written", []), "next": result.get("next", "")}, (
-        1 if findings else 0
-    ), findings
+    return (
+        {"lines": lines, "placed": placed, "written": result.get("written", []), "next": result.get("next", "")},
+        (1 if findings else 0),
+        findings,
+    )
 
 
 def _stamp(args: argparse.Namespace, cfg) -> str:
@@ -298,7 +303,7 @@ def _stamp(args: argparse.Namespace, cfg) -> str:
         return "not stamped: --version/--unit narrowed the check; a stamp needs every version"
     text = args.diff.read_text(errors="replace")
     done = subprocess.run(
-        ["git", "-C", str(args.tree), "diff", "--name-only", *([args.since] if args.since else [])],
+        ["git", "-C", str(args.tree), "diff", "--name-only", args.since or "HEAD"],
         capture_output=True,
         text=True,
     )
@@ -313,9 +318,10 @@ def _stamp(args: argparse.Namespace, cfg) -> str:
                 cfg, cli._profile(args.profile), pool, args.diff, stamp_mod.stamp_dir(args.stamps, args.config)
             )
             if code:
-                return "not stamped: the tree holds edits of another diff, so the diff was built alone and failed: " + "; ".join(
-                    f["message"] for f in found
-                )[:400]
+                return (
+                    "not stamped: the tree holds edits of another diff, so the diff was built alone and failed: "
+                    + "; ".join(f["message"] for f in found)[:400]
+                )
             return str(result.get("stamp"))
         return "not stamped: the tree's changed files are not the diff's files (it still holds edits of an earlier diff, or is on another base). Build the diff alone on a clean main tree: decomp data stamp --diff DIFF --build --tree ~/code/wt/POOL-SRC"
     return str(stamp_mod.write(stamp_mod.stamp_dir(args.stamps, args.config), text))

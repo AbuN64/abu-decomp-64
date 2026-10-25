@@ -104,7 +104,7 @@ def reextract(
 
 def changed_files(tree: Path, base: str | None = None, run=subprocess.run) -> list[str]:
     return run(
-        ["git", "-C", str(tree), "diff", "--name-only", *([base] if base else [])], capture_output=True, text=True
+        ["git", "-C", str(tree), "diff", "--name-only", base or "HEAD"], capture_output=True, text=True
     ).stdout.split()
 
 
@@ -144,9 +144,7 @@ def expand_units(
 def changed_symbols(cfg: DataConfig, tree: Path, run=subprocess.run, base: str | None = None) -> list[str]:
     """Data symbols named on a changed line of the working diff (a declaration retyped, a use rewritten); with BASE, of
     everything since that revision (a diff applied and committed, as the train holds it)."""
-    diff = run(
-        ["git", "-C", str(tree), "diff", "-U0", *([base] if base else [])], capture_output=True, text=True
-    ).stdout
+    diff = run(["git", "-C", str(tree), "diff", "-U0", base or "HEAD"], capture_output=True, text=True).stdout
     token = re.compile(r"\b" + cfg.symbol_token)
     lines = [x[1:] for x in diff.splitlines() if x[:1] in "+-" and x[:3] not in ("+++", "---")]
     return sorted({m.group(0) for line in lines for m in token.finditer(line)})
@@ -186,7 +184,7 @@ def changed_units(
     stats: dict | None = None,
 ) -> list[str]:
     out = run(
-        ["git", "-C", str(tree), "diff", "--name-only", *([base] if base else [])], capture_output=True, text=True
+        ["git", "-C", str(tree), "diff", "--name-only", base or "HEAD"], capture_output=True, text=True
     ).stdout.split()
     return expand_units(tree, version, out, run, cfg, stats) if version else [u for u in out if u.startswith("src/")]
 
@@ -217,7 +215,7 @@ def renamed(b: Builder) -> dict[str, str]:
         str(b.tree),
         "diff",
         "-U0",
-        *([getattr(b, "diff_base", None)] if getattr(b, "diff_base", None) else []),
+        getattr(b, "diff_base", None) or "HEAD",
     ]
     out = run([*cmd, "--", ":(glob)**/symbol_addrs*.txt"], capture_output=True, text=True).stdout
     return stamp.renames_of(out) if isinstance(out, str) else {}
