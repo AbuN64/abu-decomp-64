@@ -81,8 +81,19 @@ class RefSourceTests(unittest.TestCase):
         source = self.source()
         source.scan()
         self.events.clear()
+        armed, arm = threading.Event(), source.watch_fds
+
+        def watch_fds():
+            fds = arm()
+            armed.set()
+            return fds
+
+        source.watch_fds = watch_fds
         worker = threading.Thread(target=source.serve, kwargs={"iterations": 1}, daemon=True)
         worker.start()
+        # the commit after the watch is armed: one made before it was caught by serve's first scan, and the one
+        # iteration then waited on a watch that never fired (flaky under load)
+        assert armed.wait(5)
         commit(self.repo, "late")
         worker.join(5)
         assert not worker.is_alive()

@@ -182,10 +182,16 @@ def _take(root: Path, weight: int, limit: int) -> list[tuple[int, Path]] | None:
     return None
 
 
-def _can_run(weight: int, limit: int, rank: int) -> bool:
+def _can_run(weight: int, limit: int, rank: int, free: dict[int, int] | None = None) -> bool:
+    """Whether WEIGHT slots of the first LIMIT are free (and memory allows a non-owner). FREE: the counts one pass of
+    a waiter reads once, so every decision of that pass sees the same pool."""
     if _mem_gib("MemAvailable") < MEM_FLOOR_GIB + RSS_GIB * weight and rank > 0:
         return False
-    return free_count(limit) >= weight
+    if free is None:
+        return free_count(limit) >= weight
+    if limit not in free:
+        free[limit] = free_count(limit)
+    return free[limit] >= weight
 
 
 def acquire(klass: str = "batch", weight: int = 1, label: str = "", timeout: float | None = None) -> Grant:
@@ -206,22 +212,29 @@ def acquire(klass: str = "batch", weight: int = 1, label: str = "", timeout: flo
         "queued": began,
         "cmd": " ".join(sys.argv[:4])[:120],
     }
-    tfd = os.open(ticket, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)
+    # Written and locked under a dot name the queue scan skips, then renamed into the queue: a scan between the create
+    # and the flock took the bare ticket for a dead owner's and deleted it, so that waiter lost its place (PF9).
+    draft = tickets / f".{name}"
+    tfd = os.open(draft, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)
     fcntl.flock(tfd, fcntl.LOCK_EX)
     os.write(tfd, json.dumps(info).encode())
+    os.rename(draft, ticket)
     waiter = _Wait(root, tickets)
     try:
         while True:
             ahead = [(n, t) for n, t in _live_tickets(tickets) if n < name]
             blocked = False
+            # one reading of the pool for the whole pass: a slot freed between "the earlier ticket cannot run" and
+            # "we can" let a background waiter overtake an interactive one (PF9, 6 of 40 under load)
+            free: dict[int, int] = {}
             for n, t in ahead:
                 # an earlier ticket blocks us unless it cannot run now and has not waited past BACKFILL
                 older = time.time() - t.get("queued", time.time())
-                fits = _can_run(int(t.get("weight", 1)), soft if not n.startswith("0-") else cores(), int(n[0]))
+                fits = _can_run(int(t.get("weight", 1)), soft if not n.startswith("0-") else cores(), int(n[0]), free)
                 if fits or older > BACKFILL:
                     blocked = True
                     break
-            if not blocked and _can_run(weight, limit, rank):
+            if not blocked and _can_run(weight, limit, rank, free):
                 got = _take(root, weight, limit)
                 if got:
                     info.update(since=time.time(), waited=round(time.time() - began, 2))

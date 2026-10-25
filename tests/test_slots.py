@@ -54,7 +54,7 @@ class SlotsTest(unittest.TestCase):
         for klass in ("background", "interactive"):
 
             def run(klass=klass):
-                with slots.hold(klass, 1, klass):
+                with slots.hold(klass, 2, klass):  # the whole pool: one runs at a time, so order is the grant order
                     order.append(klass)
                     time.sleep(0.2)
 
