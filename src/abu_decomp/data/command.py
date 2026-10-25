@@ -102,6 +102,12 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     )
     st.add_argument("--tree", type=Path, help="--build: the shared tree the fresh tree is seeded from")
     st.add_argument("--at", help="--build: the commit the diff applies on (default: the shared tree's branch tip)")
+    pl = sub.add_parser(
+        "place", help="place a function's literal pool in the unit that compiles it, in every version (unbake sync --place)"
+    )
+    pl.add_argument("--tree", type=Path, required=True)
+    pl.add_argument("--check", action="store_true", help="list the rows and files it would write, write nothing")
+    pl.add_argument("function", nargs="+")
     g = sub.add_parser(
         "gate", help="refuse a diff that re-adds a raw member extern or a kind-conflicting decl; tree ratchet"
     )
@@ -130,6 +136,8 @@ def run(args: argparse.Namespace) -> Result:
         return _rewrite(args, cfg)
     if verb == "try":
         return _try(args, cfg)
+    if verb == "place":
+        return _place(args)
     if verb == "check":
         b = trial.Builder(cfg, args.tree)
         b.diff_base = args.since
@@ -249,6 +257,37 @@ def _try(args: argparse.Namespace, cfg) -> Result:
         for ln, r in zip(lines, rows, strict=True) if r["edit"] != 0
     ]  # fmt: skip
     return {"lines": lines, "rows": rows}, 1 if bad else 0, bad
+
+
+def _place(args: argparse.Namespace) -> Result:
+    """`unbake sync --place`, the one tool that edits the generated place rows (splat.yaml pieces, aliases, link script order) for
+    every version: each row it adds or junk row it removes is listed, a refusal names the function and the reason."""
+    from abu_decomp import cli, tools
+
+    called = tools.invoke(
+        "unbake",
+        cli._profile(args.profile),
+        ["sync", "--place", *args.function, *(["--check"] if args.check else [])],
+        project=args.tree,
+    )
+    document = called.document or {}
+    result = document.get("result") or {}
+    placed = result.get("placed") or []
+    lines = [
+        f"{p['function']} {p['version']}: {p['row']} ({p['file']})"
+        + (f"; removed junk rows {', '.join(p['removed'])}" if p.get("removed") else "")
+        for p in placed
+    ]
+    findings = [
+        {"key": f.get("key", "data.place"), "blocking": True, "message": f.get("message", "")}
+        for f in document.get("findings") or []
+        if f.get("blocking", True)
+    ]
+    if not called.ok and not findings:
+        findings = [{"key": "data.place", "blocking": True, "message": "unbake sync --place failed"}]
+    return {"lines": lines, "placed": placed, "written": result.get("written", []), "next": result.get("next", "")}, (
+        1 if findings else 0
+    ), findings
 
 
 def _stamp(args: argparse.Namespace, cfg) -> str:

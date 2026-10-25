@@ -315,3 +315,46 @@ def test_check_diff_already_committed_in_the_tree_is_no_refusal(tmp_path: Path):
     git("commit", "-qam", "change")  # the lane committed it: the diff no longer applies forward
     args = type("A", (), {"diff": diff, "write_baseline": False, "tree": tmp_path})()
     assert command._apply_diff(args) is False
+
+
+def test_data_place_runs_unbake_sync_place_and_lists_rows_and_removed_junk(tmp_path: Path, monkeypatch):
+    import argparse
+    from types import SimpleNamespace
+
+    from abu_decomp import tools
+    from abu_decomp.data import command
+
+    seen = []
+    placed = [
+        {"function": "F", "version": "us", "row": "literals_F = 0x800E1520;", "file": "versions/us/aliases.txt",
+         "note": "", "removed": ["D_800E1530 (rom 0x2030)"]}
+    ]  # fmt: skip
+
+    def invoke(tool, profile, argv, **kw):
+        seen.append((tool, list(argv), kw["project"]))
+        doc = {"ok": True, "findings": [], "result": {"placed": placed, "written": ["versions/us/aliases.txt"]}}
+        return SimpleNamespace(ok=True, document=doc)
+
+    monkeypatch.setattr(tools, "invoke", invoke)
+    monkeypatch.setattr(cli, "_profile", lambda p: "profile")
+    args = argparse.Namespace(tree=tmp_path, check=True, function=["F", "G"], profile=None)
+    result, code, findings = command._place(args)
+    assert seen == [("unbake", ["sync", "--place", "F", "G", "--check"], tmp_path)]
+    assert code == 0 and findings == []
+    assert result["lines"] == [
+        "F us: literals_F = 0x800E1520; (versions/us/aliases.txt); removed junk rows D_800E1530 (rom 0x2030)"
+    ]
+
+
+def test_data_place_carries_the_refusal_of_the_tool(tmp_path: Path, monkeypatch):
+    import argparse
+    from types import SimpleNamespace
+
+    from abu_decomp import tools
+    from abu_decomp.data import command
+
+    doc = {"ok": False, "findings": [{"key": "place.gap", "blocking": True, "message": "us: F: its data spans"}]}
+    monkeypatch.setattr(tools, "invoke", lambda *a, **k: SimpleNamespace(ok=False, document=doc))
+    monkeypatch.setattr(cli, "_profile", lambda p: "profile")
+    _, code, findings = command._place(argparse.Namespace(tree=tmp_path, check=False, function=["F"], profile=None))
+    assert code == 1 and findings == [{"key": "place.gap", "blocking": True, "message": "us: F: its data spans"}]
