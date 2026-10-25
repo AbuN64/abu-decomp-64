@@ -205,6 +205,45 @@ def test_rom_check_runs_the_configured_make_arguments_and_is_skipped_without_the
         return subprocess.CompletedProcess(cmd, 0, "ok", "")
 
     cfg = replace(CFG, make=("make",), rom_check=("check", "CHECK=rom"))
-    assert trial.Builder(cfg, tmp_path, run=run).rom_check() == (0, "ok")
+    assert trial.Builder(cfg, tmp_path, run=run).rom_check() == (0, "")
     assert seen == [(["nice", "make", "-j1", "check", "CHECK=rom"], tmp_path)]
     assert trial.Builder(CFG, tmp_path, run=run).rom_check() == (0, "") and len(seen) == 1
+
+
+def test_a_rom_refusal_names_the_version_the_shas_the_offset_and_the_function_and_keeps_the_log(tmp_path):
+    import json
+    from dataclasses import replace
+
+    from abu_decomp.data import trial
+
+    cfg = replace(
+        CFG,
+        make=("make",),
+        rom_check=("check",),
+        rom_image="build/{v}/R.z64",
+        rom_base="roms/base.{v}.z64",
+        map_file="docs/map-{v}.json",
+        versions=("a", "b"),
+    )
+    for v in ("a", "b"):
+        (tmp_path / "build" / v).mkdir(parents=True)
+        (tmp_path / "roms").mkdir(exist_ok=True)
+        (tmp_path / "docs").mkdir(exist_ok=True)
+        (tmp_path / f"roms/base.{v}.z64").write_bytes(bytes(range(64)))
+        (tmp_path / f"build/{v}/R.z64").write_bytes(bytes(range(64)))
+        (tmp_path / f"docs/map-{v}.json").write_text(json.dumps({"fns": [["Fn_A", 16, 16, 100.0, "src/a.c", 0]]}))
+    bad = bytearray(range(64))
+    bad[20] ^= 0xFF
+    (tmp_path / "build/b/R.z64").write_bytes(bytes(bad))
+
+    def run(cmd, **k):
+        return subprocess.CompletedProcess(cmd, 2, "", "make: *** [Makefile:9: check] Error 1")
+
+    rc, report = trial.Builder(cfg, tmp_path, run=run).rom_check()
+    assert rc == 2 and report.startswith("b: expected sha1 ")
+    assert "first difference at rom 0x14 (in Fn_A of src/a.c)" in report
+    assert "a:" not in report and str(tmp_path / ".stamp-rom.log") in report
+    assert "Error 1" in (tmp_path / ".stamp-rom.log").read_text()
+    (tmp_path / "build/b/R.z64").write_bytes(bytes(range(64)))  # every ROM matches: say what make did
+    again = trial.Builder(cfg, tmp_path, run=run).rom_check()[1]
+    assert "make exited 2: make: *** [Makefile:9: check] Error 1" in again

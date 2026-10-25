@@ -12,9 +12,9 @@ from abu_decomp import DecompError
 from abu_decomp.data import asm, cdecl, clayout, config, literals, source
 
 
-def test_config_unknown_key_and_missing(tmp_path: Path):
-    with pytest.raises(DecompError, match="unknown key"):
-        config.parse({"nope": 1})
+def test_config_unknown_key_is_ignored_with_a_warning_and_a_missing_config_refused(tmp_path: Path, capsys):
+    cfg = config.parse({"nope": 1, "reference": "ref"})  # a key from a newer config than this tool
+    assert cfg.reference == "ref" and "ignoring unknown key(s) nope" in capsys.readouterr().err
     with pytest.raises(DecompError, match="no data config"):
         config.load(None, tmp_path)
     (tmp_path / "docs").mkdir()

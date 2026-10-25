@@ -112,7 +112,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane):
     head = _git(shared, "rev-parse", "HEAD").stdout.strip()
     made, code, findings = _tree(profile, shared, lane, at or head or None)
     tree = Path(made["worktree"])
-    extracted = False
+    extracted = kept = False
     try:
         if code:
             return {"worktree": made}, code, findings
@@ -154,9 +154,10 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane):
         if not findings and all(r["built"] for r in results):
             # A stamp means the 5 ROMs match: the units built, now link each version and compare its hash (10-24: a stamped
             # diff broke the de ROM at the train, which links). Incremental: the objects are the ones just built.
-            rc, tail = builder.rom_check()
+            rc, report = builder.rom_check()
             if rc:
-                findings = [{"key": "data.rom", "blocking": True, "message": f"ROM check failed: {tail[-300:]}"}]
+                kept = True  # the failed tree stays (its build/ and .stamp-rom.log) until the slot is next used
+                findings = [{"key": "data.rom", "blocking": True, "message": f"ROM check failed: {report}"}]
         result: dict[str, Any] = {
             "results": results,
             "rev": made["rev"],
@@ -170,7 +171,9 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane):
         return result, 1 if findings else 0, findings
     finally:
         wall, used = time.monotonic() - started, meter.cpu() - cpu
-        if extracted:
+        if kept and (tree / ".git").exists():
+            (tree / STATE).write_text("busy\n")  # not reusable; the next stamp in this slot rebuilds it
+        elif extracted:
             worktree.prune(shared, [tree.name])
         elif (tree / ".git").exists():
             release(shared, tree)

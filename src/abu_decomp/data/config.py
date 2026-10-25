@@ -25,6 +25,8 @@ carries no game fact except the symbol shape, so a project with another naming o
     make_env = {}
     jobs = ["~/.config/m2/admit", "1.5"]      # prints the -j count
     rom_check = ["check", "CHECK=rom"]        # arguments after `make -jN`: link every version and compare its ROM hash
+    rom_image = "build/{v}/RageWars.z64"      # the linked ROM of a version, and the original it must equal (for the report)
+    rom_base = "roms/baserom.{v}.z64"
     object = "build/{v}/{unit}.o"
     fncmp = ["python3", "fncmp.py", "--aligned", "{v}", "{fn}", "{obj}"]
     fncmp_score = 'edit=(\\d+)'                # group 1: the edit count (0 = exact)
@@ -33,6 +35,7 @@ carries no game fact except the symbol shape, so a project with another naming o
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,6 +69,8 @@ class DataConfig:
     make_env: dict[str, str] = field(default_factory=dict)
     jobs: tuple[str, ...] = ()
     rom_check: tuple[str, ...] = ()
+    rom_image: str = ""
+    rom_base: str = ""
     object: str = "build/{v}/{unit}.o"
     fncmp: tuple[str, ...] = ()
     fncmp_score: str = r"edit=(\d+)"
@@ -84,8 +89,13 @@ _KEYS = {f for f in DataConfig.__dataclass_fields__}
 def parse(table: dict[str, Any], source: str = "config") -> DataConfig:
     unknown = sorted(set(table) - _KEYS)
     if unknown:
-        raise DecompError("data.config", f"{source}: unknown key(s) {', '.join(unknown)}")
-    values = {k: (tuple(v) if k in _TUPLES else v) for k, v in table.items()}
+        # A key this tool does not know yet is ignored with a warning, never a refusal: a config deployed before its tool
+        # (10-24: rom_check live in rw.toml first) made every `data` verb, and so claim.sh, refuse for ~15 min.
+        print(
+            f"decomp data: {source}: ignoring unknown key(s) {', '.join(unknown)} (this tool predates them)",
+            file=sys.stderr,
+        )
+    values = {k: (tuple(v) if k in _TUPLES else v) for k, v in table.items() if k in _KEYS}
     cfg = DataConfig(**values)
     if cfg.reference not in cfg.versions and cfg.versions != ("ref",):
         raise DecompError("data.config", f"{source}: reference {cfg.reference!r} is not in versions")

@@ -6,6 +6,7 @@ written, built and always restored (also on SIGTERM)."""
 
 from __future__ import annotations
 
+import contextlib
 import filecmp
 import json
 import os
@@ -69,9 +70,13 @@ class Builder:
         )
         return r.returncode, (r.stdout or "")[-60000:] + (r.stderr or "")[-60000:]
 
+    LOG = ".stamp-rom.log"
+
     def rom_check(self) -> tuple[int, str]:
         """Link every version and compare its ROM hash (the config's `rom_check` arguments after the make prefix), incremental
-        on the objects the data check just built. (0, "") when the config names no such check."""
+        on the objects the data check just built. (0, "") when the config names no such check. A failure's message names
+        each version that differs (expected and got SHA-1, first differing offset and the function holding it) and the log
+        file (kept in the tree: the whole make output)."""
         if not self.cfg.rom_check:
             return 0, ""
         env = dict(os.environ, **{k: expand(v) for k, v in self.cfg.make_env.items()})
@@ -82,7 +87,54 @@ class Builder:
             text=True,
             env=env,
         )
-        return r.returncode, ((r.stdout or "")[-1500:] + (r.stderr or "")[-1500:]).strip()
+        if not r.returncode:
+            return 0, ""
+        log = (r.stdout or "") + (r.stderr or "")
+        with contextlib.suppress(OSError):
+            (self.tree / self.LOG).write_text(log)
+        return r.returncode, self.rom_report(r.returncode, log)
+
+    def rom_report(self, rc: int, log: str) -> str:
+        """One line per version whose ROM is missing or differs from the original, else the make error lines."""
+        import hashlib
+
+        lines = []
+        for v in self.cfg.versions:
+            if not (self.cfg.rom_image and self.cfg.rom_base):
+                break
+            made, base = self.tree / self.cfg.rom_image.format(v=v), self.tree / self.cfg.rom_base.format(v=v)
+            if not base.is_file():
+                continue
+            if not made.is_file():
+                lines.append(f"{v}: no ROM was linked")
+                continue
+            a, b = made.read_bytes(), base.read_bytes()
+            if a == b[: len(a)] and len(a) == len(b):
+                continue
+            at = next((i for i in range(min(len(a), len(b))) if a[i] != b[i]), min(len(a), len(b)))
+            lines.append(
+                f"{v}: expected sha1 {hashlib.sha1(b).hexdigest()[:12]} got {hashlib.sha1(a).hexdigest()[:12]}, "
+                f"first difference at rom 0x{at:X}{self.holder(v, at)}"
+            )
+        if not lines:
+            errs = [x for x in log.splitlines() if "***" in x or "rror" in x][-4:]
+            lines.append(
+                f"make exited {rc}: "
+                + ("; ".join(x.strip() for x in errs) if errs else "no output (killed or crashed)")
+            )
+        return " | ".join(lines)[:900] + f" [log: {self.tree / self.LOG}]"
+
+    def holder(self, version: str, rom: int) -> str:
+        """` (in <function> of <unit>)` for the map row holding the rom offset, else ` (outside every function)`."""
+        try:
+            rows = json.loads((self.tree / self.cfg.path(self.cfg.map_file, version)).read_text())["fns"]
+        except (OSError, ValueError, KeyError):
+            return ""
+        c = self.cfg.map_columns
+        for r in rows:
+            if r[1] <= rom < r[1] + r[2]:
+                return f" (in {r[c['name']]} of {r[c['unit']]})"
+        return " (outside every function: data)"
 
     def score(self, version: str, fn: str, unit: str) -> int | None:
         """fncmp edit count of FN's object (0 = exact), None when fncmp printed no count."""
