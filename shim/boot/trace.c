@@ -16,6 +16,9 @@
 #include <stdlib.h>
 #include <string.h>
 #define NOINST __attribute__((no_instrument_function))
+/* The entry hook reads the instrumented caller's saved registers straight off the stack, below any object's frame:
+ * AddressSanitizer would report those reads as stack-buffer-overflow, so the hook path is not sanitized. */
+#define RAWSTACK __attribute__((no_sanitize_address))
 typedef struct {
     void *fn;
     unsigned index; /* entry index + 1; 0 marks a free slot */
@@ -472,7 +475,7 @@ NOINST static void first_hit(unsigned i)
 }
 /* The frame record of one instrumented entry. regs: ebx, esi, edi, ebp (the entered function's frame), the hook's
  * return address, then the two hook arguments (fn, call_site), as the i386 entry stub below lays them out. */
-NOINST static void push_frame(void *fn, void *call_site, const unsigned long *regs)
+NOINST RAWSTACK static void push_frame(void *fn, void *call_site, const unsigned long *regs)
 {
     N64cTraceStack *mine = own;
     if (!mine) {
@@ -496,7 +499,7 @@ NOINST static void push_frame(void *fn, void *call_site, const unsigned long *re
     mine->depth++;
     last_stack = mine;
 }
-NOINST static void trace_enter(void *fn, void *call_site, const unsigned long *regs)
+NOINST RAWSTACK static void trace_enter(void *fn, void *call_site, const unsigned long *regs)
 {
     if (!__atomic_load_n(&armed, __ATOMIC_ACQUIRE))
         return;
@@ -528,7 +531,7 @@ NOINST static void trace_enter(void *fn, void *call_site, const unsigned long *r
 #if defined(__i386__)
 /* The entry hook keeps the callee-saved registers as the instrumented function's caller left them: ebx, esi and
  * edi are not touched by a function before it saves them, and ebp is the function's own frame. */
-NOINST __attribute__((used, force_align_arg_pointer)) void n64c_trace_enter_i386(const unsigned long *regs)
+NOINST RAWSTACK __attribute__((used, force_align_arg_pointer)) void n64c_trace_enter_i386(const unsigned long *regs)
 {
     trace_enter((void *)regs[5], (void *)regs[6], regs);
 }
