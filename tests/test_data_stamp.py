@@ -64,3 +64,28 @@ class StampTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_pure_rename_allows_redundant_externs_and_the_include_that_replaces_them():
+    rows = (
+        "diff --git a/versions/us/symbol_addrs.txt b/versions/us/symbol_addrs.txt\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n"
+        "-func_80000000_de = 0x80000000; // type:func\n+osX = 0x80000000; // type:func\n"
+    )
+    src = (
+        "diff --git a/src/a.c b/src/a.c\n--- a/src/a.c\n+++ b/src/a.c\n@@ -1,3 +1,3 @@\n"
+        "-extern void func_80000000_de(int);\n-extern void func_80000004_de(int);\n+extern void osX(int);\n"
+        '+#include "COMMON/EXTERNS.H"\n'
+    )
+    assert stamp.pure_rename(rows + src, (".c",))
+    retyped = src.replace("+extern void osX(int);", "+extern long osX(int);")
+    assert not stamp.pure_rename(rows + retyped, (".c",))  # a changed type is not a rename
+    added = src.replace("+extern void osX(int);", "+extern void osX(int);\n+extern void other(int);")
+    assert not stamp.pure_rename(rows + added, (".c",))  # a new declaration is not redundant
+
+
+def test_extraction_files_are_symbol_rows_and_splat_config():
+    assert stamp.extraction_files(["src/a.c", "versions/us/symbol_addrs.txt", "versions/de/splat.yaml"]) == [
+        "versions/us/symbol_addrs.txt",
+        "versions/de/splat.yaml",
+    ]
+    assert stamp.extraction_files(["include/x.h"]) == []

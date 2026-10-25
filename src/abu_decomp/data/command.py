@@ -127,6 +127,11 @@ def run(args: argparse.Namespace) -> Result:
     if verb == "check":
         b = trial.Builder(cfg, args.tree)
         b.diff_base = args.since
+        from abu_decomp import cli
+
+        why = check_mod.reextract(cli._profile(args.profile), args.tree, check_mod.changed_files(args.tree, args.since))
+        if why:
+            return {}, 1, [{"key": "data.extract", "blocking": True, "message": why}]
         known = (
             json.loads(args.baseline.read_text())
             if args.baseline and args.baseline.is_file() and not args.write_baseline

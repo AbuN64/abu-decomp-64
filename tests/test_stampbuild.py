@@ -165,3 +165,19 @@ def test_a_unit_whose_object_equals_the_clean_trees_is_not_scored(tmp_path, monk
     b.score = lambda v, fn, u: scored.append((u, fn)) or 0
     monkeypatch.setattr(check_mod, "exact_fns", lambda c, t, v, units: {"src/x.c": ["f1"], "src/y.c": ["f2"]})
     assert check_mod.broken(b, "a", ["src/x.c", "src/y.c"]) == [] and scored == [("src/y.c", "f2")]
+
+
+def test_a_diff_that_changes_symbol_rows_re_extracts_the_tree_and_the_tree_is_not_kept(tmp_path, monkeypatch):
+    from abu_decomp.data import check as check_mod
+
+    calls = []
+    monkeypatch.setattr(check_mod, "reextract", lambda profile, tree, files: calls.append(files) or None)
+    diff, pruned = setup(tmp_path, monkeypatch, False)
+    rows = (
+        "diff --git a/versions/us/symbol_addrs.txt b/versions/us/symbol_addrs.txt\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n"
+        "-a\n+b\n"
+    )
+    diff.write_text(DIFF + rows)
+    _r, code, _f = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 0 and calls == [["include/x.h", "versions/us/symbol_addrs.txt"]]
+    assert pruned[-1] == ["STAMP-x"]  # the tree is pruned after use, not released for reuse

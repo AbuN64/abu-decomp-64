@@ -45,6 +45,9 @@ def pure_rename(text: str, code: tuple[str, ...] = ()) -> bool:
     names = renames_of(text)
     if not names:
         return False
+    # Declarations a rename makes redundant go too (an `extern` the shared header now declares) and the include that brings
+    # that header in: neither moves a type, a size or a value, and the all-ROM check still proves every byte.
+    include = re.compile(r"^#\s*include\b")
     sub = re.compile(r"\b(" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True)) + r")\b")
     plain = lambda line: _COMMENT.sub("", line).strip()  # noqa: E731
     gone: list[str] = []
@@ -53,10 +56,10 @@ def pure_rename(text: str, code: tuple[str, ...] = ()) -> bool:
 
     def settled() -> bool:
         table = not current.lower().endswith((*code, ".h")) and not gone
-        ok = table or (
-            len(gone) == len(came)
-            and all(sub.sub(lambda m: names[m.group(1)], plain(g)) == plain(c) for g, c in zip(gone, came, strict=True))
-        )
+        old = [sub.sub(lambda m: names[m.group(1)], plain(g)) for g in gone]
+        new = [plain(c) for c in came if not include.match(plain(c))]
+        old = [g for g in old if not (g.startswith("extern ") and g not in new)]
+        ok = table or old == new
         gone.clear()
         came.clear()
         return ok
@@ -129,3 +132,12 @@ def missing(cfg: DataConfig, directory: Path, text: str, diff: Path) -> list[str
         f"{diff.name} touches declarations or data and has no passing all-version `decomp data check` stamp "
         f"(sha256 {digest(text)[:12]}): run `decomp data check --tree TREE --diff {diff}` on the tree it came from"
     ]
+
+
+EXTRACTION_INPUT = re.compile(r"(^|/)(symbol_addrs[^/]*\.txt|splat\.ya?ml)$")
+
+
+def extraction_files(files: list[str]) -> list[str]:
+    """The files of a change that the ROM extraction reads (symbol rows, splat config): a tree that takes them has stale asm
+    until `unbake setup` runs there."""
+    return [f for f in files if EXTRACTION_INPUT.search(f)]

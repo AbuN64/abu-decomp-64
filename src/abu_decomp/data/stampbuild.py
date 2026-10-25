@@ -112,6 +112,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane):
     head = _git(shared, "rev-parse", "HEAD").stdout.strip()
     made, code, findings = _tree(profile, shared, lane, at or head or None)
     tree = Path(made["worktree"])
+    extracted = False
     try:
         if code:
             return {"worktree": made}, code, findings
@@ -128,6 +129,14 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane):
             msg = f"{diff.name} does not apply on {made['rev'][:9]}: {applied.stderr.strip()[:200]}"
             return {"worktree": made}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]
         same = made["rev"] == head  # the shared tree's objects are the clean build only at its own commit
+        files = stamp_mod.files_of(text)
+        if stamp_mod.extraction_files(files):
+            extracted = (
+                True  # the tree's asm now follows the diff's symbol rows: it is no clean tree for the next stamp
+            )
+            why = check_mod.reextract(profile, tree, files)
+            if why:
+                return {"worktree": made}, 1, [{"key": "data.extract", "blocking": True, "message": why}]
         builder = trial.Builder(cfg, tree, reference=shared if same else None)
         results = [check_mod.check(builder, v) for v in cfg.versions]
         if (
@@ -155,7 +164,9 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane):
         return result, 1 if findings else 0, findings
     finally:
         wall, used = time.monotonic() - started, meter.cpu() - cpu
-        if (tree / ".git").exists():
+        if extracted:
+            worktree.prune(shared, [tree.name])
+        elif (tree / ".git").exists():
             release(shared, tree)
         print(
             f"stamp build: wall={wall:.0f}s cpu={used:.0f}s tree={lane} {'reused' if made.get('reused') else 'fresh'}"

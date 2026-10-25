@@ -12,6 +12,25 @@ from abu_decomp.data.config import DataConfig
 from abu_decomp.data.trial import Builder, fn_unit  # noqa: F401  re-export for callers
 
 
+def reextract(profile, tree: Path, files: list[str]) -> str | None:
+    """Bring the tree's extraction up to the symbol rows it now holds (`unbake setup --no-make`: a rename takes unbake's rename
+    path, no splat). Without it fncmp finds no function under its new name (`no-score`: the asm still has the old one).
+    None when nothing needed it or it worked, else why not."""
+    from abu_decomp import tools
+    from abu_decomp.data import stamp
+
+    if not stamp.extraction_files(files):
+        return None
+    called = tools.invoke("unbake", profile, ["setup", "--no-make"], project=tree)
+    return None if called.ok else "unbake setup refused after the symbol rows changed"
+
+
+def changed_files(tree: Path, base: str | None = None, run=subprocess.run) -> list[str]:
+    return run(
+        ["git", "-C", str(tree), "diff", "--name-only", *([base] if base else [])], capture_output=True, text=True
+    ).stdout.split()
+
+
 def header_dependents(tree: Path, version: str, headers: list[str], run=subprocess.run) -> list[str]:
     """Units whose dependency file (build/<version>/<unit>.d of an earlier build) names one of HEADERS."""
     if not headers:
