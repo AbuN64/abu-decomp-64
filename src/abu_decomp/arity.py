@@ -33,7 +33,7 @@ DEFAULTS: dict[str, Any] = {
     "symbols": r"func_[0-9A-Fa-f]{8}\w*",
     "asm": "asm/us-rev1/nonmatchings",
 }
-VERSION = 2
+VERSION = 3
 KEYWORDS = frozenset(
     {"return", "else", "do", "goto", "case", "sizeof", "if", "while", "for", "switch", "typedef", "define"}
 )
