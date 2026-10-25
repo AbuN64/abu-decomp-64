@@ -327,6 +327,7 @@ def test_the_host_config_is_found_with_no_flag_or_env_and_keeps_its_stamps_besid
 
 def test_lane_config_flag_stamps_into_the_host_dir_the_queue_reads(tmp_path, monkeypatch):
     from abu_decomp.data import stamp
+
     shared = tmp_path / "shared"
     shared.mkdir()
     (shared / "rw.toml").write_text("")
@@ -560,9 +561,25 @@ def test_a_check_that_judged_no_unit_refuses_and_writes_no_stamp(tmp_path, monke
     cfg = SimpleNamespace(versions=("a",))
     args = SimpleNamespace(write_baseline=False, unit=[], diff=None, since="HEAD~1", version=[])
     empty = [{"version": "a", "units": 0, "built": True, "broken": []}]
-    results, nothing = command._judged_nothing(args, cfg, None, empty, {})
+    _results, nothing = command._judged_nothing(args, cfg, None, empty, {})
     assert nothing is True
     full = [{"version": "a", "units": 2, "built": True, "broken": []}]
     assert command._judged_nothing(args, cfg, None, full, {}) is None
     args.since = None  # a plain working-tree check asks for no judgement of a named change
     assert command._judged_nothing(args, cfg, None, empty, {}) is None
+
+
+def test_gate_counts_a_git_rev_without_checkout(tmp_path: Path):
+    cj = census_json(tmp_path)
+    tree = tmp_path / "tree"
+    git = ["git", "-C", str(tree), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "base"], check=True)
+    n = gate.count_tree(CFG, cj, tree)
+    (tree / "src" / "extra.c").write_text("extern s32 D_80100004;\n")  # a new raw member decl, uncommitted
+    assert gate.count_tree(CFG, cj, tree) == n + 1
+    assert gate.count_rev(CFG, cj, tree, "HEAD") == n  # the committed rev is what is counted
+    with pytest.raises(ValueError):
+        gate.count_rev(CFG, cj, tree, "nosuchrev")
+    assert gate.evidence_rev(CFG) == ""  # no evidence_tree configured

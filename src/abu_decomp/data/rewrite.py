@@ -55,6 +55,8 @@ def owner_header_types(tree: Path, expr: str, header: str) -> list[str]:
         return []
     ext, local = source.local_decls(path.read_text(errors="replace"), owner)
     return ext + local
+
+
 def run(
     cfg: DataConfig,
     tree: Path,

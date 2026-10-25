@@ -9,10 +9,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
+import subprocess
 import sys
+import tarfile
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -194,6 +198,30 @@ def count_tree(cfg: DataConfig, census: Path, tree: Path) -> int:
             for sym, typ in cdecl.declarators(m.group(1), token):
                 n += sym in member and kind(typ) in ("i", "f", "p") and not (member[sym][1] and evidence.separate(sym))
     return n
+
+
+def count_rev(cfg: DataConfig, census: Path, tree: Path, rev: str) -> int:
+    """count_tree of the source dirs of git REV in TREE, with no checkout: the count a commit has under the evidence
+    (asm) read now. The member rule reads another tree's asm, which moves as functions match, so a count made earlier is
+    not comparable with one made now; the base of a chain is recounted beside the head to compare like with like."""
+    p = subprocess.run(
+        ["git", "-C", str(tree), "archive", "--format=tar", rev, *cfg.source_dirs], capture_output=True, check=False
+    )
+    if p.returncode:
+        raise ValueError(f"git archive {rev}: {p.stderr.decode(errors='replace').strip()[:200]}")
+    with tempfile.TemporaryDirectory(prefix="gate-rev-") as d:
+        with tarfile.open(fileobj=io.BytesIO(p.stdout)) as t:
+            t.extractall(d, filter="data")
+        return count_tree(cfg, census, Path(d))
+
+
+def evidence_rev(cfg: DataConfig) -> str:
+    """HEAD of the evidence tree the count read ('' when none or unreadable): it names the asm a count is under."""
+    tree = os.path.expanduser(cfg.evidence_tree) if cfg.evidence_tree else ""
+    if not tree:
+        return ""
+    r = subprocess.run(["git", "-C", tree, "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=False)
+    return r.stdout.strip() if r.returncode == 0 else ""
 
 
 def ratchet(count: int, baseline: Path | None, write: bool) -> list[str]:

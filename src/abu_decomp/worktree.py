@@ -219,7 +219,8 @@ MAX_BEHIND = 25  # commits: the pool is refreshed after each landing (~20 an hou
 
 def behind(tree: Path) -> int | None:
     """Commits the remote main has that the tree HEAD lacks (None: no remote main ref or no git tree). A seed or
-    evidence tree 899 commits behind failed `data stamp --build` twice and the member gate read stale asm (10-24 REV1-ONE-24)."""
+    evidence tree 899 commits behind failed `data stamp --build` twice and the member gate read stale asm
+    (10-24 REV1-ONE-24)."""
     import subprocess
 
     refs = subprocess.run(

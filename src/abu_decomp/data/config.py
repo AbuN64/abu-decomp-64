@@ -81,8 +81,12 @@ class DataConfig:
     object: str = "build/{v}/{unit}.o"
     fncmp: tuple[str, ...] = ()
     fncmp_score: str = r"edit=(\d+)"
-    fncmp_batch: tuple[str, ...] = ()  # one process for every function of a version (a start + objdump per call otherwise)
-    census: str = ""  # census.json the gate reads: stamp --build and check --diff refuse what the gate would, before any build
+    fncmp_batch: tuple[
+        str, ...
+    ] = ()  # one process for every function of a version (a start + objdump per call otherwise)
+    census: str = (
+        ""  # census.json the gate reads: stamp --build and check --diff refuse what the gate would, before any build
+    )
     evidence_tree: str = ""  # a tree whose asm/<v>/ the gate reads to tell a separate global from a struct member
 
     def define(self, version: str) -> str:
@@ -92,7 +96,18 @@ class DataConfig:
         return template.format(v=version)
 
 
-_TUPLES = {"versions", "source_dirs", "source_suffixes", "cpp", "cc1_flags", "make", "jobs", "fncmp", "fncmp_batch", "rom_check"}
+_TUPLES = {
+    "versions",
+    "source_dirs",
+    "source_suffixes",
+    "cpp",
+    "cc1_flags",
+    "make",
+    "jobs",
+    "fncmp",
+    "fncmp_batch",
+    "rom_check",
+}
 _KEYS = {f for f in DataConfig.__dataclass_fields__}
 
 

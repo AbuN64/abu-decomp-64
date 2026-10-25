@@ -281,8 +281,12 @@ class Bridge:
                             out.write("\n".join(self.full_stack_lines) + "\n")
                         token = await self.send("-exec-continue")
                         await self.result(token)
-                    elif ('reason="signal-received"' in record and 'signal-name="SIGFPE"' in record
-                          and os.environ.get("N64C_GDB_FPE_TOLERATE") and self.fpe_hits < 100000):
+                    elif (
+                        'reason="signal-received"' in record
+                        and 'signal-name="SIGFPE"' in record
+                        and os.environ.get("N64C_GDB_FPE_TOLERATE")
+                        and self.fpe_hits < 100000
+                    ):
                         # Experiment mode (a lane asks what the original would do if this divide did not trap): log the
                         # faulting frame, mask the trap for the one instruction, restore the trap and go on.
                         self.fpe_hits += 1

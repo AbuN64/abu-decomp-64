@@ -170,12 +170,14 @@ class RemapTests(unittest.TestCase):
         result, code, _ = repin.repin(self.profile, self.tree, None, rebuild=False)
         self.assertEqual((code, result["changed"]), (1, []))
         self.assertEqual({p: p.read_text() for p in before}, before)
+
     def test_repin_check_names_the_stale_symbols_and_writes_nothing(self) -> None:
         self.manifest.write_text('{"x": "func_80004000_de"}\n')
         before = self.manifest.read_text()
         _, code, findings = repin.repin(self.profile, self.tree, None, rebuild=False, dry_run=True)
         self.assertEqual((code, [f["key"] for f in findings]), (1, ["remap.stale"]))
         self.assertEqual(self.manifest.read_text(), before)
+
     def test_the_port_remap_verb_runs_since_a_commit_and_check_is_read_only(self) -> None:
         argv = [
             "--profile",

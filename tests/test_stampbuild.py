@@ -455,12 +455,13 @@ def test_a_diff_the_gate_would_refuse_is_refused_before_any_build(tmp_path, monk
     diff.write_text(
         "diff --git a/src/a.c b/src/a.c\n--- a/src/a.c\n+++ b/src/a.c\n@@ -1 +1 @@\n"
         "-#ifdef NON_MATCHING\n+extern const f32 D_1;\n"
-        "diff --git a/include/x.h b/include/x.h\n--- a/include/x.h\n+++ b/include/x.h\n@@ -1 +1 @@\n-extern int D_2;\n+extern long D_2;\n"
+        "diff --git a/include/x.h b/include/x.h\n--- a/include/x.h\n+++ b/include/x.h\n@@ -1 +1 @@\n-extern int D_2;\n"
+        "+extern long D_2;\n"
     )
     built = []
     monkeypatch.setattr(stampbuild, "slot", lambda *a, **k: built.append(1) or (_ for _ in ()).throw(AssertionError))
     config = replace(CFG, census=str(census), symbol_token=r"D_\w+")
-    result, code, findings = stampbuild.build(config, None, tmp_path, diff, tmp_path / "stamps")
+    _result, code, findings = stampbuild.build(config, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 1 and not built and findings[0]["key"] == "data.gate" and "LITERAL D_1" in findings[0]["message"]
     assert stampbuild.gate_mod.precheck(replace(CFG, census=str(tmp_path / "none.json")), diff.read_text()) == []
 

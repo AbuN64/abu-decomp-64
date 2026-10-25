@@ -34,7 +34,11 @@ def mask(text: str) -> str:
     scan of the mask can never begin or end inside a comment (10-25 80444030_6: an `extern` inside a comment swallowed
     three functions up to the next `;`)."""
     return SPANS.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+
+
 EXTERN = re.compile(r"\bextern\b[^;{}()]*;")
+
+
 def drop_externs(text: str, sym: str) -> str:
     """Delete every extern declarator of SYM (a whole line when it was the only declarator). The scan runs on the masked
     text, so an `extern` inside a comment or string is never a declaration; kept text is cut from the original."""
@@ -64,6 +68,8 @@ def drop_externs(text: str, sym: str) -> str:
         out.append("extern" + ",".join(pieces) + ";")
     out.append(text[last:])
     return re.sub(r"[ \t]*\x00DEL\x00[ \t]*(?://[^\n]*|/\*[^\n]*?\*/)?[ \t]*\n?", "", "".join(out))
+
+
 def replace_uses(text: str, sym: str, expr: str) -> str:
     tok = re.compile(r"(?<![\w])%s\b" % re.escape(sym))
     sp = spans(text)
@@ -122,15 +128,29 @@ def directive_reason(text: str, sym: str) -> str:
         if word == "define" and re.search(r"##\s*%s|%s\s*##|#\s*%s" % (tok, tok, tok), rest):
             return f"{sym} is a # or ## operand in a macro here ({line[:60]})"
     return ""
+
+
 def type_tags(types: list[str]) -> set[str]:
     """The type names of declaration texts: `struct W *` -> {W}; qualifiers, pointers and dimensions dropped."""
     out: set[str] = set()
     for t in types:
         words = re.findall(r"[A-Za-z_]\w*", re.sub(r"\[[^\]]*\]", " ", t))
-        out |= {w for w in words if w not in ("struct", "union", "enum", "const", "volatile", "unsigned", "signed", "static")}
+        out |= {
+            w
+            for w in words
+            if w not in ("struct", "union", "enum", "const", "volatile", "unsigned", "signed", "static")
+        }
     return out
+
+
 def skip_reason(
-    text: str, sym: str, owner: str, kinds_all: set[str], access: dict | None, expr: str = "", owner_types: list[str] | None = None
+    text: str,
+    sym: str,
+    owner: str,
+    kinds_all: set[str],
+    access: dict | None,
+    expr: str = "",
+    owner_types: list[str] | None = None,
 ) -> str:
     """Why this file must keep the raw SYM ('' when the rewrite is safe): a unit-local definition or a struct alias of
     a symbol other units declare as a scalar (rewriting would re-type the access), a declared kind that contradicts how

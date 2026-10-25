@@ -122,6 +122,7 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     g.add_argument("--census", type=Path, required=True)
     g.add_argument("--diff", type=Path)
     g.add_argument("--tree", type=Path)
+    g.add_argument("--rev", help="with --tree: count git REV of TREE (no checkout), under the evidence asm read now")
     g.add_argument("--stamps", type=Path, help="with --diff: also require a check stamp when the diff touches data")
     g.add_argument("--baseline", type=Path)
     g.add_argument("--write-baseline", action="store_true")
@@ -458,8 +459,13 @@ def _gate(args: argparse.Namespace, cfg) -> Result:
         if args.stamps:
             bad += stamp_mod.missing(cfg, args.stamps, text, args.diff)
     if args.tree:
-        n = gate_mod.count_tree(cfg, args.census, args.tree)
+        n = (
+            gate_mod.count_rev(cfg, args.census, args.tree, args.rev)
+            if args.rev
+            else gate_mod.count_tree(cfg, args.census, args.tree)
+        )
         result["raw_member_scalar_decls"] = n
+        result["evidence_rev"] = gate_mod.evidence_rev(cfg)
         bad += gate_mod.ratchet(n, args.baseline, args.write_baseline)
     findings = [{"key": "data.gate", "blocking": True, "message": b} for b in bad]
     result["violations"] = bad
