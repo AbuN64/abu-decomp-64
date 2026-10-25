@@ -300,3 +300,30 @@ def test_data_check_brings_a_stale_extract_current_instead_of_refusing(monkeypat
     args = SimpleNamespace(profile=None, tree=None, since=None, reextract=False)
     command._check(args, None, None, cli)
     assert seen["allow"] is True
+
+
+def test_prepare_signs_every_versions_narrowed_includers_before_any_build(monkeypatch, tmp_path):
+    """The first make's stamp sweep covers every version: the stamps the narrowing proved are signed for all versions
+    before check() builds one, and check() builds the planned units (not the narrowed ones)."""
+    from unbake import hdrnarrow
+
+    plans = {
+        "a": {"units": ["src/x.c"], "narrowed": {"a": {"skipped": 2}}, "skipped": ["src/y.c", "src/z.c"]},
+        "b": {"units": ["src/x.c"], "narrowed": {}, "skipped": []},
+    }
+    monkeypatch.setattr(check, "plan", lambda b, v: plans[v])
+    signed = []
+    monkeypatch.setattr(hdrnarrow, "sign", lambda root, stamps: signed.extend(stamps) or len(stamps))
+    b = SimpleNamespace(tree=tmp_path, cfg=CFG, run=None)
+    check.prepare(b, ["a", "b"])
+    assert signed == ["build/a/src/y.c.i.ok", "build/a/src/z.c.i.ok"]
+    assert b.plans["a"]["narrowed"]["a"]["signed"] == 2
+    built = []
+    b.objects = lambda v, units, keep_going=False: built.append((v, units)) or (0, "")
+    monkeypatch.setattr(check, "failures", lambda b, v, units, log: {})
+    monkeypatch.setattr(check, "broken", lambda b, v, units, ren, moved: [])
+    monkeypatch.setattr(check, "renamed", lambda b: {})
+    monkeypatch.setattr(check, "moved_units", lambda tree, base, run: {})
+    monkeypatch.setattr(check, "in_version", lambda cfg, tree, v, units: units)
+    got = check.check(b, "a")
+    assert built == [("a", ["src/x.c"])] and got["narrowed"]["signed"] == 2

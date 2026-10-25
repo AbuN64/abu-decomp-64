@@ -130,17 +130,21 @@ def expand_units(
     run=subprocess.run,
     cfg: DataConfig | None = None,
     stats: dict | None = None,
+    skipped: dict | None = None,
 ) -> list[str]:
     """The units to rebuild for changed FILES: the changed units themselves, and every unit including a changed header
     that the header edit can reach (CFG given: `hdrnarrow` drops includers whose compile key the edit cannot change;
-    STATS receives what it did)."""
+    STATS receives what it did, SKIPPED[version] the includers it dropped)."""
     units = [f for f in files if f.startswith("src/") and not f.lower().endswith(".h")]
     heads = [f for f in files if f.startswith("include/") or f.lower().endswith(".h")]
     deps = header_dependents(tree, version, heads, run)
     if cfg is not None and deps:
         from unbake import hdrnarrow  # the build's own narrowing (one copy: unbake owns hdrkey)
 
-        deps, got = hdrnarrow.narrow_tree(tree, version, heads, deps, cfg.object, flags=list(cfg.cpp or []))
+        kept, got = hdrnarrow.narrow_tree(tree, version, heads, deps, cfg.object, flags=list(cfg.cpp or []))
+        if skipped is not None:
+            skipped[version] = sorted(set(deps) - set(kept))
+        deps = kept
         if stats is not None:
             stats[version] = got
     return sorted(set(units) | set(deps))
@@ -187,11 +191,14 @@ def changed_units(
     base: str | None = None,
     cfg: DataConfig | None = None,
     stats: dict | None = None,
+    skipped: dict | None = None,
 ) -> list[str]:
     out = run(
         ["git", "-C", str(tree), "diff", "--name-only", base or "HEAD"], capture_output=True, text=True
     ).stdout.split()
-    return expand_units(tree, version, out, run, cfg, stats) if version else [u for u in out if u.startswith("src/")]
+    if not version:
+        return [u for u in out if u.startswith("src/")]
+    return expand_units(tree, version, out, run, cfg, stats, skipped)
 
 
 def moved_units(tree: Path, base: str | None = None, run=subprocess.run) -> dict[str, str]:
@@ -298,6 +305,38 @@ def _narrow_note(narrowed: dict, version: str) -> dict:
     return {"narrowed": narrowed[version]} if version in narrowed else {}
 
 
+def plan(b: Builder, version: str) -> dict:
+    """What `check` rebuilds for VERSION when no units are given: {"units", "narrowed" (the narrowing's note),
+    "skipped" (the includers of the changed headers the narrowing proved the edit cannot reach)}."""
+    narrowed: dict = {}
+    skipped: dict = {}
+    base = getattr(b, "diff_base", None)
+    units = changed_units(b.tree, b.run, version, base, b.cfg, narrowed, skipped)
+    syms = changed_symbols(b.cfg, b.tree, b.run, base)
+    units = sorted(set(units) | set(referencing_units(b.cfg, b.tree, syms, b.run)))
+    built = set(units)
+    return {"units": units, "narrowed": narrowed, "skipped": [u for u in skipped.get(version, []) if u not in built]}
+
+
+def prepare(b: Builder, versions: list[str]) -> dict[str, dict]:
+    """`plan` of every version (kept on B for `check`), then the narrowed-away includers' stamps signed under the new header bytes
+    (`hdrnarrow.sign`) before any make runs: the first make's stamp sweep covers every version and would drop them all
+    (same date, other header bytes), so a later build that skips the headers by date (the stamp's ROM check, `make -o`)
+    remade every one (10-25: 186-619 CPU s per stamp for 2,000-4,000 units per version the check had proved)."""
+    from unbake import hdrnarrow
+
+    plans = {v: plan(b, v) for v in versions}
+    obj = b.cfg.object
+    stamps = [obj.format(v=v, unit=u)[: -len(".o")] + ".i.ok" for v, p in plans.items() for u in p["skipped"]]
+    if stamps and obj.endswith(".o"):
+        signed = hdrnarrow.sign(b.tree, stamps)
+        for v, p in plans.items():
+            p["narrowed"].setdefault(v, {})["signed"] = len(p["skipped"])
+        print(f"data check: {signed} stamps the narrowing proved signed under the new header bytes", flush=True)
+    b.plans = plans
+    return plans
+
+
 def check(b: Builder, version: str, units: list[str] | None = None, baseline: dict[str, str] | None = None) -> dict:
     """Rebuild the units a working diff reaches in VERSION (changed units, includers of changed headers, and every unit
     naming a changed data symbol) with `make -k`: a unit that fails to compile is listed with its own error and does not
@@ -306,10 +345,8 @@ def check(b: Builder, version: str, units: list[str] | None = None, baseline: di
     it is listed as `preexisting` and neither fails the check nor is scored."""
     narrowed: dict = {}
     if units is None:
-        base = getattr(b, "diff_base", None)
-        units = changed_units(b.tree, b.run, version, base, b.cfg, narrowed)
-        syms = changed_symbols(b.cfg, b.tree, b.run, base)
-        units = sorted(set(units) | set(referencing_units(b.cfg, b.tree, syms, b.run)))
+        got = getattr(b, "plans", {}).get(version) or plan(b, version)  # b.plans: made by `prepare`
+        units, narrowed = got["units"], got["narrowed"]
     moved = moved_units(b.tree, getattr(b, "diff_base", None), b.run)
     units = [moved.get(u, u) for u in in_version(b.cfg, b.tree, version, [*units, *moved])]
     units = sorted({u for u in units if u})  # a path the diff removed has no source to build

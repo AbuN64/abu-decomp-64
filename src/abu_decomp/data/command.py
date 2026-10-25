@@ -234,7 +234,10 @@ def _check(args: argparse.Namespace, cfg, b, cli) -> Result:
         if args.baseline and args.baseline.is_file() and not args.write_baseline
         else {}
     )
-    results = [check_mod.check(b, v, args.unit or None, known.get(v)) for v in (args.version or list(cfg.versions))]
+    versions = args.version or list(cfg.versions)
+    if not args.unit:
+        check_mod.prepare(b, versions)
+    results = [check_mod.check(b, v, args.unit or None, known.get(v)) for v in versions]
     judged = _judged_nothing(args, cfg, b, results, known)
     if judged is not None:
         results, empty = judged

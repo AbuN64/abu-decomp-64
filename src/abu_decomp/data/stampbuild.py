@@ -343,6 +343,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
                 return {"worktree": made}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]
         _phase("extract+regen", mark)
         builder = trial.Builder(cfg, tree, reference=shared if same else None)
+        check_mod.prepare(builder, list(cfg.versions))
         results = [check_mod.check(builder, v) for v in cfg.versions]
         _phase("check", mark)
         if os.environ.get("ABU_STAMP_ROM_SKIP", "1") == "1":
