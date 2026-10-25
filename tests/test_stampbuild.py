@@ -55,7 +55,9 @@ def test_the_tree_is_made_at_the_shared_trees_commit_and_falls_back_to_the_tip(t
     monkeypatch.setattr(
         worktree, "new", lambda p, s, lane, at: ats.append(at) or ({"worktree": str(tree), "rev": "a" * 40}, 0, [])
     )
-    applies = iter([1, 0])  # the diff does not apply on the shared commit, then applies on the tip
+    applies = iter(
+        [1, 1, 0]
+    )  # the diff applies neither plain nor three-way on the shared commit, then applies on the tip
 
     def run(cmd, **k):
         if "rev-parse" in cmd:
@@ -65,6 +67,28 @@ def test_the_tree_is_made_at_the_shared_trees_commit_and_falls_back_to_the_tip(t
     monkeypatch.setattr(subprocess, "run", run)
     _r, code, _f = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 0 and ats == ["c0ffee", None]
+
+
+def test_a_diff_based_on_an_older_commit_merges_onto_the_shared_commit_and_never_moves_to_the_tip(
+    tmp_path, monkeypatch
+):
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    ats, seen = [], []
+    tree = tmp_path / "wt" / "STAMP-x"
+    monkeypatch.setattr(
+        worktree, "new", lambda p, s, lane, at: ats.append(at) or ({"worktree": str(tree), "rev": "c0ffee"}, 0, [])
+    )
+
+    def run(cmd, **k):
+        seen.append(list(cmd))
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "c0ffee\n", "")
+        plain = "apply" in cmd and "--3way" not in cmd
+        return subprocess.CompletedProcess(cmd, 1 if plain else 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    _r, code, _f = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 0 and ats == ["c0ffee"]  # the tree stays at the pool's commit: no re-split of what main moved since
 
 
 RENAME = (
@@ -179,7 +203,9 @@ def test_a_unit_whose_object_equals_the_clean_trees_is_not_scored(tmp_path, monk
     assert not trial.Builder(cfg, tree).unchanged("a", "src/x.c")  # no reference tree: always scored
     scored = []
     b.score = lambda v, fn, u: scored.append((u, fn)) or 0
-    monkeypatch.setattr(check_mod, "exact_fns", lambda c, t, v, units, moved=None: {"src/x.c": ["f1"], "src/y.c": ["f2"]})
+    monkeypatch.setattr(
+        check_mod, "exact_fns", lambda c, t, v, units, moved=None: {"src/x.c": ["f1"], "src/y.c": ["f2"]}
+    )
     assert check_mod.broken(b, "a", ["src/x.c", "src/y.c"]) == [] and scored == [("src/y.c", "f2")]
 
 
@@ -187,9 +213,7 @@ def test_a_diff_that_changes_symbol_rows_re_extracts_the_tree_and_the_tree_is_no
     from abu_decomp.data import check as check_mod
 
     calls = []
-    monkeypatch.setattr(
-        check_mod, "reextract", lambda profile, tree, files, allow=False: calls.append(files) or None
-    )
+    monkeypatch.setattr(check_mod, "reextract", lambda profile, tree, files, allow=False: calls.append(files) or None)
     diff, pruned = setup(tmp_path, monkeypatch, False)
     rows = (
         "diff --git a/versions/us/symbol_addrs.txt b/versions/us/symbol_addrs.txt\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n"
@@ -207,9 +231,7 @@ def test_reextract_lets_a_splat_yaml_diff_pay_the_re_split(tmp_path, monkeypatch
     from abu_decomp.data import check as check_mod
 
     allowed = []
-    monkeypatch.setattr(
-        check_mod, "reextract", lambda profile, tree, files, allow=False: allowed.append(allow) or None
-    )
+    monkeypatch.setattr(check_mod, "reextract", lambda profile, tree, files, allow=False: allowed.append(allow) or None)
     diff, _pruned = setup(tmp_path, monkeypatch, False)
     yaml = "diff --git a/versions/us/splat.yaml b/versions/us/splat.yaml\n--- a/x\n+++ b/x\n"
     yaml += "@@ -1 +1 @@\n-a\n+b\n"

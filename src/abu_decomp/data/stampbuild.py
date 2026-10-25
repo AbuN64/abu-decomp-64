@@ -185,7 +185,13 @@ def _tree(profile: Any, shared: Path, lane: str, rev: str | None):
 
 
 def build(
-    cfg: DataConfig, profile: Any, shared: Path, diff: Path, stamps: Path, at: str | None = None, reextract: bool = False
+    cfg: DataConfig,
+    profile: Any,
+    shared: Path,
+    diff: Path,
+    stamps: Path,
+    at: str | None = None,
+    reextract: bool = False,
 ):
     """(result, code, findings). The stamp is written only when every version built and no exact function broke."""
     text = diff.read_text(errors="replace")
@@ -231,15 +237,27 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         (tree / STATE).write_text("busy\n")
         applied = _git(tree, "apply", str(diff.resolve()))
         if applied.returncode and not at and head:
+            # A diff based on an older commit than the pool tree: merge it onto the pool tree's own commit first (the train
+            # applies --3way too). Moving the tree to the tip instead re-splits every splat.yaml main changed since the
+            # pool's extraction (~450 CPU s) and drops the warm objects.
+            applied = _git(tree, "apply", "--3way", str(diff.resolve()))
+            if applied.returncode:  # conflicts leave markers behind: back to the clean commit before the tip is tried
+                _git(tree, "reset", "-q", "--hard")
+                _git(tree, "clean", "-fdq")
+        if applied.returncode and not at and head:
             made, code, findings = _tree(profile, shared, lane, None)
             tree = Path(made["worktree"])
             if code:
                 return {"worktree": made}, code, findings
             (tree / STATE).write_text("busy\n")
             applied = _git(tree, "apply", str(diff.resolve()))
-        if applied.returncode:  # main moved over files the diff edits: the train applies with --3way, so the stamp does too
+        if (
+            applied.returncode
+        ):  # main moved over files the diff edits: the train applies with --3way, so the stamp does too
             applied = _git(tree, "apply", "--3way", str(diff.resolve()))
-        if not applied.returncode:  # a file the diff creates (a module a rename moved) is tracked for sync's [file] rows
+        if (
+            not applied.returncode
+        ):  # a file the diff creates (a module a rename moved) is tracked for sync's [file] rows
             _git(tree, "add", "-A", "-N")
         if applied.returncode:
             msg = f"{diff.name} does not apply on {made['rev'][:9]}: {applied.stderr.strip()[:200]}"
@@ -252,7 +270,9 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
                 True  # the tree's asm now follows the diff's symbol rows: it is no clean tree for the next stamp
             )
             with setup_lock(shared):
-                why = check_mod.reextract(profile, tree, files, allow=reextract)  # --reextract: a splat.yaml edit pays the re-split
+                why = check_mod.reextract(
+                    profile, tree, files, allow=reextract
+                )  # --reextract: a splat.yaml edit pays the re-split
             if why:
                 return {"worktree": made}, 1, [{"key": "data.extract", "blocking": True, "message": why}]
         if "Makefile" not in files and any(f in ("config.toml", "rom.toml") for f in files):
