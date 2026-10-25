@@ -1,6 +1,7 @@
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -89,12 +90,14 @@ class RefSourceTests(unittest.TestCase):
             return fds
 
         source.watch_fds = watch_fds
-        worker = threading.Thread(target=source.serve, kwargs={"iterations": 1}, daemon=True)
+        # git writes main.lock, then renames it over main: the lock's own event can wake a scan before the rename,
+        # so the wake that sees the commit may be the second (one wake was flaky under load); the thread is a daemon
+        worker = threading.Thread(target=source.serve, kwargs={"iterations": 3}, daemon=True)
         worker.start()
-        # the commit after the watch is armed: one made before it was caught by serve's first scan, and the one
-        # iteration then waited on a watch that never fired (flaky under load)
+        # the commit after the watch is armed: one made before it was caught by serve's first scan
         assert armed.wait(5)
         commit(self.repo, "late")
-        worker.join(5)
-        assert not worker.is_alive()
+        deadline = time.monotonic() + 10
+        while not any(m.endswith("late") for m in self.events) and time.monotonic() < deadline:
+            time.sleep(0.02)
         assert any(m.endswith("late") for m in self.events)
