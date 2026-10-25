@@ -623,7 +623,7 @@ class MovieTests(unittest.TestCase):
             fourth = tas.play(self.profile, "m", now=T0)
         self.assertIsNone(fourth["same_twice"])
         with self.port("1 aa\n2 cc\n", []):
-            twice = tas.play_twice(self.profile, "m")
+            twice = tas.play_twice(self.profile, "m", state_diff=False)
         self.assertIs(twice["same_twice"], True)
 
     def test_a_run_whose_process_vanished_reads_as_killed(self):

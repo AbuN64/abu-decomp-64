@@ -1526,6 +1526,7 @@ def play_twice(
     fps_unlock: bool = False,
     start: str | None = None,
     take: bool = False,
+    state_diff: bool = True,
     sanitize: bool = False,
 ) -> dict[str, Any]:
     """Two replays back to back; the second's `same_twice` compares it with the first."""
@@ -1543,6 +1544,7 @@ def play_twice(
         "cpak": cpak,
         "fps_unlock": fps_unlock,
         "start": start,
+        "state_diff": state_diff,
         "sanitize": sanitize,
     }
     play(profile, name, **options)
