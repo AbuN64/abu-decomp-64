@@ -285,11 +285,17 @@ def narrow(
     """(UNITS to keep, stats): drops the units that no edit of HEADERS can reach (module doc). `object_fmt` is the config's
     object path template; BUDGET bounds the keys computed on the fly (hdrkey takes ~1 ms a unit; the rest are kept)."""
     stats = {"headers": len(headers), "includers": len(units), "skipped": 0, "why": ""}
-    marker = tree / "build/.pool-extracted-at"
-    try:
-        base = marker.read_text().strip()
-        since = marker.stat().st_mtime
-    except OSError:
+    for marker in (
+        tree / "build/.pool-built-at",
+        tree / "build/.pool-extracted-at",
+    ):  # the pool's build ends after its extraction
+        try:
+            base = marker.read_text().strip()
+            since = marker.stat().st_mtime
+            break
+        except OSError:
+            continue
+    else:
         stats["why"] = "no pool marker: tree not minted from a pool"
         return units, stats
     git = ["git", "-C", str(tree)]
