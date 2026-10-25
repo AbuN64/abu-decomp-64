@@ -209,8 +209,16 @@ def build(
         return _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract)
 
 
+def _phase(name: str, since: list[float]) -> None:
+    """One line per stamp phase with its wall and CPU seconds (10-25: a stamp of 762-1434 CPU s named no phase)."""
+    now = [time.monotonic(), meter.cpu()]
+    print(f"stamp phase {name}: wall={now[0] - since[0]:.0f}s cpu={now[1] - since[1]:.0f}s", flush=True)
+    since[:] = now
+
+
 def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
     started, cpu = time.monotonic(), meter.cpu()
+    mark = [started, cpu]
     # The tree is at SHARED's own commit: any other base differs in symbol facts and splits the ROM again for every
     # version (5 cold extractions, 70 s wall, 10-24). Only a diff that does not apply there goes to the tip.
     head = _git(shared, "rev-parse", "HEAD").stdout.strip()
@@ -236,6 +244,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         if applied.returncode:
             msg = f"{diff.name} does not apply on {made['rev'][:9]}: {applied.stderr.strip()[:200]}"
             return {"worktree": made}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]
+        _phase("tree+apply", mark)
         same = made["rev"] == head  # the shared tree's objects are the clean build only at its own commit
         files = stamp_mod.files_of(text)
         if stamp_mod.extraction_files(files):
@@ -256,8 +265,10 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
             if not regen.ok:
                 msg = "unbake sync --makefile refused in the stamp tree: the project rows cannot be rendered into a Makefile"
                 return {"worktree": made}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]
+        _phase("extract+regen", mark)
         builder = trial.Builder(cfg, tree, reference=shared if same else None)
         results = [check_mod.check(builder, v) for v in cfg.versions]
+        _phase("check", mark)
         if (
             same and _git(shared, "rev-parse", "HEAD").stdout.strip() != head
         ):  # the pool moved on: its objects are not ours
@@ -282,6 +293,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
             # A stamp means the 5 ROMs match: the units built, now link each version and compare its hash (10-24: a stamped
             # diff broke the de ROM at the train, which links). Incremental: the objects are the ones just built.
             rc, report = builder.rom_check()
+            _phase("rom_check", mark)
             if rc and not tree.is_dir():
                 return (
                     {"worktree": made},
