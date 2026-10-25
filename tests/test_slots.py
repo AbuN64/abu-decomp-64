@@ -60,7 +60,10 @@ class SlotsTest(unittest.TestCase):
 
             threads.append(threading.Thread(target=run))
             threads[-1].start()
-            time.sleep(0.2)
+            # both waiters queued before the release, whatever the host load (a fixed sleep raced under load, PF9)
+            deadline = time.monotonic() + 10
+            while len(slots.status()["queue"]) < len(threads) and time.monotonic() < deadline:
+                time.sleep(0.01)
         a.release()
         for thread in threads:
             thread.join(10)
