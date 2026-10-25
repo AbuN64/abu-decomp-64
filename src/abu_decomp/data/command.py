@@ -11,10 +11,10 @@ from abu_decomp import DecompError
 from abu_decomp.data import census as census_mod
 from abu_decomp.data import check as check_mod
 from abu_decomp.data import config as config_mod
+from abu_decomp.data import fntry, stampbuild, trial
 from abu_decomp.data import gate as gate_mod
 from abu_decomp.data import rewrite as rewrite_mod
 from abu_decomp.data import stamp as stamp_mod
-from abu_decomp.data import stampbuild, trial
 
 Result = tuple[dict[str, Any], int, list[dict[str, Any]]]
 
@@ -44,6 +44,18 @@ def arguments(parser: argparse.ArgumentParser) -> None:
         "--apply-literals", action="store_true", help="write the function's literal pool constants into its draft"
     )
     p.add_argument("function", nargs="+")
+    t = sub.add_parser(
+        "try",
+        help="fast loop: build one function's unit (optionally with a candidate file) and compare only that function",
+    )
+    t.add_argument("--tree", type=Path, required=True)
+    t.add_argument(
+        "--candidate", type=Path, help="file whose text stands in for the unit during the try (restored after)"
+    )
+    t.add_argument("--unit", help="the unit path when the map does not name it")
+    t.add_argument("--version", action="append", default=[], help="repeat; default the config reference version")
+    t.add_argument("-v", "--verbose", action="store_true", help="print the aligned diff hunks")
+    t.add_argument("function")
     r = sub.add_parser("rewrite", help="a raw symbol becomes its owner member expression in every C file")
     r.add_argument("--tree", type=Path, required=True)
     r.add_argument("--census", type=Path, help="read EXPR and HEADER from this census.json")
@@ -110,6 +122,8 @@ def run(args: argparse.Namespace) -> Result:
         return _probe(args, cfg)
     if verb == "rewrite":
         return _rewrite(args, cfg)
+    if verb == "try":
+        return _try(args, cfg)
     if verb == "check":
         b = trial.Builder(cfg, args.tree)
         b.diff_base = args.since
@@ -164,6 +178,20 @@ def run(args: argparse.Namespace) -> Result:
             [{"key": "data.stamp", "blocking": True, "message": m} for m in bad],
         )
     return _gate(args, cfg)
+
+
+def _try(args: argparse.Namespace, cfg) -> Result:
+    versions = args.version or [cfg.reference]
+    rows = fntry.try_fn(trial.Builder(cfg, args.tree), args.function, versions, args.candidate, args.unit, args.verbose)
+    lines = [
+        f"{args.function} {r['version']} {r['unit']} " + ("NO-SCORE" if r["edit"] is None else f"edit={r['edit']}")
+        for r in rows
+    ]
+    bad = [
+        {"key": "data.try", "blocking": True, "message": ln + (" " + r["log"][-400:] if r["edit"] is None else "")}
+        for ln, r in zip(lines, rows, strict=True) if r["edit"] != 0
+    ]  # fmt: skip
+    return {"lines": lines, "rows": rows}, 1 if bad else 0, bad
 
 
 def _stamp(args: argparse.Namespace, cfg) -> str:
