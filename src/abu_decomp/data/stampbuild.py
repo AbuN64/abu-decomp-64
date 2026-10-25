@@ -59,6 +59,20 @@ def slot(folder: Path, count: int, wait: float = 900.0) -> Iterator[str]:
         time.sleep(2)
 
 
+@contextmanager
+def setup_lock(shared: Path) -> Iterator[None]:
+    """One `unbake setup` at a time across the slots: it writes beside the shared tree (tools, caches) that the other slot's
+    make is running from (10-24: a stamp's ROM check failed with no output while another diff was being extracted)."""
+    folder = worktree.base(shared)
+    folder.mkdir(parents=True, exist_ok=True)
+    fd = os.open(folder / ".stamp-setup.lock", os.O_CREAT | os.O_RDWR, 0o664)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def _git(tree: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(tree), *args], capture_output=True, text=True)
 
@@ -90,7 +104,8 @@ def _tree(profile: Any, shared: Path, lane: str, rev: str | None):
     if rev and (made := reuse(profile, tree, rev)):
         return made, 0, []
     worktree.prune(shared, [lane])  # a leftover of an interrupted run, or a tree that could not be made current
-    return worktree.new(profile, shared, lane, rev)
+    with setup_lock(shared):
+        return worktree.new(profile, shared, lane, rev)
 
 
 def build(cfg: DataConfig, profile: Any, shared: Path, diff: Path, stamps: Path, at: str | None = None):
@@ -134,7 +149,8 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane):
             extracted = (
                 True  # the tree's asm now follows the diff's symbol rows: it is no clean tree for the next stamp
             )
-            why = check_mod.reextract(profile, tree, files)
+            with setup_lock(shared):
+                why = check_mod.reextract(profile, tree, files)
             if why:
                 return {"worktree": made}, 1, [{"key": "data.extract", "blocking": True, "message": why}]
         builder = trial.Builder(cfg, tree, reference=shared if same else None)

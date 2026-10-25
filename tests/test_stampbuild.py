@@ -247,3 +247,45 @@ def test_a_rom_refusal_names_the_version_the_shas_the_offset_and_the_function_an
     (tmp_path / "build/b/R.z64").write_bytes(bytes(range(64)))  # every ROM matches: say what make did
     again = trial.Builder(cfg, tmp_path, run=run).rom_check()[1]
     assert "make exited 2: make: *** [Makefile:9: check] Error 1" in again
+
+
+def test_a_make_that_died_without_naming_an_error_is_run_once_more_but_a_real_mismatch_is_not(tmp_path):
+    from dataclasses import replace
+
+    from abu_decomp.data import trial
+
+    cfg = replace(CFG, make=("make",), rom_check=("check",))
+    runs = []
+
+    def flaky(cmd, **k):
+        runs.append(1)
+        return subprocess.CompletedProcess(cmd, 139 if len(runs) == 1 else 0, "", "")
+
+    assert trial.Builder(cfg, tmp_path, run=flaky).rom_check() == (0, "") and len(runs) == 2
+    runs.clear()
+
+    def dead(cmd, **k):
+        runs.append(1)
+        return subprocess.CompletedProcess(cmd, 139, "", "")
+
+    rc, report = trial.Builder(cfg, tmp_path, run=dead).rom_check()
+    assert rc == 139 and len(runs) == 2 and report.startswith("make exited 139: no output")
+
+
+def test_setup_runs_one_at_a_time_across_slots(tmp_path):
+    import threading
+    import time
+
+    inside, peak = [0], [0]
+
+    def work():
+        with stampbuild.setup_lock(tmp_path / "code" / "POOL-SRC"):
+            inside[0] += 1
+            peak[0] = max(peak[0], inside[0])
+            time.sleep(0.05)
+            inside[0] -= 1
+
+    threads = [threading.Thread(target=work) for _ in range(3)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert peak[0] == 1

@@ -80,19 +80,25 @@ class Builder:
         if not self.cfg.rom_check:
             return 0, ""
         env = dict(os.environ, **{k: expand(v) for k, v in self.cfg.make_env.items()})
-        r = self.run(
-            ["nice", *map(expand, self.cfg.make), f"-j{self.jobs()}", *self.cfg.rom_check],
-            cwd=self.tree,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        if not r.returncode:
-            return 0, ""
-        log = (r.stdout or "") + (r.stderr or "")
-        with contextlib.suppress(OSError):
-            (self.tree / self.LOG).write_text(log)
-        return r.returncode, self.rom_report(r.returncode, log)
+        for attempt in (1, 2):
+            r = self.run(
+                ["nice", *map(expand, self.cfg.make), f"-j{self.jobs()}", *self.cfg.rom_check],
+                cwd=self.tree,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            if not r.returncode:
+                return 0, ""
+            log = (r.stdout or "") + (r.stderr or "")
+            with contextlib.suppress(OSError):
+                (self.tree / self.LOG).write_text(log)
+            report = self.rom_report(r.returncode, log)
+            # No ROM differs and make named no error: a make killed or raced (another extraction beside it, 10-24), not a
+            # break. Once more; a real mismatch names its version and is never retried.
+            if attempt == 2 or not report.startswith("make exited"):
+                return r.returncode, report
+        return r.returncode, report
 
     def rom_report(self, rc: int, log: str) -> str:
         """One line per version whose ROM is missing or differs from the original, else the make error lines."""
