@@ -1,6 +1,7 @@
 """TOOL-SPEED-2 (r)/(t): `decomp data check` reaches every unit naming a changed symbol, in every version, and a unit
 that does not compile does not hide the others."""
 
+import contextlib
 import dataclasses
 import json
 import subprocess
@@ -231,3 +232,25 @@ def test_every_exact_function_of_a_version_is_scored_by_one_fncmp_batch(tmp_path
     assert check.broken(b, "us", ["src/a.c", "src/b.c"]) == [("src/b.c", "f3", "edit=4")]
     assert len([c for c in calls if "--batch" in c]) == 1
     assert not [c for c in calls if c[:1] == ["fncmp"] and "--batch" not in c]  # no single call
+
+
+def test_reextract_runs_setup_under_the_exclusive_tree_lock_a_build_holds(tmp_path, monkeypatch):
+    from unbake import treelock
+
+    from abu_decomp import tools
+
+    held = []
+
+    @contextlib.contextmanager
+    def hold(tree, exclusive=False, who="", **kw):
+        held.append((tree, exclusive, who))
+        yield 0.0
+
+    monkeypatch.setattr(treelock, "hold", hold)
+    monkeypatch.setattr(tools, "invoke", lambda *a, **k: held.append("setup") or SimpleNamespace(ok=True))
+    (tmp_path / ".unbake").mkdir()
+    (tmp_path / "versions/us").mkdir(parents=True)
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("a = 0x1;\n")
+    run = lambda cmd, **kw: done({"ls-files": "versions/us/symbol_addrs.txt\n", "diff": "", "rev-parse": "H\n"}[cmd[3]])  # noqa: E731
+    assert check.reextract(None, tmp_path, [], always=True, run=run) is None
+    assert held == [(tmp_path, True, "data check setup"), "setup"]

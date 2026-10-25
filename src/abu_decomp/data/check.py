@@ -74,6 +74,8 @@ def reextract(
     extracted from (`.unbake/data-extracted.json`): an unchanged set skips the call, and a tree whose HEAD moved over
     splat.yaml changes since its extraction is refused (`allow`: `--reextract`), because the full re-split is ~450 CPU s and
     a fresh pool lease is free. None when nothing needed it or it worked, else why not."""
+    from unbake import treelock
+
     from abu_decomp import tools
     from abu_decomp.data import stamp
 
@@ -92,7 +94,10 @@ def reextract(
             "(~450 CPU s). Take a fresh tree (`pool-mint.sh --release LANE` then `--lease LANE`, reapply the diff), "
             "or pass --reextract to pay it here"
         )
-    called = tools.invoke("unbake", profile, ["setup", "--no-make"], project=tree)
+    # setup rewrites build/ (link.ld, the Makefile) and asm/: beside a ROM build in this tree it deleted build/eu/link.ld
+    # under it (10-25 REV1-ONE-38), so it waits for the tree as `decomp make` holds it
+    with treelock.hold(tree, exclusive=True, who="data check setup"):
+        called = tools.invoke("unbake", profile, ["setup", "--no-make"], project=tree)
     if not called.ok:
         return "unbake setup refused: the tree's extraction could not be brought current"
     with contextlib.suppress(OSError):
