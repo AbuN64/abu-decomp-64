@@ -24,6 +24,7 @@ carries no game fact except the symbol shape, so a project with another naming o
     make = ["make"]                           # prefix of a build: `unbake-run make`
     make_env = {}
     jobs = ["~/.config/m2/admit", "1.5"]      # prints the -j count
+    rom_check = ["check", "CHECK=rom"]        # arguments after `make -jN`: link every version and compare its ROM hash
     object = "build/{v}/{unit}.o"
     fncmp = ["python3", "fncmp.py", "--aligned", "{v}", "{fn}", "{obj}"]
     fncmp_score = 'edit=(\\d+)'                # group 1: the edit count (0 = exact)
@@ -64,6 +65,7 @@ class DataConfig:
     make: tuple[str, ...] = ("make",)
     make_env: dict[str, str] = field(default_factory=dict)
     jobs: tuple[str, ...] = ()
+    rom_check: tuple[str, ...] = ()
     object: str = "build/{v}/{unit}.o"
     fncmp: tuple[str, ...] = ()
     fncmp_score: str = r"edit=(\d+)"
@@ -75,7 +77,7 @@ class DataConfig:
         return template.format(v=version)
 
 
-_TUPLES = {"versions", "source_dirs", "source_suffixes", "cpp", "cc1_flags", "make", "jobs", "fncmp"}
+_TUPLES = {"versions", "source_dirs", "source_suffixes", "cpp", "cc1_flags", "make", "jobs", "fncmp", "rom_check"}
 _KEYS = {f for f in DataConfig.__dataclass_fields__}
 
 

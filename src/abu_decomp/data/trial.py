@@ -69,6 +69,21 @@ class Builder:
         )
         return r.returncode, (r.stdout or "")[-60000:] + (r.stderr or "")[-60000:]
 
+    def rom_check(self) -> tuple[int, str]:
+        """Link every version and compare its ROM hash (the config's `rom_check` arguments after the make prefix), incremental
+        on the objects the data check just built. (0, "") when the config names no such check."""
+        if not self.cfg.rom_check:
+            return 0, ""
+        env = dict(os.environ, **{k: expand(v) for k, v in self.cfg.make_env.items()})
+        r = self.run(
+            ["nice", *map(expand, self.cfg.make), f"-j{self.jobs()}", *self.cfg.rom_check],
+            cwd=self.tree,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return r.returncode, ((r.stdout or "")[-1500:] + (r.stderr or "")[-1500:]).strip()
+
     def score(self, version: str, fn: str, unit: str) -> int | None:
         """fncmp edit count of FN's object (0 = exact), None when fncmp printed no count."""
         obj = self.cfg.object.format(v=version, unit=unit)

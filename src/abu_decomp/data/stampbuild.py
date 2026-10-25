@@ -151,6 +151,12 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane):
             {"key": "data.build", "blocking": True, "message": f"{r['version']}: {u} does not compile: {why}"}
             for r in results for u, why in r.get("failed", [])
         ]  # fmt: skip
+        if not findings and all(r["built"] for r in results):
+            # A stamp means the 5 ROMs match: the units built, now link each version and compare its hash (10-24: a stamped
+            # diff broke the de ROM at the train, which links). Incremental: the objects are the ones just built.
+            rc, tail = builder.rom_check()
+            if rc:
+                findings = [{"key": "data.rom", "blocking": True, "message": f"ROM check failed: {tail[-300:]}"}]
         result: dict[str, Any] = {
             "results": results,
             "rev": made["rev"],

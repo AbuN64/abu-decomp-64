@@ -181,3 +181,30 @@ def test_a_diff_that_changes_symbol_rows_re_extracts_the_tree_and_the_tree_is_no
     _r, code, _f = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 0 and calls == [["include/x.h", "versions/us/symbol_addrs.txt"]]
     assert pruned[-1] == ["STAMP-x"]  # the tree is pruned after use, not released for reuse
+
+
+def test_a_stamp_needs_the_rom_check_to_pass(tmp_path, monkeypatch):
+    from abu_decomp.data import trial
+
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    monkeypatch.setattr(trial.Builder, "rom_check", lambda self: (2, "make: *** de ROM differs"))
+    _r, code, findings = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 1 and findings[0]["key"] == "data.rom" and "de ROM differs" in findings[0]["message"]
+    assert not stamp_mod.stamped(tmp_path / "stamps", DIFF)
+
+
+def test_rom_check_runs_the_configured_make_arguments_and_is_skipped_without_them(tmp_path):
+    from dataclasses import replace
+
+    from abu_decomp.data import trial
+
+    seen = []
+
+    def run(cmd, **k):
+        seen.append((cmd, k["cwd"]))
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    cfg = replace(CFG, make=("make",), rom_check=("check", "CHECK=rom"))
+    assert trial.Builder(cfg, tmp_path, run=run).rom_check() == (0, "ok")
+    assert seen == [(["nice", "make", "-j1", "check", "CHECK=rom"], tmp_path)]
+    assert trial.Builder(CFG, tmp_path, run=run).rom_check() == (0, "") and len(seen) == 1

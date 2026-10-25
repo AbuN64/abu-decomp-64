@@ -127,6 +127,13 @@ def run(args: argparse.Namespace) -> Result:
     if verb == "check":
         b = trial.Builder(cfg, args.tree)
         b.diff_base = args.since
+        # The pool's clean tree: a unit whose rebuilt object equals its object there changed no function's bytes, so it is not
+        # scored (removing one declaration from a header 439 units include scored every exact function: 552 CPU s, 10-24).
+        from abu_decomp import worktree
+
+        pool = worktree.base(args.tree) / "POOL-SRC"
+        if pool.is_dir() and pool.resolve() != args.tree.resolve():
+            b.reference = pool
         from abu_decomp import cli
 
         why = check_mod.reextract(cli._profile(args.profile), args.tree, check_mod.changed_files(args.tree, args.since))
