@@ -187,7 +187,9 @@ def test_a_diff_that_changes_symbol_rows_re_extracts_the_tree_and_the_tree_is_no
     from abu_decomp.data import check as check_mod
 
     calls = []
-    monkeypatch.setattr(check_mod, "reextract", lambda profile, tree, files: calls.append(files) or None)
+    monkeypatch.setattr(
+        check_mod, "reextract", lambda profile, tree, files, always=False: calls.append((files, always)) or None
+    )
     diff, pruned = setup(tmp_path, monkeypatch, False)
     rows = (
         "diff --git a/versions/us/symbol_addrs.txt b/versions/us/symbol_addrs.txt\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n"
@@ -195,8 +197,9 @@ def test_a_diff_that_changes_symbol_rows_re_extracts_the_tree_and_the_tree_is_no
     )
     diff.write_text(DIFF + rows)
     _r, code, _f = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
-    assert code == 0 and calls == [["include/x.h", "versions/us/symbol_addrs.txt"]]
-    assert pruned[-1] == ["STAMP-x"]  # the tree is pruned after use, not released for reuse
+    # re-extracted for the diff, then back to the clean rows (warm cache): the slot stays reusable, not pruned
+    assert code == 0 and calls == [(["include/x.h", "versions/us/symbol_addrs.txt"], False), ([], True)]
+    assert ["STAMP-x"] not in pruned
 
 
 def test_a_stamp_needs_the_rom_check_to_pass(tmp_path, monkeypatch):
