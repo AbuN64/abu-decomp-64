@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
 import time
 import traceback
@@ -1396,7 +1397,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         # argparse help is the only plain-text stdout path.
         if exc.code == 0:
             return 0
-        code, findings = 2, [{"key": "cli.arguments", "message": f"{command} rejected its arguments", "blocking": True}]
+        # tools._on_terminate turns SIGTERM into SystemExit(128+signal): an external cap or kill, not a bad argument
+        if isinstance(exc.code, int) and 128 < exc.code < 160:
+            spent = time.monotonic() - started
+            name = signal.Signals(exc.code - 128).name
+            message = f"TIMEOUT or kill: {command} stopped by {name} after {spent:.0f} s (external cap, not a failed command)"
+            code, findings = exc.code, [{"key": "command.terminated", "message": message, "blocking": True}]
+        else:
+            message = f"{command} rejected its arguments"
+            code, findings = 2, [{"key": "cli.arguments", "message": message, "blocking": True}]
     except Exception as exc:
         sys.stderr.write(traceback.format_exc())
         code, findings = 3, [{"key": "internal.error", "message": repr(exc), "blocking": True}]

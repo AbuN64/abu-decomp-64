@@ -46,6 +46,15 @@ class CliTests(unittest.TestCase):
             self.assertEqual(json.loads(run(["profile"])[1])["result"]["name"], "other")
             self.assertEqual(json.loads(run(["--profile", str(seat), "profile"])[1])["result"]["name"], "seat")
 
+    def test_a_sigterm_kill_names_itself_not_a_bad_argument(self):
+        with mock.patch("abu_decomp.cli._tool_call", side_effect=SystemExit(143)):
+            code, text = run(["data"])
+        finding = json.loads(text)["findings"][0]
+        self.assertEqual((code, finding["key"]), (143, "command.terminated"))
+        self.assertIn("SIGTERM", finding["message"])
+        with mock.patch("abu_decomp.cli._tool_call", side_effect=SystemExit(2)):
+            self.assertEqual(json.loads(run(["data"])[1])["findings"][0]["key"], "cli.arguments")
+
     def test_help_is_plain_text_and_lists_every_command(self):
         code, text = run(["--help"])
         self.assertEqual(code, 0)
