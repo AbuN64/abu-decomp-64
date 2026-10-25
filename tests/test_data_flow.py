@@ -396,12 +396,12 @@ def test_a_check_in_a_tree_holding_another_diff_stamps_by_building_alone(tmp_pat
     monkeypatch.setattr(cli, "_profile", lambda p: "profile")
     seen = {}
 
-    def fake_build(cfg, profile, shared, d, stamps, at=None):
+    def fake_build(cfg, profile, shared, d, stamps, at=None, reextract=False):
         seen["shared"] = shared
         return {"stamp": "stamps/ok"}, 0, []
 
     monkeypatch.setattr(stampbuild, "build", fake_build)
-    args = argparse.Namespace(version=None, unit=None, diff=diff, tree=tree, since=None, stamps=tmp_path / "st", config=None, profile=None)
+    args = argparse.Namespace(version=None, unit=None, diff=diff, tree=tree, since=None, stamps=tmp_path / "st", config=None, profile=None, reextract=False)
     assert command._stamp(args, None) == "stamps/ok" and seen["shared"] == pool
     monkeypatch.setattr(stampbuild, "build", lambda *a, **k: ({}, 1, [{"message": "bad rom"}]))
     assert "built alone and failed: bad rom" in command._stamp(args, None)

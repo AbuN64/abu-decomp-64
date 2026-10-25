@@ -184,7 +184,9 @@ def _tree(profile: Any, shared: Path, lane: str, rev: str | None):
         return worktree.new(profile, shared, lane, rev)
 
 
-def build(cfg: DataConfig, profile: Any, shared: Path, diff: Path, stamps: Path, at: str | None = None):
+def build(
+    cfg: DataConfig, profile: Any, shared: Path, diff: Path, stamps: Path, at: str | None = None, reextract: bool = False
+):
     """(result, code, findings). The stamp is written only when every version built and no exact function broke."""
     text = diff.read_text(errors="replace")
     if not stamp_mod.touches_data(cfg, text):
@@ -204,10 +206,10 @@ def build(cfg: DataConfig, profile: Any, shared: Path, diff: Path, stamps: Path,
             [{"key": "data.stamp", "blocking": True, "message": msg}],
         )
     with slot(worktree.base(shared), trees()) as lane:
-        return _build(cfg, profile, shared, diff, stamps, at, text, lane)
+        return _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract)
 
 
-def _build(cfg, profile, shared, diff, stamps, at, text, lane):
+def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
     started, cpu = time.monotonic(), meter.cpu()
     # The tree is at SHARED's own commit: any other base differs in symbol facts and splits the ROM again for every
     # version (5 cold extractions, 70 s wall, 10-24). Only a diff that does not apply there goes to the tip.
@@ -237,7 +239,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane):
                 True  # the tree's asm now follows the diff's symbol rows: it is no clean tree for the next stamp
             )
             with setup_lock(shared):
-                why = check_mod.reextract(profile, tree, files)
+                why = check_mod.reextract(profile, tree, files, allow=reextract)  # --reextract: a splat.yaml edit pays the re-split
             if why:
                 return {"worktree": made}, 1, [{"key": "data.extract", "blocking": True, "message": why}]
         builder = trial.Builder(cfg, tree, reference=shared if same else None)

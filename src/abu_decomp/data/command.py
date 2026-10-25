@@ -102,6 +102,11 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     st.add_argument(
         "--build", action="store_true", help="no stamp yet: build the diff alone on a fresh warm tree, stamp it"
     )
+    st.add_argument(
+        "--reextract",
+        action="store_true",
+        help="--build: a diff that edits versions/*/splat.yaml re-extracts the fresh tree (the re-split, ~450 CPU s)",
+    )
     st.add_argument("--tree", type=Path, help="--build: the shared tree the fresh tree is seeded from")
     st.add_argument("--at", help="--build: the commit the diff applies on (default: the shared tree's branch tip)")
     pl = sub.add_parser(
@@ -176,6 +181,7 @@ def run(args: argparse.Namespace) -> Result:
             args.diff,
             stamp_mod.stamp_dir(args.stamps, args.config),
             args.at,
+            reextract=args.reextract,
         )
     if verb == "stamp":
         text = args.diff.read_text(errors="replace")
@@ -329,7 +335,12 @@ def _stamp(args: argparse.Namespace, cfg) -> str:
         pool = worktree.base(args.tree) / "POOL-SRC"
         if pool.is_dir() and pool.resolve() != args.tree.resolve():
             result, code, found = stampbuild.build(
-                cfg, cli._profile(args.profile), pool, args.diff, stamp_mod.stamp_dir(args.stamps, args.config)
+                cfg,
+                cli._profile(args.profile),
+                pool,
+                args.diff,
+                stamp_mod.stamp_dir(args.stamps, args.config),
+                reextract=args.reextract,
             )
             if code:
                 return (

@@ -187,7 +187,9 @@ def test_a_diff_that_changes_symbol_rows_re_extracts_the_tree_and_the_tree_is_no
     from abu_decomp.data import check as check_mod
 
     calls = []
-    monkeypatch.setattr(check_mod, "reextract", lambda profile, tree, files: calls.append(files) or None)
+    monkeypatch.setattr(
+        check_mod, "reextract", lambda profile, tree, files, allow=False: calls.append(files) or None
+    )
     diff, pruned = setup(tmp_path, monkeypatch, False)
     rows = (
         "diff --git a/versions/us/symbol_addrs.txt b/versions/us/symbol_addrs.txt\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n"
@@ -197,6 +199,24 @@ def test_a_diff_that_changes_symbol_rows_re_extracts_the_tree_and_the_tree_is_no
     _r, code, _f = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 0 and calls == [["include/x.h", "versions/us/symbol_addrs.txt"]]
     assert pruned[-1] == ["STAMP-x"]  # the tree is pruned after use, not released for reuse
+
+
+def test_reextract_lets_a_splat_yaml_diff_pay_the_re_split(tmp_path, monkeypatch):
+    """REV1-ONE-32B: `data stamp --build` of a diff editing versions/*/splat.yaml was refused (asm predates splat.yaml
+    changes on main) and had no way to re-extract. `--reextract` is passed on as the refusal's own `allow`."""
+    from abu_decomp.data import check as check_mod
+
+    allowed = []
+    monkeypatch.setattr(
+        check_mod, "reextract", lambda profile, tree, files, allow=False: allowed.append(allow) or None
+    )
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    yaml = "diff --git a/versions/us/splat.yaml b/versions/us/splat.yaml\n--- a/x\n+++ b/x\n"
+    yaml += "@@ -1 +1 @@\n-a\n+b\n"
+    diff.write_text(DIFF + yaml)
+    stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps2", reextract=True)
+    assert allowed == [False, True]
 
 
 def test_a_stamp_needs_the_rom_check_to_pass(tmp_path, monkeypatch):
