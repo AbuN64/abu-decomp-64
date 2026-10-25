@@ -877,7 +877,11 @@ def _run_standalone(args: argparse.Namespace) -> tuple[dict[str, Any], int, list
 
 
 def _behave_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--project", type=Path, help="the project tree to act on (default: the profile's project)")
+    parser.add_argument(
+        "--project",
+        type=Path,
+        help="the project tree to act on (default: the work tree of the cwd, else the profile's project)",
+    )
     parser.add_argument("--host", type=Path, help="the unbake host file for that tree (default: the profile's host)")
     parser.add_argument(
         "--function",
@@ -919,8 +923,19 @@ def _behave_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-findings", action="store_true", help="--replay: do not write findings.jsonl")
 
 
+def _own_tree(args: argparse.Namespace, tool: str) -> Path | None:
+    """The tree a command acts on: `--project`, else the work tree of the caller's cwd (tools.cwd_project, the one
+    resolution unbake, recipe, make and diff share), else None for the profile's. A lane outside any tree is refused."""
+    from abu_decomp.tools import cwd_project
+
+    return cwd_project(_profile(args.profile), tool, [tool], args.project)
+
+
 def _run_behave(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp.behave.run import Options, run
+
+    if not args.replay:
+        args.project = _own_tree(args, "behave")
 
     if args.replay:
         from abu_decomp.behave import replay
@@ -1004,7 +1019,9 @@ def _arity_arguments(parser: argparse.ArgumentParser) -> None:
         "gate: the land arity gate on the working tree against --base",
     )
     parser.add_argument("symbol", nargs="?", help="show: the function name")
-    parser.add_argument("--project", type=Path, help="project tree (default: the profile's)")
+    parser.add_argument(
+        "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
+    )
     parser.add_argument("--base", help="gate: git revision the tree is compared with (default HEAD)")
     parser.add_argument(
         "--top", type=int, default=20, help="census: how many symbols to list (default 20; 0 = every offender)"
@@ -1017,7 +1034,7 @@ def _run_arity(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
     if args.verb == "show" and not args.symbol:
         raise DecompError("arity.args", "show needs a function name")
     profile = _profile(args.profile)
-    result = arity.run(profile, args.verb, args.symbol, args.project, args.base, args.top)
+    result = arity.run(profile, args.verb, args.symbol, _own_tree(args, "arity"), args.base, args.top)
     findings = []
     for r in result.get("refused", []):
         command = arity.next_command(profile.source_file, r["function"], r["kinds"])
@@ -1059,7 +1076,9 @@ def _diff_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rename-symbol", help="OLD=NEW: also rename the symbol in every version's symbol_addrs.txt")
     parser.add_argument("--msg", help="written as the first line `# MSG: ...` of the diff")
     parser.add_argument("--out", type=Path, help="write the diff here (default: report only)")
-    parser.add_argument("--project", type=Path, help="project tree (default: the profile's)")
+    parser.add_argument(
+        "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
+    )
 
 
 def _run_diff(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -1085,7 +1104,9 @@ def _run_diff(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 
 
 def _owes_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--project", type=Path, help="project tree (default: the profile's)")
+    parser.add_argument(
+        "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
+    )
     parser.add_argument(
         "--top", type=int, default=10, help="how many functions to list, most reached first (default 10)"
     )
@@ -1095,7 +1116,7 @@ def _run_owes(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     from abu_decomp import owes, tas, tas_health, tas_rank
 
     profile = _profile(args.profile)
-    result = owes.run(profile, args.project, args.top)
+    result = owes.run(profile, _own_tree(args, "owes"), args.top)
     try:  # the ranked open-work list over the recorded standing (no replay); owes does not need a tas section
         cfg = tas.settings(profile)
         ranked = tas.ranked_work(profile, cfg, tas_health.read(cfg, profile), tas.standing_rows(cfg), result)
@@ -1107,7 +1128,9 @@ def _run_owes(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 
 def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("verb", choices=["count"], help="count: placeholder names (func_/D_/unk/pad/spNN) per folder")
-    parser.add_argument("--project", type=Path, help="project tree (default: the profile's)")
+    parser.add_argument(
+        "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
+    )
     parser.add_argument("--dir", help="only this folder and below (src/game/MENU_2, game/MENU_2 or the leaf MENU_2)")
     parser.add_argument("--top", type=int, default=15, help="folders listed, most placeholders first (0 = every one)")
 
@@ -1115,7 +1138,7 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
 def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import cleanup, tools
 
-    root = tools.project_dir(_profile(args.profile), args.project)
+    root = tools.project_dir(_profile(args.profile), _own_tree(args, "cleanup"))
     got = cleanup.count(root, args.dir)
     rows = sorted(got["folders"].items(), key=lambda kv: (-kv[1]["count"], kv[0]))
     shown = rows if args.top == 0 else rows[: args.top]
