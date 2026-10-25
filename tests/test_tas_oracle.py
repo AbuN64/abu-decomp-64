@@ -101,6 +101,17 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(len(tas_oracle.compare(self.run_dir, 10, oracle_done=True)), 2)
         self.assertEqual(len(json.loads((self.run_dir / "diff.json").read_text())["rows"]), 2)
 
+    def test_first_divergence_names_the_first_aligned_poll_over_each_threshold(self):
+        rows = [
+            {"poll": 25, "diff": 0.015, "drift": 0, "vi_drift": 0},
+            {"poll": 50, "diff": 0.5, "drift": 1, "vi_drift": 3},
+            {"poll": 75, "diff": 0.03, "drift": 0, "vi_drift": 2},
+        ]
+        got = tas_oracle.first_divergence(rows)
+        self.assertEqual(got["diverge_1pct"], {"poll": 25, "diff": 0.015, "vi_drift": 0})
+        self.assertEqual(got["diverge_2pct"], {"poll": 75, "diff": 0.03, "vi_drift": 2})
+        self.assertEqual(tas_oracle.first_divergence([]), {"diverge_1pct": None, "diverge_2pct": None})
+
     def test_summary(self):
         self.assertIsNone(tas_oracle.summary(self.run_dir, {"id": "x"}))
         self.shots("port", {25: picture(), 50: picture((0, 255, 0))})

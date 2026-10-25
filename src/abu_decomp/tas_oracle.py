@@ -50,6 +50,7 @@ PPM_HEAD = f"P6\n{WIDTH} {HEIGHT}\n255\n".encode()
 PPM_SIZE = len(PPM_HEAD) + WIDTH * HEIGHT * 3
 DRIFT_SHOTS = 3  # oracle shots either side of a poll searched for a better match
 DRIFT_MARGIN = 0.02  # a shifted match counts as drift when it beats the same poll by this much and by half
+DIVERGE = (0.01, 0.02)  # picture-diff shares `first_divergence` reports a first poll for (1% and 2% of pixels)
 _SHOT = re.compile(r"poll-(\d{6,})\.ppm")
 _GRID_A = bytes(v >> 6 for v in range(256))
 _GRID_B = bytes((v + 32) >> 6 for v in range(256))
@@ -304,6 +305,20 @@ def compare(run: Path, every: int, oracle_done: bool) -> list[dict[str, Any]]:
         return [r for _, r in sorted(rows.items())]
 
 
+def first_divergence(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Where port and oracle stop agreeing, so a lane knows from which poll an oracle comparison is no longer valid:
+    per threshold in DIVERGE, the first aligned poll (drift 0: a drifted poll is the same screen reached earlier or
+    later, not a divergence) whose same-poll `diff` is over it, with the diff and the VI retrace difference there.
+    None when there is none."""
+    out: dict[str, Any] = {}
+    for share in DIVERGE:
+        hit = next((r for r in rows if r["diff"] > share and not r["drift"]), None)
+        out[f"diverge_{round(share * 100)}pct"] = (
+            {"poll": hit["poll"], "diff": hit["diff"], "vi_drift": hit["vi_drift"]} if hit else None
+        )
+    return out
+
+
 def summary(run: Path, record: dict[str, Any]) -> dict[str, Any] | None:
     """The `oracle` object of a runs[] row (orch plans/TAS-PAGE-CONTRACT.md), None for a run without the oracle."""
     meta = record.get("oracle")
@@ -328,6 +343,7 @@ def summary(run: Path, record: dict[str, Any]) -> dict[str, Any] | None:
         "drift": latest["drift"] if latest else 0,
         "vi_drift": latest["vi_drift"] if latest else None,
         "fps": meta.get("fps"),
+        **first_divergence(rows),
     }
 
 
