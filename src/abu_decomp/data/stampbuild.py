@@ -32,12 +32,22 @@ def build(cfg: DataConfig, profile: Any, shared: Path, diff: Path, stamps: Path,
     lane = "STAMP-" + stamp_mod.digest(text)[:10]
     shared = shared.expanduser().resolve()
     worktree.prune(shared, [lane])  # a leftover of an interrupted run
-    made, code, findings = worktree.new(profile, shared, lane, at)
+    # The tree is seeded warm from SHARED at SHARED's own commit: any other base differs in symbol facts and splits the
+    # ROM again for every version (5 cold extractions, 70 s wall, 10-24). Only a diff that does not apply there goes to the tip.
+    head = subprocess.run(["git", "-C", str(shared), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    made, code, findings = worktree.new(profile, shared, lane, at or head or None)
     tree = Path(made["worktree"])
     try:
         if code:
             return {"worktree": made}, code, findings
         applied = subprocess.run(["git", "-C", str(tree), "apply", str(diff.resolve())], capture_output=True, text=True)
+        if applied.returncode and not at and head:
+            worktree.prune(shared, [lane])
+            made, code, findings = worktree.new(profile, shared, lane, None)
+            tree = Path(made["worktree"])
+            if code:
+                return {"worktree": made}, code, findings
+            applied = subprocess.run(["git", "-C", str(tree), "apply", str(diff.resolve())], capture_output=True, text=True)
         if applied.returncode:
             msg = f"{diff.name} does not apply on {made['rev'][:9]}: {applied.stderr.strip()[:200]}"
             return {"worktree": made}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]

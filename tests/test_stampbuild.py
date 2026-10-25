@@ -46,3 +46,20 @@ def test_a_broken_function_refuses_the_stamp(tmp_path, monkeypatch):
     _result, code, findings = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 1 and "u.c f edit=1" in findings[0]["message"]
     assert not stamp_mod.stamped(tmp_path / "stamps", DIFF) and pruned
+
+
+def test_the_tree_is_made_at_the_shared_trees_commit_and_falls_back_to_the_tip(tmp_path, monkeypatch):
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    ats = []
+    tree = tmp_path / "wt" / "STAMP-x"
+    monkeypatch.setattr(worktree, "new", lambda p, s, lane, at: ats.append(at) or ({"worktree": str(tree), "rev": "a" * 40}, 0, []))
+    applies = iter([1, 0])  # the diff does not apply on the shared commit, then applies on the tip
+
+    def run(cmd, **k):
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "c0ffee\n", "")
+        return subprocess.CompletedProcess(cmd, next(applies) if "apply" in cmd else 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    _r, code, _f = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 0 and ats == ["c0ffee", None]
