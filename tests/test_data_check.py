@@ -279,3 +279,22 @@ def test_a_renamed_source_file_is_built_and_scored_under_its_new_path(tmp_path):
     builder = SimpleNamespace(cfg=CFG, tree=tmp_path, run=run, objects=objects, score=score)
     res = check.check(builder, "a", ["src/old/u.CPP", "src/gone/x.CPP"])  # the stale .d names both old paths
     assert built == [["src/new/u.CPP"]] and scored == [("f1", "src/new/u.CPP")] and res["broken"] == []
+
+
+def test_data_check_brings_a_stale_extract_current_instead_of_refusing(monkeypatch):
+    from types import SimpleNamespace
+
+    from abu_decomp.data import command
+
+    seen = {}
+
+    def fake(profile, tree, files, always=False, allow=False, run=None):
+        seen["allow"] = allow
+        return "stop here"
+
+    monkeypatch.setattr(command.check_mod, "reextract", fake)
+    monkeypatch.setattr(command.check_mod, "changed_files", lambda *a, **k: [])
+    cli = SimpleNamespace(_profile=lambda p: None)
+    args = SimpleNamespace(profile=None, tree=None, since=None, reextract=False)
+    command._check(args, None, None, cli)
+    assert seen["allow"] is True

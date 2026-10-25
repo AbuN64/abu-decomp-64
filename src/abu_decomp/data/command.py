@@ -222,7 +222,7 @@ def _check(args: argparse.Namespace, cfg, b, cli) -> Result:
         args.tree,
         check_mod.changed_files(args.tree, args.since),
         always=True,
-        allow=args.reextract,
+        allow=True,  # a stale extract is brought current here (`unbake setup --no-make`), never a data.extract refusal
     )
     if why:
         return {}, 1, [{"key": "data.extract", "blocking": True, "message": why}]
