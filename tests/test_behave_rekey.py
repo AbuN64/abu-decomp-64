@@ -106,3 +106,27 @@ class RekeyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_merge_facts_keeps_recorded_keys_and_refuses_a_corrupt_file(tmp_path):
+    import json
+
+    import pytest
+
+    from abu_decomp.behave import rekey
+
+    path = tmp_path / "facts.json"
+    path.write_text(json.dumps({"boot": {"a": 1}, "input": [1], "rom_sha1": "old"}))
+    rekey._merge_facts(path, {"rom_sha1": "new", "version": "v"})
+    done = json.loads(path.read_text())
+    assert done == {"boot": {"a": 1}, "input": [1], "rom_sha1": "new", "version": "v"}
+    assert (tmp_path / ".facts.json.last-good").is_file()
+    path.write_text("{ torn")  # unreadable: the last good copy stands in, the hand keys survive
+    rekey._merge_facts(path, {"rom_sha1": "n2", "version": "v"})
+    assert json.loads(path.read_text())["boot"] == {"a": 1}
+    (tmp_path / ".facts.json.last-good").unlink()
+    path.write_text("[1]")
+    with pytest.raises(rekey.RekeyError):
+        rekey._merge_facts(path, {"rom_sha1": "n3"})
+    with pytest.raises(rekey.RekeyError):  # the generator made nothing
+        rekey._merge_facts(tmp_path / "other.json", {})

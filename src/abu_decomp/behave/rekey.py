@@ -63,10 +63,12 @@ def derive(data: dict[str, Any], project: Path) -> dict[str, Any]:
     return out
 
 
-def _write(path: Path, text: str) -> None:
+def _write(path: Path, text: str, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     scratch = path.with_name(f".{path.name}.{os.getpid()}")
     scratch.write_text(text)
+    if mode is not None:
+        scratch.chmod(mode)  # before the rename: the file is never visible with another mode
     scratch.replace(path)
 
 
@@ -99,16 +101,42 @@ def _regenerate(profile: Profile, derived: Path, data: dict[str, Any], base: Pat
                 fresh.unlink(missing_ok=True)
 
 
+def _recorded(path: Path) -> tuple[dict[str, Any], int]:
+    """The facts file as the project recorded it ({} when there is none yet, and its mode). A file that does not parse
+    is never treated as empty (10-24: that dropped boot/input/scenarios/cpu and behave refused for 5 min): the last good
+    copy stands in, else the rewrite is refused."""
+    last = path.with_name(f".{path.name}.last-good")
+    try:
+        mode = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        return {}, 0o600
+    for source in (path, last):
+        try:
+            old = json.loads(source.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(old, dict):
+            return old, mode
+    raise RekeyError("behave.rekey", f"{path} exists but is not a JSON object and has no last-good copy: not rewritten")
+
+
 def _merge_facts(path: Path, generated: dict[str, Any]) -> None:
     """The facts file also holds what the project recorded by hand (boot state, input, scenarios, cpu): only the keys
-    the generator makes are replaced."""
-    try:
-        old = json.loads(path.read_text())
-        mode = path.stat().st_mode & 0o777
-    except (OSError, ValueError):
-        old, mode = {}, 0o600
-    _write(path, json.dumps({**old, **generated}, indent=1, sort_keys=True) + "\n")
-    path.chmod(mode)
+    the generator makes are replaced. The merge is validated before it is written (no recorded key lost, none changed
+    to another type by the generator, the generated keys present) and written atomically; the previous copy is kept as
+    `.<name>.last-good`."""
+    old, mode = _recorded(path)
+    merged = {**old, **generated}
+    lost = sorted(k for k in old if k not in merged)
+    retyped = sorted(k for k in old if k in merged and k not in generated and type(merged[k]) is not type(old[k]))
+    if not generated or lost or retyped:
+        raise RekeyError(
+            "behave.rekey",
+            f"{path}: merged facts refused (generated {len(generated)} keys, lost {lost}, retyped {retyped})",
+        )
+    if old:
+        _write(path.with_name(f".{path.name}.last-good"), json.dumps(old, indent=1, sort_keys=True) + "\n")
+    _write(path, json.dumps(merged, indent=1, sort_keys=True) + "\n", mode)
 
 
 def _why(done: Any, what: str) -> str:
