@@ -89,6 +89,10 @@ def broken(b: Builder, version: str, units: list[str]) -> list[tuple[str, str, s
     """[(unit, fn, why)] for every exact function of UNITS whose rebuilt object no longer scores 0."""
     bad = []
     for unit, fns in exact_fns(b.cfg, b.tree, version, units).items():
+        if getattr(b, "unchanged", lambda *_: False)(
+            version, unit
+        ):  # same bytes as the clean build: every exact function there still matches
+            continue
         for fn in fns:
             sc = b.score(version, fn, unit)
             if sc != 0:

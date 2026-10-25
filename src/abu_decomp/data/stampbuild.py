@@ -1,24 +1,96 @@
-"""`decomp data stamp --diff X --build --tree SHARED`: build X alone on a fresh warm tree and stamp it.
+"""`decomp data stamp --diff X --build --tree SHARED`: build X alone on a warm stamp tree and stamp it.
 
 A stamp used to need `data check` on a lane tree that held the diff, and a lane tree with several diffs rebuilt every unit
 all of them changed (8 min wall, 1404 CPU-s with one header in it, 10-24). Here the diff gets its own `decomp worktree new`
 tree (extraction, objects and times seeded from SHARED, so make rebuilds only what the diff reaches), `data check` judges
-every version, a clean pass writes the stamp, and the tree is removed. The result carries wall and CPU seconds."""
+every version, a clean pass writes the stamp. The result carries wall and CPU seconds.
+
+The tree is a SLOT (STAMP-S0.., `ABU_STAMP_TREES`, default 2; each ~6.6 GB under the shared tree's own folder, never
+`wt/wt/`): a flock'd slot whose tree was left clean at SHARED's commit is reused (reset, diff applied, built incrementally,
+reverted), so a stamp pays no new 6.6 GB seed copy and concurrent stamps are bounded by the slot count, not one tree per
+stamp left behind by a killed run (10-24). A slot at another commit, or whose last run did not finish (marker still
+"busy"), is rebuilt from the shared tree's warm extraction."""
 
 from __future__ import annotations
 
+import fcntl
+import os
 import subprocess
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import meter, worktree
+from abu_decomp import DecompError, meter, worktree
 from abu_decomp.data import check as check_mod
 from abu_decomp.data import stamp as stamp_mod
 from abu_decomp.data import trial
 from abu_decomp.data.config import DataConfig
 
 CPU_CAP = 300.0
+STATE = ".stamp-state"  # in the tree: the commit it was left clean at, or "busy" while a stamp build owns it
+
+
+def trees() -> int:
+    return max(1, int(os.environ.get("ABU_STAMP_TREES") or 2))
+
+
+@contextmanager
+def slot(folder: Path, count: int, wait: float = 900.0) -> Iterator[str]:
+    """The lane name of a stamp slot nobody else holds (a flock the kernel drops with the process); waits for one."""
+    folder.mkdir(parents=True, exist_ok=True)
+    end = time.monotonic() + wait
+    while True:
+        for i in range(count):
+            fd = os.open(folder / f".stamp-{i}.lock", os.O_CREAT | os.O_RDWR, 0o664)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                os.close(fd)
+                continue
+            try:
+                yield f"STAMP-S{i}"
+            finally:
+                os.close(fd)
+            return
+        if time.monotonic() > end:
+            raise DecompError("data.stamp", f"all {count} stamp trees are busy after {wait:.0f}s (ABU_STAMP_TREES)")
+        time.sleep(2)
+
+
+def _git(tree: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(tree), *args], capture_output=True, text=True)
+
+
+def reuse(profile: Any, tree: Path, rev: str) -> dict[str, Any] | None:
+    """The slot's tree, clean again, when it was left clean at exactly REV. None otherwise (the caller builds a fresh tree):
+    a tree at another commit would need `unbake setup` in place, which splits the ROM cold for every version (10-24:
+    5 cold extractions, 340 CPU s), where a fresh tree is seeded from the shared tree's warm extraction."""
+    marker = tree / STATE
+    state = marker.read_text().strip() if marker.is_file() else ""
+    if not (tree / ".git").exists() or state != rev:
+        return None
+    if _git(tree, "reset", "-q", "--hard").returncode or _git(tree, "clean", "-fdq").returncode:
+        return None
+    return {"worktree": str(tree), "rev": rev, "reused": True}
+
+
+def release(shared: Path, tree: Path) -> None:
+    """Back to a clean tree and its marker: the diff and its build leave nothing but objects that make sees stale."""
+    if _git(tree, "reset", "-q", "--hard").returncode or _git(tree, "clean", "-fdq").returncode:
+        worktree.prune(shared, [tree.name])
+        return
+    (tree / STATE).write_text(_git(tree, "rev-parse", "HEAD").stdout.strip() + "\n")
+
+
+def _tree(profile: Any, shared: Path, lane: str, rev: str | None):
+    """(made, code, findings) for the slot's tree at REV (None: the branch tip): reused when it is clean, else fresh."""
+    tree = worktree.base(shared) / lane
+    if rev and (made := reuse(profile, tree, rev)):
+        return made, 0, []
+    worktree.prune(shared, [lane])  # a leftover of an interrupted run, or a tree that could not be made current
+    return worktree.new(profile, shared, lane, rev)
 
 
 def build(cfg: DataConfig, profile: Any, shared: Path, diff: Path, stamps: Path, at: str | None = None):
@@ -28,31 +100,41 @@ def build(cfg: DataConfig, profile: Any, shared: Path, diff: Path, stamps: Path,
         return {"stamp": "not needed: the diff touches no declaration or data"}, 0, []
     if stamp_mod.stamped(stamps, text):
         return {"stamp": "present"}, 0, []
-    started, cpu = time.monotonic(), meter.cpu()
-    lane = "STAMP-" + stamp_mod.digest(text)[:10]
     shared = shared.expanduser().resolve()
-    worktree.prune(shared, [lane])  # a leftover of an interrupted run
-    # The tree is seeded warm from SHARED at SHARED's own commit: any other base differs in symbol facts and splits the
-    # ROM again for every version (5 cold extractions, 70 s wall, 10-24). Only a diff that does not apply there goes to the tip.
-    head = subprocess.run(["git", "-C", str(shared), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-    made, code, findings = worktree.new(profile, shared, lane, at or head or None)
+    with slot(worktree.base(shared), trees()) as lane:
+        return _build(cfg, profile, shared, diff, stamps, at, text, lane)
+
+
+def _build(cfg, profile, shared, diff, stamps, at, text, lane):
+    started, cpu = time.monotonic(), meter.cpu()
+    # The tree is at SHARED's own commit: any other base differs in symbol facts and splits the ROM again for every
+    # version (5 cold extractions, 70 s wall, 10-24). Only a diff that does not apply there goes to the tip.
+    head = _git(shared, "rev-parse", "HEAD").stdout.strip()
+    made, code, findings = _tree(profile, shared, lane, at or head or None)
     tree = Path(made["worktree"])
     try:
         if code:
             return {"worktree": made}, code, findings
-        applied = subprocess.run(["git", "-C", str(tree), "apply", str(diff.resolve())], capture_output=True, text=True)
+        (tree / STATE).write_text("busy\n")
+        applied = _git(tree, "apply", str(diff.resolve()))
         if applied.returncode and not at and head:
-            worktree.prune(shared, [lane])
-            made, code, findings = worktree.new(profile, shared, lane, None)
+            made, code, findings = _tree(profile, shared, lane, None)
             tree = Path(made["worktree"])
             if code:
                 return {"worktree": made}, code, findings
-            applied = subprocess.run(["git", "-C", str(tree), "apply", str(diff.resolve())], capture_output=True, text=True)
+            (tree / STATE).write_text("busy\n")
+            applied = _git(tree, "apply", str(diff.resolve()))
         if applied.returncode:
             msg = f"{diff.name} does not apply on {made['rev'][:9]}: {applied.stderr.strip()[:200]}"
             return {"worktree": made}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]
-        builder = trial.Builder(cfg, tree)
+        same = made["rev"] == head  # the shared tree's objects are the clean build only at its own commit
+        builder = trial.Builder(cfg, tree, reference=shared if same else None)
         results = [check_mod.check(builder, v) for v in cfg.versions]
+        if (
+            same and _git(shared, "rev-parse", "HEAD").stdout.strip() != head
+        ):  # the pool moved on: its objects are not ours
+            builder = trial.Builder(cfg, tree)
+            results = [check_mod.check(builder, v) for v in cfg.versions]
         findings = [
             {"key": "data.check", "blocking": True, "message": f"{r['version']}: {u} {fn} {why}"}
             for r in results for u, fn, why in r["broken"]
@@ -60,7 +142,12 @@ def build(cfg: DataConfig, profile: Any, shared: Path, diff: Path, stamps: Path,
             {"key": "data.build", "blocking": True, "message": f"{r['version']}: {u} does not compile: {why}"}
             for r in results for u, why in r.get("failed", [])
         ]  # fmt: skip
-        result: dict[str, Any] = {"results": results, "rev": made["rev"]}
+        result: dict[str, Any] = {
+            "results": results,
+            "rev": made["rev"],
+            "tree": lane,
+            "reused": made.get("reused", False),
+        }
         if not findings and all(r["built"] for r in results):
             result["stamp"] = str(stamp_mod.write(stamps, text))
         else:
@@ -68,8 +155,10 @@ def build(cfg: DataConfig, profile: Any, shared: Path, diff: Path, stamps: Path,
         return result, 1 if findings else 0, findings
     finally:
         wall, used = time.monotonic() - started, meter.cpu() - cpu
-        worktree.prune(shared, [lane])
+        if (tree / ".git").exists():
+            release(shared, tree)
         print(
-            f"stamp build: wall={wall:.0f}s cpu={used:.0f}s" + ("  FLAG CPU-OVER-5min" if used > CPU_CAP else ""),
+            f"stamp build: wall={wall:.0f}s cpu={used:.0f}s tree={lane} {'reused' if made.get('reused') else 'fresh'}"
+            + ("  FLAG CPU-OVER-5min" if used > CPU_CAP else ""),
             flush=True,
         )

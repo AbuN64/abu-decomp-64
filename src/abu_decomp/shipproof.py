@@ -25,7 +25,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, land, meter, tools
+from abu_decomp import DecompError, land, meter, tools, worktree
 from abu_decomp.config import Profile
 
 VERSION = 1
@@ -242,7 +242,7 @@ def prune(common: Path, keep_seconds: float = 3 * 86400.0) -> None:
 
 # the proof, built in the lane's own tree --------------------------------------------------------------------------
 def worktree_of(shared: Path, lane: str) -> Path | None:
-    path = shared.parent / "wt" / lane
+    path = worktree.base(shared) / lane
     return path if (path / ".git").exists() else None
 
 

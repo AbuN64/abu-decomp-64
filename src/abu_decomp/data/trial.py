@@ -6,6 +6,7 @@ written, built and always restored (also on SIGTERM)."""
 
 from __future__ import annotations
 
+import filecmp
 import json
 import os
 import re
@@ -22,8 +23,21 @@ Run = Callable[..., "subprocess.CompletedProcess[str]"]
 
 
 class Builder:
-    def __init__(self, cfg: DataConfig, tree: Path, run: Run = subprocess.run) -> None:
-        self.cfg, self.tree, self.run = cfg, tree, run
+    def __init__(self, cfg: DataConfig, tree: Path, run: Run = subprocess.run, reference: Path | None = None) -> None:
+        self.cfg, self.tree, self.run, self.reference = cfg, tree, run, reference
+        # reference: a clean tree built at the same commit. A unit whose rebuilt object is byte-identical to its object
+        # there cannot have changed any function's score, so the check does not score it (a decl-only diff scored 576
+        # units x 5 versions, ~450 CPU s, for nothing).
+
+    def unchanged(self, version: str, unit: str) -> bool:
+        """The unit's object here is byte-identical to the reference tree's."""
+        if self.reference is None:
+            return False
+        rel = self.cfg.object.format(v=version, unit=unit)
+        try:
+            return filecmp.cmp(self.tree / rel, self.reference / rel, shallow=False)
+        except OSError:
+            return False
 
     def jobs(self) -> str:
         if not self.cfg.jobs:

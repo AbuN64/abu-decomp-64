@@ -46,6 +46,13 @@ class WorktreeError(DecompError):
     pass
 
 
+def base(shared: Path) -> Path:
+    """The folder lane trees live in: `<shared>/../wt`, or the shared tree's own folder when it already is one (a shared
+    tree under `wt/`, like the pool's seed, used to nest its lanes in `wt/wt/`)."""
+    shared = shared.expanduser().resolve()
+    return shared.parent if shared.parent.name == "wt" else shared.parent / "wt"
+
+
 def _git(tree: Path, *args: str) -> str:
     done = subprocess.run(["git", "-C", str(tree), *args], capture_output=True, text=True, check=False)
     if done.returncode:
@@ -129,7 +136,7 @@ def new(
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     started, cpu = time.monotonic(), meter.cpu()
     shared = shared.expanduser().resolve()
-    target = shared.parent / "wt" / lane
+    target = base(shared) / lane
     if target.exists():
         raise WorktreeError("worktree.exists", f"{target} exists: one worktree per lane")
     table = land.settings(profile, shared)
@@ -183,14 +190,14 @@ def prune(
     """Remove the worktrees of ended lanes: the names given, and every lane with a RESULT.md under `results`. A
     worktree a queued ship still names is kept and reported. The disk freed is the result's `freed_mb`."""
     shared = shared.expanduser().resolve()
-    base = shared.parent / "wt"
+    folder = base(shared)
     names = set(ended)
     if results is not None:
         names |= {p.parent.name for p in results.glob("*/RESULT.md")}
     removed, kept = [], []
-    before = shutil.disk_usage(base).free if base.is_dir() else 0
+    before = shutil.disk_usage(folder).free if folder.is_dir() else 0
     for name in sorted(names):
-        path = base / name
+        path = folder / name
         if not path.is_dir():
             continue
         if why := _referenced(shared, path):
@@ -199,7 +206,7 @@ def prune(
         _git(shared, "worktree", "remove", "--force", str(path))
         removed.append(str(path))
     _git(shared, "worktree", "prune")
-    freed = (shutil.disk_usage(base).free - before) // 2**20 if base.is_dir() else 0
+    freed = (shutil.disk_usage(folder).free - before) // 2**20 if folder.is_dir() else 0
     findings = [
         {"key": "worktree.referenced", "message": f"{k['worktree']} kept: {', '.join(k['why'])}", "blocking": False}
         for k in kept

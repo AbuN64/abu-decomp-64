@@ -83,3 +83,85 @@ def test_a_pure_rename_diff_touches_no_data():
     retyped = RENAME.replace("+extern void osX(int);", "+extern long osX(int);")
     assert not stamp_mod.pure_rename(retyped, (".c",))
     assert stamp_mod.touches_data(CFG, retyped)
+
+
+def test_a_shared_tree_under_wt_keeps_lane_trees_beside_it_not_in_wt_wt(tmp_path):
+    assert worktree.base(tmp_path / "code" / "wt" / "POOL-SRC") == tmp_path / "code" / "wt"
+    assert worktree.base(tmp_path / "code" / "main") == tmp_path / "code" / "wt"
+
+
+def test_slots_are_exclusive_and_a_full_pool_times_out(tmp_path):
+    import pytest
+
+    from abu_decomp import DecompError
+
+    with stampbuild.slot(tmp_path, 2, 0) as one, stampbuild.slot(tmp_path, 2, 0) as two:
+        assert {one, two} == {"STAMP-S0", "STAMP-S1"}
+        with pytest.raises(DecompError), stampbuild.slot(tmp_path, 2, 0):
+            pass
+    with stampbuild.slot(tmp_path, 2, 0) as again:
+        assert again == "STAMP-S0"
+
+
+def git_tree(path):
+    import os
+
+    env = dict(
+        os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t"
+    )
+    path.mkdir(parents=True)
+    for cmd in (["init", "-q"], ["add", "-A"]):
+        (path / "x.h").write_text("a\n")
+        subprocess.run(["git", "-C", str(path), *cmd], check=True, env=env)
+    subprocess.run(["git", "-C", str(path), "commit", "-qm", "one"], check=True, env=env)
+    (path / "x.h").write_text("b\n")
+    subprocess.run(["git", "-C", str(path), "commit", "-qam", "two"], check=True, env=env)
+    return [
+        subprocess.run(["git", "-C", str(path), "rev-parse", r], capture_output=True, text=True).stdout.strip()
+        for r in ("HEAD~1", "HEAD")
+    ]
+
+
+def test_a_clean_slot_tree_is_reused_only_at_its_own_commit(tmp_path):
+    first, second = git_tree(tmp_path / "t")
+    tree = tmp_path / "t"
+    assert stampbuild.reuse(None, tree, second) is None  # no marker: never released, so not trusted
+    (tree / stampbuild.STATE).write_text("busy\n")
+    assert stampbuild.reuse(None, tree, second) is None
+    (tree / stampbuild.STATE).write_text(first + "\n")  # an older commit: a fresh warm tree, no setup here
+    assert stampbuild.reuse(None, tree, second) is None
+    (tree / stampbuild.STATE).write_text(second + "\n")
+    (tree / "x.h").write_text("diff applied\n")  # what a stamp build left behind
+    (tree / "new.h").write_text("untracked\n")
+    made = stampbuild.reuse(None, tree, second)
+    assert made["reused"] and made["rev"] == second
+    assert (tree / "x.h").read_text() == "b\n" and not (tree / "new.h").exists()
+
+
+def test_release_reverts_the_tree_and_records_its_commit(tmp_path):
+    _first, second = git_tree(tmp_path / "t")
+    tree = tmp_path / "t"
+    (tree / "x.h").write_text("diff\n")
+    stampbuild.release(tmp_path, tree)
+    assert (tree / "x.h").read_text() == "b\n" and (tree / stampbuild.STATE).read_text().strip() == second
+
+
+def test_a_unit_whose_object_equals_the_clean_trees_is_not_scored(tmp_path, monkeypatch):
+    from abu_decomp.data import check as check_mod
+    from abu_decomp.data import trial
+
+    cfg = DataConfig(
+        reference="a", versions=("a",), source_suffixes=(".c",), object="build/{v}/{unit}.o", map_file="m.json"
+    )
+    tree, clean = tmp_path / "tree", tmp_path / "clean"
+    for root, body in ((tree, b"same"), (clean, b"same")):
+        (root / "build/a/src").mkdir(parents=True)
+        (root / "build/a/src/x.c.o").write_bytes(body)
+        (root / "build/a/src/y.c.o").write_bytes(body + root.name.encode())  # differs between the trees
+    b = trial.Builder(cfg, tree, reference=clean)
+    assert b.unchanged("a", "src/x.c") and not b.unchanged("a", "src/y.c") and not b.unchanged("a", "src/gone.c")
+    assert not trial.Builder(cfg, tree).unchanged("a", "src/x.c")  # no reference tree: always scored
+    scored = []
+    b.score = lambda v, fn, u: scored.append((u, fn)) or 0
+    monkeypatch.setattr(check_mod, "exact_fns", lambda c, t, v, units: {"src/x.c": ["f1"], "src/y.c": ["f2"]})
+    assert check_mod.broken(b, "a", ["src/x.c", "src/y.c"]) == [] and scored == [("src/y.c", "f2")]
