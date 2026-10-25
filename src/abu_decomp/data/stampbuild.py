@@ -185,6 +185,13 @@ def _tree(profile: Any, shared: Path, lane: str, rev: str | None):
         return worktree.new(profile, shared, lane, rev)
 
 
+def missing_versions(cfg: DataConfig, shared: Path) -> list[str]:
+    """Versions the project builds (versions/<v>/splat.yaml) that the data config does not list: a stamp run without the
+    host profile and config checks only the default pseudo-version and passes (10-25: a false pass missed the eu build)."""
+    found = sorted(p.parent.name for p in (shared / "versions").glob("*/splat.yaml"))
+    return [v for v in found if v not in cfg.versions]
+
+
 def build(
     cfg: DataConfig,
     profile: Any,
@@ -209,6 +216,17 @@ def build(
             [{"key": "data.gate", "blocking": True, "message": m} for m in bad],
         )
     shared = shared.expanduser().resolve()
+    if absent := missing_versions(cfg, shared):
+        msg = (
+            f"the data config checks versions {list(cfg.versions)} but the project builds {absent} too: a stamp must build all "
+            "of them. Pass the host profile and config: `decomp --profile ~/rig-state/tas/profile.json data --config "
+            "~/rig-state/data/rw.toml stamp ...`"
+        )
+        return (
+            {"stamp": "not stamped: the config does not cover every version"},
+            1,
+            [{"key": "data.stamp", "blocking": True, "message": msg}],
+        )
     if at is None and _renamed(profile, shared, diff):
         return {"stamp": str(stamp_mod.write(stamps, text)), "proof": "renameproof"}, 0, []
     lag = worktree.behind(shared)

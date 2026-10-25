@@ -513,3 +513,15 @@ def test_a_failed_link_keeps_its_log_and_names_the_missing_objects(tmp_path):
     assert path and path.parent == tmp_path / "trees" / ".stamp-link-failures"
     assert "build/us/src/MENU_2/A.CPP.o" in path.read_text().splitlines()[0]
     assert builder.missing_objects("make: *** No rule to make target 'build/eu/B.o'.  Stop.") == ["build/eu/B.o"]
+
+
+def test_a_config_that_lacks_a_project_version_refuses_the_stamp(tmp_path, monkeypatch):
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    for v in ("a", "b", "c"):
+        (tmp_path / "versions" / v).mkdir(parents=True)
+        (tmp_path / "versions" / v / "splat.yaml").write_text("")
+    result, code, findings = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 1 and "['c']" in findings[0]["message"] and "--config" in findings[0]["message"]
+    assert not stamp_mod.stamped(tmp_path / "stamps", DIFF) and "does not cover" in result["stamp"]
+    full = replace(CFG, versions=("a", "b", "c"))
+    assert stampbuild.build(full, None, tmp_path, diff, tmp_path / "stamps")[1] == 0
