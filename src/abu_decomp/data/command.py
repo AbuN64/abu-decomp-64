@@ -259,7 +259,7 @@ def _stamp(args: argparse.Namespace, cfg) -> str:
         text=True,
     )
     if sorted(done.stdout.split()) != stamp_mod.files_of(text):
-        return "not stamped: the trees changed files are not the diffs files (check the tree the diff was made from)"
+        return "not stamped: the tree's changed files are not the diff's files (it still holds edits of an earlier diff, or is on another base). Build the diff alone on a clean main tree: decomp data stamp --diff DIFF --build --tree ~/code/wt/POOL-SRC"
     return str(stamp_mod.write(stamp_mod.stamp_dir(args.stamps, args.config), text))
 
 

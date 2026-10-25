@@ -96,7 +96,7 @@ class Builder:
             report = self.rom_report(r.returncode, log)
             # No ROM differs and make named no error: a make killed or raced (another extraction beside it, 10-24), not a
             # break. Once more; a real mismatch names its version and is never retried.
-            if attempt == 2 or not report.startswith("make exited"):
+            if attempt == 2 or not (report.startswith("make exited") or "no ROM was linked" in report):
                 return r.returncode, report
         return r.returncode, report
 

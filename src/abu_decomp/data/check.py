@@ -100,11 +100,27 @@ def header_dependents(tree: Path, version: str, headers: list[str], run=subproce
     return sorted(p[len(prefix) : -2] for p in out if p.startswith(prefix) and p.endswith(".d"))
 
 
-def expand_units(tree: Path, version: str, files: list[str], run=subprocess.run) -> list[str]:
-    """The units to rebuild for changed FILES: the changed units themselves, and every unit including a changed header."""
+def expand_units(
+    tree: Path,
+    version: str,
+    files: list[str],
+    run=subprocess.run,
+    cfg: DataConfig | None = None,
+    stats: dict | None = None,
+) -> list[str]:
+    """The units to rebuild for changed FILES: the changed units themselves, and every unit including a changed header
+    that the header edit can reach (CFG given: `hdrnarrow` drops includers whose compile key the edit cannot change;
+    STATS receives what it did)."""
     units = [f for f in files if f.startswith("src/") and not f.lower().endswith(".h")]
     heads = [f for f in files if f.startswith("include/") or f.lower().endswith(".h")]
-    return sorted(set(units) | set(header_dependents(tree, version, heads, run)))
+    deps = header_dependents(tree, version, heads, run)
+    if cfg is not None and deps:
+        from abu_decomp.data import hdrnarrow
+
+        deps, got = hdrnarrow.narrow(tree, version, heads, deps, cfg.object, flags=list(cfg.cpp or []))
+        if stats is not None:
+            stats[version] = got
+    return sorted(set(units) | set(deps))
 
 
 def changed_symbols(cfg: DataConfig, tree: Path, run=subprocess.run, base: str | None = None) -> list[str]:
@@ -143,11 +159,18 @@ def in_version(cfg: DataConfig, tree: Path, version: str, units: list[str]) -> l
     return [u for u in units if u in held]
 
 
-def changed_units(tree: Path, run=subprocess.run, version: str = "", base: str | None = None) -> list[str]:
+def changed_units(
+    tree: Path,
+    run=subprocess.run,
+    version: str = "",
+    base: str | None = None,
+    cfg: DataConfig | None = None,
+    stats: dict | None = None,
+) -> list[str]:
     out = run(
         ["git", "-C", str(tree), "diff", "--name-only", *([base] if base else [])], capture_output=True, text=True
     ).stdout.split()
-    return expand_units(tree, version, out, run) if version else [u for u in out if u.startswith("src/")]
+    return expand_units(tree, version, out, run, cfg, stats) if version else [u for u in out if u.startswith("src/")]
 
 
 def exact_fns(cfg: DataConfig, tree: Path, version: str, units: list[str]) -> dict[str, list[str]]:
@@ -217,20 +240,25 @@ def failures(b: Builder, version: str, units: list[str], log: str) -> dict[str, 
     return out
 
 
+def _narrow_note(narrowed: dict, version: str) -> dict:
+    return {"narrowed": narrowed[version]} if version in narrowed else {}
+
+
 def check(b: Builder, version: str, units: list[str] | None = None, baseline: dict[str, str] | None = None) -> dict:
     """Rebuild the units a working diff reaches in VERSION (changed units, includers of changed headers, and every unit
     naming a changed data symbol) with `make -k`: a unit that fails to compile is listed with its own error and does not
     hide the rest; the exact functions of the units that built are scored. A unit whose error equals its entry in
     BASELINE (unit -> first error, recorded on a clean tree by `--write-baseline`) already failed before the change:
     it is listed as `preexisting` and neither fails the check nor is scored."""
+    narrowed: dict = {}
     if units is None:
         base = getattr(b, "diff_base", None)
-        units = changed_units(b.tree, b.run, version, base)
+        units = changed_units(b.tree, b.run, version, base, b.cfg, narrowed)
         syms = changed_symbols(b.cfg, b.tree, b.run, base)
         units = sorted(set(units) | set(referencing_units(b.cfg, b.tree, syms, b.run)))
     units = in_version(b.cfg, b.tree, version, units)
     if not units:
-        return {"version": version, "units": 0, "built": True, "broken": []}
+        return {"version": version, "units": 0, "built": True, "broken": [], **_narrow_note(narrowed, version)}
     rc, log = b.objects(version, units, keep_going=True)
     failed = failures(b, version, units, log)
     old = {u: why for u, why in failed.items() if baseline and baseline.get(u) == why}
@@ -249,6 +277,7 @@ def check(b: Builder, version: str, units: list[str] | None = None, baseline: di
         "failed": [[u, why] for u, why in sorted(failed.items())],
         "preexisting": [[u, why] for u, why in sorted(old.items())],
         "all_failed": {**old, **failed},
+        **_narrow_note(narrowed, version),
         **({"errors": [f"{u}: {why}" for u, why in sorted(failed.items())][:8]} if failed else {}),
     }
 
