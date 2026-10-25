@@ -180,7 +180,8 @@ _HUNK = re.compile(r"^@@ -(\d+)")
 
 # The one concrete command a refusal ends with, by finding key ({p} profile, {tree} the tree, {base} the base ref,
 # {file} the finding's file). A finding that already carries `next` keeps it; unknown keys fall to the tree's status.
-MAKE = "decomp --profile {p} make --project {tree} check -j12"
+# no -jN: decomp make takes its share of the host slots (a -j12 here asked for 12 whatever the pool held, C0)
+MAKE = "decomp --profile {p} make --project {tree} check"
 NEXT_COMMANDS = {
     "land.check": MAKE,
     "land.setup": MAKE,
