@@ -331,3 +331,14 @@ def test_a_type_edit_is_not_a_rename(tmp_path, monkeypatch):
         monkeypatch=monkeypatch,
     )
     assert [r["function"] for r in gate.run()[0]] == ["caller"]
+
+
+def test_a_retired_evidence_key_is_named_with_what_to_do() -> None:
+    """PF1 (PORT-FIX-O1): a seat profile kept `land.evidence.provenance` after the check it configured was retired; the
+    refusal said only "unknown". It names the retirement and the fix."""
+    from abu_decomp import land
+
+    profile = SimpleNamespace(source_file=Path("rig.json"))
+    with pytest.raises(land.LandError, match=r"retired: provenance \(.*\): delete it from the profile"):
+        land.evidence_settings(profile, {"suffixes": [".c"], "provenance": {}})
+    assert land.evidence_settings(profile, {"suffixes": [".c"]})["suffixes"] == (".c",)

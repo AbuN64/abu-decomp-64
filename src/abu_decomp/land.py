@@ -351,6 +351,9 @@ def commit_message(
     return head[:limit].rstrip(), body
 
 
+_RETIRED_EVIDENCE = {"provenance": "the recipe try record check, retired 10-23 with the recipe verbs (b17baf2)"}
+
+
 def evidence_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
     """`land.evidence` (absent: the gate is off): suffixes of the C sources it reads, the guard and stand-in macros,
     the header paths and ROM globs that key its cache, the seconds past which a measure is flagged."""
@@ -362,8 +365,15 @@ def evidence_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
         else {"?"}
     )
     if unknown or not isinstance(given, dict):
+        retired = [
+            f"{k} ({_RETIRED_EVIDENCE[k]}): delete it from the profile"
+            for k in sorted(unknown)
+            if k in _RETIRED_EVIDENCE
+        ]
         raise LandError(
-            "config.schema", f"{profile.source_file}:land.evidence: expected an object; unknown {sorted(unknown)}"
+            "config.schema",
+            f"{profile.source_file}:land.evidence: expected an object; unknown {sorted(unknown)}"
+            + (f"; retired: {'; '.join(retired)}" if retired else ""),
         )
     return {
         "suffixes": tuple(s.lower() for s in given.get("suffixes", [".c", ".cpp"])),
