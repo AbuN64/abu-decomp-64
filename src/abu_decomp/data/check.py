@@ -43,7 +43,25 @@ def _moved_splat(tree: Path, mark: dict, run=subprocess.run) -> list[str]:
         except OSError:
             return []
     out = run(["git", "-C", str(tree), "diff", "--name-only", old, "HEAD"], capture_output=True, text=True)
-    return [f for f in out.stdout.split() if _SPLAT.search(f)] if out.returncode == 0 else []
+    changed = [f for f in out.stdout.split() if _SPLAT.search(f)] if out.returncode == 0 else []
+    return [f for f in changed if not _extracted_from(tree, f)]
+
+
+def _extracted_from(tree: Path, config: str) -> bool:
+    """Whether the build's own record says asm/<version> was extracted from this splat config as it is now: `make extract`
+    writes build/.extract-src-<version> (sha1 of the config and the symbol_addrs.txt beside it), so a tree re-extracted by
+    make needs no record of ours (10-24 REV1-ONE-25 hand-wrote .unbake/data-extracted.json)."""
+    import hashlib
+
+    folder = (tree / config).parent
+    try:
+        recorded = (tree / "build" / f".extract-src-{folder.name}").read_text().split()[0]
+        h = hashlib.sha1((tree / config).read_bytes())
+        with contextlib.suppress(OSError):
+            h.update((folder / "symbol_addrs.txt").read_bytes())
+        return h.hexdigest() == recorded
+    except (OSError, IndexError):
+        return False
 
 
 def reextract(
@@ -220,6 +238,10 @@ def broken(
         for fn in fns:
             fn = names.get(fn, fn)
             sc = b.score(version, fn, unit)
+            if sc is None:
+                # the map still files FN under the unit it had (a split-asm unit) while the diff made it C in another one:
+                # match by symbol, in the other units this check built (10-24 Render_GetSpatialEffectLevel, US)
+                sc = next((s2 for u2 in units if u2 != unit and (s2 := b.score(version, fn, u2)) is not None), None)
             if sc != 0:
                 bad.append((unit, fn, "edit=%s" % sc if sc is not None else "no-score"))
     return bad

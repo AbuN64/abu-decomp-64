@@ -147,3 +147,38 @@ def test_reextract_skips_a_current_tree_and_refuses_a_tree_moved_over_splat_chan
     assert (
         check.reextract(None, tmp_path, [], always=True, run=run) is None and len(calls) == 3
     )  # a rename-only move is cheap
+
+
+def test_a_tree_make_extract_re_extracted_is_not_moved_over_splat_changes(tmp_path):
+    import hashlib
+
+    (tmp_path / "versions/us").mkdir(parents=True)
+    (tmp_path / "versions/us/splat.yaml").write_text("new\n")
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("a = 0x1;\n")
+    run = lambda cmd, **kw: done("versions/us/splat.yaml\n")  # noqa: E731
+    mark = {"head": "H0"}
+    assert check._moved_splat(tmp_path, mark, run) == ["versions/us/splat.yaml"]  # nothing recorded the extraction
+    (tmp_path / "build").mkdir()
+    key = hashlib.sha1(b"new\na = 0x1;\n").hexdigest()
+    (tmp_path / "build/.extract-src-us").write_text(key + "\n")  # what `make extract` writes
+    assert check._moved_splat(tmp_path, mark, run) == []
+    (tmp_path / "versions/us/splat.yaml").write_text("newer\n")  # edited since: really moved
+    assert check._moved_splat(tmp_path, mark, run) == ["versions/us/splat.yaml"]
+
+
+def test_a_fn_that_moved_to_another_unit_is_scored_by_symbol(tmp_path):
+    (tmp_path / "docs").mkdir()
+    rows = [["f1", 0, 0, 100, "src/a/asm_unit.CPP"], ["f2", 0, 0, 100, "src/a/asm_unit.CPP"]]
+    (tmp_path / "docs/map-a.json").write_text(json.dumps({"fns": rows}))
+    where = {
+        ("f1", "src/a/c_unit.CPP"): 0,
+        ("f2", "src/a/c_unit.CPP"): 5,
+    }  # both became C in c_unit; asm_unit no longer holds them
+    builder = SimpleNamespace(
+        cfg=CFG,
+        tree=tmp_path,
+        run=lambda *a, **k: done(),
+        score=lambda v, fn, unit: where.get((fn, unit)),
+    )
+    bad = check.broken(builder, "a", ["src/a/asm_unit.CPP", "src/a/c_unit.CPP"])
+    assert bad == [("src/a/asm_unit.CPP", "f2", "edit=5")]  # f1 matched by symbol; f2 is really broken, not "no-score"
