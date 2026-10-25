@@ -9,6 +9,10 @@ tree's paths (project facts live in the profile, not here); `decomp repin` runs 
 A source may also spell a table name by an alias (`#define D_80146398 fz_D_80146398`: the object holds the alias); a
 fact naming an alias the source no longer defines is dropped from a JSON fact file (the entry has no symbol to bind),
 and named as stale anywhere else.
+A source FILE the source moved or merged away is carried too: a git rename, or a deleted unit whose functions another
+file now defines (a merge of units), rewrites the path; a line that then repeats a JSON list's entry is dropped, and a
+deleted unit with no successor is dropped from JSON lists and named as stale elsewhere (10-25: a merged unit left
+rage-ports' boot source list naming a deleted file, and every train round skipped the port build).
 """
 
 from __future__ import annotations
@@ -170,6 +174,108 @@ def _drop_members(text: str, names: Sequence[str]) -> tuple[str, list[str]]:
     return out, cut
 
 
+DEFINED = re.compile(r"^[A-Za-z_][\w \t\*]*?\b([A-Za-z_]\w*)\s*\([^;{]*\)\s*\{?\s*$", re.M)
+SOURCE_DIRS = ("src",)
+
+
+def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
+    """Source files of `old` that `new` lacks: path -> the file that holds them now (a git rename, or for a deleted
+    unit the one file defining most of its functions at `new`), or None when nothing does."""
+    code, out, err = run(
+        ["git", "-C", str(source), "diff", "--name-status", "-M", "-z", old, new, "--", *SOURCE_DIRS], source, None, 120
+    )
+    if code:
+        raise RemapError("remap.moves", f"git diff {old[:12]}..{new[:12]} failed in {source}: {err.strip()[-200:]}")
+    words, found = out.split("\0"), {}
+    index = 0
+    while index < len(words) and words[index]:
+        status = words[index]
+        if status.startswith("R"):
+            found[words[index + 1]] = words[index + 2]
+            index += 3
+            continue
+        if status == "D":
+            found[words[index + 1]] = None
+        index += 2
+    for path, now in list(found.items()):
+        if now is not None:
+            continue
+        code, text, _err = run(["git", "-C", str(source), "show", f"{old}:{path}"], source, None, 120)
+        names = list(dict.fromkeys(m.group(1) for m in DEFINED.finditer(text or ""))) if not code else []
+        votes: dict[str, int] = {}
+        for name in names[:8]:
+            code, hits, _err = run(
+                [
+                    "git",
+                    "-C",
+                    str(source),
+                    "grep",
+                    "-l",
+                    "-E",
+                    rf"^[A-Za-z_][^;]*\b{name}\s*\(",
+                    new,
+                    "--",
+                    *SOURCE_DIRS,
+                ],
+                source,
+                None,
+                120,
+            )
+            for hit in hits.splitlines() if code == 0 else []:
+                hit = hit.split(":", 1)[1] if hit.startswith(f"{new}:") else hit
+                votes[hit] = votes.get(hit, 0) + 1
+        if votes:
+            found[path] = max(sorted(votes), key=lambda f: votes[f])
+    return found
+
+
+_LIST_LINE = r'^[ \t]*"{}"[ \t]*,?[ \t]*\n'
+
+
+def carry_moves(tree: Path, paths: Sequence[str], moved: dict[str, str | None], write: bool = True) -> dict[str, Any]:
+    """Rewrite the tree's fact paths for MOVED source files (`moves`): {"files": rel -> paths carried, "stale": rel ->
+    deleted paths with no successor still named outside a JSON list}."""
+    changed: dict[str, list[str]] = {}
+    stale: dict[str, list[str]] = {}
+    for path in files_under(tree, paths):
+        text = read_text(path)
+        if text is None:
+            continue
+        out, done, left = text, [], []
+        for was, now in moved.items():
+            spelled = re.compile(rf"(?<![\w/.]){re.escape(was)}(?![\w/.])")
+            if not spelled.search(out):
+                continue
+            line = re.compile(_LIST_LINE.format(re.escape(was)), re.M)
+            if (
+                path.suffix == ".json"
+                and line.search(out)
+                and (now is None or re.search(_LIST_LINE.format(re.escape(now)), out, re.M))
+            ):
+                out = re.sub(
+                    r",(\s*\n[ \t]*[}\]])", r"\1", line.sub("", out)
+                )  # the list holds it already, or nothing does
+            elif now is not None:
+                out = spelled.sub(now, out)
+            else:
+                left.append(was)
+                continue
+            done.append(was)
+        rel = str(path.relative_to(tree))
+        if done and path.suffix == ".json":
+            try:
+                json.loads(out)
+            except ValueError:
+                left, done, out = left + done, [], text
+        if done:
+            changed[rel] = done
+            if write:
+                path.write_text(out)
+        if left:
+            stale[rel] = left
+    return {"files": changed, "stale": stale}
+
+
 def remap(
     run: Run, tree: Path, pin: dict[str, Any], old: str, new: str, write: bool = True
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -183,10 +289,11 @@ def remap(
     survivors = {n for names in after.values() for n in names} | aliases(run, source, new, after)
     found["dead_aliases"] = aliases(run, source, old, before) - survivors
     done = apply(tree, config["paths"], found, write)
+    carried = carry_moves(tree, config["paths"], moves(run, source, old, new), write)
     result = {
         "tree": str(tree), "from": old, "to": new, "renamed": len(found["renames"]), "files": done["files"],
         "spellings": done["spellings"], "ambiguous": len(found["ambiguous"]), "written": write,
-        "dropped_aliases": done["dropped"],
+        "dropped_aliases": done["dropped"], "moved_sources": carried["files"],
     }  # fmt: skip
     findings = [
         {"key": "remap.stale", "blocking": True,
@@ -194,6 +301,12 @@ def remap(
          f"{'it' if len(names) == 1 else 'them'} with no successor name, so the tree cannot link or load",
          "next": f"git -C {source} log -S{names[0]} --oneline {old[:12]}..{new[:12]}"}
         for rel, names in sorted(done["stale"].items())
+    ] + [
+        {"key": "remap.stale", "blocking": True,
+         "message": f"{rel} names {', '.join(files[:3])}: the source deleted {'it' if len(files) == 1 else 'them'} and "
+         "no file defines its functions now",
+         "next": f"git -C {source} log --oneline --diff-filter=D {old[:12]}..{new[:12]} -- {files[0]}"}
+        for rel, files in sorted(carried["stale"].items())
     ]  # fmt: skip
     if found["ambiguous"]:
         sample = found["ambiguous"][0]

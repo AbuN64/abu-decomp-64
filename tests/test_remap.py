@@ -231,3 +231,43 @@ def test_a_json_fact_naming_an_alias_the_source_stopped_defining_is_dropped(tmp_
     (tree / "platform/port/notes.md").write_text("fz_D_800E0000 is read here\n")
     _, findings = remap.remap(run_process, tree, pin, old, new, write=False)
     assert [(f["key"], f["blocking"]) for f in findings] == [("remap.stale", True)]
+
+
+def test_a_merged_or_renamed_source_unit_is_carried_into_the_facts(tmp_path: Path) -> None:
+    """RO1 (REV1-ONE-74): a unit merge deleted src/b_5.c (its function moved into src/b_4.c) and rage-ports' boot source
+    list kept naming it: port configure failed and the train skipped the port build every round. The list entry goes
+    (b_4.c is listed already), a TSV row follows the function, a renamed file is rewritten, a lost one is stale."""
+    source, tree = tmp_path / "source", tmp_path / "port"
+    (source / "versions/v").mkdir(parents=True)
+    (source / "src").mkdir()
+    git(source, "init", "-q", "-b", "main")
+    (source / "versions/v/symbol_addrs.txt").write_text("f = 0x80000000; // type:func\n")
+    (source / "src/b_4.c").write_text("void f(void) {\n}\n")
+    (source / "src/b_5.c").write_text("void g(void) {\n}\n")
+    (source / "src/old.c").write_text("void h(void) {\n}\n")
+    (source / "src/gone.c").write_text("void k(void) {\n}\n")
+    git(source, "add", ".")
+    git(source, "commit", "-q", "-m", "old")
+    old = git(source, "rev-parse", "HEAD").strip()
+    (source / "src/b_4.c").write_text("void f(void) {\n}\nvoid g(void) {\n}\n")
+    git(source, "rm", "-q", "src/b_5.c", "src/gone.c")
+    git(source, "mv", "src/old.c", "src/new.c")
+    git(source, "commit", "-qam", "new")
+    new = git(source, "rev-parse", "HEAD").strip()
+    (tree / "platform/port").mkdir(parents=True)
+    manifest = tree / "platform/port/manifest.json"
+    manifest.write_text('{\n  "sources": [\n    "src/b_5.c",\n    "src/old.c",\n    "src/b_4.c"\n  ]\n}\n')
+    (tree / "platform/port/gates.tsv").write_text("gate\tsrc/b_5.c\tg\n")
+    pin = {"source": source, "remap": {"facts": ["versions/v/symbol_addrs.txt"], "paths": ["platform/port"]}}
+    assert remap.moves(run_process, source, old, new) == {
+        "src/b_5.c": "src/b_4.c",
+        "src/gone.c": None,
+        "src/old.c": "src/new.c",
+    }
+    _, findings = remap.remap(run_process, tree, pin, old, new)
+    assert findings == []
+    assert json.loads(manifest.read_text()) == {"sources": ["src/new.c", "src/b_4.c"]}
+    assert (tree / "platform/port/gates.tsv").read_text() == "gate\tsrc/b_4.c\tg\n"
+    (tree / "platform/port/notes.md").write_text("src/gone.c held k\n")
+    _, findings = remap.remap(run_process, tree, pin, old, new, write=False)
+    assert [(f["key"], "src/gone.c" in f["message"]) for f in findings] == [("remap.stale", True)]
