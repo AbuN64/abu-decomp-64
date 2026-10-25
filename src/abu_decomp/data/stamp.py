@@ -55,6 +55,9 @@ def pure_rename(text: str, code: tuple[str, ...] = ()) -> bool:
     current = ""
 
     def settled() -> bool:
+        if not current.lower().endswith((*code, ".h")):
+            # a name table drops the alias row of a symbol the diff renames (the new name sits in symbol_addrs: `literals_<fn>`)
+            gone[:] = [g for g in gone if not ((m := _FACT.match("-" + g)) and m.group(1) in names)]
         table = not current.lower().endswith((*code, ".h")) and not gone
         old = [sub.sub(lambda m: names[m.group(1)], plain(g)) for g in gone]
         new = [plain(c) for c in came if not include.match(plain(c))]

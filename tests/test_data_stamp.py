@@ -89,3 +89,18 @@ def test_extraction_files_are_symbol_rows_and_splat_config():
         "versions/de/splat.yaml",
     ]
     assert stamp.extraction_files(["include/x.h"]) == []
+
+
+def test_a_rename_may_drop_the_alias_row_of_the_symbol_it_renames():
+    diff = (
+        "diff --git a/versions/de/aliases.txt b/versions/de/aliases.txt\n--- a/versions/de/aliases.txt\n+++ b/versions/de/aliases.txt\n"
+        "@@ -1,2 +1,1 @@\n-literals_func_1_de = 0x800C4AEC; // rom:0x1 size:0xC\n keep = 0x800C4AF0;\n"
+        "diff --git a/versions/de/symbol_addrs.txt b/versions/de/symbol_addrs.txt\n--- a/versions/de/symbol_addrs.txt\n"
+        "+++ b/versions/de/symbol_addrs.txt\n@@ -1,1 +1,1 @@\n-literals_func_1_de = 0x800C4AEC; // rom:0x1 size:0xC\n"
+        "+literals_Fn = 0x800C4AEC; // rom:0x1 size:0xC\n"
+    )
+    assert stamp.pure_rename(diff, (".c", ".cpp"))
+    other = diff.replace(
+        "-literals_func_1_de", "-unrelated_alias", 1
+    )  # an alias row of a name the diff does not rename
+    assert not stamp.pure_rename(other, (".c", ".cpp"))
