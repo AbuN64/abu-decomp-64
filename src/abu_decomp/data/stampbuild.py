@@ -119,20 +119,6 @@ def release(shared: Path, tree: Path) -> None:
     (tree / STATE).write_text(_git(tree, "rev-parse", "HEAD").stdout.strip() + "\n")
 
 
-def restore_extraction(profile: Any, shared: Path, tree: Path) -> None:
-    """A diff that changed symbol rows left the tree with ITS extraction. Pruning it made the next stamp seed a fresh tree and
-    split the ROM cold in every version (10-24: 650 CPU s, FLAG CPU-OVER-5min). Reset the diff, then re-extract the clean rows:
-    that content is main's own, so its extraction cache is warm and the slot is reusable at once. Prune only when that fails."""
-    ok = _git(tree, "reset", "-q", "--hard").returncode == 0 and _git(tree, "clean", "-fdq").returncode == 0
-    if ok:
-        with setup_lock(shared):
-            ok = check_mod.reextract(profile, tree, [], always=True) is None
-    if ok:
-        (tree / STATE).write_text(_git(tree, "rev-parse", "HEAD").stdout.strip() + "\n")
-    else:
-        worktree.prune(shared, [tree.name])
-
-
 def _tree(profile: Any, shared: Path, lane: str, rev: str | None):
     """(made, code, findings) for the slot's tree at REV (None: the branch tip): reused when it is clean, else fresh."""
     tree = worktree.base(shared) / lane
@@ -230,7 +216,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane):
         if kept and (tree / ".git").exists():
             (tree / STATE).write_text("busy\n")  # not reusable; the next stamp in this slot rebuilds it
         elif extracted:
-            restore_extraction(profile, shared, tree)
+            worktree.prune(shared, [tree.name])
         elif (tree / ".git").exists():
             release(shared, tree)
         print(
