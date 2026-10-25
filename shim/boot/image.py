@@ -483,11 +483,19 @@ def build(manifest, source, objects, linked, output, rom=None):
         base = len(blob)
         blob += chunk
         words += [(base + offset, name, addend) for offset, name, addend in patches]
-        runs, start = (rom_extents, item["rom"]) if "rom" in item else (extents, item["address"])
-        if runs and runs[-1][0] + runs[-1][2] == start and runs[-1][1] + runs[-1][2] == base:
-            runs[-1][2] += size
-        else:
-            runs.append([start, base, size])
+        places = [(rom_extents, item["rom"])] if "rom" in item else [(extents, item["address"])]
+        # A typed resident symbol's ROM bytes can also reach RDRAM through a game DMA (a TLB window over the
+        # cartridge, a reload): those DMAs see the same native bytes as its resident copy. Untyped emitter
+        # placeholders keep the cartridge's bytes there, like overlay placeholders.
+        if "address" in item and not PLACEHOLDER.fullmatch(item["name"]):
+            at = roms.get(item["name"], item.get("image_rom"))
+            if at is not None:
+                places.append((rom_extents, at))
+        for runs, start in places:
+            if runs and runs[-1][0] + runs[-1][2] == start and runs[-1][1] + runs[-1][2] == base:
+                runs[-1][2] += size
+            else:
+                runs.append([start, base, size])
     stops -= resolved_names
     covered = lambda address: any(start <= address < start + size for start, _, size in extents)
     binds = {}

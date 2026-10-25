@@ -282,6 +282,20 @@ class ImageTests(unittest.TestCase):
         report = json.loads((self.path / "plain" / "image.json").read_text())
         self.assertEqual((report["rom_checked"], report["code_words"], report["function_stops"]), (False, [], []))
 
+    def test_typed_resident_data_covers_its_rom_dmas(self):
+        # a typed resident symbol's ROM bytes are also an image range: a game DMA of them (a TLB window over the
+        # cartridge) sees its native bytes; an untyped emitter placeholder keeps the cartridge's bytes there
+        (self.source / "versions/test/symbol_addrs.txt").write_text(
+            "typed = 0x80001100; // rom:0x1100\nD_blob_00aa = 0x80001200; // rom:0x1200\n")
+        (self.source / "src" / "TYPED.CPP").write_text(
+            "unsigned short typed[4] = {1, 2, 3, 4};\nunsigned int D_blob_00aa[2] = {5, 6};\n")
+        unit = self.compile(self.source / "src" / "TYPED.CPP", self.path / "TYPED.CPP.o", "-x", "c")
+        out = self.path / "out"
+        image.build(self.manifest, self.source, [unit], [], out, self.cartridge({}))
+        report = json.loads((out / "image.json").read_text())
+        self.assertEqual(report["rom_extents"], [["0x1100", 8]])
+        self.assertEqual(report["extents"], 2)
+        self.assertIn("{0x1100u, 0u, 8u},", (out / "image.c").read_text())
     def test_address_scan_lists_code_words_and_guards_commands(self):
         # addrscan.code_word: a display-list command argument is never a code word; a KUSEG alias needs a pointer
         # within 6 words; a KUSEG data record (D_00XXXXXX) is tlb-data
