@@ -285,3 +285,16 @@ def test_single_own_lui_is_no_evidence(tmp_path: Path):
     cfg = _ev_cfg(tmp_path)
     _asm(tmp_path, "f", "lui $v0, %hi(D_80100004)\nlw $v0, %lo(D_80100004)($v0)\nlw $a0, %lo(D_80100004)($v0)\n")
     assert gate.check_diff(cfg, cj, "+++ b/src/b.c\n+extern s32 D_80100004;\n")[0].startswith("src/b.c: MEMBER")
+
+
+def test_stamp_dir_is_never_the_working_directory(tmp_path, monkeypatch):
+    from abu_decomp.data import stamp
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DECOMP_DATA_STAMPS", raising=False)
+    monkeypatch.delenv("DECOMP_DATA_CONFIG", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    assert stamp.stamp_dir(None, None) == tmp_path / "state/decomp-data/stamps"
+    monkeypatch.setenv("DECOMP_DATA_CONFIG", str(tmp_path / "cfg/rw.toml"))
+    assert stamp.stamp_dir(None, None) == tmp_path / "cfg/stamps"
+    assert stamp.stamp_dir(None, tmp_path / "other/x.toml") == tmp_path / "other/stamps"

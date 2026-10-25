@@ -113,7 +113,12 @@ def stamp_dir(given: Path | None, config: Path | None) -> Path:
         return given
     if os.environ.get("DECOMP_DATA_STAMPS"):
         return Path(os.environ["DECOMP_DATA_STAMPS"])
-    return (config.expanduser().parent if config else Path.cwd()) / "stamps"
+    if config:
+        return config.expanduser().parent / "stamps"
+    if os.environ.get("DECOMP_DATA_CONFIG"):
+        return Path(os.environ["DECOMP_DATA_CONFIG"]).expanduser().parent / "stamps"
+    # never the current directory: a stamp run from a lane tree wrote stamps/ into it and `data check` then refused the tree
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "decomp-data" / "stamps"
 
 
 def stamped(directory: Path, text: str) -> bool:

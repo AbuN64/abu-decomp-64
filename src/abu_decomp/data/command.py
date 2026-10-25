@@ -89,7 +89,7 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     )
     k.add_argument("--diff", type=Path, help="the train diff made from TREE: a pass over every version stamps its hash")
     k.add_argument(
-        "--stamps", type=Path, help="stamp directory (default $DECOMP_DATA_STAMPS, then <config dir>/stamps)"
+        "--stamps", type=Path, help="stamp directory (default $DECOMP_DATA_STAMPS, then <config dir>/stamps, else ~/.local/state/decomp-data/stamps; never the cwd)"
     )
     u = sub.add_parser("units", help="list every source unit that names a data symbol the tree changed since REV")
     u.add_argument("--tree", type=Path, required=True)
