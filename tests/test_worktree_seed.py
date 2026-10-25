@@ -1,5 +1,6 @@
-"""A lane or stamp tree is copied from the shared tree under its lock held shared, so an extraction (which `unbake setup`
-runs under the lock held exclusively) is never copied half-written (10-25: a stamp seed lacked undefined_syms_auto.txt)."""
+"""A lane or stamp tree is copied from the shared tree under its lock held shared, so an extraction (which
+`unbake setup` runs under the lock held exclusively) is never copied half-written (10-25: a stamp seed lacked
+undefined_syms_auto.txt)."""
 
 import subprocess
 import sys
