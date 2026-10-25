@@ -74,6 +74,7 @@ class DataConfig:
     object: str = "build/{v}/{unit}.o"
     fncmp: tuple[str, ...] = ()
     fncmp_score: str = r"edit=(\d+)"
+    evidence_tree: str = ""  # a tree whose asm/<v>/ the gate reads to tell a separate global from a struct member
 
     def define(self, version: str) -> str:
         return "-D" + self.version_define.format(V=version.upper().replace("-", "_"))

@@ -247,3 +247,41 @@ def test_expand_units_adds_dependents_of_a_changed_header(tmp_path: Path):
     got = check.expand_units(tmp_path, "r1", ["include/T.H", "src/c.c", "README"], run)
     assert got == ["src/a.c", "src/b.c", "src/c.c"]
     assert check.expand_units(tmp_path, "r1", ["src/c.c"], run) == ["src/c.c"]
+
+
+def _asm(tmp_path: Path, name: str, body: str) -> None:
+    f = tmp_path / "ev/asm/r1/nonmatchings/span" / f"{name}.s"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(body)
+
+
+def _ev_cfg(tmp_path: Path):
+    return config.parse({"reference": "r1", "versions": ["r1", "r2"], "evidence_tree": str(tmp_path / "ev")})
+
+
+def test_member_accepted_when_the_rom_gives_it_its_own_lui(tmp_path: Path):
+    """F2b: a function that loads a cluster label with a lui of its own twice used a separate symbol in the source."""
+    cj = census_json(tmp_path)
+    diff = "+++ b/src/b.c\n+extern s32 D_80100004;\n"
+    cfg = _ev_cfg(tmp_path)
+    assert gate.check_diff(cfg, cj, diff)[0].startswith("src/b.c: MEMBER")  # no asm yet: unchanged behaviour
+    _asm(tmp_path, "f", "lui $v0, %hi(D_80100004)\nlw $v0, %lo(D_80100004)($v0)\nlui $a0, %hi(D_80100000)\naddiu $a0, $a0, %lo(D_80100000)\n")
+    assert gate.check_diff(cfg, cj, diff) == []
+    assert gate.check_diff(CFG, cj, diff)[0].startswith("src/b.c: MEMBER")  # no evidence_tree configured: refuses
+
+
+def test_member_refused_when_any_function_reaches_it_as_owner_plus_offset(tmp_path: Path):
+    cj = census_json(tmp_path)
+    diff = "+++ b/src/b.c\n+extern s32 D_80100004;\n"
+    cfg = _ev_cfg(tmp_path)
+    _asm(tmp_path, "f", "lui $v0, %hi(D_80100004)\nlw $v0, %lo(D_80100004)($v0)\nlui $a0, %hi(D_80100004)\nlw $a0, %lo(D_80100004)($a0)\n")
+    assert gate.check_diff(cfg, cj, diff) == []
+    _asm(tmp_path, "g", "lui $v1, %hi(D_80100000)\nlw $v0, %lo(D_80100004)($v1)\n")  # base register of the owner
+    assert gate.check_diff(cfg, cj, diff)[0].startswith("src/b.c: MEMBER")
+
+
+def test_single_own_lui_is_no_evidence(tmp_path: Path):
+    cj = census_json(tmp_path)
+    cfg = _ev_cfg(tmp_path)
+    _asm(tmp_path, "f", "lui $v0, %hi(D_80100004)\nlw $v0, %lo(D_80100004)($v0)\nlw $a0, %lo(D_80100004)($v0)\n")
+    assert gate.check_diff(cfg, cj, "+++ b/src/b.c\n+extern s32 D_80100004;\n")[0].startswith("src/b.c: MEMBER")

@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from abu_decomp.data import cdecl
@@ -19,12 +21,21 @@ from abu_decomp.data.config import DataConfig
 
 def load_census(path: Path) -> tuple[dict, dict, set]:
     """(member: sym -> (owner+offset, usable owner expression or ''), access kinds, literal syms)."""
+    return _load(path)[:3]
+
+
+def _load(path: Path) -> tuple[dict, dict, set, dict]:
+    """load_census plus `labels`: member sym -> every symbol its cluster is told apart by (base, owner, the members)."""
     d = json.loads(path.read_text())
+    labels: dict[str, frozenset] = {}
     member: dict[str, tuple[str, str]] = {}
     acc: dict[str, set] = {}
     lit: set[str] = set()
     for c in d["clusters"]:
+        names = {c["base"], *(m["sym"] for m in c["members"])}
+        names |= {m["inner"].split("+")[0] for m in c["members"] if m.get("inner")}
         for m in c["members"]:
+            labels[m["sym"]] = frozenset(names)
             acc[m["sym"]] = {x.split(":")[1][0] == "f" for x in m["access"]}
             if c["class"] in ("SCALAR_MEMBER", "STRUCT_ALIAS") and m.get("inner"):
                 usable = m.get("path", "") if m.get("path_note", "") in ("", "union") else ""
@@ -33,19 +44,82 @@ def load_census(path: Path) -> tuple[dict, dict, set]:
         acc[m["sym"]] = {x.split(":")[1][0] == "f" for x in m["access"]}
         if m["class"] == "LITERAL":
             lit.add(m["sym"])
-    return member, acc, lit
+    return member, acc, lit, labels
+
+
+_LUI = re.compile(r"\blui\s+\$(\w+),\s*%hi\(([A-Za-z_]\w*)")
+_MEM = re.compile(
+    r"\b(?:[ls][bhwd]u?|[ls]wc1|[ls]dc1|l[wd]l|l[wd]r|s[wd]l|s[wd]r)\s+\$\w+,\s*%lo\(([A-Za-z_]\w*)[^)]*\)\(\$(\w+)\)"
+)
+
+
+def rom_evidence(text: str, sym: str, labels: frozenset) -> str:
+    """How one function's assembly reaches `sym`: 'separate' when the ROM gave it its own lui and the function also loads
+    another label of its cluster (or `sym` again) with its own lui (a struct base is loaded once and offset: gcc shares it),
+    'offset' when a load or store names `sym` through a base register loaded for a different label (owner + offset),
+    '' when this function says nothing."""
+    base: dict[str, str] = {}
+    own = 0
+    offset = has_own = False
+    for line in text.splitlines():
+        m = _LUI.search(line)
+        if m:
+            base[m.group(1)] = m.group(2)
+            own += m.group(2) in labels
+            has_own |= m.group(2) == sym
+            continue
+        m = _MEM.search(line)
+        if m and m.group(1) == sym and base.get(m.group(2), sym) != sym:
+            offset = True
+    if offset:
+        return "offset"
+    return "separate" if has_own and own >= 2 else ""
+
+
+class Evidence:
+    """Reads the reference version's function assembly of an evidence tree (config `evidence_tree`)."""
+
+    def __init__(self, cfg: DataConfig, labels: dict):
+        self.labels = labels
+        tree = os.path.expanduser(cfg.evidence_tree) if cfg.evidence_tree else ""
+        self.root = Path(tree) / cfg.path(cfg.fn_asm, cfg.reference) if tree else None
+        self._files: list[Path] | None = None
+
+    def separate(self, sym: str) -> bool:
+        """True when the ROM addresses `sym` directly in some function and as owner + offset in none."""
+        if self.root is None or sym not in self.labels or not self.root.is_dir():
+            return False
+        if self._files is None:
+            self._files = sorted(self.root.glob("*/*.s"))
+        seen = set()
+        needle = f"({sym})".encode(), f"({sym} ".encode(), f"({sym}+".encode()
+        for f in self._files:
+            data = f.read_bytes()
+            if not any(n in data for n in needle):
+                continue
+            seen.add(rom_evidence(data.decode(errors="replace"), sym, self.labels[sym]))
+        return "separate" in seen and "offset" not in seen
 
 
 def kind(t: str) -> str:
     return next(iter(cdecl.decl_kind([t])))
 
 
-def violations(sym: str, typ: str, member: dict, acc: dict, lit: set, line: str, exact: bool) -> list[str]:
+def violations(
+    sym: str,
+    typ: str,
+    member: dict,
+    acc: dict,
+    lit: set,
+    line: str,
+    exact: bool,
+    separate: Callable[[str], bool] = lambda s: False,
+) -> list[str]:
     out = []
     k = kind(typ)
     if (
-        sym in member and "MIXED" not in line and member[sym][1]
-    ):  # no usable owner form (padding, unverified): not refused
+        sym in member and "MIXED" not in line and member[sym][1] and not separate(sym)
+    ):  # no usable owner form (padding, unverified), or the ROM gives it its own lui (separate in the original): not refused
         out.append(f"MEMBER {sym} is {member[sym][1]}: write that, not `extern {typ}`")
     a = acc.get(sym)
     if a and k in ("i", "f") and len(a) == 1 and (k == "f") != (True in a):
@@ -56,7 +130,8 @@ def violations(sym: str, typ: str, member: dict, acc: dict, lit: set, line: str,
 
 
 def check_diff(cfg: DataConfig, census: Path, diff_text: str) -> list[str]:
-    member, acc, lit = load_census(census)
+    member, acc, lit, labels = _load(census)
+    evidence = Evidence(cfg, labels)
     token = re.compile(r"\b" + cfg.symbol_token)
     exact = "-#ifdef NON_MATCHING" in diff_text
     removed: dict[str, set] = {}
@@ -83,7 +158,7 @@ def check_diff(cfg: DataConfig, census: Path, diff_text: str) -> list[str]:
             text = line + (
                 " MIXED" if sym in removed.get(cur, ()) else ""
             )  # a retyped existing decl: only KIND/LITERAL apply
-            bad += [f"{cur}: {v}" for v in violations(sym, typ, member, acc, lit, text, exact)]
+            bad += [f"{cur}: {v}" for v in violations(sym, typ, member, acc, lit, text, exact, evidence.separate)]
     return bad
 
 
