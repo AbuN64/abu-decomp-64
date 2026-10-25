@@ -248,6 +248,43 @@ class RunReportTests(unittest.TestCase):
         self.assertTrue((self.build / "decomp" / "src" / "A.CPP.gcno").is_file())
         self.assertEqual(list((self.build / "decomp" / "src").glob("Gone*")), [])
 
+    def test_the_html_merge_runs_once_per_set_of_tracefiles(self):
+        """The --add-tracefile merge over every report cost ~358 CPU s; a re-run over the same tracefiles (no new run,
+        a --rebaseline) reuses the page in place, and a changed tracefile merges again."""
+        runs = self.cfg["runs"]
+        run = runs / "plays" / "r2"
+        run.mkdir()
+        (run / "coverage.json").write_text("{}")
+        (runs / "b.json").write_text("{}")
+        html = []
+
+        def fake_gcovr(args, _cwd):
+            if "--html-details" in args:
+                html.append(args)
+                Path(args[args.index("--html-details") + 1]).write_text("new")
+                Path(args[args.index("--json-summary") + 1]).write_text(json.dumps({"function_covered": 3}))
+
+        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None}
+        with (
+            mock.patch.object(cov, "settings", return_value=cov_cfg),
+            mock.patch.object(cov, "latest_runs", return_value={"m": run}),
+            mock.patch.object(cov, "baseline", return_value=runs / "b.json"),
+            mock.patch.object(cov, "gcovr", side_effect=fake_gcovr),
+            mock.patch.object(cov, "universe", return_value=([], {})),
+            mock.patch.object(cov, "union", side_effect=lambda *a, **k: {"covered": [[]], "summary": {}}),
+            mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
+            mock.patch.object(cov, "oracle_bracket", return_value=None),
+            mock.patch.object(cov, "read_oracle", return_value=None),
+            mock.patch("abu_decomp.tas.read_record", return_value={}),
+        ):
+            cov.build(self.profile, self.cfg, oracle=False, jobs=1)
+            cov.build(self.profile, self.cfg, oracle=False, jobs=1)
+            self.assertEqual(len(html), 1)
+            self.assertEqual((runs / "coverage" / "index.html").read_text(), "new")
+            (run / "coverage.json").write_text("{ }")
+            cov.build(self.profile, self.cfg, oracle=False, jobs=1)
+            self.assertEqual(len(html), 2)
+
     def test_a_union_covering_fewer_functions_is_written_beside_the_report(self):
         runs = self.cfg["runs"]
         (runs / "coverage").mkdir(parents=True)

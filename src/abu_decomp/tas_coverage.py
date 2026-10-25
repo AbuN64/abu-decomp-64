@@ -764,19 +764,20 @@ def build(
         final_page, final_summary = cfg["runs"] / HTML, cfg["runs"] / "coverage-summary.json"
         page, summary_file = cfg["runs"] / (HTML + ".new"), cfg["runs"] / "coverage-summary.new.json"
         shutil.rmtree(page, ignore_errors=True)
-        page.mkdir(parents=True)
-        args = [
-            *_gcovr_base(build_tree),
-            "--html-details",
-            str(page / "index.html"),
-            "--html-title",
-            "Rage Wars game code: TAS movies",
-            "--json-summary",
-            str(summary_file),
-        ]
-        for path in tracefiles:
-            args += ["--add-tracefile", str(path)]
-        gcovr(args, build_tree)
+        merged_key = merge_key(tracefiles, build_tree)
+        if (
+            (final_page / MERGE_KEY).is_file()
+            and (final_page / MERGE_KEY).read_text() == merged_key
+            and final_summary.is_file()
+        ):
+            # the same tracefiles as the page in place: its HTML and summary are this merge (the --add-tracefile
+            # merge over every report cost ~358 CPU s; a re-run with no new run, a --rebaseline, paid it again)
+            shutil.copytree(final_page, page)
+            shutil.copy2(final_summary, summary_file)
+        else:
+            page.mkdir(parents=True)
+            _merge_page(build_tree, page, summary_file, tracefiles)
+            (page / MERGE_KEY).write_text(merged_key)
     _, names = tas_symbolize.symbols(cfg["port"])
     report = union(rows, totals, cov["version"], collected, set(names) if names else None)
     report["runs"] = [
@@ -856,6 +857,30 @@ def build(
     tmp.write_text(json.dumps(report, sort_keys=True) + "\n")
     tmp.replace(path)
     return report
+
+
+MERGE_KEY = ".merge-key"  # in the page folder: the tracefiles (path, size, date) the page was merged from
+
+
+def merge_key(tracefiles: list[Path], build: Path) -> str:
+    """What one HTML merge of these tracefiles reads: each path, size and date, the build tree, the filter."""
+    rows = [(str(p), *((p.stat().st_size, p.stat().st_mtime_ns) if p.is_file() else (-1, -1))) for p in tracefiles]
+    return hashlib.sha256(json.dumps([rows, str(build), FILTER]).encode()).hexdigest()
+
+
+def _merge_page(build: Path, page: Path, summary: Path, tracefiles: list[Path]) -> None:
+    args = [
+        *_gcovr_base(build),
+        "--html-details",
+        str(page / "index.html"),
+        "--html-title",
+        "Rage Wars game code: TAS movies",
+        "--json-summary",
+        str(summary),
+    ]
+    for path in tracefiles:
+        args += ["--add-tracefile", str(path)]
+    gcovr(args, build)
 
 
 def stale_runs(runs: list[dict[str, Any]], tag: str) -> list[dict[str, Any]]:
