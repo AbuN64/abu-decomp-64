@@ -173,14 +173,26 @@ def _integer(seen: list[int], bits: int, signed: bool, members: list[int]) -> li
     return _mix(seen, [m & mask for m in members], limits[:3], nearby, flips, _between(seen, bits, signed), limits[3:])
 
 
+def _low(v: int) -> int:
+    """The 32-bit address of a register value; the registers hold pointers sign-extended (0xffffffff801b...)."""
+    return v & 0xFFFFFFFF if v >> 32 in (0, 0xFFFFFFFF) else v
+
+
 def _pointerish(seen: list[int]) -> bool:
-    return bool(seen) and all(v == 0 or RAM_BASE <= v < RAM_BASE + (64 << 20) for v in seen)
+    return bool(seen) and all(v == 0 or RAM_BASE <= _low(v) < RAM_BASE + (64 << 20) for v in seen)
+
+
+def _floatish(seen: list[int]) -> bool:
+    """Whether every non-zero word the real cases held has a float exponent (1e-19..1e19): an integer limit such as
+    0xffffffff only makes it a NaN the original refuses (28 of 256 generated cases of one function, TOOL-SPEED-14)."""
+    words = [v for v in seen if v]
+    return bool(words) and all(0x20000000 <= v & 0x7FFFFFFF < 0x60000000 for v in words)
 
 
 def _dereferenced(seen: list[int], reads: set[int]) -> bool:
     """Whether the original read just behind a non-null pointer value the real cases held: it is used, so NULL only
     faults it (96 of 100 generated cases of one function were unmapped-at-NULL, TOOL-SPEED-13)."""
-    return any(v and any(v <= a < v + 0x400 for a in reads) for v in seen)
+    return any(v and any(_low(v) <= a < _low(v) + 0x400 for a in reads) for v in seen)
 
 
 def _factors(
@@ -212,6 +224,8 @@ def _factors(
         elif kind in ("pointer", "funcptr", "word") and _pointerish(seen):
             domain = _mix(seen, [0])
             guarded = [0] if _dereferenced(seen, reads) else []
+            if guarded:
+                domain = [0]
         else:
             bits = {"int8": 8, "uint8": 8, "int16": 16, "uint16": 16}.get(kind, 32)
             signed = kind.startswith("int")
@@ -256,8 +270,15 @@ def _factors(
             continue
         bits = 8 * width
         pointer = _pointerish(seen) and width == 4
-        domain = _mix(seen, [0]) if pointer else _integer(seen, bits, False, [])
+        if pointer:
+            domain = _mix(seen, [0])
+        elif width == 4 and _floatish(seen):
+            domain = _mix(seen, [v for v in _FLOATS[32] if v >> 23 & 0xFF != 0xFF])  # finite: NaN faults the original
+        else:
+            domain = _integer(seen, bits, False, [])
         guarded = [0] if pointer and _dereferenced(seen, reads) else []
+        if guarded:
+            domain = [0]
         out.append(
             {
                 "kind": "memory",
@@ -269,7 +290,7 @@ def _factors(
                 "alone": [v for v in guarded if v in domain],
             }
         )
-    return [f for f in out if len(f["domain"]) > 1]
+    return [f for f in out if len(f["domain"]) > 1 or f["alone"]]
 
 
 def _apply(base: dict[str, Any], factors: list[dict[str, Any]], row: tuple[Any, ...], n: int) -> dict[str, Any]:
@@ -318,7 +339,8 @@ def generate(
     if not factors:
         return [], {**report, "generated": 0, "why": "no input with more than one value"}
     # a dereferenced pointer's NULL runs once on its own (the original faults on it anywhere it is combined with others)
-    domains = [[v for v in f["domain"] if v not in f.get("alone", ())] for f in factors]
+    # and its other observed values are other objects this base snapshot does not hold: the base keeps its own
+    domains = [[v for v in f["domain"] if v not in f.get("alone", ())] or [None] for f in factors]
     alone = [(i, v) for i, f in enumerate(factors) for v in f.get("alone", ())]
     size = 1
     for domain in domains:

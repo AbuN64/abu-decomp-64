@@ -47,6 +47,22 @@ class PermutationTests(unittest.TestCase):
         self.assertEqual(sorted(set(nulls)), ["ptr=0x0"])
         self.assertTrue(any("n=" in c["labels"]["generated"] for c in cases))
 
+    def test_a_sign_extended_pointer_is_still_a_pointer(self):
+        """Registers hold 0xffffffff801b...: bit flips of that value only fault the original."""
+        for case in self.cases:
+            case["registers"]["r4"] = "0xffffffff80000100"
+        cases, _ = self.generate(budget=200)
+        self.assertEqual({c["registers"]["r4"] for c in cases}, {"0xffffffff80000100", "0x0"})
+
+    def test_a_word_holding_floats_is_varied_with_floats_not_integer_limits(self):
+        for case, value in zip(self.cases, (0x4425450E, 0x44579825), strict=True):
+            case["memory"] = [{"addr": "0x80000040", "hex": value.to_bytes(4, "big").hex()}]
+        cases, _ = self.generate(budget=200)
+        words = {m["hex"] for c in cases for m in c.get("memory", []) if m["addr"] == "0x80000040"}
+        self.assertIn("3f800000", words)
+        self.assertNotIn("ffffffff", words)
+        self.assertNotIn("7fc00000", words)
+
     def test_an_unread_pointer_still_pairs_with_null(self):
         cases, _ = self.generate(budget=200)
         self.assertTrue(any("ptr=0x0" in c["labels"]["generated"] and "n=" in c["labels"]["generated"] for c in cases))
