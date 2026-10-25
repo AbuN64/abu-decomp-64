@@ -29,6 +29,10 @@ Run = Callable[..., "subprocess.CompletedProcess[str]"]
 class Builder:
     def __init__(self, cfg: DataConfig, tree: Path, run: Run = subprocess.run, reference: Path | None = None) -> None:
         self.cfg, self.tree, self.run, self.reference = cfg, tree, run, reference
+        # skip_headers: header files the diff edited whose includers the data check already rebuilt or proved unchanged
+        # (hdrnarrow): the ROM link treats them as old (`make -o H`), so make does not preprocess every other includer again
+        # (10-25 final-c1: the link after the check rebuilt 619 s of includers the check had judged).
+        self.skip_headers: list[str] = []
         # reference: a clean tree built at the same commit. A unit whose rebuilt object is byte-identical to its object
         # there cannot have changed any function's score, so the check does not score it (a decl-only diff scored 576
         # units x 5 versions, ~450 CPU s, for nothing).
@@ -89,6 +93,19 @@ class Builder:
     LOG = ".stamp-rom.log"
 
     def rom_check(self) -> tuple[int, str]:
+        """The link check with the diff's headers skipped (`skip_headers`); a failure repeats it with every includer judged by
+        make, so a skipped includer that did need the rebuild is never blamed on the diff, only a real mismatch is."""
+        got = self._rom_check()
+        if got[0] and self.skip_headers:
+            print(
+                f"stamp: ROM check failed with {len(self.skip_headers)} headers skipped; repeating it in full",
+                flush=True,
+            )
+            self.skip_headers = []
+            return self._rom_check()
+        return got
+
+    def _rom_check(self) -> tuple[int, str]:
         """Link every version and compare its ROM hash (the config's `rom_check` arguments after the make prefix), incremental
         on the objects the data check just built. (0, "") when the config names no such check. A failure's message names
         each version that differs (expected and got SHA-1, first differing offset and the function holding it) and the log
@@ -98,7 +115,15 @@ class Builder:
         env = dict(os.environ, **{k: expand(v) for k, v in self.cfg.make_env.items()})
         for attempt in (1, 2):
             r = self.run_held(
-                self.low(["nice", *map(expand, self.cfg.make), f"-j{self.jobs()}", *self.cfg.rom_check]),
+                self.low(
+                    [
+                        "nice",
+                        *map(expand, self.cfg.make),
+                        f"-j{self.jobs()}",
+                        *[x for h in self.skip_headers for x in ("-o", h)],
+                        *self.cfg.rom_check,
+                    ]
+                ),
                 cwd=self.tree,
                 capture_output=True,
                 text=True,

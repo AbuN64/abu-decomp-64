@@ -264,10 +264,17 @@ def _renamed(profile: Any, shared: Path, diff: Path) -> bool:
     return bool(called.ok)
 
 
+def header_files(files: list[str]) -> list[str]:
+    """The headers among a diff's files (what `expand_units` counts as one), for the ROM link to treat as old."""
+    return sorted(f for f in files if f.startswith("include/") or f.lower().endswith(".h"))
+
+
 def _phase(name: str, since: list[float]) -> None:
     """One line per stamp phase with its wall and CPU seconds (10-25: a stamp of 762-1434 CPU s named no phase)."""
     now = [time.monotonic(), meter.cpu()]
-    print(f"stamp phase {name}: wall={now[0] - since[0]:.0f}s cpu={now[1] - since[1]:.0f}s", flush=True)
+    used = now[1] - since[1]
+    over = f"  FLAG CPU-OVER-5min step={name}" if used > CPU_CAP else ""
+    print(f"stamp phase {name}: wall={now[0] - since[0]:.0f}s cpu={used:.0f}s{over}", flush=True)
     since[:] = now
 
 
@@ -338,11 +345,14 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         builder = trial.Builder(cfg, tree, reference=shared if same else None)
         results = [check_mod.check(builder, v) for v in cfg.versions]
         _phase("check", mark)
+        if os.environ.get("ABU_STAMP_ROM_SKIP", "1") == "1":
+            builder.skip_headers = header_files(files)  # the check judged their includers; the link does not redo them
         if (
             same and _git(shared, "rev-parse", "HEAD").stdout.strip() != head
         ):  # the pool moved on: its objects are not ours
             builder = trial.Builder(cfg, tree)
             results = [check_mod.check(builder, v) for v in cfg.versions]
+            _phase("check again", mark)
         findings = [
             {"key": "data.check", "blocking": True, "message": f"{r['version']}: {u} {fn} {why}"}
             for r in results for u, fn, why in r["broken"]

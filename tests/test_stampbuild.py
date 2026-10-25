@@ -526,3 +526,32 @@ def test_a_config_that_lacks_a_project_version_refuses_the_stamp(tmp_path, monke
     assert not stamp_mod.stamped(tmp_path / "stamps", DIFF) and "does not cover" in result["stamp"]
     full = replace(CFG, versions=("a", "b", "c"))
     assert stampbuild.build(full, None, tmp_path, diff, tmp_path / "stamps")[1] == 0
+
+
+def test_rom_check_skips_the_diffs_headers_and_repeats_in_full_on_a_failure(tmp_path):
+    from dataclasses import replace
+
+    from abu_decomp.data import stampbuild, trial
+
+    seen = []
+
+    def run(cmd, **k):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1 if "-o" in cmd else 0, "", "make: *** Error 1")
+
+    cfg = replace(CFG, make=("make",), rom_check=("check",))
+    b = trial.Builder(cfg, tmp_path, run=run)
+    b.skip_headers = stampbuild.header_files(["src/a.c", "include/t.h", "x/y.H"])
+    assert b.skip_headers == ["include/t.h", "x/y.H"]
+    assert b.rom_check() == (0, "")
+    assert "-o" in seen[0] and seen[0][seen[0].index("-o") + 1] == "include/t.h" and seen[0][-1] == "check"
+    assert "-o" not in seen[-1] and b.skip_headers == []
+
+
+def test_a_stamp_phase_over_the_cpu_cap_names_itself(monkeypatch, capsys):
+    from abu_decomp.data import stampbuild
+
+    mark = [0.0, 0.0]
+    monkeypatch.setattr(stampbuild.meter, "cpu", lambda: 400.0)
+    stampbuild._phase("rom_check", mark)
+    assert "FLAG CPU-OVER-5min step=rom_check" in capsys.readouterr().out
