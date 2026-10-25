@@ -583,16 +583,24 @@ def lists(report: dict[str, Any], limit: int = LISTED) -> dict[str, Any]:
 
 # --- driving it ---
 
+LINK = "ragewars-decomp"  # a coverage build tree's link to the source it compiled
 FILTER = ".*/src/"  # the original game's sources (not the headers, not the generated stubs)
 
 
 def build_dir(cfg: dict[str, Any]) -> Path:
-    """The CMake build tree of the page's port: where the .gcno files and the `ragewars-decomp` source link are."""
-    return Path(cfg["port"]).parent
+    """The CMake build tree of the page's port: where the .gcno files and the `ragewars-decomp` source link are. The
+    port's own folder when it is that tree; else the tree `tas.build.units` lies in (its nearest folder holding a
+    CMakeCache.txt): a page port is published away from its build tree (live/port), and coverage refused it as "not
+    a coverage build" (PORT-FIX-O1, 10-25)."""
+    own = Path(cfg["port"]).parent
+    units = (cfg.get("build") or {}).get("units")
+    if (own / LINK).exists() or not units:
+        return own
+    return next((p for p in (Path(units), *Path(units).parents) if (p / "CMakeCache.txt").is_file()), own)
 
 
 def _gcovr_base(build: Path) -> list[str]:
-    if not (build / "ragewars-decomp").exists():
+    if not (build / LINK).exists():
         raise DecompError(
             "tas.coverage",
             f"{build} is not a coverage build (no ragewars-decomp link): "
@@ -624,7 +632,7 @@ def run_report(profile: Profile, cfg: dict[str, Any], run: Path) -> Path | None:
 def drop_orphan_notes(build: Path) -> int:
     """Delete every .gcno (and its .gcda) under build/decomp whose unit source is gone from the build's source link
     (units a pin bump renamed or merged): gcovr dies reading a missing source. Returns how many were dropped."""
-    link, dropped = build / "ragewars-decomp", 0
+    link, dropped = build / LINK, 0
     if not link.exists():  # not a coverage build: nothing says which notes are orphans
         return 0
     for note in (build / "decomp").rglob("*.gcno"):

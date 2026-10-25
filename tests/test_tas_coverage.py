@@ -484,3 +484,17 @@ class AddressJoinTests(unittest.TestCase):
         )
         hit = {r["name"]: r["state"] for r in table["functions"]}
         self.assertEqual((hit["Cleaned"], hit["Second"]), ("both", "neither"))
+
+
+def test_a_published_page_port_finds_its_build_tree_through_the_build_units(tmp_path):
+    """PF7 (PORT-FIX-O1): the page profile runs a port published away from its build tree (live/port), and coverage
+    refused it as "not a coverage build". The tree tas.build.units lies in (its CMakeCache.txt) is the build."""
+    build = tmp_path / "build"
+    (build / "decomp/src").mkdir(parents=True)
+    (build / "CMakeCache.txt").write_text("")
+    (build / "ragewars-decomp").mkdir()
+    (tmp_path / "live/port").mkdir(parents=True)
+    cfg = {"port": tmp_path / "live/port/ragewars", "build": {"units": build / "decomp/src"}}
+    assert cov.build_dir(cfg) == build
+    assert cov.build_dir({"port": build / "ragewars", "build": {"units": build / "decomp/src"}}) == build
+    assert cov.build_dir({"port": tmp_path / "live/port/ragewars"}) == tmp_path / "live/port"
