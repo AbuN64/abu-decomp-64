@@ -37,6 +37,28 @@ def git(tree: Path, *args: str, env: dict[str, str] | None = None, data: bytes |
     return done.stdout
 
 
+_CONFLICT = re.compile(
+    r"^(?:U (\S+)|Applied patch to '([^']+)' with conflicts\.|error: patch failed: ([^:]+):\d+"
+    r"|error: (\S+): (?:does not exist in index|already exists in index))",
+    re.M,
+)
+    r"^(?:U (\S+)|Applied patch to '([^']+)' with conflicts\.|error: patch failed: ([^:]+):\d+|error: (\S+): (?:does not exist in index|already exists in index))",
+    re.M,
+)
+
+
+def conflict_message(stderr: str, onto: str) -> str:
+    """What a failed 3-way apply onto ONTO names: the files that conflict, then what to do (10-25 NAMES-2: the bare git
+    error was cut off and named no file)."""
+    files = sorted({next(g for g in m.groups() if g) for m in _CONFLICT.finditer(stderr)})
+    if not files:
+        return f"the change does not apply onto {onto}: {stderr.strip()[-400:]}"
+    return (
+        f"the change conflicts with {onto} in {len(files)} file(s): {', '.join(files[:12])}. Rebuild those files on a "
+        f"fresh lease at {onto} (`git diff {onto} -- FILE` shows what landed there), or leave them out with PATHS"
+    )
+
+
 def filter_hunks(diff: str, pattern: str) -> str:
     """Only the hunks of a `git diff` with a changed (+/-) line matching `pattern`; a file with none is dropped."""
     rx = re.compile(pattern)
@@ -198,16 +220,15 @@ def run(
         index = {"GIT_INDEX_FILE": str(Path(scratch) / "index")}
         git(tree, "read-tree", onto, env=index)
         if part.strip():
-            git(
-                tree,
-                "apply",
-                "--cached",
-                "-3",
-                "--recount",
-                *(["--unidiff-zero"] if hunks or function else []),
-                env=index,
-                data=part.encode(errors="surrogateescape"),
+            argv = ["apply", "--cached", "-3", "--recount", *(["--unidiff-zero"] if hunks or function else [])]
+            done = subprocess.run(
+                ["git", "-C", str(tree), *argv],
+                input=part.encode(errors="surrogateescape"),
+                capture_output=True,
+                env={**os.environ, **index},
             )
+            if done.returncode:
+                raise DiffOntoError("diff.conflict", conflict_message(done.stderr.decode(errors="replace"), onto))
         renamed = []
         if rename:
             old, eq, new = rename.partition("=")

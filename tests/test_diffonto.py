@@ -91,3 +91,17 @@ def test_function_filter_keeps_one_functions_hunks_and_its_rows(tmp_path):
     assert "return 11" not in text and "return 44" not in text
     with pytest.raises(DecompError):
         diffonto.run(t, "HEAD", ["src/f.c"], function="Nope_Fn")
+
+
+def test_a_conflict_names_the_files_and_what_to_do(tmp_path):
+    t = repo(tmp_path)
+    g(t, "branch", "newmain")
+    g(t, "checkout", "-q", "newmain")
+    (t / "src/a.c").write_text((t / "src/a.c").read_text().replace("a2\n", "main2\n"))
+    g(t, "commit", "-qam", "main moved")
+    g(t, "checkout", "-q", "main")
+    (t / "src/a.c").write_text((t / "src/a.c").read_text().replace("a2\n", "lane2\n"))
+    with pytest.raises(DecompError) as got:
+        diffonto.run(t, "newmain", ["src/a.c"])
+    assert "src/a.c" in str(got.value) and "fresh lease" in str(got.value)
+    assert diffonto.conflict_message("error: something odd\n", "M").startswith("the change does not apply onto M")
