@@ -83,21 +83,23 @@ class Evidence:
         self.labels = labels
         tree = os.path.expanduser(cfg.evidence_tree) if cfg.evidence_tree else ""
         self.root = Path(tree) / cfg.path(cfg.fn_asm, cfg.reference) if tree else None
-        self._files: list[Path] | None = None
+        self._index: dict[str, list[Path]] | None = None
+
+    def _files_of(self, sym: str) -> list[Path]:
+        """The functions that name `sym`; one pass over the assembly indexes every symbol for the whole gate run."""
+        if self._index is None:
+            token = re.compile(rb"%(?:hi|lo)\(([A-Za-z_]\w*)")
+            self._index = {}
+            for f in sorted(self.root.glob("*/*.s")):
+                for name in set(token.findall(f.read_bytes())):
+                    self._index.setdefault(name.decode(), []).append(f)
+        return self._index.get(sym, [])
 
     def separate(self, sym: str) -> bool:
         """True when the ROM addresses `sym` directly in some function and as owner + offset in none."""
         if self.root is None or sym not in self.labels or not self.root.is_dir():
             return False
-        if self._files is None:
-            self._files = sorted(self.root.glob("*/*.s"))
-        seen = set()
-        needle = f"({sym})".encode(), f"({sym} ".encode(), f"({sym}+".encode()
-        for f in self._files:
-            data = f.read_bytes()
-            if not any(n in data for n in needle):
-                continue
-            seen.add(rom_evidence(data.decode(errors="replace"), sym, self.labels[sym]))
+        seen = {rom_evidence(f.read_text(errors="replace"), sym, self.labels[sym]) for f in self._files_of(sym)}
         return "separate" in seen and "offset" not in seen
 
 
@@ -168,7 +170,8 @@ def _decls(line: str, token: re.Pattern[str]):
 
 
 def count_tree(cfg: DataConfig, census: Path, tree: Path) -> int:
-    member, _acc, _lit = load_census(census)
+    member, _acc, _lit, labels = _load(census)
+    evidence = Evidence(cfg, labels)
     token = re.compile(r"\b" + cfg.symbol_token)
     n = 0
     for f in cdecl.source_files(tree, cfg):
@@ -177,7 +180,7 @@ def count_tree(cfg: DataConfig, census: Path, tree: Path) -> int:
             continue
         for m in cdecl.CDECL.finditer(cdecl.strip_comments(t)):
             for sym, typ in cdecl.declarators(m.group(1), token):
-                n += sym in member and kind(typ) in ("i", "f", "p")
+                n += sym in member and kind(typ) in ("i", "f", "p") and not (member[sym][1] and evidence.separate(sym))
     return n
 
 
