@@ -103,6 +103,26 @@ class PlayAllFastTests(unittest.TestCase):
                 tas.play_all(None, jobs=1, gdb_all=True)
                 self.assertEqual(sorted(seen), [("a", True), ("b", True)])
 
+    def test_resume_skips_movies_with_a_result_from_the_current_build(self):
+        pins = {"rw": "b"}
+        prev = {
+            "a": (Path("run-a"), {"outcome": "ok", "pins": pins}),
+            "b": (Path("run-b"), {"outcome": "crash", "pins": pins}),
+            "c": (Path("run-c"), {"outcome": "ok", "pins": {"rw": "a"}}),
+            "d": (Path("run-d"), {"outcome": "refused", "pins": pins}),
+        }
+        with mock.patch.object(tas_select, "read_pins", return_value=pins):
+            replay, skipped, why = tas_select.resume_plan({}, ["a", "b", "c", "d", "e"], prev)
+        self.assertEqual((replay, sorted(skipped)), (["c", "d", "e"], ["a", "b"]))
+        self.assertIn("2 of 5", why)
+        with mock.patch.object(tas_select, "read_pins", return_value=None):
+            self.assertEqual(tas_select.resume_plan({}, ["a"], prev)[0], ["a"])
+
+    def test_lower_priority_takes_the_asked_niceness(self):
+        with mock.patch("os.nice", side_effect=lambda n: n) as nice:
+            tas._lower_priority(15)
+        nice.assert_called_with(15)
+
     def test_changed_skips_unaffected_movies_with_their_standing(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

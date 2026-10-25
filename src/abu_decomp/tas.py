@@ -1618,12 +1618,12 @@ def all_jobs() -> int:
     return max(1, min(slots.capacity(), wanted if wanted > 0 else ALL_JOBS))
 
 
-def _lower_priority() -> None:
+def _lower_priority(level: int = ALL_NICE) -> None:
     """A sweep yields the CPU to lane builds and the train: this process and every replay it starts run at nice
     ALL_NICE or lower priority already (the children inherit it)."""
     try:
-        if os.nice(0) < ALL_NICE:
-            os.nice(ALL_NICE - os.nice(0))
+        if os.nice(0) < level:
+            os.nice(level - os.nice(0))
     except OSError:
         pass
 
@@ -1637,6 +1637,8 @@ def play_all(
     twice: bool = False,
     run_ids: dict[str, str] | None = None,
     changed: bool = False,
+    resume: bool = False,
+    nice: int = 0,
     gdb_all: bool = False,
     **options: Any,
 ) -> tuple[dict[str, Any], int]:
@@ -1660,7 +1662,7 @@ def play_all(
     health = tas_health.read(cfg, profile)
     skipped: dict[str, tuple[Path, dict[str, Any]]] = {}
     why_skipped = ""
-    if changed:
+    if changed or resume:
         newest: dict[str, tuple[Path, dict[str, Any]]] = {}
         for run, row in run_rows(cfg):  # oldest first: the newest good plain movie run of each movie wins
             if (
@@ -1670,11 +1672,14 @@ def play_all(
                 and not (row.get("stopped") or row.get("taken") or row.get("sanitizer") or row.get("start"))
             ):
                 newest[row["movie"]] = (run, row)
-        names_to_run, skipped, why_skipped = tas_select.plan(profile, cfg, names, newest)
+        if resume:
+            names_to_run, skipped, why_skipped = tas_select.resume_plan(cfg, names, newest)
+        else:
+            names_to_run, skipped, why_skipped = tas_select.plan(profile, cfg, names, newest)
     else:
         names_to_run = names
     jobs = jobs or all_jobs()
-    _lower_priority()
+    _lower_priority(nice or ALL_NICE)
     options.setdefault("slot_class", "batch")
     options.setdefault("batch", _stamp(now) + "-all")  # the findings of this run share one batch id
     began, cpu0 = time.monotonic(), resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -1774,7 +1779,7 @@ def play_all(
     timing = {"wall_seconds": round(time.monotonic() - began, 1), "cpu_seconds": cpu}
     ranked = ranked_work(profile, cfg, health, rows)
     result = {"build": tas_health.header(health), "movies": rows, "worse": worse, **timing, "ranked": ranked}
-    if changed:
+    if changed or resume:
         result["selected"] = {"replayed": len(names_to_run), "skipped": len(skipped), "why": why_skipped}
     try:  # the unioned coverage never fails a replay
         report = None if sanitize else tas_coverage.build(profile, cfg, jobs=jobs)

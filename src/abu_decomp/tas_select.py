@@ -98,6 +98,26 @@ def affected(files: dict[str, bool] | None, changed: set[str]) -> bool:
     return False
 
 
+def resume_plan(
+    cfg: dict[str, Any],
+    names: list[str],
+    previous: dict[str, tuple[Path, dict[str, Any]]],
+) -> tuple[list[str], dict[str, tuple[Path, dict[str, Any]]], str]:
+    """`play --all --resume`: a movie whose newest finished run was made by the CURRENT build (equal pins) and ended
+    with a real outcome keeps that result; everything else (no run, no pins, other pins, refused/unknown) replays. No
+    profile section needed: an interrupted or throttled sweep restarts without redoing its finished movies."""
+    now = read_pins(cfg)
+    replay: list[str] = []
+    skipped: dict[str, tuple[Path, dict[str, Any]]] = {}
+    for name in names:
+        last = previous.get(name)
+        if now is None or last is None or last[1].get(PINS) != now or last[1].get("outcome") in (None, "", "refused"):
+            replay.append(name)
+        else:
+            skipped[name] = last
+    return replay, skipped, f"{len(skipped)} of {len(names)} movies already have a result from this build"
+
+
 def plan(
     profile: Profile,
     cfg: dict[str, Any],
