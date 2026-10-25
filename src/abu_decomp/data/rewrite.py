@@ -46,6 +46,15 @@ def resolve(census_path: Path | None, sym: str, expr: str | None, header: str | 
     return expr or m["path"], header or owner_header(census, owner), m
 
 
+def owner_header_types(tree: Path, expr: str, header: str) -> list[str]:
+    """The type texts the owner header declares for the owner of EXPR (the real struct): a unit that declares the owner as
+    another struct is a stand-in the rewrite must leave alone. [] when the header or the declaration is not found."""
+    owner = expr.split(".")[0].split("[")[0]
+    path = tree / "include" / header
+    if not header or not path.is_file():
+        return []
+    ext, local = source.local_decls(path.read_text(errors="replace"), owner)
+    return ext + local
 def run(
     cfg: DataConfig,
     tree: Path,
@@ -60,10 +69,11 @@ def run(
     """Files rewritten. With the census MEMBER the per-file safety rules apply: a file they refuse keeps the raw symbol and
     is named with its reason in SKIPPED (the MIXED candidates)."""
     files = [tree / f for f in only] if only else cdecl.source_files(tree, cfg)
+    owner_types = owner_header_types(tree, expr, header)
     touched = []
     for f in files:
         text = f.read_text(errors="replace")
-        new, why = source.plan_file(text, sym, expr, header, f.name == Path(header).name, member)
+        new, why = source.plan_file(text, sym, expr, header, f.name == Path(header).name, member, owner_types)
         if why and skipped is not None:
             skipped[str(f.relative_to(tree))] = why
         if new != text:

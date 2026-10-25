@@ -29,27 +29,41 @@ def spans(text: str) -> list[tuple[int, int]]:
     return [m.span() for m in SPANS.finditer(text)]
 
 
+def mask(text: str) -> str:
+    """TEXT with every comment and string literal blanked to spaces (newlines kept): same length, same offsets, so a
+    scan of the mask can never begin or end inside a comment (10-25 80444030_6: an `extern` inside a comment swallowed
+    three functions up to the next `;`)."""
+    return SPANS.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+EXTERN = re.compile(r"\bextern\b[^;{}()]*;")
 def drop_externs(text: str, sym: str) -> str:
-    """Delete every extern declarator of SYM (a whole line when it was the only declarator)."""
+    """Delete every extern declarator of SYM (a whole line when it was the only declarator). The scan runs on the masked
+    text, so an `extern` inside a comment or string is never a declaration; kept text is cut from the original."""
     tok = re.compile(r"(?<![\w])%s\b" % re.escape(sym))
-
-    def drop(m: re.Match[str]) -> str:
+    masked = mask(text)
+    out, last = [], 0
+    for m in EXTERN.finditer(masked):
         body = m.group(0)
         if not tok.search(body):
-            return body
-        parts = re.split(r",(?![^\[]*\])", body[len("extern") : -1])
+            continue
+        base = m.start() + len("extern")
+        inner = body[len("extern") : -1]
+        cuts = [0] + [c.end() for c in re.finditer(r",(?![^\[]*\])", inner)] + [len(inner) + 1]
+        parts = [(base + cuts[i], base + cuts[i + 1] - 1) for i in range(len(cuts) - 1)]
+        parts[-1] = (parts[-1][0], base + len(inner))
+        out.append(text[last : m.start()])
+        last = m.end()
         if len(parts) == 1:
-            return "\x00DEL\x00"
-        keep = [p for p in parts if not tok.search(p)]
-        if tok.search(parts[0]):  # SYM was the first declarator: the next one takes the type
-            typ = parts[0][: tok.search(parts[0]).start()].rstrip("* \t")
-            keep[0] = " " + typ.strip() + " " + keep[0].strip()
-        return "extern" + ",".join(keep) + ";"
-
-    text = re.sub(r"\bextern\b[^;{}()]*;", drop, text)
-    return re.sub(r"[ \t]*\x00DEL\x00[ \t]*(?://[^\n]*|/\*[^\n]*?\*/)?[ \t]*\n?", "", text)
-
-
+            out.append("\x00DEL\x00")
+            continue
+        keep = [(s_, e_) for s_, e_ in parts if not tok.search(masked[s_:e_])]
+        pieces = [text[s_:e_] for s_, e_ in keep]
+        if tok.search(masked[parts[0][0] : parts[0][1]]):  # SYM was the first declarator: the next one takes the type
+            first = masked[parts[0][0] : parts[0][1]]
+            typ = first[: tok.search(first).start()].rstrip("* \t")
+            pieces[0] = " " + typ.strip() + " " + pieces[0].strip()
+        out.append("extern" + ",".join(pieces) + ";")
+    out.append(text[last:])
+    return re.sub(r"[ \t]*\x00DEL\x00[ \t]*(?://[^\n]*|/\*[^\n]*?\*/)?[ \t]*\n?", "", "".join(out))
 def replace_uses(text: str, sym: str, expr: str) -> str:
     tok = re.compile(r"(?<![\w])%s\b" % re.escape(sym))
     sp = spans(text)
@@ -90,7 +104,34 @@ def shape_reason(ext: list[str], expr: str) -> str:
     return ""
 
 
-def skip_reason(text: str, sym: str, owner: str, kinds_all: set[str], access: dict | None, expr: str = "") -> str:
+def directive_reason(text: str, sym: str) -> str:
+    """Why a preprocessor use of SYM forbids the rewrite ('' when none): a macro NAMED sym, `#undef`/`#ifdef`/`defined()`
+    of it, or a `#`/`##` operand in a macro body would become the member expression (`#define D_2.m`), invalid C
+    (10-25 DATA-FRAME-O2: #define aliases rewritten into invalid code)."""
+    tok = r"(?<![\w])%s\b" % re.escape(sym)
+    code = mask(text)
+    for m in re.finditer(r"^[ \t]*#[ \t]*(\w+)((?:\\\n|[^\n])*)", code, re.M):
+        word, rest = m.group(1), m.group(2)
+        if not re.search(tok, rest):
+            continue
+        line = m.group(0).strip().replace("\\\n", " ")
+        if word in ("define", "undef") and re.match(r"\s*%s" % tok, rest):
+            return f"{sym} is itself a macro name here ({line[:60]}): the member expression cannot replace it"
+        if word in ("ifdef", "ifndef", "undef") or re.search(r"defined\s*\(?\s*%s" % tok, rest):
+            return f"preprocessor test of {sym} here ({line[:60]})"
+        if word == "define" and re.search(r"##\s*%s|%s\s*##|#\s*%s" % (tok, tok, tok), rest):
+            return f"{sym} is a # or ## operand in a macro here ({line[:60]})"
+    return ""
+def type_tags(types: list[str]) -> set[str]:
+    """The type names of declaration texts: `struct W *` -> {W}; qualifiers, pointers and dimensions dropped."""
+    out: set[str] = set()
+    for t in types:
+        words = re.findall(r"[A-Za-z_]\w*", re.sub(r"\[[^\]]*\]", " ", t))
+        out |= {w for w in words if w not in ("struct", "union", "enum", "const", "volatile", "unsigned", "signed", "static")}
+    return out
+def skip_reason(
+    text: str, sym: str, owner: str, kinds_all: set[str], access: dict | None, expr: str = "", owner_types: list[str] | None = None
+) -> str:
     """Why this file must keep the raw SYM ('' when the rewrite is safe): a unit-local definition or a struct alias of
     a symbol other units declare as a scalar (rewriting would re-type the access), a declared kind that contradicts how
     the ROM accesses it, or an owner declared here as something that has no members."""
@@ -110,6 +151,9 @@ def skip_reason(text: str, sym: str, owner: str, kinds_all: set[str], access: di
     o_ext, o_local = local_decls(text, owner)
     if o_local or (o_ext and cdecl.decl_kind(o_ext) - {"s"}):
         return f"owner {owner} is declared here as {(o_local or o_ext)[0]}, not as its struct"
+    here = o_local + o_ext
+    if owner_types and here and not (type_tags(here) & type_tags(owner_types)):
+        return f"owner {owner} is declared here as a stand-in {here[0]}, the owner header declares {owner_types[0]}"
     return ""
 
 
@@ -144,14 +188,18 @@ def plan_file(
     header: str,
     is_header_file: bool = False,
     member: dict | None = None,
+    owner_types: list[str] | None = None,
 ) -> tuple[str, str]:
     """(new text, skip reason): the per-file rewrite of rewrite.py. A file with a reason keeps its text. The safety
     rules run when the census MEMBER of the symbol is given (kinds every unit declares it with, ROM access, decl types)."""
     if sym not in text:
         return text, ""
+    why = directive_reason(text, sym)  # census or not: `#define D_2.m` is invalid C
+    if why:
+        return text, why
     owner = re.match(r"\w+", expr).group(0)
     kinds = set(member.get("decl_kind") or []) if member is not None else None
-    why = skip_reason(text, sym, owner, kinds, member.get("access"), expr) if member is not None else ""
+    why = skip_reason(text, sym, owner, kinds, member.get("access"), expr, owner_types) if member is not None else ""
     if why:
         return text, why
     use = file_expr(text, sym, expr, (member or {}).get("decl"))
