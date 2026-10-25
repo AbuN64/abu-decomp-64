@@ -232,6 +232,15 @@ def _check(args: argparse.Namespace, cfg, b, cli) -> Result:
         else {}
     )
     results = [check_mod.check(b, v, args.unit or None, known.get(v)) for v in (args.version or list(cfg.versions))]
+    judged = _judged_nothing(args, cfg, b, results, known)
+    if judged is not None:
+        results, empty = judged
+        if empty:
+            msg = (
+                "the check judged 0 units, so it proves nothing and writes no stamp: the tree holds no uncommitted change "
+                "and the diff names no unit it builds. Pass --since REV (the commit the diff sits on) or --unit"
+            )
+            return {"results": results}, 1, [{"key": "data.check", "blocking": True, "message": msg}]
     if args.write_baseline:
         if not args.baseline:
             raise DecompError("data.baseline", "--write-baseline needs --baseline FILE")
@@ -252,6 +261,25 @@ def _check(args: argparse.Namespace, cfg, b, cli) -> Result:
     if args.diff and not findings:
         out["stamp"] = _stamp(args, cfg)
     return out, 1 if findings else 0, findings
+
+
+def _judged_nothing(args, cfg, b, results, known):
+    """(results, True) when a check of --diff or --since selected no unit in any version, after one more try with the
+    units the diff's own files reach (a committed, rebased tree has no working-tree change to select them from);
+    None when something was judged or the call asked for no judgement."""
+    if args.write_baseline or args.unit or not (args.diff or args.since):
+        return None
+    if any(r.get("units") for r in results):
+        return None
+    if args.diff:
+        files = stamp_mod.files_of(args.diff.read_text(errors="replace"))
+        again = []
+        for v in args.version or list(cfg.versions):
+            units = check_mod.expand_units(args.tree, v, files, b.run, cfg)
+            again.append(check_mod.check(b, v, units or None, known.get(v)) if units else results[len(again)])
+        if any(r.get("units") for r in again):
+            return again, False
+    return results, True
 
 
 def _try(args: argparse.Namespace, cfg) -> Result:

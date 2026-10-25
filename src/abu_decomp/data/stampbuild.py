@@ -270,6 +270,14 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
             {"key": "data.build", "blocking": True, "message": f"{r['version']}: {u} does not compile: {why}"}
             for r in results for u, why in r.get("failed", [])
         ]  # fmt: skip
+        if not findings and results and all(r.get("units", 1) == 0 for r in results):
+            findings = [
+                {
+                    "key": "data.check",
+                    "blocking": True,
+                    "message": "the check judged 0 units in every version, so it proves nothing: no stamp",
+                }
+            ]
         if not findings and all(r["built"] for r in results):
             # A stamp means the 5 ROMs match: the units built, now link each version and compare its hash (10-24: a stamped
             # diff broke the de ROM at the train, which links). Incremental: the objects are the ones just built.

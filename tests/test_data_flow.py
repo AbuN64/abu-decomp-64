@@ -489,3 +489,19 @@ def test_stamp_accepts_a_lane_tree_that_committed_its_diff(tmp_path: Path, monke
                           "config": None, "profile": None})()
     assert command._stamp(args, None) == str(tmp_path / "stamp")
     assert written == [diff.read_text()]
+
+
+def test_a_check_that_judged_no_unit_refuses_and_writes_no_stamp(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from abu_decomp.data import command
+
+    cfg = SimpleNamespace(versions=("a",))
+    args = SimpleNamespace(write_baseline=False, unit=[], diff=None, since="HEAD~1", version=[])
+    empty = [{"version": "a", "units": 0, "built": True, "broken": []}]
+    results, nothing = command._judged_nothing(args, cfg, None, empty, {})
+    assert nothing is True
+    full = [{"version": "a", "units": 2, "built": True, "broken": []}]
+    assert command._judged_nothing(args, cfg, None, full, {}) is None
+    args.since = None  # a plain working-tree check asks for no judgement of a named change
+    assert command._judged_nothing(args, cfg, None, empty, {}) is None

@@ -410,3 +410,13 @@ def test_a_diff_moving_project_rows_regenerates_the_makefile_before_the_build(tm
     monkeypatch.setattr(tools, "invoke", invoke)
     stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
     assert called == [("unbake", ["sync", "--makefile"])]
+
+
+def test_a_build_that_judged_no_unit_writes_no_stamp(tmp_path, monkeypatch):
+    from abu_decomp.data import check as check_mod
+
+    diff, _ = setup(tmp_path, monkeypatch, False)
+    monkeypatch.setattr(check_mod, "check", lambda b, v: {"version": v, "units": 0, "built": True, "broken": []})
+    _r, code, findings = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 1 and "judged 0 units" in findings[0]["message"]
+    assert not stamp_mod.stamped(tmp_path / "stamps", DIFF)
