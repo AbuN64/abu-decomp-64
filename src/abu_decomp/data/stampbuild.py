@@ -229,6 +229,8 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
                 return {"worktree": made}, code, findings
             (tree / STATE).write_text("busy\n")
             applied = _git(tree, "apply", str(diff.resolve()))
+        if applied.returncode:  # main moved over files the diff edits: the train applies with --3way, so the stamp does too
+            applied = _git(tree, "apply", "--3way", str(diff.resolve()))
         if not applied.returncode:  # a file the diff creates (a module a rename moved) is tracked for sync's [file] rows
             _git(tree, "add", "-A", "-N")
         if applied.returncode:

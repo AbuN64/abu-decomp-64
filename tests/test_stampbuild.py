@@ -179,7 +179,7 @@ def test_a_unit_whose_object_equals_the_clean_trees_is_not_scored(tmp_path, monk
     assert not trial.Builder(cfg, tree).unchanged("a", "src/x.c")  # no reference tree: always scored
     scored = []
     b.score = lambda v, fn, u: scored.append((u, fn)) or 0
-    monkeypatch.setattr(check_mod, "exact_fns", lambda c, t, v, units: {"src/x.c": ["f1"], "src/y.c": ["f2"]})
+    monkeypatch.setattr(check_mod, "exact_fns", lambda c, t, v, units, moved=None: {"src/x.c": ["f1"], "src/y.c": ["f2"]})
     assert check_mod.broken(b, "a", ["src/x.c", "src/y.c"]) == [] and scored == [("src/y.c", "f2")]
 
 
@@ -379,3 +379,17 @@ def test_a_file_the_diff_creates_is_tracked_after_the_apply_so_sync_sees_a_renam
     stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
     git = [argv[3:] for argv in seen if argv[:1] == ["git"] and argv[1] == "-C"]
     assert git.index(["add", "-A", "-N"]) > next(i for i, a in enumerate(git) if a[:1] == ["apply"])
+
+
+def test_a_diff_that_only_applies_three_way_is_still_stamped_as_the_train_applies_it(tmp_path, monkeypatch):
+    diff, _ = setup(tmp_path, monkeypatch, False)
+    seen = []
+
+    def run(argv, *a, **k):
+        seen.append(list(argv))
+        plain = "apply" in argv and "--3way" not in argv
+        return subprocess.CompletedProcess(argv, 1 if plain else 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    _r, code, _f = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 0 and any("--3way" in argv for argv in seen)
