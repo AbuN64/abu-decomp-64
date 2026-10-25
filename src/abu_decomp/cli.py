@@ -1207,7 +1207,7 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rev", help="count: the sources of this commit, read from git (no checkout)")
     parser.add_argument("--distinct", action="store_true", help="count: also the number of different names per class")
     parser.add_argument("--hours", type=float, default=1.0, help="ledger: the window the per-lane rates cover")
-    parser.add_argument("--names", type=Path, help="ledger: the name book directory (default ~/rig-state/names)")
+    parser.add_argument("--book", type=Path, help="ledger: the name book directory (default ~/rig-state/names)")
     parser.add_argument("--top", type=int, default=15, help="folders listed, most placeholders first (0 = every one)")
     parser.add_argument("--packs", type=Path, help="dead-decls: write one diff per layer here (dead-decls-L<n>.diff)")
     parser.add_argument("--apply", action="store_true", help="dead-decls: write layer 0 into the tree")
@@ -1227,7 +1227,7 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
     from abu_decomp import cleanup, tools
 
     if args.verb == "ledger":
-        book = args.names or Path("~/rig-state/names").expanduser()
+        book = args.book or Path("~/rig-state/names").expanduser()
         found = cleanup.ledger(book, args.hours)
         rows = found["rows"]
         print(
