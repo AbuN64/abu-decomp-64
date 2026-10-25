@@ -1367,9 +1367,10 @@ def _refusal_lines(findings: list[dict[str, Any]]) -> None:
     """Each blocking finding on stderr: what refused and the one command to run next (never only in JSON)."""
     for finding in findings:
         if finding.get("blocking"):
-            sys.stderr.write(f"decomp: refused {finding.get('key')}: {finding.get('message')}\n")
-            if finding.get("next"):
-                sys.stderr.write(f"decomp: next: {finding['next']}\n")
+            why = finding.get("message") or finding.get("reason") or "no reason given"  # a recipe finding says `reason`
+            sys.stderr.write(f"decomp: refused {finding.get('key')}: {why}\n")
+            if nxt := finding.get("next") or finding.get("action"):
+                sys.stderr.write(f"decomp: next: {nxt}\n")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -25,6 +25,24 @@ class RefusalLinesTests(unittest.TestCase):
             ["decomp: refused land.commit_subject: subject is 80 characters", "decomp: next: decomp ship"],
         )
 
+    def test_a_recipe_finding_prints_its_reason_and_action(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            cli._refusal_lines(
+                [
+                    {
+                        "key": "recipe.name",
+                        "reason": "no member or folder is named x",
+                        "blocking": True,
+                        "action": "recipe name next",
+                    }
+                ]
+            )
+        self.assertEqual(
+            err.getvalue().splitlines(),
+            ["decomp: refused recipe.name: no member or folder is named x", "decomp: next: recipe name next"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
