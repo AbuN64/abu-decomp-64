@@ -364,3 +364,75 @@ class RunReportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AddressJoinTests(unittest.TestCase):
+    """A rename in the source must not lose a function's coverage: the join is by ROM address."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.source = Path(directory.name)
+        (self.source / "versions").mkdir()
+        (self.source / "versions" / "symbols.txt").write_text(
+            "Cleaned = 0x80200400; // type:func\nSecond = 0x80200500; // type:func\nD_1 = 0x800E0000;\n"
+        )
+        (self.source / "versions" / "aliases.txt").write_text("Alias = 0x80200400; // type:func\n")
+        self.cfg = {
+            "elf": "{version}.elf",
+            "version": "us-rev1",
+            "versions": ["eu", "us-rev1"],
+            "source": self.source,
+            "symbols": ["versions/symbols.txt", "versions/aliases.txt"],
+        }
+
+    def elfs(self, path):
+        if str(path) == "us-rev1.elf":
+            return {"func_80200400_us_rev1": (0x80200400, 32), "Second": (0x80200500, 100)}
+        return {"func_80200400_us_rev1": (0x80200400, 40), "only_eu": (0x80300000, 8)}
+
+    def test_symbol_tables_read_functions_only_and_the_first_name_at_an_address_wins(self):
+        by_name, first = cov.symbol_tables(self.cfg)
+        self.assertEqual(by_name, {"Cleaned": 0x80200400, "Second": 0x80200500, "Alias": 0x80200400})
+        self.assertEqual(first, {0x80200400: "Cleaned", 0x80200500: "Second"})
+        self.assertEqual(cov.symbol_tables({"source": self.source}), ({}, {}))
+
+    def test_the_universe_names_a_function_by_what_the_source_calls_it_now_and_joins_other_versions(self):
+        symbols = cov.symbol_tables(self.cfg)
+        with (
+            mock.patch.object(cov, "elf_functions", side_effect=self.elfs),
+            mock.patch.object(cov, "source_files", return_value={}),
+        ):
+            rows, totals = cov.universe(self.cfg, symbols)
+        by = {r["name"]: r for r in rows}
+        self.assertEqual(sorted(by), ["Cleaned", "Second", "only_eu"])
+        self.assertEqual(by["Cleaned"]["elf_name"], "func_80200400_us_rev1")
+        self.assertEqual((by["Cleaned"]["address"], by["Cleaned"]["size"]), (0x80200400, 32))
+        self.assertEqual(sorted(by["Cleaned"]["versions"]), ["eu", "us-rev1"])
+        self.assertEqual(totals, {"eu": 2, "us-rev1": 2})
+
+    def test_an_old_name_a_new_name_and_an_alias_all_land_on_the_one_row(self):
+        symbols = cov.symbol_tables(self.cfg)
+        with (
+            mock.patch.object(cov, "elf_functions", side_effect=self.elfs),
+            mock.patch.object(cov, "source_files", return_value={}),
+        ):
+            rows, _ = cov.universe(self.cfg, symbols)
+        resolve = cov.resolver(rows, "us-rev1", symbols[0])
+        self.assertEqual(
+            [resolve(n) for n in ("Cleaned", "Alias", "func_80200400_us_rev1", "helper")],
+            ["Cleaned", "Cleaned", "Cleaned", "helper"],
+        )
+        port = cov.fold({"Cleaned": 3, "Alias": 4, "helper": 1}, resolve, lambda a, b: a + b)
+        self.assertEqual(port, {"Cleaned": 7, "helper": 1})
+        oracle = cov.fold({"func_80200400_us_rev1": (9, 5), "Cleaned": (2, 1)}, resolve, cov._first_seen)
+        self.assertEqual(oracle, {"Cleaned": (2, 6)})
+        table = cov.union(
+            rows,
+            {"us-rev1": 2, "eu": 2},
+            "us-rev1",
+            [{"movie": "m", "port": port, "oracle": oracle, "port_polls": 10, "oracle_polls": 10}],
+            None,
+        )
+        hit = {r["name"]: r["state"] for r in table["functions"]}
+        self.assertEqual((hit["Cleaned"], hit["Second"]), ("both", "neither"))

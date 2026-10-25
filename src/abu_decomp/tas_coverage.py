@@ -9,7 +9,10 @@ percentages, source annotated. Nothing here renders HTML by hand.
 
 Oracle side: the recompiled original (cake-taste host) replays the same movie with `N64R_GOLDEN_DIR`; its
 `trace-final.tsv` (symbol, first VI, thread, count) is the per-function first-entry record the host already writes.
-The join with the port is by function name (the versions share names). Not a gcov build of the recomp: see RESULT.
+The join with the port is by ROM address: a function's identity is the address the reference version's ELF gives it, and
+every name a side reports (the port's gcov names, the original host's names) resolves to it through the source's address
+tables (`symbols`), so a rename never loses coverage; a row carries the current name and the
+`address`. Not a gcov build of the recomp: see RESULT.
 Behaviour: the host also writes cumulative entry counts every shot_every polls (`trace-poll-N.tsv`); `behaviour`
 judges each function by the port's gcov count against the original's counts around the port's last poll, so the
 table says "executed and behaves like the original", not only "executed" (granularity: TAS-CORPUS-OPUS-1 DESIGN.md).
@@ -18,7 +21,8 @@ The universe for percentages by bytes is every function of the version's ELF (`r
 name with the versions that define it. A row is scope `sdk` when its file is under `src/sdk/` (the port replaces
 those with its shim), other when no source defines it (compiler runtime, asm-only), else game.
 Section `tas.coverage`: {"elf": ".../build/{version}/RageWars.elf", "version":
-"us-rev1", "versions": [...], "source": folder with src/ (default: tas.serve.pin), "oracle": {"argv": [...],
+"us-rev1", "versions": [...], "source": folder with src/ (default: tas.serve.pin), "symbols": [address tables in
+source, first file names win; e.g. "versions/us-rev1/symbol_addrs.txt", ".../aliases.txt"], "oracle": {"argv": [...],
 "env": {...}} with {movie}, {dir}, {trace} in values}.
 """
 
@@ -36,14 +40,15 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, slots, tas_oracle, tas_symbolize
+from abu_decomp import DecompError, remap, slots, tas_oracle, tas_symbolize
 from abu_decomp.config import Profile, check_keys
 
 COVERAGE, GCOV, ORACLE_DIR, TABLE, HTML = "coverage.json", "gcov", "oracle-golden", "coverage-table.json", "coverage"
-_KEYS = frozenset({"elf", "version", "versions", "source"})
+_KEYS = frozenset({"elf", "version", "versions", "source", "symbols"})
 _SYMBOL = re.compile(r"^\s*\d+:\s+([0-9a-fA-F]+)\s+(\d+)\s+FUNC\s+\w+\s+\w+\s+\S+\s+(\S+)$")
 _DEFINITION = re.compile(r"^(?:[A-Za-z_][\w]*[\s\*]+)+\**([A-Za-z_]\w*)\s*\([^;]*$")
 _INCLUDE_ASM = re.compile(r"INCLUDE_ASM\s*\([^,]*,\s*([A-Za-z_]\w*)")
@@ -64,6 +69,7 @@ def settings(profile: Profile, cfg: dict[str, Any]) -> dict[str, Any] | None:
         "version": version,
         "versions": [str(v) for v in table.get("versions", [version])],
         "source": profile.path("tas.coverage.source", pin) if pin else None,
+        "symbols": [str(f) for f in table.get("symbols", [])],
     }
 
 
@@ -356,19 +362,82 @@ def source_files(source: Path | None, names: set[str]) -> dict[str, str]:
     return where
 
 
-def universe(cov: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """One row per function name over all versions' ELFs, and each version's function count."""
+def symbol_tables(cov: dict[str, Any]) -> tuple[dict[str, int], dict[int, str]]:
+    """(name -> address, address -> the name the first table gives it) of the functions in the source's address
+    tables (`tas.coverage.symbols`); both empty without them or without a source."""
+    by_name: dict[str, int] = {}
+    first: dict[int, str] = {}
+    source = cov.get("source")
+    for rel in cov.get("symbols") or []:
+        try:
+            text = (source / rel).read_text(errors="replace") if source else ""
+        except OSError:
+            continue
+        for line in text.splitlines():
+            found = remap.FACT.match(line)
+            if found and "type:func" in found.group(3):
+                address = int(found.group(2), 16)
+                by_name.setdefault(found.group(1), address)
+                first.setdefault(address, found.group(1))
+    return by_name, first
+
+
+def resolver(rows: list[dict[str, Any]], version: str, by_name: dict[str, int]) -> Callable[[str], str]:
+    """name -> the row name it stands for: itself when a row has it, else the row at the address the source's tables
+    give the name (the row of a function the source renamed), else itself (a helper no ROM address names)."""
+    names = {row["name"] for row in rows}
+    at = {row["address"]: row["name"] for row in rows if version in row["versions"] and row["address"]}
+    old = {row["elf_name"]: row["name"] for row in rows if row.get("elf_name")}
+
+    def resolve(name: str) -> str:
+        if name in names:
+            return name
+        return old.get(name) or at.get(by_name.get(name, 0), name)
+
+    return resolve
+
+
+def fold(counts: dict[str, Any], resolve: Callable[[str], str], merge: Callable[[Any, Any], Any]) -> dict[str, Any]:
+    """`counts` keyed by row name: the entries of names that resolve to one row merge into it."""
+    out: dict[str, Any] = {}
+    for name, value in counts.items():
+        key = resolve(name)
+        out[key] = merge(out[key], value) if key in out else value
+    return out
+
+
+def _add(a: int, b: int) -> int:
+    return a + b
+
+
+def _first_seen(a: tuple[int, int], b: tuple[int, int]) -> tuple[int, int]:
+    return (min(a[0], b[0]), a[1] + b[1])
+
+
+def universe(
+    cov: dict[str, Any], symbols: tuple[dict[str, int], dict[int, str]] | None = None
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """One row per function over all versions' ELFs, and each version's function count. The reference version's
+    functions are keyed by ROM address and carry the name the source's tables give that address now (`elf_name` when
+    the ELF still says another); the other versions' functions join them by their ELF name, renamed the same way."""
     rows: dict[str, dict[str, Any]] = {}
     totals: dict[str, int] = {}
-    for version in cov["versions"]:
+    current = symbols[1] if symbols else {}
+    renamed: dict[str, str] = {}
+    for version in sorted(cov["versions"], key=lambda v: v != cov["version"]):
         elf = Path(cov["elf"].format(version=version))
         funcs = elf_functions(elf)
         totals[version] = len(funcs)
         for name, (address, size) in funcs.items():
-            row = rows.setdefault(name, {"name": name, "versions": [], "address": 0, "size": 0})
+            if version == cov["version"]:
+                renamed[name] = current.get(address, name)
+            key = renamed.get(name, name)
+            row = rows.setdefault(key, {"name": key, "versions": [], "address": 0, "size": 0})
             row["versions"].append(version)
             if version == cov["version"] or not row["size"]:
                 row["address"], row["size"] = address, size
+            if version == cov["version"] and key != name:
+                row["elf_name"] = name
     files = source_files(cov["source"], set(rows))
     for name, row in rows.items():
         row["file"] = files.get(name, "")
@@ -404,7 +473,9 @@ def union(
     table = []
     for row in rows:
         name = row["name"]
-        out = {k: row[k] for k in ("name", "file", "scope", "size", "versions")}
+        out = {k: row[k] for k in ("name", "file", "scope", "size", "versions", "address") if k in row}
+        if row.get("elf_name"):
+            out["elf_name"] = row["elf_name"]
         out["in_version"] = version in row["versions"]
         port = [(r["movie"], r["port"][name]) for r in runs if r["port"].get(name)]
         oracle = [(r["movie"], r["oracle"][name]) for r in runs if r["oracle"] and name in r["oracle"]]
@@ -606,6 +677,9 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
         return None
     runs = latest_runs(cfg)
     drop_orphan_notes(build_dir(cfg))
+    symbols = symbol_tables(cov)
+    rows, totals = universe(cov, symbols)
+    resolve = resolver(rows, cov["version"], symbols[0])
 
     def one(item: tuple[str, Path]) -> dict[str, Any]:
         name, run = item
@@ -615,14 +689,16 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
         got = read_oracle(run)
         if got is None and oracle and run_oracle(profile, cfg, run, record):
             got = read_oracle(run)
-        port = read_gcovr(run / COVERAGE) or {}
+        port = fold(read_gcovr(run / COVERAGE) or {}, resolve, _add)
         bracket = oracle_bracket(run, int(record.get("polls_reached") or 0))
+        if bracket:
+            bracket = (fold(bracket[0], resolve, _add), fold(bracket[1], resolve, _add) if bracket[1] else None)
         return {
             "movie": name,
             "run": run.name,
             "port": port,
             "behaviour": behaviour(port, bracket) if bracket else None,
-            "oracle": got[0] if got else None,
+            "oracle": fold(got[0], resolve, _first_seen) if got else None,
             "port_polls": int(record.get("polls_reached") or 0),
             "oracle_polls": got[1] if got else 0,
             "build": str(record.get("build") or "unknown"),
@@ -671,7 +747,6 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
     for path in tracefiles:
         args += ["--add-tracefile", str(path)]
     gcovr(args, build_tree)
-    rows, totals = universe(cov)
     _, names = tas_symbolize.symbols(cfg["port"])
     report = union(rows, totals, cov["version"], collected, set(names) if names else None)
     report["runs"] = [
