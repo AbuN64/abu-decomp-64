@@ -1,4 +1,6 @@
-"""`decomp cleanup count`: the placeholder names a cleanup pass removes, per folder, from one shared set of patterns.
+"""`decomp cleanup slices`: who owns each placeholder target (one `recipe name slices` run, see `slices_argv`).
+
+`decomp cleanup count`: the placeholder names a cleanup pass removes, per folder, from one shared set of patterns.
 
 Lanes and the orchestrator's WATCH report the same numbers when they all run this one verb: a placeholder is a
 function (`func_<8 hex>`), a datum (`D_<8 hex>`), an unnamed member (`unk<hex>`), a padding member (`pad<hex>`) or a
@@ -32,6 +34,27 @@ EVIDENCE: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 SUFFIXES = (".c", ".cpp", ".h")
 ROOTS = ("src/", "include/")
+
+
+def slices_argv(lanes: int | None, module_map: str | None, assign: list[str], out: str | None) -> list[str]:
+    """The `recipe name slices` arguments: the slicer lives with the evidence (Recipe Maker); this verb is its front, so
+    the lane count, the pluggable module map (unit<TAB>module lines, MODULES.tsv when it exists) and the lane
+    assignments are all it adds."""
+    argv = ["name", "slices"]
+    if lanes:
+        argv += ["--lanes", str(lanes)]
+    if module_map:
+        argv += ["--map", module_map]
+    for pair in assign:
+        argv += ["--assign", pair]
+    if out:
+        argv += ["--out", out]
+    return argv
+
+
+def slices_lines(document: Mapping[str, Any]) -> list[str]:
+    """The report of a slices run: the counts, then where the document and the per-lane ownership files went."""
+    return [*document.get("summary", []), f"slices {document.get('path', '?')}", *document.get("lane_files", [])]
 
 
 def folder_of(path: str) -> str:

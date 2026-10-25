@@ -1194,9 +1194,10 @@ def _run_owes(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "verb",
-        choices=["count", "dead-decls"],
+        choices=["count", "dead-decls", "slices"],
         help="count: placeholder names (func_/D_/unk/pad/spNN/var_/argN) per folder; dead-decls: the declarations of"
-        " --dir (a header folder) nothing reads, as layered removal packs",
+        " --dir (a header folder) nothing reads, as layered removal packs; slices: one owner for every placeholder"
+        " target (80-100 functions per slice), the lane ownership files the name ledger gates on",
     )
     parser.add_argument(
         "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
@@ -1206,6 +1207,10 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--top", type=int, default=15, help="folders listed, most placeholders first (0 = every one)")
     parser.add_argument("--packs", type=Path, help="dead-decls: write one diff per layer here (dead-decls-L<n>.diff)")
     parser.add_argument("--apply", action="store_true", help="dead-decls: write layer 0 into the tree")
+    parser.add_argument("--lanes", type=int, help="slices: the lane count (GLOBALS and STRUCT slices scale with it)")
+    parser.add_argument("--map", help="slices: a module map file (unit<TAB>module lines, e.g. MODULES.tsv)")
+    parser.add_argument("--assign", action="append", default=[], metavar="LANE=ID[,ID]", help="slices: LANE owns these")
+    parser.add_argument("--names", help="slices: the names directory (default: the name book's store)")
     parser.add_argument(
         "--evidence",
         action="store_true",
@@ -1218,6 +1223,15 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
     from abu_decomp import cleanup, tools
 
     root = tools.project_dir(_profile(args.profile), _own_tree(args, "cleanup"))
+    if args.verb == "slices":
+        argv = cleanup.slices_argv(args.lanes, args.map, args.assign, args.names)
+        called = tools.invoke("recipe", _profile(args.profile), argv, project=root)
+        if not called.ok:
+            why = "; ".join(str(f.get("message", f)) for f in called.document.get("findings", [])) or "recipe refused"
+            raise DecompError("cleanup.slices", f"recipe name slices failed: {why}")
+        for line in cleanup.slices_lines(called.document):
+            print(line, file=sys.stderr)
+        return dict(called.document), 0, []
     if args.verb == "dead-decls":
         from abu_decomp import deaddecls
 

@@ -82,3 +82,60 @@ def test_count_rev_reads_a_commit_without_a_checkout(tmp_path):
         assert "nosuch" in str(e)
     else:
         raise AssertionError("an unknown revision counted")
+
+
+def test_slices_argv_hands_the_lane_count_map_and_assignments_to_the_recipe_slicer():
+    assert cleanup.slices_argv(None, None, [], None) == ["name", "slices"]
+    assert cleanup.slices_argv(12, "MODULES.tsv", ["a=S001,S002", "b=T01"], "/n") == [
+        "name",
+        "slices",
+        "--lanes",
+        "12",
+        "--map",
+        "MODULES.tsv",
+        "--assign",
+        "a=S001,S002",
+        "--assign",
+        "b=T01",
+        "--out",
+        "/n",
+    ]
+    doc = {"summary": ["98 slices"], "path": "/n/slices.json", "lane_files": ["/n/slices/a.json"]}
+    assert cleanup.slices_lines(doc) == ["98 slices", "slices /n/slices.json", "/n/slices/a.json"]
+
+
+def test_cleanup_slices_runs_recipe_in_the_project_and_refuses_when_recipe_does(monkeypatch, capsys, tmp_path):
+    import argparse
+
+    from abu_decomp import DecompError, cli, tools
+
+    seen = []
+    result = argparse.Namespace(ok=True, document={"ok": True, "summary": ["1 slices"], "path": "p", "lane_files": []})
+    monkeypatch.setattr(cli, "_profile", lambda name: "PROFILE")
+    monkeypatch.setattr(cli, "_own_tree", lambda args, verb: None)
+    monkeypatch.setattr(tools, "project_dir", lambda profile, tree: tmp_path)
+    monkeypatch.setattr(
+        tools, "invoke", lambda tool, profile, argv, project=None: seen.append((tool, argv, project)) or result
+    )
+    args = argparse.Namespace(
+        verb="slices",
+        profile=None,
+        lanes=8,
+        map=None,
+        assign=["x=S001"],
+        names=None,
+        dir=None,
+        rev=None,
+        evidence=False,
+    )
+    document, code, rows = cli._run_cleanup(args)
+    assert seen == [("recipe", ["name", "slices", "--lanes", "8", "--assign", "x=S001"], tmp_path)]
+    assert document["summary"] == ["1 slices"] and code == 0 and rows == []
+    assert "1 slices" in capsys.readouterr().err
+    result.ok, result.document = False, {"ok": False, "findings": [{"message": "no evidence"}]}
+    try:
+        cli._run_cleanup(args)
+    except DecompError as e:
+        assert "no evidence" in str(e)
+    else:
+        raise AssertionError("a refused slicer returned")
