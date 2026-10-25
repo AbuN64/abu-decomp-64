@@ -25,6 +25,7 @@ from typing import Any
 
 from abu_decomp import DecompError, meter, worktree
 from abu_decomp.data import check as check_mod
+from abu_decomp.data import gate as gate_mod
 from abu_decomp.data import stamp as stamp_mod
 from abu_decomp.data import trial
 from abu_decomp.data.config import DataConfig
@@ -199,6 +200,14 @@ def build(
         return {"stamp": "not needed: the diff touches no declaration or data"}, 0, []
     if stamp_mod.stamped(stamps, text):
         return {"stamp": "present"}, 0, []
+    if bad := gate_mod.precheck(
+        cfg, text
+    ):  # the gate refuses these at queue time: cheaper to say so before a 70 s build
+        return (
+            {"stamp": "not stamped: the gate would refuse this diff"},
+            1,
+            [{"key": "data.gate", "blocking": True, "message": m} for m in bad],
+        )
     shared = shared.expanduser().resolve()
     lag = worktree.behind(shared)
     if lag is not None and lag > worktree.MAX_BEHIND:

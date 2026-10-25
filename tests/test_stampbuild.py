@@ -1,6 +1,8 @@
 """`data stamp --build`: a diff is built alone on a fresh warm tree and stamped only on a clean all-version pass."""
 
+import json
 import subprocess
+from dataclasses import replace
 
 from abu_decomp import worktree
 from abu_decomp.data import stamp as stamp_mod
@@ -442,3 +444,20 @@ def test_a_build_that_judged_no_unit_writes_no_stamp(tmp_path, monkeypatch):
     _r, code, findings = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 1 and "judged 0 units" in findings[0]["message"]
     assert not stamp_mod.stamped(tmp_path / "stamps", DIFF)
+
+
+def test_a_diff_the_gate_would_refuse_is_refused_before_any_build(tmp_path, monkeypatch):
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    census = tmp_path / "census.json"
+    census.write_text(json.dumps({"clusters": [], "lones": [{"sym": "D_1", "class": "LITERAL", "access": ["lwc1:f"]}]}))
+    diff.write_text(
+        "diff --git a/src/a.c b/src/a.c\n--- a/src/a.c\n+++ b/src/a.c\n@@ -1 +1 @@\n"
+        "-#ifdef NON_MATCHING\n+extern const f32 D_1;\n"
+        "diff --git a/include/x.h b/include/x.h\n--- a/include/x.h\n+++ b/include/x.h\n@@ -1 +1 @@\n-extern int D_2;\n+extern long D_2;\n"
+    )
+    built = []
+    monkeypatch.setattr(stampbuild, "slot", lambda *a, **k: built.append(1) or (_ for _ in ()).throw(AssertionError))
+    config = replace(CFG, census=str(census), symbol_token=r"D_\w+")
+    result, code, findings = stampbuild.build(config, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 1 and not built and findings[0]["key"] == "data.gate" and "LITERAL D_1" in findings[0]["message"]
+    assert stampbuild.gate_mod.precheck(replace(CFG, census=str(tmp_path / "none.json")), diff.read_text()) == []

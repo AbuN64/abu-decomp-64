@@ -205,3 +205,15 @@ def ratchet(count: int, baseline: Path | None, write: bool) -> list[str]:
         if count > b:
             return [f"RATCHET raw member scalar decls {count} > baseline {b}"]
     return []
+
+
+def precheck(cfg: DataConfig, diff_text: str) -> list[str]:
+    """What `data gate --diff` would refuse, for the verbs that build first (a stamp is 70 s): [] when the config names
+    no census or it is unreadable, so a host without one never blocks."""
+    census = Path(cfg.census).expanduser() if getattr(cfg, "census", "") else None
+    if not census or not census.is_file():
+        return []
+    try:
+        return check_diff(cfg, census, diff_text)
+    except (OSError, ValueError, KeyError):
+        return []

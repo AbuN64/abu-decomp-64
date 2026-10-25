@@ -158,6 +158,8 @@ def run(args: argparse.Namespace) -> Result:
             b.reference = pool
         from abu_decomp import cli
 
+        if args.diff and (bad := gate_mod.precheck(cfg, args.diff.read_text(errors="replace"))):
+            return {"violations": bad}, 1, [{"key": "data.gate", "blocking": True, "message": m} for m in bad]
         applied = _apply_diff(args)  # a --diff the tree does not hold yet is applied for the check and taken off again
         try:
             return _check(args, cfg, b, cli)
@@ -333,6 +335,7 @@ def _main_bases(tree) -> list[str]:
     """The merge-base of HEAD with main (github/main, origin/main): a lane tree that committed its diff (REV1-ONE-32B: a
     splat.yaml edit needs --reextract, which refused an uncommitted second diff) is checked against where it left main."""
     import subprocess
+
     out = []
     for ref in ("github/main", "origin/main"):
         mb = subprocess.run(["git", "-C", str(tree), "merge-base", "HEAD", ref], capture_output=True, text=True)
@@ -351,7 +354,9 @@ def _stamp(args: argparse.Namespace, cfg) -> str:
     want = stamp_mod.files_of(text)
 
     def changed(since: str) -> list[str]:
-        out = subprocess.run(["git", "-C", str(args.tree), "diff", "--name-only", since], capture_output=True, text=True)
+        out = subprocess.run(
+            ["git", "-C", str(args.tree), "diff", "--name-only", since], capture_output=True, text=True
+        )
         return sorted(out.stdout.split()) if out.returncode == 0 else []
 
     bases = [args.since] if args.since else ["HEAD", *_main_bases(args.tree)]

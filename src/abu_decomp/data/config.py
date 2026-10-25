@@ -31,6 +31,7 @@ carries no game fact except the symbol shape, so a project with another naming o
     fncmp = ["python3", "fncmp.py", "--aligned", "{v}", "{fn}", "{obj}"]
     fncmp_score = 'edit=(\\d+)'                # group 1: the edit count (0 = exact)
     fncmp_batch = ["python3", "fncmp.py", "--aligned", "--batch", "{v}"]  # optional: reads "FN OBJ" lines, prints "FN <result line>"
+    census = "~/census.json"                  # optional: the gate's census; stamp/check refuse a gate violation before building
 """
 
 from __future__ import annotations
@@ -81,6 +82,7 @@ class DataConfig:
     fncmp: tuple[str, ...] = ()
     fncmp_score: str = r"edit=(\d+)"
     fncmp_batch: tuple[str, ...] = ()  # one process for every function of a version (a start + objdump per call otherwise)
+    census: str = ""  # census.json the gate reads: stamp --build and check --diff refuse what the gate would, before any build
     evidence_tree: str = ""  # a tree whose asm/<v>/ the gate reads to tell a separate global from a struct member
 
     def define(self, version: str) -> str:
