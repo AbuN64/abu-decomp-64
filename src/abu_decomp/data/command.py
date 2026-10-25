@@ -279,7 +279,7 @@ def _place(args: argparse.Namespace) -> Result:
         for p in placed
     ]
     findings = [
-        {"key": f.get("key", "data.place"), "blocking": True, "message": f.get("message", "")}
+        {"key": f.get("key", "data.place"), "blocking": True, "message": f.get("message") or f.get("reason") or ""}
         for f in document.get("findings") or []
         if f.get("blocking", True)
     ]

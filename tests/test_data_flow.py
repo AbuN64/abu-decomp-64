@@ -353,7 +353,7 @@ def test_data_place_carries_the_refusal_of_the_tool(tmp_path: Path, monkeypatch)
     from abu_decomp import tools
     from abu_decomp.data import command
 
-    doc = {"ok": False, "findings": [{"key": "place.gap", "blocking": True, "message": "us: F: its data spans"}]}
+    doc = {"ok": False, "findings": [{"key": "place.gap", "blocking": True, "reason": "us: F: its data spans"}]}
     monkeypatch.setattr(tools, "invoke", lambda *a, **k: SimpleNamespace(ok=False, document=doc))
     monkeypatch.setattr(cli, "_profile", lambda p: "profile")
     _, code, findings = command._place(argparse.Namespace(tree=tmp_path, check=False, function=["F"], profile=None))
