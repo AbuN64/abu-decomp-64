@@ -13,12 +13,17 @@ def test_decompiler_locals_and_unnamed_parameters_are_counted():
     assert got["var"] == 3 and got["arg"] == 2
 
 
-def test_evidence_asks_each_step_for_the_classes_a_folder_holds_and_skips_the_rest():
+def test_evidence_asks_once_for_every_folder_and_reads_each_step_a_folder_has_classes_for():
     asked = []
 
-    def ask(step, target):
-        asked.append((step, target))
-        return {"L": {"slots": 9, "no_evidence": 4}, "N4": {"targets": 3, "no_evidence": 1}}.get(step, {})
+    def ask(steps, targets):
+        asked.append((steps, targets))
+        return {
+            "folders": {
+                "src/game/A": {"L": {"namable": 9, "no_evidence": 4}, "N4": {"namable": 3, "no_evidence": 1}},
+                "src/game/B": {"N5": {"namable": 0, "no_evidence": 0}, "L": {"namable": 7, "no_evidence": 0}},
+            }
+        }
 
     folders = {
         "game/A": {"sp": 2, "var": 0, "arg": 0, "data": 1, "func": 0},
@@ -28,7 +33,8 @@ def test_evidence_asks_each_step_for_the_classes_a_folder_holds_and_skips_the_re
     got = cleanup.evidence(folders, ask)
     assert got["game/A"] == {"locals": {"namable": 9, "no_evidence": 4}, "data": {"namable": 3, "no_evidence": 1}}
     assert got["include/COMMON"] == {} and got["game/B"] == {"functions": {"namable": 0, "no_evidence": 0}}
-    assert asked == [("L", "src/game/A"), ("N4", "src/game/A"), ("N5", "src/game/B")]
+    assert asked == [(["L", "N4", "N5"], ["src/game/A", "src/game/B"])]  # one recipe run, not one per folder and step
+    assert cleanup.evidence({"include/X": {"sp": 1}}, ask) == {"include/X": {}} and len(asked) == 1
 
 
 def test_count_groups_by_folder_and_filters_by_dir_or_leaf(tmp_path):

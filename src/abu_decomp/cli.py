@@ -1170,7 +1170,7 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
         "--evidence",
         action="store_true",
         help="per listed folder, how many locals (L), data (N4) and functions (N5) Recipe Maker can name from source"
-        " evidence and how many have none (runs those steps read-only; seconds per folder)",
+        " evidence and how many have none (one read-only `recipe name count` for every listed folder)",
     )
 
 
@@ -1195,12 +1195,9 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
     if args.evidence:
         profile = _profile(args.profile)
 
-        def ask(step: str, target: str) -> dict[str, Any]:
+        def ask(steps: list[str], targets: list[str]) -> dict[str, Any]:
             called = tools.invoke(
-                "recipe",
-                profile,
-                ["name", "next", "--step", step, "--target", target, "--no-apply", "--count", "100000"],
-                project=root,
+                "recipe", profile, ["name", "count", "--steps", ",".join(steps), "--targets", *targets], project=root
             )
             return dict(called.document) if called.ok else {}
 

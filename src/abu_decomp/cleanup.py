@@ -74,22 +74,29 @@ def count(root: Path, only: str | None = None) -> dict[str, Any]:
     return {"total": sum(total.values()), "classes": {k: total[k] for k in CLASSES}, "folders": rows}
 
 
-def evidence(folders: Mapping[str, Mapping[str, Any]], ask: Callable[[str, str], Mapping[str, Any]]) -> dict[str, Any]:
+def evidence(
+    folders: Mapping[str, Mapping[str, Any]], ask: Callable[[list[str], list[str]], Mapping[str, Any]]
+) -> dict[str, Any]:
     """Per folder (a row of `count`) and per step of EVIDENCE: `namable` (slots or targets a step packs with evidence)
-    and `no_evidence`; `ask(step, target_folder)` runs `recipe name next --step S --target FOLDER --no-apply` and
-    returns its result. A folder with none of the step's placeholder classes is not asked; an include/ folder holds no
-    function, so it only counts for what a header can name (nothing here)."""
-    out: dict[str, Any] = {}
-    for folder, row in folders.items():
-        got: dict[str, Any] = {}
-        if folder.startswith("include"):
-            out[folder] = got
-            continue
-        for step, (what, classes) in EVIDENCE.items():
-            if not any(row.get(c) for c in classes):
-                continue
-            result = ask(step, "src/" + folder)
-            namable = result.get("slots", result.get("targets", 0))
-            got[what] = {"namable": int(namable or 0), "no_evidence": int(result.get("no_evidence", 0) or 0)}
-        out[folder] = got
+    and `no_evidence`. `ask(steps, target_folders)` runs `recipe name count --steps S,.. --targets F..` once (one
+    evidence build for every folder; a `next` per folder and step was 45 runs, 231 s) and returns its result. A folder
+    with none of a step's placeholder classes is not counted for it; an include/ folder holds no function."""
+    wanted = {
+        folder: [step for step, (_what, classes) in EVIDENCE.items() if any(row.get(c) for c in classes)]
+        for folder, row in folders.items()
+        if not folder.startswith("include")
+    }
+    steps = [step for step in EVIDENCE if any(step in got for got in wanted.values())]
+    found = ask(steps, ["src/" + f for f in wanted]) if steps else {}
+    rows = found.get("folders", {}) if isinstance(found, Mapping) else {}
+    out: dict[str, Any] = {folder: {} for folder in folders}
+    for folder, mine in wanted.items():
+        for step in mine:
+            result = rows.get("src/" + folder, {}).get(step) or {}
+            if "namable" in result:
+                what = EVIDENCE[step][0]
+                out[folder][what] = {
+                    "namable": int(result["namable"]),
+                    "no_evidence": int(result.get("no_evidence", 0)),
+                }
     return out
