@@ -429,3 +429,13 @@ class HostTraceTests(unittest.TestCase):
             mock.patch.object(sd, "_units", return_value=tmp),
         ):
             self.assertIsNone(sd.available(object()))
+
+
+class StartupFaultTests(unittest.TestCase):
+    def test_a_signal_before_poll_1_is_a_named_host_fault(self):
+        from abu_decomp import tas_oracle
+
+        self.assertIn("SIGSEGV before poll 1", tas_oracle.startup_note(-11, 0))
+        self.assertEqual(tas_oracle.startup_note(-11, 5), "")
+        self.assertEqual(tas_oracle.startup_note(0, 0), "")
+        self.assertEqual(tas_oracle.startup_note(None, 0), "")

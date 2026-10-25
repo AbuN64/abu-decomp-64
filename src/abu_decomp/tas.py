@@ -1485,6 +1485,8 @@ def play(
                 "cpu_seconds": oracle_end["cpu"],
                 "fps": round(polls / wall, 1) if wall else None,
             }
+            if note := tas_oracle.startup_note(oracle_end["code"], polls):
+                record["oracle"]["startup_fault"] = note
             result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
         if first_pass and result["outcome"] != "ok":
             raise NeedsSupervisor(run)

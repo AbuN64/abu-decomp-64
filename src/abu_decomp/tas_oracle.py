@@ -191,6 +191,18 @@ def outcome(code: int | None) -> dict[str, Any]:
     return {"outcome": "exit", "subject": f"exit {code}"}
 
 
+def startup_note(code: int | None, polls: int) -> str:
+    """A named finding for an original that died by a signal before its first poll: the host (its GPU driver, EGL, the
+    loader) failed, not the game, so the run has nothing of the original to compare (TAS-COVER-2/3: an EGL SIGSEGV read
+    as "the original left no state trace"). "" otherwise."""
+    if code is None or code >= 0 or polls > 0:
+        return ""
+    return (
+        f"the original's host died by {outcome(code).get('subject')} before poll 1: a host fault (GPU driver, EGL, "
+        "loader), not the game; this run has no original to compare"
+    )
+
+
 def trace(path: Path) -> dict[int, int]:
     """poll -> VI retrace from a "poll vi" trace (a half-written last line is left out)."""
     rows: dict[int, int] = {}

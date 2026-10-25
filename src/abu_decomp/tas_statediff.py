@@ -589,7 +589,9 @@ def _oracle_done(session: Session) -> bool:
     work = session.oracle_dir
     final = session.cfg["runs"] / ORACLES / session.key
     if not (work / ORACLE_HASHES).is_file():
-        session.notes.append(f"the original left no state trace (exit {session._end.get('code')})")
+        code = session._end.get("code")
+        died = tas_oracle.startup_note(code, 0) if isinstance(code, int) and code < 0 else ""
+        session.notes.append(died or f"the original left no state trace (exit {code})")
         shutil.rmtree(work, ignore_errors=True)
         return False
     for junk in ("oracle.bmp", "oracle-cpak.mpk", "oracle.txt"):
