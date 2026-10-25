@@ -124,13 +124,22 @@ def stamp_dir(given: Path | None, config: Path | None) -> Path:
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "decomp-data" / "stamps"
 
 
+def body(text: str) -> str:
+    """TEXT without its leading comment lines (the train's `# MSG:` subject, lane notes): adding or editing the subject after
+    the check keeps the stamp (HONEST-O1 ran the data check twice after claim.sh asked for the MSG line)."""
+    lines = text.splitlines(keepends=True)
+    while lines and lines[0].startswith("#"):
+        lines.pop(0)
+    return "".join(lines)
+
+
 def stamped(directory: Path, text: str) -> bool:
-    return (directory / f"{digest(text)}.ok").is_file()
+    return any((directory / f"{digest(t)}.ok").is_file() for t in (body(text), text))
 
 
 def write(directory: Path, text: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{digest(text)}.ok"
+    path = directory / f"{digest(body(text))}.ok"
     path.write_text("\n".join(files_of(text)) + "\n")
     return path
 
@@ -141,7 +150,7 @@ def missing(cfg: DataConfig, directory: Path, text: str, diff: Path) -> list[str
         return []
     return [
         f"{diff.name} touches declarations or data and has no passing all-version `decomp data check` stamp "
-        f"(sha256 {digest(text)[:12]}): run `decomp data check --tree TREE --diff {diff}` on the tree it came from"
+        f"(sha256 {digest(body(text))[:12]}): run `decomp data check --tree TREE --diff {diff}` on the tree it came from"
     ]
 
 
