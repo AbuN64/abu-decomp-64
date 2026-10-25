@@ -329,6 +329,30 @@ class RunReportTests(unittest.TestCase):
         self.assertEqual(gcovr.call_count, 1)
         self.assertEqual(cov.merge_build("x", runs[:1], cache, self.build), runs[0])
 
+    def test_table_only_rebuilds_the_table_without_gcovr_and_keeps_the_page_fields(self):
+        runs = self.run / "runs"
+        runs.mkdir()
+        (runs / "coverage-table.json").write_text(
+            json.dumps({"gcovr": {"function_covered": 7}, "baseline": "b1", "changed_functions": 2, "mixed_build": []})
+        )
+        cfg = {"runs": runs, "port": self.build}
+        fresh = {"functions": [{"name": "f"}], "covered": []}
+        with (
+            mock.patch.object(cov, "settings", return_value={"version": "v"}),
+            mock.patch.object(cov, "latest_runs", return_value={}),
+            mock.patch.object(cov, "drop_orphan_notes"),
+            mock.patch.object(cov, "symbol_tables", return_value=({}, {})),
+            mock.patch.object(cov, "universe", return_value=([], {})),
+            mock.patch.object(cov, "resolver"),
+            mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
+            mock.patch.object(cov, "union", return_value=fresh),
+            mock.patch.object(cov, "gcovr", side_effect=AssertionError("gcovr must not run")),
+        ):
+            report = cov.build(self.profile, cfg, oracle=False, table_only=True)
+        self.assertTrue(report["table_only"])
+        self.assertEqual((report["gcovr"], report["baseline"]), ({"function_covered": 7}, "b1"))
+        self.assertEqual(json.loads((runs / "coverage-table.json").read_text())["functions"][0]["name"], "f")
+
     def test_a_smaller_union_passes_only_by_the_functions_of_changed_source(self):
         old = {"gcovr": {"function_covered": 100}, "baseline": "a"}
         same = {"gcovr": {"function_covered": 99}, "baseline": "a", "changed_functions": 50}

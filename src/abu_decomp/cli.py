@@ -406,6 +406,12 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     )
     coverage.add_argument("--no-oracle", action="store_true", help="do not replay runs that lack an oracle trace")
     coverage.add_argument(
+        "--table-only",
+        action="store_true",
+        help="rebuild only the function table from the per-run counts (seconds, no gcovr merge or page); "
+        "the HTML page and line totals stay the last full build's",
+    )
+    coverage.add_argument(
         "--jobs", type=int, default=0, help="parallel oracle replays (default 0: the host slot pool capacity)"
     )
     actions.add_parser("serve", help="serve the TAS page: every replay's picture, sound, log and the cycle state")
@@ -610,7 +616,9 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
     if args.action == "coverage":
         from abu_decomp import tas_coverage
 
-        report = tas_coverage.build(profile, tas.settings(profile), oracle=not args.no_oracle, jobs=args.jobs)
+        report = tas_coverage.build(
+            profile, tas.settings(profile), oracle=not args.no_oracle, jobs=args.jobs, table_only=args.table_only
+        )
         if report is None:
             raise DecompError("tas.coverage", "the profile has no tas.coverage section")
         print(tas_coverage.line(report), file=sys.stderr)

@@ -664,10 +664,15 @@ def latest_runs(cfg: dict[str, Any]) -> dict[str, Path]:
     return newest
 
 
-def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: int = 0) -> dict[str, Any] | None:
+def build(
+    profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: int = 0, table_only: bool = False
+) -> dict[str, Any] | None:
     """Union the newest run of every movie: runs/coverage/ (gcovr `--html-details` over the baseline and every
     run's JSON), runs/coverage-table.json (the function table with the oracle). None without a `tas.coverage`
-    section. With `oracle`, a run with no oracle trace yet is replayed in the oracle first."""
+    section. With `oracle`, a run with no oracle trace yet is replayed in the oracle first. With `table_only` the
+    function table is rebuilt from the per-run function counts alone: no gcovr merge, no HTML page, no line summary
+    (that final `--add-tracefile` over every report cost ~358 CPU s, past the 5-minute cap); the page, the line
+    totals and the per-build fields stay those of the last full build."""
     from concurrent.futures import ThreadPoolExecutor
 
     from abu_decomp import tas
@@ -707,46 +712,52 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
     with ThreadPoolExecutor(max_workers=max(1, jobs or slots.capacity())) as pool:
         collected = list(pool.map(one, sorted(runs.items())))
     build_tree = build_dir(cfg)
-    # One build per movie (its newest run). The runs of each port build merge once (cached); a build other than the
-    # baseline's (the current port) keeps only the files whose source text the current build shares, the dropped
-    # files counted per build.
-    base = baseline(cfg)
-    current = file_signatures(base)
+    changed: dict[str, set[str]] = {}
     groups: dict[str, list[Path]] = {}
-    for r in collected:
-        path = runs[r["movie"]] / COVERAGE
-        if path.is_file():  # a run of an unknown build is its own group: its source cannot be assumed shared
-            groups.setdefault(r["build"] if r["build"] != "unknown" else f"unknown-{r['run']}", []).append(path)
-    cache = cfg["runs"] / "coverage-builds"
-    cache.mkdir(parents=True, exist_ok=True)
-    tag = base.stem.rsplit("-", 1)[-1]
-    tracefiles, changed, keep = [base], {}, set()
-    for group, paths in sorted(groups.items()):
-        merged = merge_build(group, paths, cache, build_tree)
-        changed[group] = {f for f, sig in file_signatures(merged).items() if current.get(f) != sig}
-        key = merged.stem if merged.parent == cache else merged.parent.name
-        out = comparable(merged, changed[group], cache / f"{key}.on-{tag}.json")
-        keep.update({merged.name, out.name})
-        tracefiles.append(out)
-    for old in cache.iterdir():
-        if old.name not in keep:
-            old.unlink()
-    final_page, final_summary = cfg["runs"] / HTML, cfg["runs"] / "coverage-summary.json"
-    page, summary_file = cfg["runs"] / (HTML + ".new"), cfg["runs"] / "coverage-summary.new.json"
-    shutil.rmtree(page, ignore_errors=True)
-    page.mkdir(parents=True)
-    args = [
-        *_gcovr_base(build_tree),
-        "--html-details",
-        str(page / "index.html"),
-        "--html-title",
-        "Rage Wars game code: TAS movies",
-        "--json-summary",
-        str(summary_file),
-    ]
-    for path in tracefiles:
-        args += ["--add-tracefile", str(path)]
-    gcovr(args, build_tree)
+    page = summary_file = final_page = final_summary = None
+    base: Path | None = None
+    tag = ""
+    if not table_only:
+        # One build per movie (its newest run). The runs of each port build merge once (cached); a build other than the
+        # baseline's (the current port) keeps only the files whose source text the current build shares, the dropped
+        # files counted per build.
+        base = baseline(cfg)
+        current = file_signatures(base)
+        groups: dict[str, list[Path]] = {}
+        for r in collected:
+            path = runs[r["movie"]] / COVERAGE
+            if path.is_file():  # a run of an unknown build is its own group: its source cannot be assumed shared
+                groups.setdefault(r["build"] if r["build"] != "unknown" else f"unknown-{r['run']}", []).append(path)
+        cache = cfg["runs"] / "coverage-builds"
+        cache.mkdir(parents=True, exist_ok=True)
+        tag = base.stem.rsplit("-", 1)[-1]
+        tracefiles, changed, keep = [base], {}, set()
+        for group, paths in sorted(groups.items()):
+            merged = merge_build(group, paths, cache, build_tree)
+            changed[group] = {f for f, sig in file_signatures(merged).items() if current.get(f) != sig}
+            key = merged.stem if merged.parent == cache else merged.parent.name
+            out = comparable(merged, changed[group], cache / f"{key}.on-{tag}.json")
+            keep.update({merged.name, out.name})
+            tracefiles.append(out)
+        for old in cache.iterdir():
+            if old.name not in keep:
+                old.unlink()
+        final_page, final_summary = cfg["runs"] / HTML, cfg["runs"] / "coverage-summary.json"
+        page, summary_file = cfg["runs"] / (HTML + ".new"), cfg["runs"] / "coverage-summary.new.json"
+        shutil.rmtree(page, ignore_errors=True)
+        page.mkdir(parents=True)
+        args = [
+            *_gcovr_base(build_tree),
+            "--html-details",
+            str(page / "index.html"),
+            "--html-title",
+            "Rage Wars game code: TAS movies",
+            "--json-summary",
+            str(summary_file),
+        ]
+        for path in tracefiles:
+            args += ["--add-tracefile", str(path)]
+        gcovr(args, build_tree)
     _, names = tas_symbolize.symbols(cfg["port"])
     report = union(rows, totals, cov["version"], collected, set(names) if names else None)
     report["runs"] = [
@@ -758,43 +769,53 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
     for r in collected:
         builds[r["build"]] = builds.get(r["build"], 0) + 1
     report["builds"] = dict(sorted(builds.items(), key=lambda kv: -kv[1]))
-    report["changed_files"] = {group: len(files) for group, files in changed.items() if files}
-    report["baseline"] = tag
-    dropped = set().union(*changed.values()) if changed else set()
-    # the functions whose older-build counts were dropped, by name: a smaller union shows what it lost
-    report["dropped_functions"] = [
-        {"file": file, "function": name}
-        for file, _, name in sorted(key.partition(":") for key in spans(base))
-        if file in dropped
-    ]
-    report["changed_functions"] = len(report["dropped_functions"])
-    # spans per known build (one run each; a run of an unknown build is not compared)
-    report["mixed_build"] = mixed_builds(
-        {group: spans(paths[0]) for group, paths in groups.items() if not group.startswith("unknown-")}
-    )
-    mixed = {m["function"] for m in report["mixed_build"]}
-    for row in report.get("functions", []):
-        row["mixed_build"] = row.get("name") in mixed
-    try:
-        gsum = json.loads(summary_file.read_text())
-        report["gcovr"] = {
-            k: gsum.get(k)
-            for k in (
-                "line_percent",
-                "line_covered",
-                "line_total",
-                "function_percent",
-                "function_covered",
-                "function_total",
-                "branch_percent",
-                "branch_covered",
-                "branch_total",
-            )
-        }
-    except (OSError, ValueError):
-        report["gcovr"] = None
+    old = read_table(cfg) or {}
+    if table_only or base is None:
+        # the page, the line totals and the per-build comparison are the last full build's
+        for key in ("changed_files", "baseline", "dropped_functions", "changed_functions", "mixed_build", "gcovr"):
+            report[key] = old.get(key, [] if key.endswith(("functions", "build")) else None)
+        report["table_only"] = True
+        mixed = {m["function"] for m in report.get("mixed_build") or []}
+        for row in report.get("functions", []):
+            row["mixed_build"] = row.get("name") in mixed
+    else:
+        report["changed_files"] = {group: len(files) for group, files in changed.items() if files}
+        report["baseline"] = tag
+        dropped = set().union(*changed.values()) if changed else set()
+        report["dropped_functions"] = [
+            {"file": file, "function": name}
+            for file, _, name in sorted(key.partition(":") for key in spans(base))
+            if file in dropped
+        ]
+        report["changed_functions"] = len(report["dropped_functions"])
+    if not table_only:
+        # spans per known build (one run each; a run of an unknown build is not compared)
+        report["mixed_build"] = mixed_builds(
+            {group: spans(paths[0]) for group, paths in groups.items() if not group.startswith("unknown-")}
+        )
+        mixed = {m["function"] for m in report["mixed_build"]}
+        for row in report.get("functions", []):
+            row["mixed_build"] = row.get("name") in mixed
+        try:
+            gsum = json.loads(summary_file.read_text())
+            report["gcovr"] = {
+                k: gsum.get(k)
+                for k in (
+                    "line_percent",
+                    "line_covered",
+                    "line_total",
+                    "function_percent",
+                    "function_covered",
+                    "function_total",
+                    "branch_percent",
+                    "branch_covered",
+                    "branch_total",
+                )
+            }
+        except (OSError, ValueError):
+            report["gcovr"] = None
     path = cfg["runs"] / TABLE
-    why = refusal(read_table(cfg), report)
+    why = None if table_only else refusal(read_table(cfg), report)
     if why:  # never replace a report with one covering fewer functions: the new one lands beside it
         report["refused"] = why
         side = path.with_name("coverage-table.refused.json")
@@ -802,9 +823,10 @@ def build(profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: i
         shutil.rmtree(page, ignore_errors=True)
         summary_file.unlink(missing_ok=True)
         return report
-    shutil.rmtree(final_page, ignore_errors=True)
-    page.replace(final_page)
-    summary_file.replace(final_summary)
+    if not table_only:
+        shutil.rmtree(final_page, ignore_errors=True)
+        page.replace(final_page)
+        summary_file.replace(final_summary)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(report, sort_keys=True) + "\n")
     tmp.replace(path)
