@@ -390,3 +390,42 @@ def test_a_check_in_a_tree_holding_another_diff_stamps_by_building_alone(tmp_pat
     assert "built alone and failed: bad rom" in command._stamp(args, None)
     pool.rmdir()  # no pool to build in: the old refusal stays
     assert "still holds edits" in command._stamp(args, None)
+
+
+def test_a_seed_tree_far_behind_main_is_refused_for_a_stamp_build(tmp_path, monkeypatch):
+    from abu_decomp import worktree
+    from abu_decomp.data import stampbuild
+
+    monkeypatch.setattr(worktree, "behind", lambda tree: 899)
+    diff = tmp_path / "d.diff"
+    diff.write_text("+++ b/include/a.h\n+extern int x;\n")
+    monkeypatch.setattr(stampbuild.stamp_mod, "touches_data", lambda cfg, text: True)
+    monkeypatch.setattr(stampbuild.stamp_mod, "stamped", lambda stamps, text: False)
+    _, code, findings = stampbuild.build(None, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 1 and "899 commits behind" in findings[0]["message"] and "--refresh" in findings[0]["message"]
+
+
+def test_behind_counts_main_commits_a_tree_lacks(tmp_path):
+    import subprocess
+
+    from abu_decomp import worktree
+
+    def git(*a, cwd=tmp_path):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=cwd, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("commit", "-q", "--allow-empty", "-m", "a")
+    git("update-ref", "refs/remotes/github/main", "HEAD")
+    assert worktree.behind(tmp_path) == 0
+    git("commit", "-q", "--allow-empty", "-m", "b")
+    git("update-ref", "refs/remotes/github/main", "HEAD")
+    git("checkout", "-q", "--detach", "HEAD~1")
+    assert worktree.behind(tmp_path) == 1
+    assert worktree.behind(tmp_path / "nowhere") is None
+
+
+def test_a_make_failure_without_an_error_line_shows_its_last_output():
+    from abu_decomp.data import trial
+
+    assert "last output: boom / bye" in trial.Builder._tail("\nboom\n\nbye\n")
+    assert "no output at all" in trial.Builder._tail("\n")

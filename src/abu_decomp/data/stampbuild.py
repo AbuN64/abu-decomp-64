@@ -137,6 +137,13 @@ def build(cfg: DataConfig, profile: Any, shared: Path, diff: Path, stamps: Path,
     if stamp_mod.stamped(stamps, text):
         return {"stamp": "present"}, 0, []
     shared = shared.expanduser().resolve()
+    lag = worktree.behind(shared)
+    if lag is not None and lag > worktree.MAX_BEHIND:
+        msg = (
+            f"the seed tree {shared} is {lag} commits behind main: a stamp seeded from it rebuilds from stale asm and objects. "
+            "Refresh it (pool-mint.sh --refresh) and retry"
+        )
+        return {"stamp": "not stamped: seed tree behind main"}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]
     with slot(worktree.base(shared), trees()) as lane:
         return _build(cfg, profile, shared, diff, stamps, at, text, lane)
 

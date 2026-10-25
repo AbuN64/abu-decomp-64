@@ -126,9 +126,15 @@ class Builder:
             errs = [x for x in log.splitlines() if "***" in x or "rror" in x][-4:]
             lines.append(
                 f"make exited {rc}: "
-                + ("; ".join(x.strip() for x in errs) if errs else "no output (killed or crashed)")
+                + ("; ".join(x.strip() for x in errs) if errs else self._tail(log))
             )
         return " | ".join(lines)[:900] + f" [log: {self.tree / self.LOG}]"
+
+    @staticmethod
+    def _tail(log: str) -> str:
+        """No error line in make's output: the last lines it printed (exit 245 hid in `no output`, 10-24), else why it is blank."""
+        last = [x.strip() for x in log.splitlines() if x.strip()][-3:]
+        return "no error line; last output: " + " / ".join(last) if last else "no output at all (killed or crashed)"
 
     def holder(self, version: str, rom: int) -> str:
         """` (in <function> of <unit>)` for the map row holding the rom offset, else ` (outside every function)`."""

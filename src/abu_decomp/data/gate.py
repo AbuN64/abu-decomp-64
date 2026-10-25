@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -84,6 +85,17 @@ class Evidence:
         tree = os.path.expanduser(cfg.evidence_tree) if cfg.evidence_tree else ""
         self.root = Path(tree) / cfg.path(cfg.fn_asm, cfg.reference) if tree else None
         self._index: dict[str, list[Path]] | None = None
+        if tree:
+            from abu_decomp import worktree
+
+            lag = worktree.behind(Path(tree))
+            if lag is not None and lag > worktree.MAX_BEHIND:
+                print(
+                    f"WARNING data gate: evidence_tree {tree} is {lag} commits behind main, so the member rule reads stale "
+                    "asm; refresh it (pool-mint.sh --refresh)",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     def _files_of(self, sym: str) -> list[Path]:
         """The functions that name `sym`; one pass over the assembly indexes every symbol for the whole gate run."""

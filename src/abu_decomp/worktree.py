@@ -212,3 +212,24 @@ def prune(
         for k in kept
     ]
     return {"removed": removed, "kept": kept, "freed_mb": freed}, 0, findings
+
+
+MAX_BEHIND = 25  # commits: the pool is refreshed after each landing (~20 an hour), so more means it was not
+
+
+def behind(tree: Path) -> int | None:
+    """Commits the remote main has that the tree HEAD lacks (None: no remote main ref or no git tree). A seed or
+    evidence tree 899 commits behind failed `data stamp --build` twice and the member gate read stale asm (10-24 REV1-ONE-24)."""
+    import subprocess
+
+    refs = subprocess.run(
+        ["git", "-C", str(tree), "for-each-ref", "--format=%(refname:short)", "refs/remotes/*/main"],
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    if not refs:
+        return None
+    ref = "github/main" if "github/main" in refs else refs[0]
+    cmd = ["git", "-C", str(tree), "rev-list", "--count", f"HEAD..{ref}"]
+    out = subprocess.run(cmd, capture_output=True, text=True)
+    return int(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip().isdigit() else None
