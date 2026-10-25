@@ -1088,6 +1088,26 @@ def _run_owes(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
     return {**result, "ranked": ranked, "next": ranked[0]["next"] if ranked else result["next"]}, 0, []
 
 
+def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("verb", choices=["count"], help="count: placeholder names (func_/D_/unk/pad/spNN) per folder")
+    parser.add_argument("--project", type=Path, help="project tree (default: the profile's)")
+    parser.add_argument("--dir", help="only this folder and below (src/game/MENU_2, game/MENU_2 or the leaf MENU_2)")
+    parser.add_argument("--top", type=int, default=15, help="folders listed, most placeholders first (0 = every one)")
+
+
+def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import cleanup, tools
+
+    root = tools.project_dir(_profile(args.profile), args.project)
+    got = cleanup.count(root, args.dir)
+    rows = sorted(got["folders"].items(), key=lambda kv: (-kv[1]["count"], kv[0]))
+    shown = rows if args.top == 0 else rows[: args.top]
+    print(f"placeholders {got['total']} " + " ".join(f"{k}={v}" for k, v in got["classes"].items()), file=sys.stderr)
+    for folder, row in shown:
+        print(f"  {row['count']:>6}  {folder}", file=sys.stderr)
+    return {**got, "folders": dict(shown), "folder_count": len(rows)}, 0, []
+
+
 def _sweep_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--rules", action="append", type=Path, required=True, metavar="FILE", help="a rules TOML file (repeat)"
@@ -1255,6 +1275,11 @@ COMMANDS: dict[str, Command] = {
         "functions that owe a match (NON_MATCHING bodies, reached INCLUDE_ASM) by evidence level, most reached first",
         _owes_arguments,
         _run_owes,
+    ),
+    "cleanup": Command(
+        "placeholder-name counts (func_/D_/unk/pad/spNN) per folder: the one number lanes and WATCH share",
+        _cleanup_arguments,
+        _run_cleanup,
     ),
     "sweep": Command(
         "find the siblings of fixed root causes: project rules (TOML) over source trees, new hits vs a baseline",
