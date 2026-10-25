@@ -306,7 +306,7 @@ def test_stamp_dir_is_never_the_working_directory(tmp_path, monkeypatch):
     assert stamp.stamp_dir(None, None) == tmp_path / "state/decomp-data/stamps"
     monkeypatch.setenv("DECOMP_DATA_CONFIG", str(tmp_path / "cfg/rw.toml"))
     assert stamp.stamp_dir(None, None) == tmp_path / "cfg/stamps"
-    assert stamp.stamp_dir(None, tmp_path / "other/x.toml") == tmp_path / "other/stamps"
+    assert stamp.stamp_dir(None, tmp_path / "other/x.toml") == tmp_path / "other/stamps"  # no host config here
 
 
 def test_the_host_config_is_found_with_no_flag_or_env_and_keeps_its_stamps_beside_it(tmp_path, monkeypatch):
@@ -323,6 +323,22 @@ def test_the_host_config_is_found_with_no_flag_or_env_and_keeps_its_stamps_besid
     monkeypatch.delenv("DECOMP_DATA_STAMPS", raising=False)
     assert config.load(None, tmp_path / "tree").reference == "ref"
     assert stamp.stamp_dir(None, None) == shared.resolve() / "stamps"
+
+
+def test_lane_config_flag_stamps_into_the_host_dir_the_queue_reads(tmp_path, monkeypatch):
+    from abu_decomp.data import stamp
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "rw.toml").write_text("")
+    link = tmp_path / "home/.config/abu-decomp/data.toml"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(shared / "rw.toml")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("DECOMP_DATA_CONFIG", raising=False)
+    monkeypatch.delenv("DECOMP_DATA_STAMPS", raising=False)
+    host = shared.resolve() / "stamps"
+    assert stamp.stamp_dir(None, tmp_path / "lane/rw.toml") == host == stamp.stamp_dir(None, None)
+    assert stamp.stamp_dir(tmp_path / "x", tmp_path / "lane/rw.toml") == tmp_path / "x"
 
 
 def test_check_diff_already_committed_in_the_tree_is_no_refusal(tmp_path: Path):

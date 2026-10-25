@@ -110,17 +110,20 @@ def digest(text: str) -> str:
 
 
 def stamp_dir(given: Path | None, config: Path | None) -> Path:
+    """ONE resolution for stamp, check, gate and the queue: explicit --stamps, $DECOMP_DATA_STAMPS, the host config's
+    stamps (a lane passing its own --config used to stamp into that copy's dir while the queue read the host's:
+    CLEAN-COMMON-1 pack 4 was stamped, refused and waited on), then the given config's dir, then $DECOMP_DATA_CONFIG's."""
     if given:
         return given
     if os.environ.get("DECOMP_DATA_STAMPS"):
         return Path(os.environ["DECOMP_DATA_STAMPS"])
+    if (user := config_module.user_config()).is_file():  # the host's own config: its stamps sit beside the real file
+        return user.resolve().parent / "stamps"
     if config:
         return config.expanduser().parent / "stamps"
     if os.environ.get("DECOMP_DATA_CONFIG"):
         return Path(os.environ["DECOMP_DATA_CONFIG"]).expanduser().parent / "stamps"
-    if (user := config_module.user_config()).is_file():  # the host's own config: its stamps sit beside the real file
-        return user.resolve().parent / "stamps"
-    # never the current directory: a stamp run from a lane tree wrote stamps/ into it and `data check` then refused the tree
+    # never the current directory: a stamp run from a lane tree wrote stamps/ into it and `data check` then refused t...
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "decomp-data" / "stamps"
 
 
