@@ -320,7 +320,7 @@ def _stamp(args: argparse.Namespace, cfg) -> str:
         out = subprocess.run(["git", "-C", str(args.tree), "diff", "--name-only", since], capture_output=True, text=True)
         return sorted(out.stdout.split()) if out.returncode == 0 else []
 
-    bases = [args.since] if args.since else ["HEAD"] + _main_bases(args.tree)
+    bases = [args.since] if args.since else ["HEAD", *_main_bases(args.tree)]
     if not any(changed(b) == want for b in bases):
         # The tree holds a second diff's edits, so this check cannot vouch for the named diff alone: build it alone on a
         # clean slot of the pool (the --build path) instead of leaving the lane stuck (REV1-ONE-16B, 10-24).
