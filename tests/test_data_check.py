@@ -120,3 +120,30 @@ def test_a_function_the_diff_renames_is_scored_by_its_new_name(tmp_path):
     )
     res = check.check(builder, "a", ["src/a/u.CPP"])
     assert seen == ["Math_Sqrtf"] and res["broken"] == []
+
+
+def test_reextract_skips_a_current_tree_and_refuses_a_tree_moved_over_splat_changes(tmp_path, monkeypatch):
+    from abu_decomp import tools
+
+    calls = []
+    monkeypatch.setattr(tools, "invoke", lambda *a, **k: calls.append(a) or SimpleNamespace(ok=True))
+    (tmp_path / ".unbake").mkdir()
+    state = {"ls-files": "versions/us/symbol_addrs.txt\nsrc/a.c\n", "diff": "", "rev-parse": "H1\n"}
+
+    def run(cmd, **kw):
+        return done(state[cmd[3]])
+
+    (tmp_path / "versions/us").mkdir(parents=True)
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("a = 0x1;\n")
+    assert check.reextract(None, tmp_path, [], always=True, run=run) is None and len(calls) == 1
+    assert check.reextract(None, tmp_path, [], always=True, run=run) is None and len(calls) == 1  # same inputs: skipped
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("b = 0x1;\n")
+    state["diff"] = "versions/us/splat.yaml\n"
+    why = check.reextract(None, tmp_path, [], always=True, run=run)
+    assert why and "splat.yaml" in why and "--lease" in why and len(calls) == 1
+    assert check.reextract(None, tmp_path, [], always=True, allow=True, run=run) is None and len(calls) == 2
+    state["diff"] = "versions/us/symbol_addrs.txt\n"
+    (tmp_path / "versions/us/symbol_addrs.txt").write_text("c = 0x1;\n")
+    assert (
+        check.reextract(None, tmp_path, [], always=True, run=run) is None and len(calls) == 3
+    )  # a rename-only move is cheap

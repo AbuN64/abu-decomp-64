@@ -82,6 +82,11 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     k.add_argument(
         "--since", help="REV the diff was committed on top of: judge everything changed since REV, not the index"
     )
+    k.add_argument(
+        "--reextract",
+        action="store_true",
+        help="re-extract a tree whose asm predates splat.yaml changes on main (~450 CPU s)",
+    )
     k.add_argument("--diff", type=Path, help="the train diff made from TREE: a pass over every version stamps its hash")
     k.add_argument(
         "--stamps", type=Path, help="stamp directory (default $DECOMP_DATA_STAMPS, then <config dir>/stamps)"
@@ -191,7 +196,11 @@ def _apply_diff(args: argparse.Namespace) -> bool:
 
 def _check(args: argparse.Namespace, cfg, b, cli) -> Result:
     why = check_mod.reextract(
-        cli._profile(args.profile), args.tree, check_mod.changed_files(args.tree, args.since), always=True
+        cli._profile(args.profile),
+        args.tree,
+        check_mod.changed_files(args.tree, args.since),
+        always=True,
+        allow=args.reextract,
     )
     if why:
         return {}, 1, [{"key": "data.extract", "blocking": True, "message": why}]

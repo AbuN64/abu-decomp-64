@@ -3,6 +3,8 @@ stopped matching (the MIXED finder, seconds instead of a ROM bisect); `--mixed` 
 
 from __future__ import annotations
 
+import contextlib
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -11,20 +13,75 @@ from abu_decomp.data import source
 from abu_decomp.data.config import DataConfig
 from abu_decomp.data.trial import Builder, fn_unit  # noqa: F401  re-export for callers
 
+_MARK = ".unbake/data-extracted.json"
+_SPLAT = re.compile(r"(^|/)splat\.ya?ml$")
 
-def reextract(profile, tree: Path, files: list[str], always: bool = False) -> str | None:
+
+def _inputs(tree: Path, run=subprocess.run) -> tuple[str, list[str]]:
+    """(sha1 of the working content of every extraction input the tree tracks, their paths)."""
+    import hashlib
+
+    from abu_decomp.data import stamp
+
+    names = stamp.extraction_files(
+        run(["git", "-C", str(tree), "ls-files"], capture_output=True, text=True).stdout.split()
+    )
+    h = hashlib.sha1()
+    for n in sorted(names):
+        with contextlib.suppress(OSError):
+            h.update(n.encode() + b"\0" + (tree / n).read_bytes())
+    return h.hexdigest(), names
+
+
+def _moved_splat(tree: Path, mark: dict, run=subprocess.run) -> list[str]:
+    """splat configs that differ between the commit the tree's asm was extracted at and its HEAD: a tree moved to a newer
+    main re-splits every segment they touch (446 CPU s on the next build, 10-24 REV1-ONE-17)."""
+    old = mark.get("head")
+    if not old:
+        try:
+            old = (tree / "build/.pool-extracted-at").read_text().strip()
+        except OSError:
+            return []
+    out = run(["git", "-C", str(tree), "diff", "--name-only", old, "HEAD"], capture_output=True, text=True)
+    return [f for f in out.stdout.split() if _SPLAT.search(f)] if out.returncode == 0 else []
+
+
+def reextract(
+    profile, tree: Path, files: list[str], always: bool = False, allow: bool = False, run=subprocess.run
+) -> str | None:
     """Bring the tree's extraction up to the symbol rows it now holds (`unbake setup --no-make`: a rename takes unbake's rename
     path, no splat; a current tree costs ~6 s). Without it fncmp finds no function under its new name (`no-score`: the asm
     still has the old one). `always`: also when no changed file says so, for a tree whose HEAD moved under it (10-24:
-    MoveMenuFocus edit=91 in every version on a check tree older than the rename). None when nothing needed it or it
-    worked, else why not."""
+    MoveMenuFocus edit=91 in every version on a check tree older than the rename). The tree records the inputs it was
+    extracted from (`.unbake/data-extracted.json`): an unchanged set skips the call, and a tree whose HEAD moved over
+    splat.yaml changes since its extraction is refused (`allow`: `--reextract`), because the full re-split is ~450 CPU s and
+    a fresh pool lease is free. None when nothing needed it or it worked, else why not."""
     from abu_decomp import tools
     from abu_decomp.data import stamp
 
     if not always and not stamp.extraction_files(files):
         return None
+    now, _names = _inputs(tree, run)
+    mark: dict = {}
+    with contextlib.suppress(OSError, ValueError):
+        mark = json.loads((tree / _MARK).read_text())
+    if mark.get("inputs") == now:
+        return None
+    moved = [] if allow else _moved_splat(tree, mark, run)
+    if moved:
+        return (
+            f"the tree's asm was extracted before {', '.join(moved[:3])} changed on main: re-extracting re-splits every segment "
+            "(~450 CPU s). Take a fresh tree (`pool-mint.sh --release LANE` then `--lease LANE`, reapply the diff), "
+            "or pass --reextract to pay it here"
+        )
     called = tools.invoke("unbake", profile, ["setup", "--no-make"], project=tree)
-    return None if called.ok else "unbake setup refused: the tree's extraction could not be brought current"
+    if not called.ok:
+        return "unbake setup refused: the tree's extraction could not be brought current"
+    with contextlib.suppress(OSError):
+        head = run(["git", "-C", str(tree), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        (tree / _MARK).parent.mkdir(exist_ok=True)
+        (tree / _MARK).write_text(json.dumps({"inputs": now, "head": head}))
+    return None
 
 
 def changed_files(tree: Path, base: str | None = None, run=subprocess.run) -> list[str]:
