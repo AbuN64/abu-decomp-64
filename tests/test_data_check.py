@@ -100,3 +100,19 @@ def test_since_judges_a_committed_diff_not_the_index(tmp_path):
     assert seen[0][-1] == "abc"
     assert check.changed_units(tmp_path, run, "", "abc") == ["src/a/u1.CPP"]
     assert seen[1][-1] == "abc"
+
+
+def test_a_renamed_symbol_is_scored_under_its_new_name(tmp_path):
+    diff = (
+        "--- a/versions/a/symbol_addrs.txt\n+++ b/versions/a/symbol_addrs.txt\n"
+        "-func_8040FB94_de = 0x8040FB94; // type:func\n+Frontend_Open = 0x8040FB94; // type:func\n"
+        "-gone = 0x80000000;\n+other = 0x80000004;\n"
+    )
+    run = lambda *a, **k: done(diff)  # noqa: E731
+    assert check.renamed_symbols(CFG, tmp_path, "a", run) == {"func_8040FB94_de": "Frontend_Open"}
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/map-a.json").write_text(json.dumps({"fns": [["func_8040FB94_de", 0, 0, 100, "src/a/u1.CPP"]]}))
+    asked = []
+    b = SimpleNamespace(cfg=CFG, tree=tmp_path, run=run, score=lambda v, fn, unit: asked.append(fn) or 0)
+    assert check.broken(b, "a", ["src/a/u1.CPP"]) == []
+    assert asked == ["Frontend_Open"]
