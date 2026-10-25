@@ -47,6 +47,11 @@ from abu_decomp import DecompError
 ENV = "DECOMP_DATA_CONFIG"
 
 
+def user_config() -> Path:
+    """The host's own data config (a rig links it to its shared file), read when nothing else names one."""
+    return Path.home() / ".config" / "abu-decomp" / "data.toml"
+
+
 @dataclass(frozen=True)
 class DataConfig:
     reference: str = "ref"
@@ -112,6 +117,7 @@ def load(path: Path | None, tree: Path | None = None) -> DataConfig:
         candidates.append(Path(os.environ[ENV]))
     if tree:
         candidates.append(tree / "docs" / "data.toml")
+    candidates.append(user_config())
     for c in candidates:
         if c and c.expanduser().is_file():
             try:

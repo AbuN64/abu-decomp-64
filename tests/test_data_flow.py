@@ -291,6 +291,7 @@ def test_stamp_dir_is_never_the_working_directory(tmp_path, monkeypatch):
     from abu_decomp.data import stamp
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("DECOMP_DATA_STAMPS", raising=False)
     monkeypatch.delenv("DECOMP_DATA_CONFIG", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
@@ -298,6 +299,22 @@ def test_stamp_dir_is_never_the_working_directory(tmp_path, monkeypatch):
     monkeypatch.setenv("DECOMP_DATA_CONFIG", str(tmp_path / "cfg/rw.toml"))
     assert stamp.stamp_dir(None, None) == tmp_path / "cfg/stamps"
     assert stamp.stamp_dir(None, tmp_path / "other/x.toml") == tmp_path / "other/stamps"
+
+
+def test_the_host_config_is_found_with_no_flag_or_env_and_keeps_its_stamps_beside_it(tmp_path, monkeypatch):
+    from abu_decomp.data import config, stamp
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "rw.toml").write_text('[data]\nversions = ["ref"]\nreference = "ref"\n')
+    link = tmp_path / "home/.config/abu-decomp/data.toml"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(shared / "rw.toml")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("DECOMP_DATA_CONFIG", raising=False)
+    monkeypatch.delenv("DECOMP_DATA_STAMPS", raising=False)
+    assert config.load(None, tmp_path / "tree").reference == "ref"
+    assert stamp.stamp_dir(None, None) == shared.resolve() / "stamps"
 
 
 def test_check_diff_already_committed_in_the_tree_is_no_refusal(tmp_path: Path):

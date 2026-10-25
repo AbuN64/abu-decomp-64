@@ -11,6 +11,7 @@ import os
 import re
 from pathlib import Path
 
+from abu_decomp.data import config as config_module
 from abu_decomp.data.config import DataConfig
 
 HEADER = re.compile(r"\.h$", re.I)
@@ -117,6 +118,8 @@ def stamp_dir(given: Path | None, config: Path | None) -> Path:
         return config.expanduser().parent / "stamps"
     if os.environ.get("DECOMP_DATA_CONFIG"):
         return Path(os.environ["DECOMP_DATA_CONFIG"]).expanduser().parent / "stamps"
+    if (user := config_module.user_config()).is_file():  # the host's own config: its stamps sit beside the real file
+        return user.resolve().parent / "stamps"
     # never the current directory: a stamp run from a lane tree wrote stamps/ into it and `data check` then refused the tree
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "decomp-data" / "stamps"
 
