@@ -209,6 +209,8 @@ def build(
             [{"key": "data.gate", "blocking": True, "message": m} for m in bad],
         )
     shared = shared.expanduser().resolve()
+    if at is None and _renamed(profile, shared, diff):
+        return {"stamp": str(stamp_mod.write(stamps, text)), "proof": "renameproof"}, 0, []
     lag = worktree.behind(shared)
     if lag is not None and lag > worktree.MAX_BEHIND:
         msg = (
@@ -222,6 +224,26 @@ def build(
         )
     with slot(worktree.base(shared), trees()) as lane:
         return _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract)
+
+
+def _renamed(profile: Any, shared: Path, diff: Path) -> bool:
+    """Whether `unbake renameproof` proves the diff a pure rename of identifiers on the shared tree's commit: the proof
+    already stands for the 5 ROMs when a diff is queued (claim-preflight), so a stamp needs no build (10-25: a types pack
+    of renamed tags and members stamped at 831 CPU s). A diff that does not apply there, or any tool failure, builds."""
+    if profile is None:
+        return False
+    head = _git(shared, "rev-parse", "HEAD").stdout.strip()
+    if not head:
+        return False
+    from abu_decomp import tools
+
+    try:
+        called = tools.invoke(
+            "unbake", profile, ["renameproof", "--against", head, "--patch", str(diff.resolve())], project=shared
+        )
+    except Exception:
+        return False
+    return bool(called.ok)
 
 
 def _phase(name: str, since: list[float]) -> None:

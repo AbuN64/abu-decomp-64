@@ -461,3 +461,16 @@ def test_a_diff_the_gate_would_refuse_is_refused_before_any_build(tmp_path, monk
     result, code, findings = stampbuild.build(config, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 1 and not built and findings[0]["key"] == "data.gate" and "LITERAL D_1" in findings[0]["message"]
     assert stampbuild.gate_mod.precheck(replace(CFG, census=str(tmp_path / "none.json")), diff.read_text()) == []
+
+
+def test_a_diff_renameproof_proves_is_stamped_without_a_build(tmp_path, monkeypatch):
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    from abu_decomp import tools
+
+    monkeypatch.setattr(tools, "invoke", lambda *a, **k: type("R", (), {"ok": True})())
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "c0ffee\n", "")
+    )
+    monkeypatch.setattr(stampbuild, "slot", lambda *a, **k: (_ for _ in ()).throw(AssertionError("built")))
+    result, code, _f = stampbuild.build(CFG, object(), tmp_path, diff, tmp_path / "stamps")
+    assert code == 0 and result["proof"] == "renameproof" and stamp_mod.stamped(tmp_path / "stamps", diff.read_text())
