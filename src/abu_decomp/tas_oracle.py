@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -164,9 +165,19 @@ def start(
     env.pop("N64R_CPAK", None)
     if card:
         env["N64R_CPAK"] = str(card)
+    argv = [str(oracle["host"])]
+    events = os.environ.get("N64C_TRACE_EVENTS")
+    gdb = shutil.which("gdb") if events else None
+    if events and gdb:
+        # the event trace's twin (TAS-COVER-6 ran it by hand): dprintf lines land in oracle.txt, `split_events`
+        # moves them to oracle-events.txt; the outcome is then gdb's, so the run says the trace was on
+        argv = [gdb, "-q", "-nx", "-batch", "-iex", "set dprintf-style gdb", "-iex", "set pagination off"]
+        for command in event_commands(events):
+            argv += ["-ex", command]
+        argv += ["-ex", "run", "--args", str(oracle["host"])]
     with (run / LOG).open("w") as output:
         return subprocess.Popen(
-            [str(oracle["host"])],
+            argv,
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=output,
@@ -174,6 +185,35 @@ def start(
             **procguard.owned(),
             cwd=run,
         )
+
+
+ORACLE_EVENTS = "oracle-events.txt"
+
+
+def event_commands(spec: str) -> list[str]:
+    """The original's dprintf lines for `--trace-events FUNC[/N],...`: a recompiled function is
+    fn(uint8_t *rdram, recomp_context *ctx), so guest argument i (a0..a3) is the 64-bit register slot at ctx+32+8i
+    ($rsi at entry). Lines `EV|FUNC|a0|..`, the port's format, so the two files diff line by line."""
+    out = []
+    for item in (s.strip() for s in spec.split(",")):
+        if not item:
+            continue
+        name, _, count = item.partition("/")
+        n = min(int(count or 0), 4)
+        fmt = "EV|" + name + "|%d" * n + "\\n"
+        out.append(f'dprintf *{name},"{fmt}"' + "".join(f", *(int*)($rsi+{32 + 8 * i})" for i in range(n)))
+    return out
+
+
+def split_events(run: Path) -> int:
+    """Move the `EV|` lines of the original's output into RUN/oracle-events.txt; returns how many."""
+    try:
+        lines = [x for x in (run / LOG).read_text(errors="replace").splitlines() if x.startswith("EV|")]
+    except OSError:
+        return 0
+    if lines:
+        (run / ORACLE_EVENTS).write_text("\n".join(lines) + "\n")
+    return len(lines)
 
 
 def outcome(code: int | None) -> dict[str, Any]:

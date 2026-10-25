@@ -25,12 +25,19 @@ def decode_stream(record):
 _MI_ASYNC = re.compile(r"[=*+][a-z][a-z-]*(,|$)")
 
 
-def event_commands(spec, pointer_bytes):
+RAM_FAULT = "ram-fault.bin"
+
+
+POLL = "*(long*)&polls"  # the shim's poll counter (shim/n64c_tas.c; a static: read through its address)
+
+
+def event_commands(spec, pointer_bytes, poll=None):
     """gdb `dprintf` lines for N64C_TRACE_EVENTS (`FUNC[/N],...`): at each FUNC's first instruction print
     `EV|FUNC|a0|..|aN-1` (its first N integer arguments, read the way the ABI passes them at entry: the stack above the
     return address for a 32-bit port, rdi rsi rdx rcx r8 r9 for a 64-bit one). The bridge appends these lines to
     RUN/events.txt in the order the port hit them (TAS-COVER-5/6 wrote these by hand; an argument named by a symbol
-    the port lacks stalls gdb, a register or stack read never does)."""
+    the port lacks stalls gdb, a register or stack read never does). With POLL (an expression the bridge proved
+    readable), each line is `EV|FUNC@poll|...`, so calls count per poll against the original's (TAS-COVER-4)."""
     regs = ("$rdi", "$rsi", "$rdx", "$rcx", "$r8", "$r9")
     out = []
     for item in (s.strip() for s in spec.split(",")):
@@ -42,7 +49,11 @@ def event_commands(spec, pointer_bytes):
             args = [f"(long){regs[i]}" for i in range(n)]
         else:
             args = [f"*(int*)($esp+{4 + 4 * i})" for i in range(n)]
-        fmt = "EV|" + name + "|%d" * n + "\\n"
+        if poll:
+            fmt = "EV|" + name + "@%ld" + "|%d" * n + "\\n"
+            args = [f"(long){poll}", *args]
+        else:
+            fmt = "EV|" + name + "|%d" * n + "\\n"
         out.append(f'dprintf *{name},"{fmt}"' + "".join(", " + a for a in args))
     return out
 
@@ -163,6 +174,17 @@ class Bridge:
         token = await self.send("-interpreter-exec console " + json.dumps(command))
         return await self.result(token)
 
+    async def dump_ram(self):
+        """Guest RAM at a host fault as RUN/ram-fault.bin, read by gdb without calling into the stopped port: the shim
+        maps guest RDRAM at host 0x80000000 (`n64c_memory_ram`), its size in the shim's `ram_size`, else the 4 MB
+        base. A crash whose batch is built at draw time can then be read like a poll dump (TAS-COVER-3)."""
+        out = self.run_dir / RAM_FAULT
+        for size in ("*(unsigned int*)&ram_size", "'n64c_memory.c'::ram_size", "0x400000"):
+            response = await self.cli(f"dump binary memory {out} 0x80000000 0x80000000+{size}")
+            if "^done" in (response or "") and out.is_file() and out.stat().st_size:
+                return True
+        return False
+
     async def stack(self, label):
         await self.cli("set print frame-arguments none")
         await self.cli("set filename-display basename")
@@ -208,6 +230,7 @@ class Bridge:
                     await self.cli(command)
                 self.stack_mode = None
                 (self.run_dir / "signal-context.txt").write_text("\n".join(self.full_stack_lines) + "\n")
+                await self.dump_ram()
                 # Lane-supplied reads at the fault (N64C_FAULT_GDB = a file of gdb commands, one per line): the
                 # sprite, glyph or batch the faulting frame holds, written beside the stacks as signal-extra.txt.
                 script = os.environ.get("N64C_FAULT_GDB")
@@ -286,7 +309,9 @@ class Bridge:
             events = os.environ.get("N64C_TRACE_EVENTS")
             if events:
                 await self.cli("set dprintf-style gdb")
-                for command in event_commands(events, pointer_size(self.argv[0])):
+                probe = await self.cli(f"output (long){POLL}")  # a missing symbol must not reach a dprintf: it stalls
+                poll = POLL if "^done" in probe else None
+                for command in event_commands(events, pointer_size(self.argv[0]), poll):
                     response = await self.cli(command)
                     if "^error" in response:
                         print("[gdb] trace event refused: " + command + ": " + response[-160:], flush=True)
@@ -303,6 +328,7 @@ class Bridge:
                         print("debug-stop: " + self.breakpoint, flush=True)
                         token = await self.send("-data-evaluate-expression " + self.reason_expression)
                         reason_result = await self.result(token)
+                        reason = ""
                         if "value=" in reason_result:
                             value_text = reason_result.split("value=", 1)[1]
                             try:
@@ -312,6 +338,8 @@ class Bridge:
                             except (ValueError, IndexError):
                                 pass
                         await self.stack(self.breakpoint)
+                        if reason.startswith("host-fault"):  # a crash the shim named: its RAM too
+                            await self.dump_ram()
                         while True:
                             raw_instruction = await self.command_reader.readline()
                             instruction = raw_instruction.decode(errors="replace")

@@ -439,3 +439,22 @@ class StartupFaultTests(unittest.TestCase):
         self.assertEqual(tas_oracle.startup_note(-11, 5), "")
         self.assertEqual(tas_oracle.startup_note(0, 0), "")
         self.assertEqual(tas_oracle.startup_note(None, 0), "")
+
+
+class OracleEventTests(unittest.TestCase):
+    def test_the_original_reads_guest_arguments_from_the_recomp_context(self):
+        from abu_decomp import tas_oracle
+
+        self.assertEqual(
+            tas_oracle.event_commands("Gfx_DrawRect/2"),
+            ['dprintf *Gfx_DrawRect,"EV|Gfx_DrawRect|%d|%d\\n", *(int*)($rsi+32), *(int*)($rsi+40)'],
+        )
+
+    def test_split_events_moves_the_event_lines_out_of_the_output(self):
+        from abu_decomp import tas_oracle
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / tas_oracle.LOG).write_text("host up\nEV|F|1\nnoise\nEV|F|2\n")
+        self.assertEqual(tas_oracle.split_events(tmp), 2)
+        self.assertEqual((tmp / tas_oracle.ORACLE_EVENTS).read_text(), "EV|F|1\nEV|F|2\n")

@@ -1487,6 +1487,8 @@ def play(
             }
             if note := tas_oracle.startup_note(oracle_end["code"], polls):
                 record["oracle"]["startup_fault"] = note
+            if os.environ.get("N64C_TRACE_EVENTS"):
+                record["oracle"]["events"] = tas_oracle.split_events(run)  # the outcome above is gdb's then
             result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
         if first_pass and result["outcome"] != "ok":
             raise NeedsSupervisor(run)

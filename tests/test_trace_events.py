@@ -37,3 +37,26 @@ def test_event_lines_go_to_events_txt_and_nowhere_else(tmp_path, capsys):
     bridge.proc = type("P", (), {"stdout": Out()})()
     asyncio.run(bridge.read_output())
     assert (tmp_path / "run/events.txt").read_text() == "EV|F|1|2\n"
+
+
+def test_a_fault_dumps_guest_ram_trying_the_shim_size_first(tmp_path):
+    cls = next(v for v in vars(gdb).values() if isinstance(v, type) and hasattr(v, "dump_ram"))
+    bridge = cls.__new__(cls)
+    bridge.run_dir = tmp_path
+    sent = []
+
+    async def cli(command):
+        sent.append(command)
+        if "0x400000" in command:
+            (tmp_path / gdb.RAM_FAULT).write_bytes(b"ram")
+            return "5^done"
+        return '5^error,msg="No symbol"'
+
+    bridge.cli = cli
+    assert asyncio.run(bridge.dump_ram())
+    assert len(sent) == 3 and "ram_size" in sent[0] and sent[0].startswith("dump binary memory")
+
+
+def test_events_carry_the_poll_when_the_shim_counter_reads():
+    got = gdb.event_commands("F/1", 4, gdb.POLL)
+    assert got == ['dprintf *F,"EV|F@%ld|%d\\n", (long)' + gdb.POLL + ", *(int*)($esp+4)"]
