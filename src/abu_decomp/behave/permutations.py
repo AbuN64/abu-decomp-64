@@ -297,6 +297,7 @@ def _apply(base: dict[str, Any], factors: list[dict[str, Any]], row: tuple[Any, 
     registers = dict(base.get("registers", {}))
     memory = list(base.get("memory", []))
     parts = []
+    moved = [(f, v) for f, v in zip(factors, row, strict=True) if v is not None]
     for factor, value in zip(factors, row, strict=True):
         if value is None:
             continue
@@ -313,9 +314,24 @@ def _apply(base: dict[str, Any], factors: list[dict[str, Any]], row: tuple[Any, 
         "registers": registers,
         "labels": {"generated": ",".join(parts)[:160], "base": str(base["name"])},
     }
+    if len(moved) == 1:  # one input off its real value: its outcome says whether that value is usable (see refused)
+        case["labels"]["single"] = f"{moved[0][0]['name']}\t{moved[0][1]}"
     if memory:
         case["memory"] = memory
     return case
+
+
+def refused(cases: list[dict[str, Any]], results: list[dict[str, Any]]) -> frozenset[tuple[str, int]]:
+    """(input name, value) pairs a single-input case showed the original cannot run: an index past its table, a word
+    that is read as a pointer, a value that fails a check. Combined with other inputs such a value only repeats the
+    same fault (91 of 150 cases of one function were `unmapped`, TOOL-SPEED-14), so the second stage leaves it out."""
+    bad: set[tuple[str, int]] = set()
+    for case, result in zip(cases, results, strict=True):
+        single = case.get("labels", {}).get("single")
+        if single and result.get("status") != "ok":
+            name, _, value = single.partition("\t")
+            bad.add((name, int(value)))
+    return frozenset(bad)
 
 
 def generate(
@@ -327,8 +343,14 @@ def generate(
     headers: tuple[str, ...],
     budget: int,
     readonly: tuple[tuple[int, int], ...] = (),
+    stage: str = "all",
+    skip: frozenset[tuple[str, int]] = frozenset(),
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Generated cases (at most `budget`) over the real cases that ran in the original, and the report of how."""
+    """Generated cases (at most `budget`) over the real cases that ran in the original, and the report of how.
+    A large cross product runs in two stages so that what the first shows is used by the second: stage "singles"
+    returns the one-input cases and the report says `more`; the caller runs them, takes `refused(...)` of the results
+    and asks stage "pairs" with it as `skip`, which returns the pairwise cases over the values that were not refused.
+    Stage "all" (the default) is both at once, with nothing refused."""
     pairs = [(c, r) for c, r in zip(cases, results, strict=True) if is_real(c) and r["status"] == "ok"]
     report: dict[str, Any] = {"budget": budget, "real_bases": len(pairs)}
     if not pairs or budget <= 0:
@@ -340,7 +362,10 @@ def generate(
         return [], {**report, "generated": 0, "why": "no input with more than one value"}
     # a dereferenced pointer's NULL runs once on its own (the original faults on it anywhere it is combined with others)
     # and its other observed values are other objects this base snapshot does not hold: the base keeps its own
-    domains = [[v for v in f["domain"] if v not in f.get("alone", ())] or [None] for f in factors]
+    domains = [
+        [v for v in f["domain"] if v not in f.get("alone", ()) and (f["name"], v) not in skip] or [None]
+        for f in factors
+    ]
     alone = [(i, v) for i, f in enumerate(factors) for v in f.get("alone", ())]
     size = 1
     for domain in domains:
@@ -351,18 +376,25 @@ def generate(
         rows = [tuple(r) for r in itertools.product(*domains)]
         rows += [tuple(v if j == i else None for j in range(len(factors))) for i, v in alone]
     else:
-        report["mode"] = "single+pairwise"
+        report["mode"] = "single+pairwise" if stage == "all" else stage
         none = (None,) * len(factors)
-        for i, domain in enumerate(domains):
-            rows += [(*none[:i], v, *none[i + 1 :]) for v in domain]
-        rng = random.Random(SEED)
-        rows += [tuple(domains[i][j] for i, j in enumerate(r)) for r in inputs.pairwise(domains, rng, budget)]
-        rows += [tuple(v if j == i else None for j in range(len(factors))) for i, v in alone]
+        if stage != "pairs":
+            for i, domain in enumerate(domains):
+                rows += [(*none[:i], v, *none[i + 1 :]) for v in domain]
+        if stage != "singles":
+            rng = random.Random(SEED)
+            rows += [tuple(domains[i][j] for i, j in enumerate(r)) for r in inputs.pairwise(domains, rng, budget)]
+        if stage != "pairs":
+            rows += [tuple(v if j == i else None for j in range(len(factors))) for i, v in alone]
+        if stage == "singles":
+            report["more"] = True
+        if stage == "pairs":
+            report["refused"] = sorted(f"{n}={v:#x}" for n, v in skip)[:24]
     generated: list[dict[str, Any]] = []
     seen: set[str] = set()
     for n, row in enumerate(rows):
         base = real[n % len(real)]
-        case = _apply(base, factors, row, n)
+        case = _apply(base, factors, row, n + (1 << 12 if stage == "pairs" else 0))
         sig = repr((case["registers"], [(m["addr"], m["hex"]) for m in case.get("memory", [])], case["labels"]["base"]))
         if sig in seen or case["labels"]["generated"] == "":
             continue

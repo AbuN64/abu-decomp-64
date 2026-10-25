@@ -91,6 +91,27 @@ class PermutationTests(unittest.TestCase):
         cases, _ = self.generate()
         self.assertEqual({c["registers"]["r4"] for c in cases}, {"0x80000100", "0x0"})
 
+    def test_a_value_the_original_cannot_run_alone_is_left_out_of_the_pairs(self):
+        """Stage 1 runs one input off its real value at a time; a value that fails there (an index past the table) is
+        not combined with the other inputs' values in stage 2."""
+        singles, report = permutations.generate(
+            self.cases, self.results, self.seeded, PROTO, Path(self.dir.name), (), 200, stage="singles"
+        )
+        self.assertTrue(report.get("more"), report)
+        self.assertTrue(all("single" in c["labels"] for c in singles))
+        results = [{"status": "ok"} for _ in singles]
+        bad = next(i for i, c in enumerate(singles) if c["labels"]["generated"].startswith("n="))
+        results[bad]["status"] = "unmapped"
+        value = singles[bad]["registers"]["r5"]
+        skip = permutations.refused(singles, results)
+        self.assertEqual(skip, {("n", int(value, 0))})
+        pairs, report = permutations.generate(
+            self.cases, self.results, self.seeded, PROTO, Path(self.dir.name), (), 200, stage="pairs", skip=skip
+        )
+        self.assertTrue(pairs)
+        self.assertNotIn(value, {c["registers"]["r5"] for c in pairs if "ptr=" in c["labels"]["generated"]})
+        self.assertEqual(report["refused"], [f"n={int(value, 0):#x}"])
+
     def test_small_domains_run_the_full_cross_product_and_large_ones_stay_in_budget(self):
         cases, report = self.generate(budget=500)
         self.assertEqual(report["mode"], "cross-product" if len(cases) < 96 else "single+pairwise")

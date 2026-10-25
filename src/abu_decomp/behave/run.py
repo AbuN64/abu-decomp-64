@@ -563,22 +563,45 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
             tuple(config["headers"]),
             int(config["generated_cases"]),
             readonly,
+            stage="singles",
         )
-        if generated:
-            more = ask(
-                "original-generated",
-                _request(
-                    version=version,
-                    address=address,
-                    cases=generated,
-                    config=config,
-                    depth=depth,
-                    memory_end=memory_end,
-                    question=question + " (generated from real inputs)",
-                ),
+        for stage in ("singles", "pairs"):  # the second stage skips the values the first showed the original cannot run
+            if generated:
+                more = ask(
+                    "original-generated" if stage == "singles" else "original-generated-pairs",
+                    _request(
+                        version=version,
+                        address=address,
+                        cases=generated,
+                        config=config,
+                        depth=depth,
+                        memory_end=memory_end,
+                        question=question + " (generated from real inputs)",
+                    ),
+                )
+                cases = [*cases, *generated]
+                original = {**original, "cases": [*original["cases"], *more["cases"]]}
+            if stage == "pairs" or not (generation or {}).get("more"):
+                break
+            first = len(generated)
+            generated, second = permutations.generate(
+                cases,
+                original["cases"],
+                options.seeded,
+                proto,
+                chosen.project,
+                tuple(config["headers"]),
+                int(config["generated_cases"]) - first,
+                readonly,
+                stage="pairs",
+                skip=permutations.refused(cases, original["cases"]),
             )
-            cases = [*cases, *generated]
-            original = {**original, "cases": [*original["cases"], *more["cases"]]}
+            generation = {
+                **{k: v for k, v in generation.items() if k != "more"},
+                "mode": "single+pairwise",
+                "generated": first + second.get("generated", 0),
+                "refused": second.get("refused", []),
+            }
     record = original["record"]
     cut = [name for name, why in record.get("stubs", {}).items() if why == "boundary"]
     # a case the original could not finish for want of memory is not compared. Widening the memory leaves the cases
