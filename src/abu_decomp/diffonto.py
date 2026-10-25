@@ -42,9 +42,6 @@ _CONFLICT = re.compile(
     r"|error: (\S+): (?:does not exist in index|already exists in index))",
     re.M,
 )
-    r"^(?:U (\S+)|Applied patch to '([^']+)' with conflicts\.|error: patch failed: ([^:]+):\d+|error: (\S+): (?:does not exist in index|already exists in index))",
-    re.M,
-)
 
 
 def conflict_message(stderr: str, onto: str) -> str:
