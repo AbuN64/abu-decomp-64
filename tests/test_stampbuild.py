@@ -555,3 +555,26 @@ def test_a_stamp_phase_over_the_cpu_cap_names_itself(monkeypatch, capsys):
     monkeypatch.setattr(stampbuild.meter, "cpu", lambda: 400.0)
     stampbuild._phase("rom_check", mark)
     assert "FLAG CPU-OVER-5min step=rom_check" in capsys.readouterr().out
+
+
+def test_release_gives_the_reverted_files_their_shared_date_and_signs_the_headers_includers_again(
+    tmp_path, monkeypatch
+):
+    """A2: `git reset` dates every file the diff touched now, so the next stamp preprocessed every includer of a
+    reverted header and its sweep dropped the stamps the diff had signed. A reverted file equal to the shared tree's
+    takes its date; the reverted headers' untouched includers are signed again (`hdrnarrow.resign`)."""
+    import os
+
+    from unbake import hdrnarrow
+
+    _first, _second = git_tree(tmp_path / "t")
+    tree, shared = tmp_path / "t", tmp_path / "shared"
+    shared.mkdir()
+    (shared / "x.h").write_text("b\n")
+    os.utime(shared / "x.h", ns=(10**15, 10**15))
+    asked = []
+    monkeypatch.setattr(hdrnarrow, "resign", lambda root, headers, before: asked.append((root, headers, before)) or 7)
+    (tree / "x.h").write_text("diff\n")
+    stampbuild.release(shared, tree, {"build/a/x.i.ok": [1, "k"]})
+    assert (tree / "x.h").read_text() == "b\n" and (tree / "x.h").stat().st_mtime_ns == 10**15
+    assert asked == [(tree, ["x.h"], {"build/a/x.i.ok": [1, "k"]})]

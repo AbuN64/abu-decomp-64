@@ -167,12 +167,30 @@ def reuse(profile: Any, tree: Path, rev: str) -> dict[str, Any] | None:
     return {"worktree": str(tree), "rev": rev, "reused": True}
 
 
-def release(shared: Path, tree: Path) -> None:
-    """Back to a clean tree and its marker: the diff and its build leave nothing but objects that make sees stale."""
+def release(shared: Path, tree: Path, before: dict[str, list] | None = None) -> None:
+    """Back to a clean tree and its marker: the diff and its build leave nothing but objects that make sees stale.
+    BEFORE: the tree's stamp records from before the diff was applied (`restore`)."""
+    changed = [p for p in _git(tree, "diff", "--name-only", "-z", "HEAD").stdout.split("\0") if p]
     if _git(tree, "reset", "-q", "--hard").returncode or _git(tree, "clean", "-fdq").returncode:
         worktree.prune(shared, [tree.name])
         return
+    restore(shared, tree, changed, before or {})
     (tree / STATE).write_text(_git(tree, "rev-parse", "HEAD").stdout.strip() + "\n")
+
+
+def restore(shared: Path, tree: Path, changed: list[str], before: dict[str, list]) -> dict[str, int]:
+    """The reverted files of a reused slot as the commit built them (A2, 10-25: the next stamp in a reused slot rebuilt
+    2,000-4,500 includers per version a header diff had only signed). `git reset` gives each file the diff touched
+    a new date: it takes the shared tree's date again where the bytes are the same, so make does not preprocess
+    every includer of a reverted header; the includer stamps the diff's narrowing signed under its header bytes and
+    no build touched are signed again under the commit's (`hdrnarrow.resign` with BEFORE, the records read before the
+    diff was applied), so the stamp sweep keeps them. A unit the diff rebuilt keeps its newer stamp, whose record the
+    sweep finds stale: make builds it again."""
+    from unbake import hdrnarrow
+
+    aligned = worktree.align_times(shared, tree, changed)
+    headers = header_files(changed)
+    return {"aligned": aligned, "signed": hdrnarrow.resign(tree, headers, before) if headers and before else 0}
 
 
 def _tree(profile: Any, shared: Path, lane: str, rev: str | None):
@@ -287,6 +305,9 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
     made, code, findings = _tree(profile, shared, lane, at or head or None)
     tree = Path(made["worktree"])
     extracted = kept = False
+    from unbake import hdrnarrow
+
+    before = {} if code else dict(hdrnarrow.records(tree))  # the stamp records the clean slot holds, for `restore`
     try:
         if code:
             return {"worktree": made}, code, findings
@@ -303,6 +324,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         if applied.returncode and not at and head:
             made, code, findings = _tree(profile, shared, lane, None)
             tree = Path(made["worktree"])
+            before = {} if code else dict(hdrnarrow.records(tree))
             if code:
                 return {"worktree": made}, code, findings
             (tree / STATE).write_text("busy\n")
@@ -407,7 +429,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         elif extracted:
             worktree.prune(shared, [tree.name])
         elif (tree / ".git").exists():
-            release(shared, tree)
+            release(shared, tree, before)
         print(
             f"stamp build: wall={wall:.0f}s cpu={used:.0f}s tree={lane} {'reused' if made.get('reused') else 'fresh'}"
             + ("  FLAG CPU-OVER-5min" if used > CPU_CAP else ""),

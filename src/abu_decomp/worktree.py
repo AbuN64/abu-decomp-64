@@ -69,10 +69,11 @@ def _copy(source: Path, target: Path) -> None:
         shutil.copy2(source, target)
 
 
-def align_times(shared: Path, tree: Path) -> int:
-    """Every tracked file of `tree` whose bytes equal the shared tree's file takes that file's modification time."""
+def align_times(shared: Path, tree: Path, names: list[str] | None = None) -> int:
+    """Every tracked file of `tree` (or each of NAMES) whose bytes equal the shared tree's file takes that file's
+    modification time."""
     count = 0
-    for name in _git(tree, "ls-files", "-z").split("\0"):
+    for name in _git(tree, "ls-files", "-z").split("\0") if names is None else names:
         if not name:
             continue
         one, other = shared / name, tree / name
