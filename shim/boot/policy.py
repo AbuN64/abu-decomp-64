@@ -26,8 +26,11 @@ def pinned(source, version):
     aliases = source / "versions" / version / "aliases.txt"
     functions = {int(address, 16) for address, comment in table.values() if "type:func" in comment}
     for line in aliases.read_text().splitlines() if aliases.exists() else ():
-        # A data alias: a D_ name, or a cleanly named one (rspbootTextEnd) at an address no function starts at.
-        if (match := PIN.match(line)) and (match[1].startswith("D_") or int(match[2], 16) not in functions):
+        # A data alias: a D_ name, or a cleanly named one (rspbootTextEnd) outside the libultra range at an address no
+        # function starts at.
+        if (match := PIN.match(line)) and (
+            match[1].startswith("D_") or (int(match[2], 16) not in functions and not SDK_LO <= int(match[2], 16) < SDK_HI)
+        ):
             if match[1] in table and int(table[match[1]][0], 16) != int(match[2], 16):
                 raise ValueError("conflicting pinned address: " + match[1])
             table.setdefault(match[1], (match[2], match[3]))
