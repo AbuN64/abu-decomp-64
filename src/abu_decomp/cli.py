@@ -1129,13 +1129,18 @@ def _run_owes(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 
 def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "verb", choices=["count"], help="count: placeholder names (func_/D_/unk/pad/spNN/var_/argN) per folder"
+        "verb",
+        choices=["count", "dead-decls"],
+        help="count: placeholder names (func_/D_/unk/pad/spNN/var_/argN) per folder; dead-decls: the declarations of"
+        " --dir (a header folder) nothing reads, as layered removal packs",
     )
     parser.add_argument(
         "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
     )
     parser.add_argument("--dir", help="only this folder and below (src/game/MENU_2, game/MENU_2 or the leaf MENU_2)")
     parser.add_argument("--top", type=int, default=15, help="folders listed, most placeholders first (0 = every one)")
+    parser.add_argument("--packs", type=Path, help="dead-decls: write one diff per layer here (dead-decls-L<n>.diff)")
+    parser.add_argument("--apply", action="store_true", help="dead-decls: write layer 0 into the tree")
     parser.add_argument(
         "--evidence",
         action="store_true",
@@ -1148,6 +1153,15 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
     from abu_decomp import cleanup, tools
 
     root = tools.project_dir(_profile(args.profile), _own_tree(args, "cleanup"))
+    if args.verb == "dead-decls":
+        from abu_decomp import deaddecls
+
+        if not args.dir:
+            raise DecompError("cleanup.dir", "dead-decls needs --dir (the header folder, e.g. include/COMMON)")
+        found = deaddecls.run(root, args.dir, args.packs, args.apply)
+        sizes = [row["declarations"] for row in found["layers"]]  # type: ignore[attr-defined]
+        print(f"dead-decls {found['dead']} in {found['headers']} headers, layers {sizes}", file=sys.stderr)
+        return found, 0, []
     got = cleanup.count(root, args.dir)
     rows = sorted(got["folders"].items(), key=lambda kv: (-kv[1]["count"], kv[0]))
     shown = rows if args.top == 0 else rows[: args.top]
