@@ -321,3 +321,30 @@ def test_setup_runs_one_at_a_time_across_slots(tmp_path):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert peak[0] == 1
+
+
+def test_a_lock_whose_named_holder_is_gone_is_broken(tmp_path):
+    import fcntl
+    import os
+
+    lock = tmp_path / ".stamp-0.lock"
+    orphan = os.open(lock, os.O_CREAT | os.O_RDWR)  # an orphan child kept the flock after its stamp died
+    fcntl.flock(orphan, fcntl.LOCK_EX)
+    lock.write_text("999999999\n")
+    with stampbuild.slot(tmp_path, 1, 0) as one:
+        assert one == "STAMP-S0"
+        assert stampbuild.holder_of(lock) == os.getpid()
+    os.close(orphan)
+
+
+def test_a_busy_pool_names_the_live_holder(tmp_path):
+    import pytest
+
+    from abu_decomp import DecompError
+
+    with (
+        stampbuild.slot(tmp_path, 1, 0),
+        pytest.raises(DecompError, match=r"STAMP-S0: pid \d+ \(live"),
+        stampbuild.slot(tmp_path, 1, 0),
+    ):
+        pass

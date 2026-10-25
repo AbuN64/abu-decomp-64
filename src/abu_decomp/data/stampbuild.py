@@ -13,6 +13,7 @@ stamp left behind by a killed run (10-24). A slot at another commit, or whose la
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import os
 import subprocess
@@ -53,19 +54,65 @@ def busy_in(tree: Path, proc: Path = Path("/proc")) -> list[int]:
     return found
 
 
+def holder_of(path: Path) -> int | None:
+    """The pid a lock file names as its holder (written on every take), or None."""
+    try:
+        return int(path.read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def alive(pid: int, proc: Path = Path("/proc")) -> bool:
+    return (proc / str(pid)).exists()
+
+
+def describe(path: Path, proc: Path = Path("/proc")) -> str:
+    """Who holds the lock, for a refusal: pid, command line, age of the claim."""
+    pid = holder_of(path)
+    if pid is None:
+        return "an unknown holder"
+    try:
+        cmd = (proc / str(pid) / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()
+    except OSError:
+        cmd = ""
+    age = ""
+    with contextlib.suppress(OSError):
+        age = f", claimed {time.time() - path.stat().st_mtime:.0f}s ago"
+    return f"pid {pid} ({'live: ' + cmd[:120] if cmd else 'gone'}){age}"
+
+
+def take(path: Path) -> int | None:
+    """The fd of an exclusive flock on PATH, or None when held. The file names its holder. A lock whose named holder is
+    gone is stale (an orphan forked from it kept the flock): the file is replaced by a fresh one, which no orphan can
+    hold, and taken. The fd never reaches a child process."""
+    for _ in range(2):
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o664)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            pid = holder_of(path)
+            if pid is not None and not alive(pid):
+                with contextlib.suppress(OSError):
+                    path.unlink()  # a new inode: the orphan keeps the old one, nobody waits on it
+                continue
+            return None
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        return fd
+    return None
+
+
 @contextmanager
 def slot(folder: Path, count: int, wait: float = 900.0) -> Iterator[str]:
-    """The lane name of a stamp slot nobody else holds (a flock the kernel drops with the process) and no process still works in
-    (busy_in); waits for one. The lease is exclusive until release: no other stamp reuses, resets or prunes the tree."""
+    """The lane name of a stamp slot nobody else holds (a flock the kernel drops with the process, a dead holder's lock
+    broken by `take`) and no process still works in (busy_in); waits for one, then refuses naming the holders."""
     folder.mkdir(parents=True, exist_ok=True)
     end = time.monotonic() + wait
     while True:
         for i in range(count):
-            fd = os.open(folder / f".stamp-{i}.lock", os.O_CREAT | os.O_RDWR, 0o664)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                os.close(fd)
+            fd = take(folder / f".stamp-{i}.lock")
+            if fd is None:
                 continue
             if busy_in(folder / f"STAMP-S{i}"):
                 os.close(fd)
@@ -76,19 +123,27 @@ def slot(folder: Path, count: int, wait: float = 900.0) -> Iterator[str]:
                 os.close(fd)
             return
         if time.monotonic() > end:
-            raise DecompError("data.stamp", f"all {count} stamp trees are busy after {wait:.0f}s (ABU_STAMP_TREES)")
+            who = "; ".join(f"STAMP-S{i}: {describe(folder / f'.stamp-{i}.lock')}" for i in range(count))
+            raise DecompError(
+                "data.stamp", f"all {count} stamp trees are busy after {wait:.0f}s (ABU_STAMP_TREES): {who}"
+            )
         time.sleep(2)
 
 
 @contextmanager
-def setup_lock(shared: Path) -> Iterator[None]:
+def setup_lock(shared: Path, wait: float = 900.0) -> Iterator[None]:
     """One `unbake setup` at a time across the slots: it writes beside the shared tree (tools, caches) that the other slot's
-    make is running from (10-24: a stamp's ROM check failed with no output while another diff was being extracted)."""
+    make is running from (10-24: a stamp's ROM check failed with no output while another diff was being extracted).
+    Waits `wait` seconds, then refuses naming the holder."""
     folder = worktree.base(shared)
     folder.mkdir(parents=True, exist_ok=True)
-    fd = os.open(folder / ".stamp-setup.lock", os.O_CREAT | os.O_RDWR, 0o664)
+    path = folder / ".stamp-setup.lock"
+    end = time.monotonic() + wait
+    while (fd := take(path)) is None:
+        if time.monotonic() > end:
+            raise DecompError("data.stamp", f"the setup lock is held after {wait:.0f}s by {describe(path)}")
+        time.sleep(2)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
         os.close(fd)
@@ -143,7 +198,11 @@ def build(cfg: DataConfig, profile: Any, shared: Path, diff: Path, stamps: Path,
             f"the seed tree {shared} is {lag} commits behind main: a stamp seeded from it rebuilds from stale asm and objects. "
             "Refresh it (pool-mint.sh --refresh) and retry"
         )
-        return {"stamp": "not stamped: seed tree behind main"}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]
+        return (
+            {"stamp": "not stamped: seed tree behind main"},
+            1,
+            [{"key": "data.stamp", "blocking": True, "message": msg}],
+        )
     with slot(worktree.base(shared), trees()) as lane:
         return _build(cfg, profile, shared, diff, stamps, at, text, lane)
 
@@ -200,10 +259,17 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane):
             # diff broke the de ROM at the train, which links). Incremental: the objects are the ones just built.
             rc, report = builder.rom_check()
             if rc and not tree.is_dir():
-                return {"worktree": made}, 1, [{
-                    "key": "data.stamp", "blocking": True,
-                    "message": f"stamp tree {lane} ({tree}) vanished during the build: another process removed it; retry the stamp",
-                }]
+                return (
+                    {"worktree": made},
+                    1,
+                    [
+                        {
+                            "key": "data.stamp",
+                            "blocking": True,
+                            "message": f"stamp tree {lane} ({tree}) vanished during the build: another process removed it; retry the stamp",
+                        }
+                    ],
+                )
             if rc:
                 kept = True  # the failed tree stays (its build/ and .stamp-rom.log) until the slot is next used
                 findings = [{"key": "data.rom", "blocking": True, "message": f"ROM check failed: {report}"}]
