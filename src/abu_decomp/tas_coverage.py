@@ -665,7 +665,13 @@ def latest_runs(cfg: dict[str, Any]) -> dict[str, Path]:
 
 
 def build(
-    profile: Profile, cfg: dict[str, Any], *, oracle: bool = True, jobs: int = 0, table_only: bool = False
+    profile: Profile,
+    cfg: dict[str, Any],
+    *,
+    oracle: bool = True,
+    jobs: int = 0,
+    table_only: bool = False,
+    rebaseline: bool = False,
 ) -> dict[str, Any] | None:
     """Union the newest run of every movie: runs/coverage/ (gcovr `--html-details` over the baseline and every
     run's JSON), runs/coverage-table.json (the function table with the oracle). None without a `tas.coverage`
@@ -815,7 +821,11 @@ def build(
         except (OSError, ValueError):
             report["gcovr"] = None
     path = cfg["runs"] / TABLE
-    why = None if table_only else refusal(read_table(cfg), report)
+    old = read_table(cfg)
+    why = None if table_only or rebaseline else refusal(old, report)
+    if rebaseline and old is not None:  # the report in place stays readable beside the new one
+        path.with_name("coverage-table.prev.json").write_text(json.dumps(old, sort_keys=True) + "\n")
+        report["rebaselined"] = covered_functions(old)
     if why:  # never replace a report with one covering fewer functions: the new one lands beside it
         report["refused"] = why
         side = path.with_name("coverage-table.refused.json")

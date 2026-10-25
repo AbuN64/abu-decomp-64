@@ -281,6 +281,25 @@ class RunReportTests(unittest.TestCase):
         self.assertEqual(cov.covered_functions(cov.read_table(self.cfg)), 50)
         self.assertTrue((runs / "coverage-table.refused.json").is_file())
         self.assertFalse((runs / "coverage.new").exists())
+        # --rebaseline (TAS-COVER-3: the join key changed on purpose): the smaller union replaces it, the old stays
+        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None}
+        with (
+            mock.patch.object(cov, "settings", return_value=cov_cfg),
+            mock.patch.object(cov, "latest_runs", return_value={"m": run}),
+            mock.patch.object(cov, "baseline", return_value=runs / "b.json"),
+            mock.patch.object(cov, "gcovr", side_effect=fake_gcovr),
+            mock.patch.object(cov, "universe", return_value=([], {})),
+            mock.patch.object(cov, "union", return_value={"covered": [[]], "summary": {}}),
+            mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
+            mock.patch.object(cov, "oracle_bracket", return_value=None),
+            mock.patch.object(cov, "read_oracle", return_value=None),
+            mock.patch("abu_decomp.tas.read_record", return_value={}),
+        ):
+            report = cov.build(self.profile, self.cfg, oracle=False, jobs=1, rebaseline=True)
+        self.assertNotIn("refused", report)
+        self.assertEqual(report["rebaselined"], 50)
+        self.assertEqual(cov.covered_functions(cov.read_table(self.cfg)), 3)
+        self.assertEqual(cov.covered_functions(json.loads((runs / "coverage-table.prev.json").read_text())), 50)
 
     def test_functions_whose_source_moved_between_merged_builds_are_flagged(self):
         a = {"x.c:f": "1-9", "x.c:g": "10-20", "x.c:h": "30-40"}

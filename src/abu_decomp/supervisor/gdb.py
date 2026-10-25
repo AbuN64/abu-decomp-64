@@ -25,6 +25,38 @@ def decode_stream(record):
 _MI_ASYNC = re.compile(r"[=*+][a-z][a-z-]*(,|$)")
 
 
+def event_commands(spec, pointer_bytes):
+    """gdb `dprintf` lines for N64C_TRACE_EVENTS (`FUNC[/N],...`): at each FUNC's first instruction print
+    `EV|FUNC|a0|..|aN-1` (its first N integer arguments, read the way the ABI passes them at entry: the stack above the
+    return address for a 32-bit port, rdi rsi rdx rcx r8 r9 for a 64-bit one). The bridge appends these lines to
+    RUN/events.txt in the order the port hit them (TAS-COVER-5/6 wrote these by hand; an argument named by a symbol
+    the port lacks stalls gdb, a register or stack read never does)."""
+    regs = ("$rdi", "$rsi", "$rdx", "$rcx", "$r8", "$r9")
+    out = []
+    for item in (s.strip() for s in spec.split(",")):
+        if not item:
+            continue
+        name, _, count = item.partition("/")
+        n = min(int(count or 0), 6)
+        if pointer_bytes == 8:
+            args = [f"(long){regs[i]}" for i in range(n)]
+        else:
+            args = [f"*(int*)($esp+{4 + 4 * i})" for i in range(n)]
+        fmt = "EV|" + name + "|%d" * n + "\\n"
+        out.append(f'dprintf *{name},"{fmt}"' + "".join(", " + a for a in args))
+    return out
+
+
+def pointer_size(path):
+    """4 or 8 from an ELF file's class byte, else 8."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(5)
+        return 4 if head[:4] == b"\x7fELF" and head[4] == 1 else 8
+    except OSError:
+        return 8
+
+
 def is_mi_async(record):
     """An MI async record (`=thread-created,...`, `*running,...`, `+download,...`): a class word right after the sign.
     Inferior output that only starts with one of those signs is not one: AddressSanitizer opens every report with
@@ -78,6 +110,11 @@ class Bridge:
             record = raw.decode(errors="replace").rstrip("\r\n")
             if record.startswith(("~", "@", "&")):
                 value = decode_stream(record)
+                if record[0] == "~" and value.startswith("EV|"):
+                    self.run_dir.mkdir(parents=True, exist_ok=True)
+                    with (self.run_dir / "events.txt").open("a") as out:
+                        out.write(value if value.endswith("\n") else value + "\n")
+                    continue
                 if record[0] == "@":
                     print(value, end="" if value.endswith("\n") else "\n", flush=True)
                 elif self.stack_mode == "visible" and record[0] == "~":
@@ -246,6 +283,13 @@ class Bridge:
                 for command in Path(init).read_text().splitlines():
                     if command.strip() and not command.startswith("#"):
                         await self.cli(command)
+            events = os.environ.get("N64C_TRACE_EVENTS")
+            if events:
+                await self.cli("set dprintf-style gdb")
+                for command in event_commands(events, pointer_size(self.argv[0])):
+                    response = await self.cli(command)
+                    if "^error" in response:
+                        print("[gdb] trace event refused: " + command + ": " + response[-160:], flush=True)
             token = await self.send("-exec-run")
             response = await self.result(token)
             if response.startswith(str(token) + "^error"):

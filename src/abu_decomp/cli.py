@@ -414,6 +414,12 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     coverage.add_argument(
         "--jobs", type=int, default=0, help="parallel oracle replays (default 0: the host slot pool capacity)"
     )
+    coverage.add_argument(
+        "--rebaseline",
+        action="store_true",
+        help="replace the report in place even when the new union covers fewer functions (the join key or the port "
+        "build changed on purpose); the old one is kept as coverage-table.prev.json",
+    )
     actions.add_parser("serve", help="serve the TAS page: every replay's picture, sound, log and the cycle state")
     triage = actions.add_parser(
         "triage", help="the findings of batch runs, sweeps and checks grouped by root cause, strongest bucket first"
@@ -550,6 +556,20 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         help="with --from and no movie: replay the point at turbo, then drive live; saved as a new movie",
     )
     play.add_argument(
+        "--trace-events",
+        metavar="FUNC[/N],...",
+        help="under the gdb bridge: log each call of FUNC (and its first N integer arguments) to RUN/events.txt",
+    )
+    play.add_argument("--gdb-init", type=Path, metavar="FILE", help="gdb commands run before the port starts")
+    play.add_argument(
+        "--fault-gdb", type=Path, metavar="FILE", help="gdb commands run at a host fault (RUN/signal-extra.txt)"
+    )
+    play.add_argument(
+        "--fpe-tolerate",
+        action="store_true",
+        help="count guest float traps (RUN/fpe-tolerated.txt) and run on instead of stopping at the first",
+    )
+    play.add_argument(
         "--no-state-diff",
         action="store_true",
         help="skip the region-by-region game state comparison with the original (findings.jsonl)",
@@ -617,7 +637,12 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         from abu_decomp import tas_coverage
 
         report = tas_coverage.build(
-            profile, tas.settings(profile), oracle=not args.no_oracle, jobs=args.jobs, table_only=args.table_only
+            profile,
+            tas.settings(profile),
+            oracle=not args.no_oracle,
+            jobs=args.jobs,
+            table_only=args.table_only,
+            rebaseline=getattr(args, "rebaseline", False),
         )
         if report is None:
             raise DecompError("tas.coverage", "the profile has no tas.coverage section")
@@ -631,6 +656,17 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         return tas.show(profile, args.name), 0, []
     if args.action == "delete":
         return tas.delete(profile, args.name), 0, []
+    # gdb bridge inputs (the bridge reads them from its environment; TAS-COVER-4/5 set the variables by hand)
+    for flag, var in (("gdb_init", "N64C_GDB_INIT"), ("fault_gdb", "N64C_FAULT_GDB")):
+        given = getattr(args, flag, None)
+        if given:
+            if not Path(given).is_file():
+                raise DecompError("tas.play", f"--{flag.replace('_', '-')} {given} is no file")
+            os.environ[var] = str(Path(given).resolve())
+    if getattr(args, "fpe_tolerate", False):
+        os.environ["N64C_GDB_FPE_TOLERATE"] = "1"
+    if getattr(args, "trace_events", None):
+        os.environ["N64C_TRACE_EVENTS"] = args.trace_events
     inspect = {"shots_every": args.shots_every, "dump_ram_at": args.dump_ram_at, "trace_draws": args.trace_draws}
     if args.twice and any(inspect.values()):
         raise DecompError("tas.play", "--twice compares two plain runs; inspect with a single replay")
