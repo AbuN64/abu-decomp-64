@@ -64,3 +64,17 @@ class ProofTests(unittest.TestCase):
         self.assertEqual((split.command, split.project, split.args), (plain.command, plain.project, plain.args))
         bare = cli._tool_call(["unbake", "--", "sync"])
         self.assertEqual((bare.project, bare.args), (None, ["sync"]))
+
+    def test_tree_is_the_project_flag_and_make_defaults_to_the_callers_tree(self):
+        parsed = cli._tool_call(["--profile", "p.json", "make", "--tree", "t", "check"])
+        self.assertEqual((str(parsed.project), parsed.args), ("t", ["check"]))
+        lane = Path(self.temp.name) / "lane"
+        args = mock.Mock(profile=None, args=["check"], project=None, host=None)
+        with (
+            mock.patch.object(cli, "_profile", return_value=self.profile),
+            mock.patch("abu_decomp.tools.cwd_project", return_value=lane) as picked,
+            mock.patch.object(proof, "run", return_value=({}, 0, [])) as ran,
+        ):
+            cli._run_make(args)
+        self.assertEqual(picked.call_args.args[1:], ("make", ["check"], None))
+        self.assertEqual(ran.call_args.kwargs["project"], lane)  # not the seat tree

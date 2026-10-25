@@ -48,6 +48,7 @@ def run(
     chosen = tools.settings(profile, project, host)
     argv = command(profile, chosen.project, list(args))
     started, tail = time.monotonic(), deque(maxlen=TAIL_LINES)
+    print(f"decomp: make in {chosen.project}", file=sys.stderr)
     try:
         # make rewrites build/ and the extraction a ship's check reads: it holds the tree lock as the ship does
         with treelock.hold(chosen.project, exclusive=True, who="make"):
@@ -69,7 +70,7 @@ def run(
     except OSError as exc:
         raise DecompError("proof.process", f"cannot execute {argv[0]}: {exc}") from exc
     wall = round(time.monotonic() - started, 1)
-    result = {"exit": code, "wall_seconds": wall, "command": argv[1:]}
+    result = {"exit": code, "wall_seconds": wall, "command": argv[1:], "project": str(chosen.project)}
     if code == 0:
         return result, 0, []
     return (

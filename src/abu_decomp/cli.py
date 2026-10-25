@@ -54,7 +54,12 @@ def _passthrough(parser: argparse.ArgumentParser) -> None:
 
 
 def _tool_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--project", type=Path, help="the project tree to act on (default: the profile's project)")
+    parser.add_argument(
+        "--project",
+        "--tree",
+        type=Path,
+        help="the project tree to act on (default: the work tree of the current directory, else the profile's project)",
+    )
     parser.add_argument("--host", type=Path, help="the unbake host file for that tree (default: the profile's host)")
     _passthrough(parser)
 
@@ -103,8 +108,12 @@ def _run_tool(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 
 def _run_make(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import proof
+    from abu_decomp.tools import cwd_project
 
-    return proof.run(_profile(args.profile), args.args, project=args.project, host=args.host)
+    profile = _profile(args.profile)
+    # the tree the caller stands in, as the unbake and recipe verbs do (a bare make built the seat tree 4 times)
+    project = cwd_project(profile, "make", args.args, args.project)
+    return proof.run(profile, args.args, project=project, host=args.host)
 
 
 def _port_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1322,8 +1331,9 @@ def _tool_call(args: list[str]) -> argparse.Namespace | None:
         rest = rest[1:]
     while rest:
         flag, eq, value = rest[0].partition("=")
-        if flag not in ("--project", "--host"):
+        if flag not in ("--project", "--tree", "--host"):
             break
+        flag = "--project" if flag == "--tree" else flag
         if eq:
             rest = rest[1:]
         elif len(rest) > 1:
