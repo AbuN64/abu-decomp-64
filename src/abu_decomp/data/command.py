@@ -190,6 +190,11 @@ def _apply_diff(args: argparse.Namespace) -> bool:
         ["git", "-C", str(args.tree), "apply", str(args.diff.resolve())], capture_output=True, text=True
     )
     if done.returncode:
+        held = subprocess.run(  # the diff reversed applies: the tree already holds it, committed (pass --since REV for its base)
+            ["git", "-C", str(args.tree), "apply", "--check", "-R", str(args.diff.resolve())], capture_output=True
+        )
+        if held.returncode == 0:
+            return False
         raise DecompError("data.check", f"{args.diff.name} does not apply to {args.tree}: {done.stderr.strip()[:200]}")
     return True
 

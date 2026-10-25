@@ -298,3 +298,20 @@ def test_stamp_dir_is_never_the_working_directory(tmp_path, monkeypatch):
     monkeypatch.setenv("DECOMP_DATA_CONFIG", str(tmp_path / "cfg/rw.toml"))
     assert stamp.stamp_dir(None, None) == tmp_path / "cfg/stamps"
     assert stamp.stamp_dir(None, tmp_path / "other/x.toml") == tmp_path / "other/stamps"
+
+
+def test_check_diff_already_committed_in_the_tree_is_no_refusal(tmp_path: Path):
+    from abu_decomp.data import command
+
+    def git(*a):
+        return subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True, capture_output=True, text=True).stdout
+
+    git("init", "-q")
+    (tmp_path / "a.c").write_text("one\n")
+    git("add", "a.c"), git("commit", "-qm", "base")
+    (tmp_path / "a.c").write_text("two\n")
+    diff = tmp_path.parent / "held.diff"
+    diff.write_text(git("diff"))
+    git("commit", "-qam", "change")  # the lane committed it: the diff no longer applies forward
+    args = type("A", (), {"diff": diff, "write_baseline": False, "tree": tmp_path})()
+    assert command._apply_diff(args) is False
