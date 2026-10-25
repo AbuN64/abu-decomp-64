@@ -36,9 +36,27 @@ def trees() -> int:
     return max(1, int(os.environ.get("ABU_STAMP_TREES") or 2))
 
 
+def busy_in(tree: Path, proc: Path = Path("/proc")) -> list[int]:
+    """Pids (other than ours) with their working directory inside TREE: the orphaned make/cc1 of a stamp that was killed by a
+    cap (SIGTERM reaches only the tool, its children go on). The slot flock died with that stamp, but its jobs still write the
+    tree, so the next stamp would reset and rebuild it under them (10-24: a reused STAMP-S1 linked no ROM in any version)."""
+    root, mine, found = str(tree), os.getpid(), []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit() or int(entry.name) == mine:
+            continue
+        try:
+            cwd = os.readlink(entry / "cwd")
+        except OSError:
+            continue
+        if cwd == root or cwd.startswith(root + "/"):
+            found.append(int(entry.name))
+    return found
+
+
 @contextmanager
 def slot(folder: Path, count: int, wait: float = 900.0) -> Iterator[str]:
-    """The lane name of a stamp slot nobody else holds (a flock the kernel drops with the process); waits for one."""
+    """The lane name of a stamp slot nobody else holds (a flock the kernel drops with the process) and no process still works in
+    (busy_in); waits for one. The lease is exclusive until release: no other stamp reuses, resets or prunes the tree."""
     folder.mkdir(parents=True, exist_ok=True)
     end = time.monotonic() + wait
     while True:
@@ -47,6 +65,9 @@ def slot(folder: Path, count: int, wait: float = 900.0) -> Iterator[str]:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
+                os.close(fd)
+                continue
+            if busy_in(folder / f"STAMP-S{i}"):
                 os.close(fd)
                 continue
             try:
@@ -171,6 +192,11 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane):
             # A stamp means the 5 ROMs match: the units built, now link each version and compare its hash (10-24: a stamped
             # diff broke the de ROM at the train, which links). Incremental: the objects are the ones just built.
             rc, report = builder.rom_check()
+            if rc and not tree.is_dir():
+                return {"worktree": made}, 1, [{
+                    "key": "data.stamp", "blocking": True,
+                    "message": f"stamp tree {lane} ({tree}) vanished during the build: another process removed it; retry the stamp",
+                }]
             if rc:
                 kept = True  # the failed tree stays (its build/ and .stamp-rom.log) until the slot is next used
                 findings = [{"key": "data.rom", "blocking": True, "message": f"ROM check failed: {report}"}]

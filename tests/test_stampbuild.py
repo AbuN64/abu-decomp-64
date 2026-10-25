@@ -103,6 +103,22 @@ def test_slots_are_exclusive_and_a_full_pool_times_out(tmp_path):
         assert again == "STAMP-S0"
 
 
+def test_a_slot_whose_tree_still_has_a_working_process_is_skipped(tmp_path):
+    # the orphan of a stamp killed by a cap: its flock is gone but its make still runs inside STAMP-S0
+    (tmp_path / "STAMP-S0" / "build").mkdir(parents=True)
+    child = subprocess.Popen(["sleep", "30"], cwd=tmp_path / "STAMP-S0" / "build")
+    try:
+        assert stampbuild.busy_in(tmp_path / "STAMP-S0") == [child.pid]
+        assert stampbuild.busy_in(tmp_path / "STAMP-S1") == []
+        with stampbuild.slot(tmp_path, 2, 0) as lane:
+            assert lane == "STAMP-S1"
+    finally:
+        child.kill()
+        child.wait()
+    with stampbuild.slot(tmp_path, 2, 0) as lane:
+        assert lane == "STAMP-S0"
+
+
 def git_tree(path):
     import os
 
@@ -191,6 +207,22 @@ def test_a_stamp_needs_the_rom_check_to_pass(tmp_path, monkeypatch):
     _r, code, findings = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 1 and findings[0]["key"] == "data.rom" and "de ROM differs" in findings[0]["message"]
     assert not stamp_mod.stamped(tmp_path / "stamps", DIFF)
+
+
+def test_a_tree_removed_under_the_build_is_named_not_reported_as_a_rom_failure(tmp_path, monkeypatch):
+    import shutil
+
+    from abu_decomp.data import trial
+
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+
+    def gone(self):
+        shutil.rmtree(self.tree)
+        return 2, "no ROM was linked"
+
+    monkeypatch.setattr(trial.Builder, "rom_check", gone)
+    _r, code, findings = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 1 and findings[0]["key"] == "data.stamp" and "vanished during the build" in findings[0]["message"]
 
 
 def test_rom_check_runs_the_configured_make_arguments_and_is_skipped_without_them(tmp_path):
