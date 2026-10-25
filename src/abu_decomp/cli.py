@@ -1194,16 +1194,20 @@ def _run_owes(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "verb",
-        choices=["count", "dead-decls", "slices"],
+        choices=["count", "dead-decls", "slices", "ledger"],
         help="count: placeholder names (func_/D_/unk/pad/spNN/var_/argN) per folder; dead-decls: the declarations of"
         " --dir (a header folder) nothing reads, as layered removal packs; slices: one owner for every placeholder"
-        " target (80-100 functions per slice), the lane ownership files the name ledger gates on",
+        " target (80-100 functions per slice), the lane ownership files the name ledger gates on; ledger: the name"
+        " ledger's queue, batches, rows accepted/refused per lane and slice progress (WATCH)",
     )
     parser.add_argument(
         "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
     )
     parser.add_argument("--dir", help="only this folder and below (src/game/MENU_2, game/MENU_2 or the leaf MENU_2)")
     parser.add_argument("--rev", help="count: the sources of this commit, read from git (no checkout)")
+    parser.add_argument("--distinct", action="store_true", help="count: also the number of different names per class")
+    parser.add_argument("--hours", type=float, default=1.0, help="ledger: the window the per-lane rates cover")
+    parser.add_argument("--names", type=Path, help="ledger: the name book directory (default ~/rig-state/names)")
     parser.add_argument("--top", type=int, default=15, help="folders listed, most placeholders first (0 = every one)")
     parser.add_argument("--packs", type=Path, help="dead-decls: write one diff per layer here (dead-decls-L<n>.diff)")
     parser.add_argument("--apply", action="store_true", help="dead-decls: write layer 0 into the tree")
@@ -1222,6 +1226,27 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
 def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import cleanup, tools
 
+    if args.verb == "ledger":
+        book = args.names or Path("~/rig-state/names").expanduser()
+        found = cleanup.ledger(book, args.hours)
+        rows = found["rows"]
+        print(
+            f"ledger rows queued {rows['queued']} inflight {rows['inflight']} landed {rows['landed']} returned"
+            f" {rows['returned']}; batches landed {found['batches']['landed']}",
+            file=sys.stderr,
+        )
+        for lane, got in sorted(found["lanes"].items()):
+            print(
+                f"  {lane}: accepted {got['accepted']} refused {got['refused']} ({got['rows_per_hour']}/h)"
+                f" {got['by_rule']}",
+                file=sys.stderr,
+            )
+        for lane, got in sorted(found["slices"].items()):
+            print(
+                f"  slice {got['slice']} ({lane}): {got['named_fns']}/{got['owned_fns']} fns have a row",
+                file=sys.stderr,
+            )
+        return found, 0, []
     root = tools.project_dir(_profile(args.profile), _own_tree(args, "cleanup"))
     if args.verb == "slices":
         argv = cleanup.slices_argv(args.lanes, args.map, args.assign, args.names)
@@ -1245,12 +1270,18 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
     if rev and args.evidence:
         raise DecompError("cleanup.rev", "--evidence reads a built work tree: count --rev without it")
     try:
-        got = cleanup.count(root, args.dir, rev)
+        got = cleanup.count(root, args.dir, rev, getattr(args, "distinct", False))
     except ValueError as e:
         raise DecompError("cleanup.rev", str(e)) from None
     rows = sorted(got["folders"].items(), key=lambda kv: (-kv[1]["count"], kv[0]))
     shown = rows if args.top == 0 else rows[: args.top]
     print(f"placeholders {got['total']} " + " ".join(f"{k}={v}" for k, v in got["classes"].items()), file=sys.stderr)
+    if "distinct" in got:
+        print(
+            f"distinct {got['distinct']['total']} "
+            + " ".join(f"{k}={v}" for k, v in got["distinct"]["classes"].items()),
+            file=sys.stderr,
+        )
     found: dict[str, Any] = {}
     if args.evidence:
         profile = _profile(args.profile)

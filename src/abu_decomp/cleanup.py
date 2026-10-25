@@ -32,6 +32,7 @@ EVIDENCE: dict[str, tuple[str, tuple[str, ...]]] = {
     "N4": ("data", ("data",)),
     "N5": ("functions", ("func",)),
 }
+LOCAL = frozenset({"sp", "var", "arg"})  # a slot is scoped by its function: distinct names are counted per file
 SUFFIXES = (".c", ".cpp", ".h")
 ROOTS = ("src/", "include/")
 
@@ -67,6 +68,15 @@ def count_text(text: str) -> Counter[str]:
     return Counter({name: len(rx.findall(text)) for name, rx in CLASSES.items()})
 
 
+def distinct_text(path: str, text: str) -> dict[str, set[Any]]:
+    """The distinct placeholder names of one file per class: a name, or (file, name) for the slot classes."""
+    out: dict[str, set[Any]] = {}
+    for name, rx in CLASSES.items():
+        found = set(rx.findall(text))
+        out[name] = {(path, t) for t in found} if name in LOCAL else found
+    return out
+
+
 def tracked(root: Path, rev: str | None = None) -> list[str]:
     """The source files under src/ and include/: tracked in the work tree, or held by commit REV."""
     argv = ["ls-tree", "-r", "-z", "--name-only", rev, "--", *ROOTS] if rev else ["ls-files", "-z", "--", *ROOTS]
@@ -97,12 +107,14 @@ def _texts(root: Path, rev: str, paths: list[str]) -> dict[str, str]:
     return out
 
 
-def count(root: Path, only: str | None = None, rev: str | None = None) -> dict[str, Any]:
+def count(root: Path, only: str | None = None, rev: str | None = None, distinct: bool = False) -> dict[str, Any]:
     """{"total", "classes", "folders": {folder: {"count", classes..., "files"}}} over the tracked tree, or over commit
     REV without a checkout (CLEAN-PLAN-O1 counted commits with its own git grep); `only` keeps the folders equal to it
-    or under it (a leaf name such as MENU_2 also matches)."""
+    or under it (a leaf name such as MENU_2 also matches). `distinct` adds the number of different names per class
+    ("distinct": {"total", "classes"}, and per folder): a rename pass removes names, not occurrences."""
     folders: dict[str, Counter[str]] = {}
     files: Counter[str] = Counter()
+    names: dict[str, dict[str, set[Any]]] = {}  # folder -> class -> distinct names (only with `distinct`)
     want = (only or "").strip("/").removeprefix("src/")
     paths = [
         p
@@ -118,12 +130,27 @@ def count(root: Path, only: str | None = None, rev: str | None = None) -> dict[s
             continue
         folders.setdefault(folder, Counter()).update(count_text(text))
         files[folder] += 1
+        if distinct:
+            mine = names.setdefault(folder, {k: set() for k in CLASSES})
+            for k, found in distinct_text(path, text).items():
+                mine[k] |= found
     total: Counter[str] = Counter()
     rows = {}
     for folder, got in sorted(folders.items()):
         total.update(got)
         rows[folder] = {"count": sum(got.values()), **{k: got[k] for k in CLASSES}, "files": files[folder]}
-    return {"total": sum(total.values()), "classes": {k: total[k] for k in CLASSES}, "folders": rows}
+    out: dict[str, Any] = {"total": sum(total.values()), "classes": {k: total[k] for k in CLASSES}, "folders": rows}
+    if distinct:
+        every: dict[str, set[Any]] = {k: set() for k in CLASSES}
+        for folder, mine in names.items():
+            rows[folder]["distinct"] = sum(len(v) for v in mine.values())
+            for k, found in mine.items():
+                every[k] |= found
+        out["distinct"] = {
+            "total": sum(len(v) for v in every.values()),
+            "classes": {k: len(v) for k, v in every.items()},
+        }
+    return out
 
 
 def evidence(
@@ -152,3 +179,76 @@ def evidence(
                     "no_evidence": int(result.get("no_evidence", 0)),
                 }
     return out
+
+
+def _stamp(ts: str) -> float:
+    import time
+
+    return time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+
+
+def _lines(path: Path) -> list[dict[str, Any]]:
+    import json
+
+    if not path.is_file():
+        return []
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def ledger(names: Path, hours: float = 1.0, now: float | None = None) -> dict[str, Any]:
+    """WATCH's view of the name ledger (`names` = ~/rig-state/names): queue and batch counts, per lane the rows
+    submitted, accepted and refused in the last `hours` (with the refusing rules), rows accepted per hour, and per slice
+    how many of its functions have an accepted row. Read from the ledger, submits, events and slices files; nothing
+    is written."""
+    import json
+    import time
+
+    now = now or time.time()
+    rows = _lines(names / "ledger.jsonl")
+    state = {r["seq"]: "queued" for r in rows}
+    batches: dict[int, str] = {}
+    for e in _lines(names / "events.jsonl"):
+        batch = e.get("batch", 0)
+        word = {"made": "inflight", "landed": "landed", "returned": "returned", "requeued": "queued"}.get(
+            e.get("event", "")
+        )
+        for seq in e.get("seqs", ()):
+            if word and seq in state:
+                state[seq] = word
+        if e.get("event") in ("made", "landed"):
+            batches[batch] = e["event"]
+    window: dict[str, dict[str, Any]] = {}
+    for sub in _lines(names / "submits.jsonl"):
+        if now - _stamp(sub["ts"]) > hours * 3600:
+            continue
+        lane = window.setdefault(sub["lane"], {"submitted": 0, "accepted": 0, "refused": 0, "by_rule": {}})
+        lane["submitted"] += sub["rows"]
+        lane["accepted"] += sub["accepted"]
+        lane["refused"] += sub["refused"]
+        for rule, n in sub.get("by_rule", {}).items():
+            lane["by_rule"][rule] = lane["by_rule"].get(rule, 0) + n
+    for lane in window.values():
+        lane["rows_per_hour"] = round(lane["accepted"] / hours, 1)
+    slices = {}
+    for path in sorted((names / "slices").glob("*.json")) if (names / "slices").is_dir() else []:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        owned = set(doc.get("fns", ()))
+        named = {r["key"] for r in rows if r["key"] in owned and state.get(r["seq"]) != "returned"}
+        slices[path.stem] = {"slice": doc.get("slice", ""), "owned_fns": len(owned), "named_fns": len(named)}
+    tally = Counter(state.values())
+    return {
+        "hours": hours,
+        "rows": {k: tally.get(k, 0) for k in ("queued", "inflight", "landed", "returned")},
+        "batches": {
+            "made": sum(1 for v in batches.values() if v == "made"),
+            "landed": sum(1 for v in batches.values() if v == "landed"),
+        },
+        "lanes": window,
+        "slices": slices,
+    }

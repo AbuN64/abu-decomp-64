@@ -139,3 +139,59 @@ def test_cleanup_slices_runs_recipe_in_the_project_and_refuses_when_recipe_does(
         assert "no evidence" in str(e)
     else:
         raise AssertionError("a refused slicer returned")
+
+
+def test_distinct_counts_names_not_occurrences_and_scopes_slots_per_file(tmp_path):
+    def git(*a):
+        subprocess.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True)
+
+    git("init", "-q")
+    for path, text in {
+        "src/game/A/x.c": "func_80000001 func_80000001 D_80000003 sp1C sp1C",
+        "src/game/A/y.c": "func_80000001 sp1C arg0",
+    }.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text)
+    git("add", "-A")
+    got = cleanup.count(tmp_path, distinct=True)
+    assert got["classes"]["func"] == 3 and got["distinct"]["classes"]["func"] == 1  # one function, three spellings
+    assert got["distinct"]["classes"]["sp"] == 2 and got["distinct"]["classes"]["arg"] == 1  # sp1C once per file
+    assert got["distinct"]["total"] == 1 + 1 + 2 + 1 and got["folders"]["game/A"]["distinct"] == 5
+    assert "distinct" not in cleanup.count(tmp_path)
+
+
+def test_ledger_report_counts_rows_lanes_batches_and_slice_progress(tmp_path):
+    import json
+    import time
+
+    now = time.time()
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now - 600))
+    old = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now - 7200))
+    (tmp_path / "slices").mkdir()
+    (tmp_path / "slices/L1.json").write_text(
+        json.dumps({"slice": "S1", "fns": ["fn:us-rev1:80000001", "fn:us-rev1:80000002", "fn:us-rev1:80000003"]})
+    )
+    rows = [{"seq": i, "ts": ts, "lane": "L1", "key": f"fn:us-rev1:8000000{i}"} for i in (1, 2, 3)]
+    (tmp_path / "ledger.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    events = [
+        {"event": "made", "batch": 1, "seqs": [1, 2]},
+        {"event": "landed", "batch": 1, "seqs": [1, 2]},
+        {"event": "returned", "batch": 2, "seqs": [3]},
+    ]
+    (tmp_path / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    subs = [
+        {"ts": ts, "lane": "L1", "rows": 5, "accepted": 3, "refused": 2, "by_rule": {"evidence": 2}},
+        {"ts": old, "lane": "L1", "rows": 9, "accepted": 9, "refused": 0, "by_rule": {}},
+    ]
+    (tmp_path / "submits.jsonl").write_text("".join(json.dumps(r) + "\n" for r in subs))
+    got = cleanup.ledger(tmp_path, hours=1.0, now=now)
+    assert got["rows"] == {"queued": 0, "inflight": 0, "landed": 2, "returned": 1}
+    assert got["batches"] == {"made": 0, "landed": 1}
+    assert got["lanes"]["L1"] == {
+        "submitted": 5,
+        "accepted": 3,
+        "refused": 2,
+        "by_rule": {"evidence": 2},
+        "rows_per_hour": 3.0,
+    }
+    assert got["slices"]["L1"] == {"slice": "S1", "owned_fns": 3, "named_fns": 2}  # the returned row does not count
