@@ -303,6 +303,20 @@ def _stamp(args: argparse.Namespace, cfg) -> str:
         text=True,
     )
     if sorted(done.stdout.split()) != stamp_mod.files_of(text):
+        # The tree holds a second diff's edits, so this check cannot vouch for the named diff alone: build it alone on a
+        # clean slot of the pool (the --build path) instead of leaving the lane stuck (REV1-ONE-16B, 10-24).
+        from abu_decomp import cli, worktree
+
+        pool = worktree.base(args.tree) / "POOL-SRC"
+        if pool.is_dir() and pool.resolve() != args.tree.resolve():
+            result, code, found = stampbuild.build(
+                cfg, cli._profile(args.profile), pool, args.diff, stamp_mod.stamp_dir(args.stamps, args.config)
+            )
+            if code:
+                return "not stamped: the tree holds edits of another diff, so the diff was built alone and failed: " + "; ".join(
+                    f["message"] for f in found
+                )[:400]
+            return str(result.get("stamp"))
         return "not stamped: the tree's changed files are not the diff's files (it still holds edits of an earlier diff, or is on another base). Build the diff alone on a clean main tree: decomp data stamp --diff DIFF --build --tree ~/code/wt/POOL-SRC"
     return str(stamp_mod.write(stamp_mod.stamp_dir(args.stamps, args.config), text))
 

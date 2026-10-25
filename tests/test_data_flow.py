@@ -358,3 +358,35 @@ def test_data_place_carries_the_refusal_of_the_tool(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(cli, "_profile", lambda p: "profile")
     _, code, findings = command._place(argparse.Namespace(tree=tmp_path, check=False, function=["F"], profile=None))
     assert code == 1 and findings == [{"key": "place.gap", "blocking": True, "message": "us: F: its data spans"}]
+
+
+def test_a_check_in_a_tree_holding_another_diff_stamps_by_building_alone(tmp_path, monkeypatch):
+    """`data check --diff X` in a tree that also holds a second diff's edits built X alone on a pool slot (it used to refuse)."""
+    import argparse
+    import subprocess
+    from types import SimpleNamespace
+
+    from abu_decomp import cli
+    from abu_decomp.data import command, stampbuild
+
+    pool = tmp_path / "wt" / "POOL-SRC"
+    pool.mkdir(parents=True)
+    tree = tmp_path / "wt" / "L1"
+    tree.mkdir()
+    diff = tmp_path / "x.diff"
+    diff.write_text("diff --git a/include/a.h b/include/a.h\n--- a/include/a.h\n+++ b/include/a.h\n@@ -1 +1 @@\n-x\n+y\n")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="include/a.h\ninclude/other.h\n", returncode=0))
+    monkeypatch.setattr(cli, "_profile", lambda p: "profile")
+    seen = {}
+
+    def fake_build(cfg, profile, shared, d, stamps, at=None):
+        seen["shared"] = shared
+        return {"stamp": "stamps/ok"}, 0, []
+
+    monkeypatch.setattr(stampbuild, "build", fake_build)
+    args = argparse.Namespace(version=None, unit=None, diff=diff, tree=tree, since=None, stamps=tmp_path / "st", config=None, profile=None)
+    assert command._stamp(args, None) == "stamps/ok" and seen["shared"] == pool
+    monkeypatch.setattr(stampbuild, "build", lambda *a, **k: ({}, 1, [{"message": "bad rom"}]))
+    assert "built alone and failed: bad rom" in command._stamp(args, None)
+    pool.rmdir()  # no pool to build in: the old refusal stays
+    assert "still holds edits" in command._stamp(args, None)
