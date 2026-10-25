@@ -116,7 +116,8 @@ def body(source: str, name: str) -> str | None:
 def foundations(
     tree: Path, ref: str, tsv: str, scores: dict[str, tuple[float, str | None]], rule: str
 ) -> dict[str, Any]:
-    """Per category: bytes, exact % B (score 100, no FAKEMATCH), named % B (rule finds nothing in the body)."""
+    """Per category: bytes, exact % B (map score 100: unbake scores a FAKEMATCH build below it), named % B (rule finds
+    nothing in the body)."""
     named, cache = re.compile(rule), {}
     cats: dict[str, dict[str, Any]] = {}
     for text in tsv.splitlines():
@@ -132,7 +133,7 @@ def foundations(
                 except DecompError:
                     cache[file] = ""
             src = body(cache[file], name)
-        exact = score == 100.0 and src is not None and "FAKEMATCH" not in src
+        exact = score == 100.0
         clean = src is not None and not named.search(src)
         entry = cats.setdefault(
             cat, {"fns": 0, "bytes": 0, "exact_bytes": 0, "named_bytes": 0, "clean_bytes": 0, "failing": []}

@@ -859,8 +859,8 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) tile
 
 /* ---------- phase map (rail tab Map, #map) and #film: /api/phase gate rows, /api/phase/map Hilbert cells ---------- */
 const PH = { phase: null, map: null, etag: null, gone: false, version: null, hover: -1 };
-const MAP_RGB = { 0: "#222222", 1: "#6b7280", 2: "#555555", 3: "#d9a400", 4: "#3b7ddd", 5: "#3b7ddd", 6: "#1aa7a1", 7: "#3fc35a" };
-const MAP_NAMES = { 0: "unassigned", 1: "data / blob / fill", 2: "unmapped (no C)", 3: "fuzzy", 4: "exact", 5: "fakematch", 6: "clean-named", 7: "covered" };
+const MAP_RGB = { 0: "#222222", 1: "#6b7280", 2: "#555555", 3: "#d9a400", 4: "#3b7ddd", 6: "#1aa7a1", 7: "#3fc35a" };
+const MAP_NAMES = { 0: "unassigned", 1: "data / blob / fill", 2: "unmapped (no C)", 3: "fuzzy", 4: "exact", 6: "clean-named", 7: "covered" };
 const hex2 = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
 /* standard Hilbert curve (d -> x,y and back) on an n x n grid, n = 2^order */
 function d2xy(n, d) {

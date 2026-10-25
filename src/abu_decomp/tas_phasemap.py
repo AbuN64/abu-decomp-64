@@ -8,10 +8,11 @@ The map is one cell per `cell_bytes` ROM bytes of the version's code and data se
   only its
 colour changes. A cell's state is the state of the row covering most of its bytes:
 
-  0 unassigned, 1 data / blob / fill, 2 unmapped function (no C), 3 fuzzy, 4 exact, 5 FAKEMATCH, 6 clean-named,
+  0 unassigned, 1 data / blob / fill, 2 unmapped function (no C), 3 fuzzy (a FAKEMATCH build too: its map score is
+  below 100), 4 exact, 6 clean-named,
   7 covered (the port ran it; the high nibble is gcov line % / 10).
 
-Sources, all read without a checkout: `config.toml`, `docs/map-<version>.json` and the FAKEMATCH comments at the
+Sources, all read without a checkout: `config.toml` and `docs/map-<version>.json` at the
   serve pin
 (`tas.serve.pin`, git show / git grep at its HEAD); the coverage table (`<tas.runs>/coverage-table.json`); the seat
 profile's optional `phase` section (module phase: `out` = the phase JSON served as is, `named_rule`, `focus`, and
@@ -46,7 +47,6 @@ STATES = {
     "unmapped": 2,
     "fuzzy": 3,
     "exact": 4,
-    "fakematch": 5,
     "named": 6,
     "covered": 7,
 }
@@ -57,13 +57,11 @@ PALETTE = {
     2: (0x55, 0x55, 0x55),
     3: (0xD9, 0xA4, 0x00),
     4: (0x3B, 0x7D, 0xDD),
-    5: (0x3B, 0x7D, 0xDD),
     6: (0x1A, 0xA7, 0xA1),
     7: (0x3F, 0xC3, 0x5A),
 }
 STRIP_HEIGHT = 32
 DEFAULT_NAMED = r"^(func_|D_)[0-9A-F]{8}"
-_DEFINITION = re.compile(r"^(?:[A-Za-z_]\w*[\s*]+)+\**([A-Za-z_]\w*)\s*\(")
 
 
 # --- reading the sources ---
@@ -102,28 +100,6 @@ def order(total_bytes: int, cell_bytes: int = CELL_BYTES) -> int:
     return k
 
 
-def fakematch_fns(repo: Path, ref: str) -> set[str]:
-    """Functions whose body carries a FAKEMATCH comment: the nearest definition line above each comment."""
-    done = subprocess.run(
-        ["git", "-C", str(repo), "grep", "-l", "FAKEMATCH", ref, "--", "src"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    found: set[str] = set()
-    for entry in done.stdout.split():
-        path = entry.partition(":")[2] or entry
-        text = git_show(repo, ref, path) or ""
-        name = ""
-        for line in text.splitlines():
-            match = _DEFINITION.match(line)
-            if match:
-                name = match.group(1)
-            if "FAKEMATCH" in line and name:
-                found.add(name)
-    return found
-
-
 def foundations(template: str | None, version: str) -> set[str]:
     """Function names of the foundations TSV (category, function, ...); empty when absent."""
     if not template:
@@ -138,14 +114,12 @@ def foundations(template: str | None, version: str) -> set[str]:
 # --- the cells ---
 
 
-def fn_state(row: list[Any], fake: set[str], named: re.Pattern[str], hit: bool) -> int:
+def fn_state(row: list[Any], named: re.Pattern[str], hit: bool) -> int:
     name, score, file = row[0], row[3], row[4] or ""
     if not file or file.endswith(".s"):
         return STATES["unmapped"]
     if score < 100:
         return STATES["fuzzy"]
-    if name in fake:
-        return STATES["fakematch"]
     if hit:
         return STATES["covered"]
     return STATES["exact"] if named.search(name) else STATES["named"]
@@ -156,7 +130,6 @@ def build(
     segs: list[list[int]],
     map_json: dict[str, Any],
     coverage: dict[str, dict[str, Any]],
-    fake: set[str],
     foundation: set[str],
     named: re.Pattern[str],
     ref: str,
@@ -194,7 +167,7 @@ def build(
         name, rom, size = row[0], row[1], row[2]
         cov = coverage.get(name) or {}
         hit = bool((cov.get("port") or {}).get("hit"))
-        state = fn_state(row, fake, named, hit)
+        state = fn_state(row, named, hit)
         pct = cov.get("line_percent") if state == STATES["covered"] else None
         for v_lo, v_hi in virtual(rom, rom + size):
             value = state | (min(15, round((pct or 0) / 10)) << 4 if state == STATES["covered"] else 0)
@@ -271,8 +244,6 @@ def _shade(state_value: int, x: int, y: int) -> tuple[int, int, int]:
     if state == STATES["covered"]:
         scale = 0.55 + 0.45 * min(10, state_value >> 4) / 10 if state_value >> 4 else 1.0
         return int(r * scale), int(g * scale), int(b * scale)
-    if state == STATES["fakematch"] and (x + y) % 4 < 2:
-        return int(r * 0.6), int(g * 0.6), int(b * 0.6)
     return r, g, b
 
 
@@ -459,7 +430,6 @@ class Phase:
             segs,
             map_json,
             coverage,
-            fakematch_fns(self.pin, sha),
             foundations(self.foundation_template(version), version),
             self.named,
             sha,

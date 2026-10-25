@@ -32,7 +32,7 @@ segments = [
 FNS = [
     ["Fuzz", 0x100, 0x40, 50.0, "src/a.c", 1],
     ["Covered", 0x140, 0x40, 100.0, "src/a.c", 2],
-    ["FakeFn", 0x180, 0x20, 100.0, "src/b.c", 3],
+    ["FakeFn", 0x180, 0x20, 99.0, "src/b.c", 3],
     ["func_80001234", 0x1A0, 0x20, 100.0, "src/b.c", 4],
     ["NoC", 0x1C0, 0x20, 0.0, "", 5],
     ["Named", 0x1E0, 0x20, 100.0, "src/b.c", 6],
@@ -44,9 +44,10 @@ MAP = {
     "blobs": [["x", 0x200, 0x80, "d", "g"]],
     "spans": {"data": [[0x300, 0x340]]},
 }
-# virtual cells (8 B each): 0-7 fuzzy, 8-15 covered at 80 % (7 | 8 << 4), 16-19 fakematch, 20-23 exact, 24-27 unmapped,
+# virtual cells (8 B each): 0-7 fuzzy, 8-15 covered at 80 % (7 | 8 << 4), 16-19 fuzzy (a FAKEMATCH build scores 99),
+# 20-23 exact, 24-27 unmapped,
 # 28-31 named, 32-39 data, 40-63 unassigned
-EXPECTED = bytes([3] * 8 + [0x87] * 8 + [5] * 4 + [4] * 4 + [2] * 4 + [6] * 4 + [1] * 8 + [0] * 24)
+EXPECTED = bytes([3] * 8 + [0x87] * 8 + [3] * 4 + [4] * 4 + [2] * 4 + [6] * 4 + [1] * 8 + [0] * 24)
 COVERAGE = {"Covered": {"in_version": True, "name": "Covered", "port": {"hit": True}, "line_percent": 80.0}}
 
 
@@ -54,7 +55,7 @@ class Cells(unittest.TestCase):
     def build(self):
         named = re.compile(tas_phasemap.DEFAULT_NAMED)
         segs = tas_phasemap.segments(CONFIG, "t")
-        return segs, tas_phasemap.build("t", segs, MAP, COVERAGE, {"FakeFn"}, {"Fuzz", "Named"}, named, "abc", 7)
+        return segs, tas_phasemap.build("t", segs, MAP, COVERAGE, {"Fuzz", "Named"}, named, "abc", 7)
 
     def test_segments_are_the_vram_ones_ending_at_the_next_start(self):
         segs, body = self.build()
@@ -74,7 +75,7 @@ class Cells(unittest.TestCase):
         _, body = self.build()
         by = {r[0]: r for r in body["fns"]}
         self.assertEqual(by["Covered"], ["Covered", 0x140, 0x40, "covered", 80.0, "src/a.c", False])
-        self.assertEqual(by["FakeFn"][3], "fakematch")
+        self.assertEqual(by["FakeFn"][3], "fuzzy")
         self.assertEqual(by["func_80001234"][3], "exact")
         self.assertEqual(by["NoC"][3], "unmapped")
         self.assertTrue(by["Fuzz"][6] and by["Named"][6])

@@ -58,17 +58,15 @@ class PhaseTests(Fixture):
         self.assertEqual(rows["p1", "foundation.input.named_pct_b"]["value"], 0.0)  # func_ call in the body
         self.assertFalse(rows["p1", "foundations_clean_bytes"]["met"])
 
-    def test_a_fakematch_alone_is_not_exact(self):
+    def test_exact_is_the_map_score_alone(self):
+        # unbake scores a FAKEMATCH build below 100 in the map: phase reads that score, no comment check of its own
         tree = self.root / "tests/fixtures/phase/src/a.c"
-        cats = phase.foundations(
-            self.root,
-            "HEAD",
-            "rng\tPak_Save\t16\t100.0\t1\ttests/fixtures/phase/src/a.c\n",
-            {"Pak_Save": (100.0, str(tree.relative_to(self.root)))},
-            "NOPE",
-        )
-        self.assertEqual(cats["rng"]["exact_bytes"], 0)
-        self.assertEqual(cats["rng"]["named_bytes"], 16)
+        rows = "rng\tPak_Save\t16\t100.0\t1\ttests/fixtures/phase/src/a.c\n"
+        path = str(tree.relative_to(self.root))
+        cats = phase.foundations(self.root, "HEAD", rows, {"Pak_Save": (99.0, path)}, "NOPE")
+        self.assertEqual((cats["rng"]["exact_bytes"], cats["rng"]["named_bytes"]), (0, 16))
+        cats = phase.foundations(self.root, "HEAD", rows, {"Pak_Save": (100.0, path)}, "NOPE")
+        self.assertEqual(cats["rng"]["exact_bytes"], 16)
 
     def test_p2_absent_port_is_not_met(self):
         def edit(cfg):
