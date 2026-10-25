@@ -855,12 +855,13 @@ def _repin_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tree", type=Path, required=True, help="the tree whose pin places are set (land.trees pin)")
     parser.add_argument("--to", help="the source commit or ref to pin (default: the pin config's ref, HEAD)")
     parser.add_argument("--no-rebuild", action="store_true", help="leave the page port (tas.build.rebuild) unbuilt")
+    parser.add_argument("--check", action="store_true", help="name the stale symbols a repin would meet; write nothing")
 
 
 def _run_repin(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp.repin import repin
 
-    return repin(_profile(args.profile), args.tree, args.to, rebuild=not args.no_rebuild)
+    return repin(_profile(args.profile), args.tree, args.to, rebuild=not args.no_rebuild, dry_run=args.check)
 
 
 def _standalone_arguments(parser: argparse.ArgumentParser) -> None:

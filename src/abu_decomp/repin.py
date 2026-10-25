@@ -180,7 +180,7 @@ def rebuild_page(profile: Profile, run: Run, tree: Path) -> dict[str, Any] | Non
 
 
 def repin(
-    profile: Profile, tree: Path, to: str | None, run: Run | None = None, rebuild: bool = True
+    profile: Profile, tree: Path, to: str | None, run: Run | None = None, rebuild: bool = True, dry_run: bool = False
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import land
 
@@ -193,7 +193,14 @@ def repin(
     before = check(pin, tree, run)["pin"]
     carried: tuple[dict[str, Any], list[dict[str, Any]]] | None = None
     if pin.get("remap") and before and before != sha:  # the source's renames between the two pins, before the pin moves
+        dry = remap.remap(run, tree, pin, before, sha, write=False)  # read first: a dropped name writes nothing
+        stale = [f for f in dry[1] if f["blocking"]]
+        if stale or dry_run:
+            refused = {"tree": str(tree), "from": before, "to": sha, "changed": [], "remap": dry[0]}
+            return refused, int(bool(stale)), stale
         carried = remap.remap(run, tree, pin, before, sha)
+    if dry_run:  # no remap configured, or the pin is current: nothing to meet
+        return {"tree": str(tree), "from": before, "to": sha, "changed": []}, 0, []
     changed = apply(pin, tree, sha)
     fetched = checkout_fetched(run, pin, sha)
     built = rebuild_page(profile, run, tree) if rebuild else None
