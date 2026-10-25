@@ -404,6 +404,46 @@ def _command(tool: str, chosen: Settings | TasteSettings, given: tuple[str, ...]
     return [*command, *given[1:]]
 
 
+def _git_common(path: Path, run: Callable[..., Any] = subprocess.run) -> str:
+    cmd = ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"]
+    out = run(cmd, capture_output=True, text=True)
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def cwd_project(
+    profile: Profile,
+    tool: str,
+    given: Sequence[str],
+    project: Path | None,
+    cwd: Path | None = None,
+    run: Callable[..., Any] = subprocess.run,
+) -> Path | None:
+    """The tree a call acts on when it names no --project: the work tree of the caller's cwd when that is a worktree of
+    the seat project's repository other than the seat tree itself (10-24: `recipe name` and `diff` run from a lane tree
+    silently acted on the shared PROGRESS tree). A lane (DECOMP_LANE set) standing anywhere else is refused, never
+    given the seat tree; a text call (--help) needs none. None keeps the profile's project."""
+    if project or tool == "taste":
+        return project
+    try:
+        seat = project_dir(profile)
+    except DecompError:
+        return None  # a profile with no usable project: the call's own refusal comes from invoke
+    here = (cwd or Path.cwd()).resolve()
+    top = run(["git", "-C", str(here), "rev-parse", "--show-toplevel"], capture_output=True, text=True).stdout.strip()
+    if top and Path(top).resolve() != seat:
+        common = _git_common(Path(top), run)
+        if common and common == _git_common(seat, run):
+            return Path(top).resolve()
+    if os.environ.get("DECOMP_LANE") and not is_text_call(given):
+        raise DependencyError(
+            "dependency.seat_tree",
+            f"lane {os.environ['DECOMP_LANE']}: `{tool} {' '.join(given[:2])}` names no --project and {here} is not a "
+            f"work tree of the seat project's repository, so it would act on the shared seat tree ({seat}); "
+            f"pass `--project <your tree>` or run it inside your tree",
+        )
+    return None
+
+
 # The verbs that write the project tree (unbake and Recipe Maker), alone or as `group verb`.
 WRITING_VERBS = frozenset({"sync", "setup", "submit", "land", "apply", "move"})
 WRITING_PAIRS = frozenset({("structure", "apply"), ("name", "submit")})

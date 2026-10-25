@@ -77,10 +77,12 @@ class _Text(Exception):
 
 
 def _run_tool(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    from abu_decomp.tools import invoke
+    from abu_decomp.tools import cwd_project, invoke
 
     stdin = sys.stdin.buffer.read() if "-" in args.args else b""
-    called = invoke(args.command, _profile(args.profile), args.args, stdin=stdin, project=args.project, host=args.host)
+    profile = _profile(args.profile)
+    project = cwd_project(profile, args.command, args.args, args.project)
+    called = invoke(args.command, profile, args.args, stdin=stdin, project=project, host=args.host)
     if called.text is not None:
         sys.stdout.buffer.write(called.text)
         sys.stdout.buffer.flush()
@@ -1032,7 +1034,8 @@ def _diff_arguments(parser: argparse.ArgumentParser) -> None:
 def _run_diff(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import diffonto, tools
 
-    tree = tools.project_dir(_profile(args.profile), args.project)
+    profile = _profile(args.profile)
+    tree = tools.project_dir(profile, tools.cwd_project(profile, "diff", ["diff"], args.project))
     return (
         diffonto.run(
             tree,
