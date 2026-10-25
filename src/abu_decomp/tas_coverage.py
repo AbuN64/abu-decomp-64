@@ -570,6 +570,11 @@ def lists(report: dict[str, Any], limit: int = LISTED) -> dict[str, Any]:
         "dropped_functions": report.get("dropped_functions") or [],
         "mixed_build_count": len(report.get("mixed_build") or []),
         "mixed_build": (report.get("mixed_build") or [])[:limit],
+        **(
+            {"refused": report["refused"], "stale_runs": report.get("stale_runs") or [], "next": report.get("next")}
+            if report.get("refused")
+            else {}
+        ),
         "oracle_only": pick("oracle-only"),
         "neither": pick("neither"),
         "port_only": pick("port-only"),
@@ -828,6 +833,8 @@ def build(
         report["rebaselined"] = covered_functions(old)
     if why:  # never replace a report with one covering fewer functions: the new one lands beside it
         report["refused"] = why
+        report["stale_runs"] = stale_runs(report["runs"], tag)
+        report["next"] = refused_next(report["stale_runs"])
         side = path.with_name("coverage-table.refused.json")
         side.write_text(json.dumps(report, sort_keys=True) + "\n")
         shutil.rmtree(page, ignore_errors=True)
@@ -841,6 +848,29 @@ def build(
     tmp.write_text(json.dumps(report, sort_keys=True) + "\n")
     tmp.replace(path)
     return report
+
+
+def stale_runs(runs: list[dict[str, Any]], tag: str) -> list[dict[str, Any]]:
+    """The union's runs from a port build other than the baseline's (TAG, the current build's id prefix; "" for a
+    table-only union, which knows no baseline): {movie, run, build}, the movies a replay on the current build renews."""
+    if not tag:
+        return []
+    return [
+        {"movie": r["movie"], "run": r["run"], "build": r["build"]}
+        for r in runs
+        if not str(r.get("build") or "").startswith(tag)
+    ]
+
+
+def refused_next(stale: list[dict[str, Any]]) -> str:
+    """What to run after a refused union: replay the stale movies on the current build, or take the smaller union."""
+    if stale:
+        return (
+            f"decomp tas play --all --resume (replays the {len(stale)} movies whose newest run is another port build: "
+            f"{', '.join(r['movie'] for r in stale[:5])}{' ...' if len(stale) > 5 else ''}), then decomp tas coverage; "
+            "or decomp tas coverage --rebaseline to accept the smaller union"
+        )
+    return "decomp tas coverage --rebaseline to accept the smaller union (no run is from another port build)"
 
 
 def covered_functions(report: dict[str, Any] | None) -> int:
@@ -875,7 +905,10 @@ def line(report: dict[str, Any]) -> str:
     g = report.get("gcovr") or {}
     states = s["states"]
     if report.get("refused"):
-        return f"coverage report NOT replaced: new union {report['refused']} (beside it: coverage-table.refused.json)"
+        return (
+            f"coverage report NOT replaced: new union {report['refused']} (beside it: coverage-table.refused.json); "
+            f"{len(report.get('stale_runs') or [])} runs from another port build; next: {report.get('next')}"
+        )
     pct = lambda key: f"{g[key]:.1f}%" if g.get(key) is not None else "?"  # noqa: E731
     return (
         f"coverage {s['version']} gcov: lines {pct('line_percent')}, branches {pct('branch_percent')}, functions "

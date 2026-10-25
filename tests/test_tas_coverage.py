@@ -277,6 +277,11 @@ class RunReportTests(unittest.TestCase):
         ):
             report = cov.build(self.profile, self.cfg, oracle=False, jobs=1)
         self.assertIn("covers 3 functions", report["refused"])
+        # PF4: the refusal names the runs of another port build and the way out
+        self.assertEqual(report["stale_runs"], [{"movie": "m", "run": "r2", "build": "unknown"}])
+        self.assertIn("decomp tas play --all --resume", report["next"])
+        self.assertIn("--rebaseline", report["next"])
+        self.assertEqual(cov.lists(report)["stale_runs"], report["stale_runs"])
         self.assertEqual((runs / "coverage" / "index.html").read_text(), "old")
         self.assertEqual(cov.covered_functions(cov.read_table(self.cfg)), 50)
         self.assertTrue((runs / "coverage-table.refused.json").is_file())
