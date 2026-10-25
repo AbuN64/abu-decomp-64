@@ -1401,7 +1401,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if isinstance(exc.code, int) and 128 < exc.code < 160:
             spent = time.monotonic() - started
             name = signal.Signals(exc.code - 128).name
-            message = f"TIMEOUT or kill: {command} stopped by {name} after {spent:.0f} s (external cap, not a failed command)"
+            message = f"TIMEOUT or kill: {command} stopped by {name} after {spent:.0f} s (external cap)"
             code, findings = exc.code, [{"key": "command.terminated", "message": message, "blocking": True}]
         else:
             message = f"{command} rejected its arguments"
