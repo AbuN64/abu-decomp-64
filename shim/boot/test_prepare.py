@@ -233,6 +233,38 @@ class ObjectCacheTests(unittest.TestCase):
         build, text, ran = self.unit("b", header="22")
         self.assertEqual((text, ran), ("22", False))  # another tree: the same key through --root and --map
 
+    GCNO_STEP = ("import os, pathlib, sys\n"
+                 "out = pathlib.Path(sys.argv[1])\n"
+                 "out.write_text(open(sys.argv[2]).read())\n"
+                 "cwd = os.getcwd().encode() + b'\\0'\n"
+                 "head = b'oncg' + b'*24B' + b'stmp' + bytes(4) + len(cwd).to_bytes(4, 'little')\n"
+                 "out.with_suffix('.gcno').write_bytes(head + cwd + b'rest')\n"
+                 "pathlib.Path(sys.argv[3]).write_text(str(out) + ': ' + sys.argv[2] + '\\n')\n"
+                 "(out.parent / 'ran').write_text('x')\n")
+
+    def test_a_coverage_units_gcno_is_restored_naming_the_tree_it_is_restored_in(self):
+        """PF3: a coverage build kept the object cache off (a restored object had no .gcno) and cost 642-678 CPU s a
+        build. The .gcno is an --out; restored in another tree it names that tree as its compile directory."""
+        header_file = self.path / "src" / "h.h"
+        header_file.write_text("1")
+        found = {}
+        for tree in ("a", "b"):
+            build = self.path / tree
+            build.mkdir()
+            (build / "step.py").write_text(self.GCNO_STEP)
+            obj = build / "u.o"
+            subprocess.run([sys.executable, "-I", str(ROOT / "unitstep.py"), "--base", str(build / "u"), "--source",
+                            "u", "--objcache", str(self.path / "cache"), "--root", str(build),
+                            "--map", f"{self.path}/src=SRC", "--out", str(obj), "--out", str(build / "u.gcno"),
+                            "--depfile", str(build / "u.d"), "--dep-target", str(obj), "--", sys.executable,
+                            str(build / "step.py"), str(obj), str(header_file), str(build / "u.d")],
+                           check=True, cwd=build)
+            found[tree] = ((build / "ran").exists(), (build / "u.gcno").read_bytes())
+        self.assertTrue(found["a"][0])
+        self.assertFalse(found["b"][0])  # restored, no step ran
+        cwd = str(self.path / "b").encode() + b"\0"
+        self.assertEqual(found["b"][1], b"oncg*24Bstmp" + bytes(4) + len(cwd).to_bytes(4, "little") + cwd + b"rest")
+
     def test_restore_answers_from_signatures(self):
         """A restore of an unchanged dependency stats it and never reads the digest memo; touching the file's
         content (same size, new mtime) still goes through the memo and the hash."""

@@ -12,7 +12,10 @@ content hash; a header's hash is remembered by size and mtime in OBJCACHE/digest
 shared by thousands of units is read once per machine, not once per unit or tree.
   --root BUILD  --map OLD=NEW (repeatable)  --compiler PATH  --out FILE (repeatable: the files restored)
   --drop FILE (repeatable: removed on a restore, e.g. a stale .i)  --depfile FILE  --dep-target FILE
-Only --out files, the depfile and --drop are touched: an entry holds each --out file's bytes or its absence."""
+Only --out files, the depfile and --drop are touched: an entry holds each --out file's bytes or its absence.
+A coverage build (--coverage) lists each step's .gcno as an --out: its flags key it apart from a plain build's entry in
+the one cache, and a restored .gcno names the directory it is restored in (the step's cwd), as the compile there would
+(gcov resolves the unit's relative source names from it), so a coverage build in another tree restores too."""
 import marshal
 import os
 import sys
@@ -135,7 +138,13 @@ class ObjectCache:
                 except OSError:
                     pass
             outs = self.opts["outs"]
-            for path, text in zip(outs, entry["files"]):
+            files = list(entry["files"])
+            for index, (path, text) in enumerate(zip(outs, files, strict=False)):
+                if path.endswith(".gcno") and isinstance(text, bytes):
+                    files[index] = gcno_cwd(text, os.getcwd())
+                    if files[index] is None:  # a layout this cannot rewrite: build it, never restore a wrong one
+                        return False
+            for path, text in zip(outs, files):
                 if text is None:
                     if os.path.exists(path):
                         os.unlink(path)
@@ -275,6 +284,19 @@ def parse(argv):
             current.append(word)
     commands.append(current)
     return opts, commands
+
+
+def gcno_cwd(data, cwd):
+    """A GCC 12+ .gcno (magic, version, stamp, checksum, then the compile directory as a byte-length string with its
+    NUL) naming CWD as its compile directory; None when DATA is not of that layout."""
+    if len(data) < 20 or data[:4] != b"oncg":
+        return None
+    size = int.from_bytes(data[16:20], "little")
+    end = 20 + size
+    if size < 2 or end > len(data) or data[end - 1] != 0 or data[20:21] != b"/":
+        return None
+    name = cwd.encode() + b"\0"
+    return data[:16] + len(name).to_bytes(4, "little") + name + data[end:]
 
 
 def unit(argv):
