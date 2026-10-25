@@ -85,6 +85,17 @@ class RekeyTests(unittest.TestCase):
         self.go(self.lane)
         self.assertEqual(len(self.calls), 4)
 
+    def test_an_edit_of_the_recomp_facts_regenerates_again(self):
+        # PF6: a local_indirect_jumps fact added to the Taste profile changes the generated output
+        self.go(self.lane)
+        data = json.loads(self.base.read_text())
+        data["recomp"]["local_indirect_jumps"] = {"v1": [{"at": "0x80408860"}]}
+        self.base.write_text(json.dumps(data))
+        self.go(self.lane)
+        self.assertEqual(len(self.calls), 4)
+        self.go(self.lane)
+        self.assertEqual(len(self.calls), 4)
+
     def test_shared_tree_uses_the_profile_itself(self):
         self.assertEqual(self.go(self.shared), self.base)
         self.assertEqual(self.seen, [str(self.shared)] * 2)

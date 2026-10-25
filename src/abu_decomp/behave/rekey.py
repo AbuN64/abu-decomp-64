@@ -35,7 +35,9 @@ def inputs(project: Path, recomp: dict[str, Any], version: str) -> list[Path]:
 
 
 def digest(project: Path, recomp: dict[str, Any], version: str) -> str:
-    total = hashlib.sha256()
+    """The key of the generated output: the boundary inputs of PROJECT and the profile recomp facts themselves (an
+    edit of local_indirect_jumps left the old output standing until `taste recomp generate` ran by hand, PF6 10-25)."""
+    total = hashlib.sha256(json.dumps(recomp, sort_keys=True).encode())
     for path in inputs(project, recomp, version):
         try:
             body = path.read_bytes()
