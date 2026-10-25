@@ -121,9 +121,26 @@ def _port_arguments(parser: argparse.ArgumentParser) -> None:
     new = actions.add_parser("new", help="write the port boilerplate into an empty directory")
     new.add_argument("--spec", type=Path, required=True, help="port spec JSON (the port's project facts)")
     new.add_argument("destination", type=Path)
+    carry = actions.add_parser("remap", help="carry the source's symbol renames since a commit into the port's facts")
+    carry.add_argument("--tree", type=Path, required=True, help="the port tree (land.trees entry with pin.remap)")
+    carry.add_argument("--since", required=True, help="the source commit the tree's facts are spelled at")
+    carry.add_argument("--to", help="the source commit or ref the renames run to (default: the pin config's ref)")
+    carry.add_argument("--check", action="store_true", help="report what would change and write nothing")
 
 
 def _run_port(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    if args.action == "remap":
+        from abu_decomp import land, remap, repin
+
+        profile = _profile(args.profile)
+        tree = args.tree.expanduser().resolve()
+        pin = land.settings(profile, tree)["pin"]
+        if pin is None:
+            raise remap.RemapError("remap.config", f"land.trees has no pin for {tree}")
+        old = repin.commit(land.run_process, pin["source"], args.since)
+        new = repin.commit(land.run_process, pin["source"], args.to or pin["ref"])
+        result, findings = remap.remap(land.run_process, tree, pin, old, new, write=not args.check)
+        return result, int(any(f["blocking"] for f in findings)), findings
     from abu_decomp.port import generate, load_spec
 
     return generate(load_spec(args.spec), args.destination.resolve()), 0, []

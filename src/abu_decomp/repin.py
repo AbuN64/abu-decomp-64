@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, nextcmd
+from abu_decomp import DecompError, nextcmd, remap
 from abu_decomp.config import Profile
 
 Run = Callable[[Sequence[str], Path, "dict[str, str] | None", "float | None"], "tuple[int, str, str]"]
@@ -191,6 +191,9 @@ def repin(
         raise RepinError("repin.config", f"land.trees has no pin for {tree}")
     sha = commit(run, pin["source"], to or pin["ref"])
     before = check(pin, tree, run)["pin"]
+    carried: tuple[dict[str, Any], list[dict[str, Any]]] | None = None
+    if pin.get("remap") and before and before != sha:  # the source's renames between the two pins, before the pin moves
+        carried = remap.remap(run, tree, pin, before, sha)
     changed = apply(pin, tree, sha)
     fetched = checkout_fetched(run, pin, sha)
     built = rebuild_page(profile, run, tree) if rebuild else None
@@ -198,6 +201,8 @@ def repin(
     blocking = [
         f for f in after["findings"] if f["blocking"] and f["key"] != "pin.fetched"
     ]  # fetched follows the build
+    if carried:
+        blocking += [f for f in carried[1] if f["blocking"]]
     _, moved, _ = run(["git", "-C", str(pin["source"]), "log", "-1", "--format=%s", sha], tree, None, 60)
     head = f"Repin to {pin['source'].name} {sha[:7]}"
     limit = land.settings(profile, tree)["subject_limit"]
@@ -205,6 +210,9 @@ def repin(
         profile.source_file, tree, "repin", f"{head}: {moved.strip()}", worktree=True, limit=limit
     )
     result = {"tree": str(tree), "from": before, "to": sha, "changed": changed, "next": ship}
+    if carried:
+        result["remap"] = carried[0]
+        result["changed"] = sorted({*changed, *carried[0]["files"]})
     if fetched:
         result["fetched"] = fetched
     if built is not None:

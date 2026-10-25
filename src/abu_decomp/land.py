@@ -470,6 +470,22 @@ def step_list(profile: Profile, where: str, given: Any) -> list[dict[str, Any]]:
     return steps
 
 
+def remap_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
+    """`pin.remap`: how the source's symbol renames reach the tree. `facts` are the source's address tables (paths in
+    the source repository), `paths` the files or directories of the tree that spell the source's symbols."""
+    if given is None:
+        return None
+    keys = frozenset({"facts", "paths"})
+    check_keys(profile.source_file, "land.trees.pin.remap", given, keys, keys)
+    for key in sorted(keys):
+        rows = given[key]
+        if not isinstance(rows, list) or not rows or not all(isinstance(r, str) and r for r in rows):
+            raise LandError(
+                "config.schema", f"{profile.source_file}:land.trees.pin.remap.{key}: expected a nonempty list of paths"
+            )
+    return {"facts": list(given["facts"]), "paths": list(given["paths"])}
+
+
 def pin_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
     """`pin`: where a tree spells the commit of another repository it builds from. `source` is that repository's
     checkout (its `ref`, default HEAD, is what the pin should follow); each `files` row names a file and a `pattern`
@@ -477,7 +493,7 @@ def pin_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
     if given is None:
         return None
     where = f"{profile.source_file}:land.trees.pin"
-    allowed = frozenset({"source", "ref", "files", "fetched"})
+    allowed = frozenset({"source", "ref", "files", "fetched", "remap"})
     check_keys(profile.source_file, "land.trees.pin", given, frozenset({"source", "files"}), allowed)
     rows = given["files"]
     if not isinstance(rows, list) or not rows:
@@ -498,6 +514,7 @@ def pin_settings(profile: Profile, given: Any) -> dict[str, Any] | None:
         "ref": str(given.get("ref", "HEAD")),
         "files": files,
         "fetched": profile.path("land.trees.pin.fetched", given["fetched"]) if given.get("fetched") else None,
+        "remap": remap_settings(profile, given.get("remap")),
     }
 
 
