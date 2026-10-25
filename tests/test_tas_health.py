@@ -181,3 +181,16 @@ class CompareTests(unittest.TestCase):
                 self.assertEqual(out["ranked"][0]["where"], "f")
                 self.assertEqual(out["next"], "n")
                 self.assertTrue(tas.table(out).splitlines()[-1].startswith("next: "))
+
+
+def test_play_all_default_jobs_are_capped_and_overridable(monkeypatch):
+    from abu_decomp import slots
+
+    monkeypatch.setattr(slots, "capacity", lambda: 40)
+    monkeypatch.delenv("ABU_TAS_JOBS", raising=False)
+    assert tas.all_jobs() == 4
+    monkeypatch.setenv("ABU_TAS_JOBS", "2")
+    assert tas.all_jobs() == 2
+    monkeypatch.setattr(slots, "capacity", lambda: 1)
+    monkeypatch.setenv("ABU_TAS_JOBS", "9")
+    assert tas.all_jobs() == 1

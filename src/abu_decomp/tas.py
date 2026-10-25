@@ -1604,6 +1604,30 @@ def table(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+ALL_JOBS = 4  # `play --all` default parallelism: 33-47 load on the rig came from a full-capacity sweep (10-25)
+ALL_NICE = 10
+
+
+def all_jobs() -> int:
+    """Default parallel replays of `play --all`: the slot pool capacity, at most ALL_JOBS (env ABU_TAS_JOBS overrides;
+    an explicit --jobs is taken as given)."""
+    try:
+        wanted = int(os.environ.get("ABU_TAS_JOBS", ""))
+    except ValueError:
+        wanted = ALL_JOBS
+    return max(1, min(slots.capacity(), wanted if wanted > 0 else ALL_JOBS))
+
+
+def _lower_priority() -> None:
+    """A sweep yields the CPU to lane builds and the train: this process and every replay it starts run at nice
+    ALL_NICE or lower priority already (the children inherit it)."""
+    try:
+        if os.nice(0) < ALL_NICE:
+            os.nice(ALL_NICE - os.nice(0))
+    except OSError:
+        pass
+
+
 @_play_signals
 def play_all(
     profile: Profile,
@@ -1623,8 +1647,9 @@ def play_all(
 
     The recorded standing is the best row so far in `runs/standing.json`, moved only when a movie is not worse, so a
     regression stays `worse` until fixed. Exit status 1 when any movie is worse.
-    Speed: `jobs` 0 (the default) is the host's slot pool capacity (module slots; every replay still waits for its
-    slot, so other work is never starved). A movie first runs without the gdb bridge; one that does not end ok is
+    Speed: `jobs` 0 (the default) is the host's slot pool capacity, at most 4 (`all_jobs`, module slots;
+    every replay still waits for its slot, so other work is never starved).
+    A movie first runs without the gdb bridge; one that does not end ok is
     deleted and replayed under the bridge, so every outcome, subject and stack is the bridge's (`gdb_all` runs every
     movie under it as before). `changed` replays only the movies the sources changed since their last good run can
     have touched (module tas_select); the others keep their recorded standing and say `skipped` with that run."""
@@ -1648,7 +1673,8 @@ def play_all(
         names_to_run, skipped, why_skipped = tas_select.plan(profile, cfg, names, newest)
     else:
         names_to_run = names
-    jobs = jobs or slots.capacity()
+    jobs = jobs or all_jobs()
+    _lower_priority()
     options.setdefault("slot_class", "batch")
     options.setdefault("batch", _stamp(now) + "-all")  # the findings of this run share one batch id
     began, cpu0 = time.monotonic(), resource.getrusage(resource.RUSAGE_CHILDREN)
