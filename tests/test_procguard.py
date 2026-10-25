@@ -20,6 +20,14 @@ def alive(pid: int) -> bool:
         return False
 
 
+def comm(pid: int) -> str:
+    try:
+        with open(f"/proc/{pid}/comm") as name:
+            return name.read().strip()
+    except OSError:
+        return ""
+
+
 class OwnedChildren(unittest.TestCase):
     def test_sigkilled_owner_leaves_no_survivor_within_two_seconds(self):
         # owner -> bridge (owned) -> gdb stand-in (owned) -> game stand-in (setpriv wrapped, as gdb's exec-wrapper does)
@@ -52,6 +60,11 @@ class OwnedChildren(unittest.TestCase):
             bridge_pid, gdb_pid, game_pid = map(int, owner_proc.stdout.readline().split())
             pids = [bridge_pid, gdb_pid, game_pid]
             self.assertTrue(all(alive(p) for p in pids))
+            # the game pid is printed at the fork, before setpriv arms its death signal and execs: kill the owner only
+            # once the game runs, or a loaded host killed it first and the game outlived an unarmed setpriv
+            armed = time.monotonic() + 10
+            while time.monotonic() < armed and comm(game_pid) not in ("sleep", ""):
+                time.sleep(0.01)
             os.kill(owner_proc.pid, signal.SIGKILL)
             owner_proc.wait()
             end = time.monotonic() + 2
