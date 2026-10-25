@@ -94,6 +94,8 @@ class Builder:
             with contextlib.suppress(OSError):
                 (self.tree / self.LOG).write_text(log)
             report = self.rom_report(r.returncode, log)
+            if "no ROM was linked" in report:  # the empty-log failure (REV1-ONE-18/18B, DATA-B-S4): name what was running
+                report += " " + self._diag(r.returncode, log)
             # No ROM differs and make named no error: a make killed or raced (another extraction beside it, 10-24), not a
             # break. Once more; a real mismatch names its version and is never retried.
             if attempt == 2 or not (report.startswith("make exited") or "no ROM was linked" in report):
@@ -129,6 +131,24 @@ class Builder:
                 + ("; ".join(x.strip() for x in errs) if errs else self._tail(log))
             )
         return " | ".join(lines)[:900] + f" [log: {self.tree / self.LOG}]"
+
+    def _diag(self, rc: int, log: str) -> str:
+        """Evidence for a link that left no ROM: make's exit and last output, the make processes working in this tree, and
+        the extraction locks held (a make killed or raced by another extraction leaves exactly this and an empty log)."""
+        import os
+
+        mine = str(self.tree.resolve())
+        procs = []
+        for entry in os.listdir("/proc"):
+            if entry.isdigit():
+                with contextlib.suppress(OSError):
+                    cwd = os.readlink(f"/proc/{entry}/cwd")
+                    if cwd == mine or cwd.startswith(mine + "/"):
+                        comm = Path(f"/proc/{entry}/comm").read_text().strip()
+                        if comm in ("make", "python3", "python", "ld", "mips-linux-gnu-ld"):
+                            procs.append(f"{entry}:{comm}")
+        locks = sorted(p.name for p in (self.tree / "build").glob(".extract-lock-*")) if (self.tree / "build").is_dir() else []
+        return f"[diag: make rc={rc}; {self._tail(log)}; processes in tree: {' '.join(procs[:8]) or 'none'}; locks: {' '.join(locks) or 'none'}]"
 
     @staticmethod
     def _tail(log: str) -> str:

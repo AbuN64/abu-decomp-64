@@ -429,3 +429,15 @@ def test_a_make_failure_without_an_error_line_shows_its_last_output():
 
     assert "last output: boom / bye" in trial.Builder._tail("\nboom\n\nbye\n")
     assert "no output at all" in trial.Builder._tail("\n")
+
+
+def test_a_link_that_left_no_rom_names_the_make_state(tmp_path):
+    from types import SimpleNamespace
+
+    from abu_decomp.data import trial
+
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build/.extract-lock-us").write_text("")
+    fake = SimpleNamespace(tree=tmp_path, _tail=trial.Builder._tail)
+    text = trial.Builder._diag(fake, 245, "\n")
+    assert "make rc=245" in text and "no output at all" in text and "locks: .extract-lock-us" in text
