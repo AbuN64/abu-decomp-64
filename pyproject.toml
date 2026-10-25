@@ -19,7 +19,7 @@ dependencies = [
   "pillow==13.0.0",  # shared capture decoder + bounded JPEG video for the TAS viewer
   "unbake @ git+https://github.com/AbuN64/cake-unbake-64@e5f7d23e7126401865e7da31959dd8006d4efc92",
   "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@68ea2e63e3636ddeab2b82feba19d6acbd05d0e4",
-  "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@e843b8fb11abc47ea671b28eb221b4aacc73715b",
+  "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@3d225f283961d4b4eca69ba2489a65d0e0cb9a83",
 ]
 
 [project.optional-dependencies]
