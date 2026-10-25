@@ -77,7 +77,20 @@ def local_decls(text: str, sym: str) -> tuple[list[str], list[str]]:
     return ext, local
 
 
-def skip_reason(text: str, sym: str, owner: str, kinds_all: set[str], access: dict | None) -> str:
+def shape_reason(ext: list[str], expr: str) -> str:
+    """Why the declared shape of the symbol in this file cannot be mapped onto the owner expression ('' when it can): a 2-D (or
+    deeper) array declaration, or a 1-D array declared where the owner member is itself an array of arrays (`O.m[0][0]`), would
+    be rewritten to `m[i]` forms that index the wrong dimension (10-24 DATA-B-S3: FontStyle, cell arrays). Written by hand."""
+    dims = max((t.count("[") for t in ext), default=0)
+    leaf = len(re.findall(r"\[0\]", re.search(r"(?:\[0\])*$", expr).group(0)))
+    if dims >= 2:
+        return f"{dims}-D array declaration here ({ext[0]}): the cell indexing cannot be mapped onto {expr}; rewrite by hand"
+    if dims == 1 and leaf >= 2:
+        return f"declared as a 1-D array here ({ext[0]}) but {expr} is an array of arrays; rewrite by hand"
+    return ""
+
+
+def skip_reason(text: str, sym: str, owner: str, kinds_all: set[str], access: dict | None, expr: str = "") -> str:
     """Why this file must keep the raw SYM ('' when the rewrite is safe): a unit-local definition or a struct alias of
     a symbol other units declare as a scalar (rewriting would re-type the access), a declared kind that contradicts how
     the ROM accesses it, or an owner declared here as something that has no members."""
@@ -91,6 +104,9 @@ def skip_reason(text: str, sym: str, owner: str, kinds_all: set[str], access: di
     mine = {k for k in kinds if k in ("i", "f")}
     if seen and mine and not (seen & mine):
         return f"declared {ext[0]} but the ROM accesses it as {'/'.join(sorted(seen))}"
+    why = shape_reason(ext or [], expr) if expr else ""
+    if why:
+        return why
     o_ext, o_local = local_decls(text, owner)
     if o_local or (o_ext and cdecl.decl_kind(o_ext) - {"s"}):
         return f"owner {owner} is declared here as {(o_local or o_ext)[0]}, not as its struct"
@@ -135,7 +151,7 @@ def plan_file(
         return text, ""
     owner = re.match(r"\w+", expr).group(0)
     kinds = set(member.get("decl_kind") or []) if member is not None else None
-    why = skip_reason(text, sym, owner, kinds, member.get("access")) if member is not None else ""
+    why = skip_reason(text, sym, owner, kinds, member.get("access"), expr) if member is not None else ""
     if why:
         return text, why
     use = file_expr(text, sym, expr, (member or {}).get("decl"))

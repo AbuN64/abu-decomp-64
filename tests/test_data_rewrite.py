@@ -65,3 +65,17 @@ def test_without_the_census_member_the_old_unguarded_rewrite_still_runs(tmp_path
         == []
     )
     assert list(skipped) == ["src/a.c"]
+
+
+def test_a_2d_array_declaration_is_refused_not_mis_indexed():
+    text = "extern s32 D_1[4][2];\nint f(int i) { return D_1[i][1]; }\n"
+    new, why = plan(text, expr="D_2.cells[0]", kinds={"i"})
+    assert new == text and "2-D array" in why
+
+
+def test_a_1d_array_against_an_array_of_arrays_member_is_refused():
+    text = "extern s32 D_1[8];\nint f(int i) { return D_1[i]; }\n"
+    new, why = plan(text, expr="D_2.rows[0][0]", kinds={"i"})
+    assert new == text and "array of arrays" in why
+    ok, why = plan(text, expr="D_2.rows[0]", kinds={"i"})
+    assert why == "" and "D_2.rows" in ok
