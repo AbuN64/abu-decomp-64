@@ -194,16 +194,37 @@ def changed_units(
     return expand_units(tree, version, out, run, cfg, stats) if version else [u for u in out if u.startswith("src/")]
 
 
-def exact_fns(cfg: DataConfig, tree: Path, version: str, units: list[str]) -> dict[str, list[str]]:
-    """unit -> exact (score 100) function names of the version's map."""
+def moved_units(tree: Path, base: str | None = None, run=subprocess.run) -> dict[str, str]:
+    """old unit path -> new path for the source files the working diff renames. The map of a tree that has not synced
+    still files the functions under the old path, and the build's dependency files still name it: scoring the old path
+    finds no object (stamp of a folder rename: every function "no-score")."""
+    out = run(
+        ["git", "-C", str(tree), "diff", "--name-status", "-M", base or "HEAD"], capture_output=True, text=True
+    ).stdout
+    moves = {}
+    for line in out.splitlines():
+        cols = line.split("\t")
+        if len(cols) == 3 and cols[0].startswith("R") and cols[1].startswith("src/"):
+            moves[cols[1]] = cols[2]
+        elif len(cols) == 2 and cols[0] == "D" and cols[1].startswith("src/"):
+            moves[cols[1]] = ""  # removed
+    return moves
+
+
+def exact_fns(
+    cfg: DataConfig, tree: Path, version: str, units: list[str], moved: dict[str, str] | None = None
+) -> dict[str, list[str]]:
+    """unit -> exact (score 100) function names of the version's map (MOVED: old unit path -> new, for a renamed file)."""
     import json
 
+    moved = moved or {}
     rows = json.loads((tree / cfg.path(cfg.map_file, version)).read_text())["fns"]
     c = cfg.map_columns
     out: dict[str, list[str]] = {u: [] for u in units}
     for r in rows:
-        if r[c["unit"]] in out and r[c["score"]] >= 100:
-            out[r[c["unit"]]].append(r[c["name"]])
+        unit = moved.get(r[c["unit"]]) or r[c["unit"]]
+        if unit in out and r[c["score"]] >= 100:
+            out[unit].append(r[c["name"]])
     return out
 
 
@@ -227,7 +248,11 @@ def renamed(b: Builder) -> dict[str, str]:
 
 
 def broken(
-    b: Builder, version: str, units: list[str], names: dict[str, str] | None = None
+    b: Builder,
+    version: str,
+    units: list[str],
+    names: dict[str, str] | None = None,
+    moved: dict[str, str] | None = None,
 ) -> list[tuple[str, str, str]]:
     """[(unit, fn, why)] for every exact function of UNITS whose rebuilt object no longer scores 0 (a function the diff
     renames is looked up by its new name; NAMES: old -> new). Every function of the version is asked of ONE fncmp process
@@ -235,7 +260,7 @@ def broken(
     bad = []
     names = names or {}
     wanted: list[tuple[str, str]] = []
-    for unit, fns in exact_fns(b.cfg, b.tree, version, units).items():
+    for unit, fns in exact_fns(b.cfg, b.tree, version, units, moved).items():
         if getattr(b, "unchanged", lambda *_: False)(
             version, unit
         ):  # same bytes as the clean build: every exact function there still matches
@@ -285,7 +310,9 @@ def check(b: Builder, version: str, units: list[str] | None = None, baseline: di
         units = changed_units(b.tree, b.run, version, base, b.cfg, narrowed)
         syms = changed_symbols(b.cfg, b.tree, b.run, base)
         units = sorted(set(units) | set(referencing_units(b.cfg, b.tree, syms, b.run)))
-    units = in_version(b.cfg, b.tree, version, units)
+    moved = moved_units(b.tree, getattr(b, "diff_base", None), b.run)
+    units = [moved.get(u, u) for u in in_version(b.cfg, b.tree, version, [*units, *moved])]
+    units = sorted({u for u in units if u})  # a path the diff removed has no source to build
     if not units:
         return {"version": version, "units": 0, "built": True, "broken": [], **_narrow_note(narrowed, version)}
     rc, log = b.objects(version, units, keep_going=True)
@@ -297,7 +324,7 @@ def check(b: Builder, version: str, units: list[str] | None = None, baseline: di
     ):  # make failed with no unit named (a missing rule, a toolchain error): nothing can be judged
         errs = [x for x in log.splitlines() if re.search(r"error", x, re.I)][:5]
         return {"version": version, "units": len(units), "built": False, "broken": [], "errors": errs}
-    bad = broken(b, version, [u for u in units if u not in failed and u not in old], renamed(b))
+    bad = broken(b, version, [u for u in units if u not in failed and u not in old], renamed(b), moved)
     return {
         "version": version,
         "units": len(units),

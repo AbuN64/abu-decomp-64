@@ -254,3 +254,28 @@ def test_reextract_runs_setup_under_the_exclusive_tree_lock_a_build_holds(tmp_pa
     run = lambda cmd, **kw: done({"ls-files": "versions/us/symbol_addrs.txt\n", "diff": "", "rev-parse": "H\n"}[cmd[3]])  # noqa: E731
     assert check.reextract(None, tmp_path, [], always=True, run=run) is None
     assert held == [(tmp_path, True, "data check setup"), "setup"]
+
+
+def test_a_renamed_source_file_is_built_and_scored_under_its_new_path(tmp_path):
+    """A folder rename: the map and the build's .d files still name the old path (stamp of a 132-file rename: every
+    function of every moved unit was "no-score")."""
+    (tmp_path / "docs").mkdir()
+    rows = [["f1", 0, 0, 100, "src/old/u.CPP"], ["f2", 0, 0, 100, "src/gone/x.CPP"]]
+    (tmp_path / "docs/map-a.json").write_text(json.dumps({"fns": rows}))
+    status = "R098\tsrc/old/u.CPP\tsrc/new/u.CPP\nD\tsrc/gone/x.CPP\nM\tsrc/a/m.CPP\n"
+    built, scored = [], []
+
+    def run(cmd, **kw):
+        return done(status if "--name-status" in cmd else "")
+
+    def objects(v, u, keep_going=False):
+        built.append(list(u))
+        return 0, ""
+
+    def score(v, fn, unit):
+        scored.append((fn, unit))
+        return 0
+
+    builder = SimpleNamespace(cfg=CFG, tree=tmp_path, run=run, objects=objects, score=score)
+    res = check.check(builder, "a", ["src/old/u.CPP", "src/gone/x.CPP"])  # the stale .d names both old paths
+    assert built == [["src/new/u.CPP"]] and scored == [("f1", "src/new/u.CPP")] and res["broken"] == []
