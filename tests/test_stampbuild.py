@@ -393,3 +393,20 @@ def test_a_diff_that_only_applies_three_way_is_still_stamped_as_the_train_applie
     monkeypatch.setattr(subprocess, "run", run)
     _r, code, _f = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 0 and any("--3way" in argv for argv in seen)
+
+
+def test_a_diff_moving_project_rows_regenerates_the_makefile_before_the_build(tmp_path, monkeypatch):
+    from abu_decomp import tools
+
+    diff, _ = setup(tmp_path, monkeypatch, False)
+    head = "diff --git a/config.toml b/config.toml\n--- a/config.toml\n+++ b/config.toml\n"
+    diff.write_text(DIFF + head + "@@ -1 +1 @@\n-a\n+b\n")
+    called = []
+
+    def invoke(tool, profile, args, project=None, **k):
+        called.append((tool, args))
+        return type("R", (), {"ok": True})()
+
+    monkeypatch.setattr(tools, "invoke", invoke)
+    stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert called == [("unbake", ["sync", "--makefile"])]

@@ -246,6 +246,16 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
                 why = check_mod.reextract(profile, tree, files, allow=reextract)  # --reextract: a splat.yaml edit pays the re-split
             if why:
                 return {"worktree": made}, 1, [{"key": "data.extract", "blocking": True, "message": why}]
+        if "Makefile" not in files and any(f in ("config.toml", "rom.toml") for f in files):
+            # a project row (a file's flags, a folder) moved: the committed Makefile still keys them by the old path, so a
+            # renamed unit compiled without its -ffast-math (Math_Sqrtf edit=9, 10-25). The train regenerates it after landing.
+            from abu_decomp import tools
+
+            with setup_lock(shared):
+                regen = tools.invoke("unbake", profile, ["sync", "--makefile"], project=tree)
+            if not regen.ok:
+                msg = "unbake sync --makefile refused in the stamp tree: the project rows cannot be rendered into a Makefile"
+                return {"worktree": made}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]
         builder = trial.Builder(cfg, tree, reference=shared if same else None)
         results = [check_mod.check(builder, v) for v in cfg.versions]
         if (
