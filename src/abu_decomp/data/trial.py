@@ -177,6 +177,27 @@ class Builder:
         return int(m.group(1)) if m else None
 
 
+def _scores(self, version: str, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], int | None]:
+    """{(fn, unit): edit count or None} for every pair, in ONE fncmp process when the config names `fncmp_batch` (a
+    process start and an objdump per function cost 284 s wall on a header edit with ~4000 exact functions, 10-25); the
+    per-function command otherwise (the batch did not answer once per question)."""
+    found: dict[tuple[str, str], int | None] = {}
+    if self.cfg.fncmp_batch and pairs:
+        cmd = [expand(c.format(v=version)) for c in self.cfg.fncmp_batch]
+        objs = {(fn, unit): self.cfg.object.format(v=version, unit=unit) for fn, unit in pairs}
+        lines = "".join(f"{fn} {obj}\n" for (fn, _unit), obj in objs.items())
+        out = self.run(cmd, cwd=self.tree, capture_output=True, text=True, input=lines).stdout or ""
+        rows = [x.partition(" ")[::2] for x in out.splitlines()]
+        if len(rows) == len(objs):  # one answer per question, in order: else the batch is not trusted
+            for key, (name, text) in zip(objs, rows, strict=True):
+                m = re.search(self.cfg.fncmp_score, text) if name == key[0] else None
+                found[key] = int(m.group(1)) if m else None
+    return {key: found[key] if key in found else self.score(version, *key) for key in pairs}
+
+
+Builder.scores = _scores
+
+
 @contextmanager
 def restored(path: Path):
     """Write-restore guard for a unit: the original text comes back on exit and on SIGTERM."""

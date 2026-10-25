@@ -225,23 +225,27 @@ def broken(
     b: Builder, version: str, units: list[str], names: dict[str, str] | None = None
 ) -> list[tuple[str, str, str]]:
     """[(unit, fn, why)] for every exact function of UNITS whose rebuilt object no longer scores 0 (a function the diff
-    renames is looked up by its new name; NAMES: old -> new)."""
+    renames is looked up by its new name; NAMES: old -> new). Every function of the version is asked of ONE fncmp process
+    when the builder can batch (`fncmp_batch`): a process start and an objdump per function took 284 s on one header edit."""
     bad = []
     names = names or {}
+    wanted: list[tuple[str, str]] = []
     for unit, fns in exact_fns(b.cfg, b.tree, version, units).items():
         if getattr(b, "unchanged", lambda *_: False)(
             version, unit
         ):  # same bytes as the clean build: every exact function there still matches
             continue
-        for fn in fns:
-            fn = names.get(fn, fn)
-            sc = b.score(version, fn, unit)
-            if sc is None:
-                # the map still files FN under the unit it had (a split-asm unit) while the diff made it C in another one:
-                # match by symbol, in the other units this check built (10-24 Render_GetSpatialEffectLevel, US)
-                sc = next((s2 for u2 in units if u2 != unit and (s2 := b.score(version, fn, u2)) is not None), None)
-            if sc != 0:
-                bad.append((unit, fn, "edit=%s" % sc if sc is not None else "no-score"))
+        wanted += [(names.get(fn, fn), unit) for fn in fns]
+    scores = getattr(b, "scores", None)
+    known = scores(version, wanted) if scores is not None and getattr(b.cfg, "fncmp_batch", None) else {}
+    for fn, unit in wanted:
+        sc = known[(fn, unit)] if (fn, unit) in known else b.score(version, fn, unit)
+        if sc is None:
+            # the map still files FN under the unit it had (a split-asm unit) while the diff made it C in another one:
+            # match by symbol, in the other units this check built (10-24 Render_GetSpatialEffectLevel, US)
+            sc = next((s2 for u2 in units if u2 != unit and (s2 := b.score(version, fn, u2)) is not None), None)
+        if sc != 0:
+            bad.append((unit, fn, "edit=%s" % sc if sc is not None else "no-score"))
     return bad
 
 

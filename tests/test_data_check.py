@@ -1,12 +1,13 @@
 """TOOL-SPEED-2 (r)/(t): `decomp data check` reaches every unit naming a changed symbol, in every version, and a unit
 that does not compile does not hide the others."""
 
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-from abu_decomp.data import check
+from abu_decomp.data import check, trial
 from abu_decomp.data.config import DataConfig
 
 CFG = DataConfig(reference="a", versions=("a", "b"))
@@ -208,3 +209,25 @@ def test_a_rename_already_staged_in_the_tree_is_still_the_diffs_rename(tmp_path)
     builder = SimpleNamespace(tree=tmp_path)
     assert check.renamed(builder) == {"func_80001000": "Math_Sqrtf", "func_80002000": "Other_Name"}
     assert check.changed_files(tmp_path) == ["versions/symbol_addrs.txt"]
+
+
+def test_every_exact_function_of_a_version_is_scored_by_one_fncmp_batch(tmp_path):
+    """The check asks a version's functions in one process (284 s wall for ~4000 single calls on a header edit)."""
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "-C"] or "--batch" not in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        names = [line.split()[0] for line in kw["input"].splitlines()]
+        return subprocess.CompletedProcess(cmd, 0, "".join(f"{n} ALIGNED edit={0 if n != 'f3' else 4}\n" for n in names), "")
+
+    cfg = dataclasses.replace(CFG, fncmp_batch=("fncmp", "--batch", "{v}"), fncmp=("fncmp", "{v}", "{fn}", "{obj}"))
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/map-us.json").write_text(
+        json.dumps({"fns": [["f1", 0, 0, 100, "src/a.c"], ["f2", 0, 0, 100, "src/a.c"], ["f3", 0, 0, 100, "src/b.c"]]})
+    )
+    b = trial.Builder(cfg, tmp_path, run=run)
+    assert check.broken(b, "us", ["src/a.c", "src/b.c"]) == [("src/b.c", "f3", "edit=4")]
+    assert len([c for c in calls if "--batch" in c]) == 1
+    assert not [c for c in calls if c[:1] == ["fncmp"] and "--batch" not in c]  # no single call
