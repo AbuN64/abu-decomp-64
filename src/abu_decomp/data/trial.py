@@ -11,12 +11,15 @@ import filecmp
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
+from abu_decomp import slots
 from abu_decomp.data import literals, source
 from abu_decomp.data.config import DataConfig, expand
 
@@ -40,6 +43,19 @@ class Builder:
         except OSError:
             return False
 
+    @staticmethod
+    def low(argv: list[str]) -> list[str]:
+        """A lane's build runs behind the train's: nice 10 (the train's check is not niced) and idle IO, so eight
+        stamps at once leave the landing build its cores (10-25: load 47 on 16 cores, the train at 0.3 cores)."""
+        return [argv[0], "-n", "10", *(["ionice", "-c3"] if shutil.which("ionice") else []), *argv[1:]]
+
+    def run_held(self, argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        """The build, holding its jobs' share of the host slot pool (class batch) while it runs: builds queue behind
+        each other instead of thrashing. Re-entrant when the caller already holds slots."""
+        want = max(1, min(int(self.jobs()), slots.capacity()))
+        with slots.hold("batch", weight=want, label="stamp build"):
+            return self.run(argv, **kw)
+
     def jobs(self) -> str:
         if not self.cfg.jobs:
             return "1"
@@ -49,8 +65,8 @@ class Builder:
     def build(self, version: str, unit: str) -> tuple[int, str]:
         obj = self.cfg.object.format(v=version, unit=unit)
         env = dict(os.environ, **{k: expand(v) for k, v in self.cfg.make_env.items()})
-        r = self.run(
-            ["nice", *map(expand, self.cfg.make), f"-j{self.jobs()}", obj],
+        r = self.run_held(
+            self.low(["nice", *map(expand, self.cfg.make), f"-j{self.jobs()}", obj]),
             cwd=self.tree,
             capture_output=True,
             text=True,
@@ -61,8 +77,8 @@ class Builder:
     def objects(self, version: str, units: list[str], keep_going: bool = False) -> tuple[int, str]:
         env = dict(os.environ, **{k: expand(v) for k, v in self.cfg.make_env.items()})
         objs = [self.cfg.object.format(v=version, unit=u) for u in units]
-        r = self.run(
-            ["nice", *map(expand, self.cfg.make), f"-j{self.jobs()}", *(["-k"] if keep_going else []), *objs],
+        r = self.run_held(
+            self.low(["nice", *map(expand, self.cfg.make), f"-j{self.jobs()}", *(["-k"] if keep_going else []), *objs]),
             cwd=self.tree,
             capture_output=True,
             text=True,
@@ -81,8 +97,8 @@ class Builder:
             return 0, ""
         env = dict(os.environ, **{k: expand(v) for k, v in self.cfg.make_env.items()})
         for attempt in (1, 2):
-            r = self.run(
-                ["nice", *map(expand, self.cfg.make), f"-j{self.jobs()}", *self.cfg.rom_check],
+            r = self.run_held(
+                self.low(["nice", *map(expand, self.cfg.make), f"-j{self.jobs()}", *self.cfg.rom_check]),
                 cwd=self.tree,
                 capture_output=True,
                 text=True,
@@ -94,7 +110,9 @@ class Builder:
             with contextlib.suppress(OSError):
                 (self.tree / self.LOG).write_text(log)
             report = self.rom_report(r.returncode, log)
-            if "no ROM was linked" in report:  # the empty-log failure (REV1-ONE-18/18B, DATA-B-S4): name what was running
+            if (
+                "no ROM was linked" in report
+            ):  # the empty-log failure (REV1-ONE-18/18B, DATA-B-S4): name what was running
                 report += " " + self._diag(r.returncode, log)
             # No ROM differs and make named no error: a make killed or raced (another extraction beside it, 10-24), not a
             # break. Once more; a real mismatch names its version and is never retried.
@@ -126,10 +144,7 @@ class Builder:
             )
         if not lines:
             errs = [x for x in log.splitlines() if "***" in x or "rror" in x][-4:]
-            lines.append(
-                f"make exited {rc}: "
-                + ("; ".join(x.strip() for x in errs) if errs else self._tail(log))
-            )
+            lines.append(f"make exited {rc}: " + ("; ".join(x.strip() for x in errs) if errs else self._tail(log)))
         return " | ".join(lines)[:900] + f" [log: {self.tree / self.LOG}]"
 
     def _diag(self, rc: int, log: str) -> str:
@@ -147,7 +162,11 @@ class Builder:
                         comm = Path(f"/proc/{entry}/comm").read_text().strip()
                         if comm in ("make", "python3", "python", "ld", "mips-linux-gnu-ld"):
                             procs.append(f"{entry}:{comm}")
-        locks = sorted(p.name for p in (self.tree / "build").glob(".extract-lock-*")) if (self.tree / "build").is_dir() else []
+        locks = (
+            sorted(p.name for p in (self.tree / "build").glob(".extract-lock-*"))
+            if (self.tree / "build").is_dir()
+            else []
+        )
         return f"[diag: make rc={rc}; {self._tail(log)}; processes in tree: {' '.join(procs[:8]) or 'none'}; locks: {' '.join(locks) or 'none'}]"
 
     @staticmethod

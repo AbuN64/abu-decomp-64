@@ -1,6 +1,7 @@
 """`data stamp --build`: a diff is built alone on a fresh warm tree and stamped only on a clean all-version pass."""
 
 import json
+import shutil
 import subprocess
 from dataclasses import replace
 
@@ -282,7 +283,8 @@ def test_rom_check_runs_the_configured_make_arguments_and_is_skipped_without_the
 
     cfg = replace(CFG, make=("make",), rom_check=("check", "CHECK=rom"))
     assert trial.Builder(cfg, tmp_path, run=run).rom_check() == (0, "")
-    assert seen == [(["nice", "make", "-j1", "check", "CHECK=rom"], tmp_path)]
+    low = ["nice", "-n", "10", *(["ionice", "-c3"] if shutil.which("ionice") else [])]
+    assert seen == [([*low, "make", "-j1", "check", "CHECK=rom"], tmp_path)]
     assert trial.Builder(CFG, tmp_path, run=run).rom_check() == (0, "") and len(seen) == 1
 
 
@@ -474,3 +476,28 @@ def test_a_diff_renameproof_proves_is_stamped_without_a_build(tmp_path, monkeypa
     monkeypatch.setattr(stampbuild, "slot", lambda *a, **k: (_ for _ in ()).throw(AssertionError("built")))
     result, code, _f = stampbuild.build(CFG, object(), tmp_path, diff, tmp_path / "stamps")
     assert code == 0 and result["proof"] == "renameproof" and stamp_mod.stamped(tmp_path / "stamps", diff.read_text())
+
+
+def test_a_stamp_build_holds_its_jobs_in_the_slot_pool_behind_the_train(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from abu_decomp import slots
+    from abu_decomp.data import trial
+    held = []
+
+    class Hold:
+        def __init__(self, klass, weight=1, label=""):
+            held.append((klass, weight, label))
+
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(slots, "hold", Hold)
+    monkeypatch.setattr(slots, "capacity", lambda: 14)
+    ran = []
+    run = lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")  # noqa: E731
+    cfg = replace(CFG, make=("make",), jobs=())
+    trial.Builder(cfg, tmp_path, run=run).build("us", "u")
+    assert held == [("batch", 1, "stamp build")] and ran[0][:3] == ["nice", "-n", "10"]
