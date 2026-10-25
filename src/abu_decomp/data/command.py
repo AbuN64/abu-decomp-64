@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -136,35 +137,14 @@ def run(args: argparse.Namespace) -> Result:
             b.reference = pool
         from abu_decomp import cli
 
-        why = check_mod.reextract(cli._profile(args.profile), args.tree, check_mod.changed_files(args.tree, args.since))
-        if why:
-            return {}, 1, [{"key": "data.extract", "blocking": True, "message": why}]
-        known = (
-            json.loads(args.baseline.read_text())
-            if args.baseline and args.baseline.is_file() and not args.write_baseline
-            else {}
-        )
-        results = [check_mod.check(b, v, args.unit or None, known.get(v)) for v in (args.version or list(cfg.versions))]
-        if args.write_baseline:
-            if not args.baseline:
-                raise DecompError("data.baseline", "--write-baseline needs --baseline FILE")
-            args.baseline.write_text(
-                json.dumps({r["version"]: r.get("all_failed", {}) for r in results}, indent=1, sort_keys=True)
-            )
-        findings = [
-            {"key": "data.check", "blocking": True, "message": f"{r['version']}: {u} {fn} {why}"}
-            for r in results for u, fn, why in r["broken"]
-        ] + [
-            {"key": "data.build", "blocking": True, "message": f"{r['version']}: {u} does not compile: {why}"}
-            for r in results for u, why in r.get("failed", [])
-        ] + [
-            {"key": "data.build", "blocking": True, "message": f"{r['version']}: build failed: {'; '.join(r.get('errors', []))}"}
-            for r in results if not r["built"] and not r.get("failed")
-        ]  # fmt: skip
-        out: dict[str, Any] = {"results": results}
-        if args.diff and not findings:
-            out["stamp"] = _stamp(args, cfg)
-        return out, 1 if findings else 0, findings
+        applied = _apply_diff(args)  # a --diff the tree does not hold yet is applied for the check and taken off again
+        try:
+            return _check(args, cfg, b, cli)
+        finally:
+            if applied:
+                subprocess.run(
+                    ["git", "-C", str(args.tree), "apply", "-R", str(args.diff.resolve())], capture_output=True
+                )
     if verb == "units":
         syms = check_mod.changed_symbols(cfg, args.tree, base=args.since)
         return {"symbols": syms, "units": check_mod.referencing_units(cfg, args.tree, syms)}, 0, []
@@ -190,6 +170,57 @@ def run(args: argparse.Namespace) -> Result:
             [{"key": "data.stamp", "blocking": True, "message": m} for m in bad],
         )
     return _gate(args, cfg)
+
+
+def _apply_diff(args: argparse.Namespace) -> bool:
+    """Apply --diff to a clean tree (the lane's tree already holds it when it is dirty): True when this call applied it."""
+    if not args.diff or args.write_baseline:
+        return False
+    dirty = subprocess.run(
+        ["git", "-C", str(args.tree), "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True
+    ).stdout.strip()
+    if dirty:
+        return False
+    done = subprocess.run(
+        ["git", "-C", str(args.tree), "apply", str(args.diff.resolve())], capture_output=True, text=True
+    )
+    if done.returncode:
+        raise DecompError("data.check", f"{args.diff.name} does not apply to {args.tree}: {done.stderr.strip()[:200]}")
+    return True
+
+
+def _check(args: argparse.Namespace, cfg, b, cli) -> Result:
+    why = check_mod.reextract(
+        cli._profile(args.profile), args.tree, check_mod.changed_files(args.tree, args.since), always=True
+    )
+    if why:
+        return {}, 1, [{"key": "data.extract", "blocking": True, "message": why}]
+    known = (
+        json.loads(args.baseline.read_text())
+        if args.baseline and args.baseline.is_file() and not args.write_baseline
+        else {}
+    )
+    results = [check_mod.check(b, v, args.unit or None, known.get(v)) for v in (args.version or list(cfg.versions))]
+    if args.write_baseline:
+        if not args.baseline:
+            raise DecompError("data.baseline", "--write-baseline needs --baseline FILE")
+        args.baseline.write_text(
+            json.dumps({r["version"]: r.get("all_failed", {}) for r in results}, indent=1, sort_keys=True)
+        )
+    findings = [
+        {"key": "data.check", "blocking": True, "message": f"{r['version']}: {u} {fn} {why}"}
+        for r in results for u, fn, why in r["broken"]
+    ] + [
+        {"key": "data.build", "blocking": True, "message": f"{r['version']}: {u} does not compile: {why}"}
+        for r in results for u, why in r.get("failed", [])
+    ] + [
+        {"key": "data.build", "blocking": True, "message": f"{r['version']}: build failed: {'; '.join(r.get('errors', []))}"}
+        for r in results if not r["built"] and not r.get("failed")
+    ]  # fmt: skip
+    out: dict[str, Any] = {"results": results}
+    if args.diff and not findings:
+        out["stamp"] = _stamp(args, cfg)
+    return out, 1 if findings else 0, findings
 
 
 def _try(args: argparse.Namespace, cfg) -> Result:

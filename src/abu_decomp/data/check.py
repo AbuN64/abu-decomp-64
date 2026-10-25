@@ -12,17 +12,19 @@ from abu_decomp.data.config import DataConfig
 from abu_decomp.data.trial import Builder, fn_unit  # noqa: F401  re-export for callers
 
 
-def reextract(profile, tree: Path, files: list[str]) -> str | None:
+def reextract(profile, tree: Path, files: list[str], always: bool = False) -> str | None:
     """Bring the tree's extraction up to the symbol rows it now holds (`unbake setup --no-make`: a rename takes unbake's rename
-    path, no splat). Without it fncmp finds no function under its new name (`no-score`: the asm still has the old one).
-    None when nothing needed it or it worked, else why not."""
+    path, no splat; a current tree costs ~6 s). Without it fncmp finds no function under its new name (`no-score`: the asm
+    still has the old one). `always`: also when no changed file says so, for a tree whose HEAD moved under it (10-24:
+    MoveMenuFocus edit=91 in every version on a check tree older than the rename). None when nothing needed it or it
+    worked, else why not."""
     from abu_decomp import tools
     from abu_decomp.data import stamp
 
-    if not stamp.extraction_files(files):
+    if not always and not stamp.extraction_files(files):
         return None
     called = tools.invoke("unbake", profile, ["setup", "--no-make"], project=tree)
-    return None if called.ok else "unbake setup refused after the symbol rows changed"
+    return None if called.ok else "unbake setup refused: the tree's extraction could not be brought current"
 
 
 def changed_files(tree: Path, base: str | None = None, run=subprocess.run) -> list[str]:
