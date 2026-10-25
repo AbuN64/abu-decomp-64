@@ -38,6 +38,19 @@ class PermutationTests(unittest.TestCase):
     def generate(self, budget=64):
         return permutations.generate(self.cases, self.results, self.seeded, PROTO, Path(self.dir.name), (), budget)
 
+    def test_a_dereferenced_pointer_is_null_only_on_its_own(self):
+        """The original read just behind r4 in every real case: NULL combined with other inputs only faults it."""
+        read = {"status": "ok", "reads": [[0x80000040, 4], [0x80000108, 4]]}
+        self.results = [dict(read), dict(read)]
+        cases, _ = self.generate(budget=200)
+        nulls = [c["labels"]["generated"] for c in cases if "ptr=0x0" in c["labels"]["generated"]]
+        self.assertEqual(sorted(set(nulls)), ["ptr=0x0"])
+        self.assertTrue(any("n=" in c["labels"]["generated"] for c in cases))
+
+    def test_an_unread_pointer_still_pairs_with_null(self):
+        cases, _ = self.generate(budget=200)
+        self.assertTrue(any("ptr=0x0" in c["labels"]["generated"] and "n=" in c["labels"]["generated"] for c in cases))
+
     def test_real_labels_are_recognised(self):
         self.assertTrue(permutations.is_real({"labels": {"seed": "s"}}))
         self.assertTrue(permutations.is_real({"labels": {"seed": "s", "hit": "2"}}))
@@ -87,3 +100,35 @@ class PermutationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UntestableReasonTests(unittest.TestCase):
+    def test_reasons_are_counted_with_addresses_blanked_most_frequent_first(self):
+        from abu_decomp.behave import run
+
+        rows = [
+            {"verdict": "untestable", "reason": f"original unmapped: unmapped 0000000{i} 4 last 803FFE74"}
+            for i in range(3)
+        ]
+        rows += [{"verdict": "untestable", "reason": "original fatal: x"}, {"verdict": "same", "reason": None}]
+        got = run.untestable_by_reason(rows, [{"n": i} for i in range(5)])
+        self.assertEqual(
+            [(g["reason"], g["cases"]) for g in got],
+            [("original unmapped: unmapped N N last N", 3), ("original fatal: x", 1)],
+        )
+        self.assertEqual(got[0]["example"], {"n": 0})
+
+
+class FiniteFillerTests(unittest.TestCase):
+    def test_a_nan_hit_function_gets_ordinary_floats_at_its_swept_offsets(self):
+        import random
+        import struct
+
+        from abu_decomp.behave import inputs
+
+        data = inputs.fill(random.Random("s"), 64, [(0, 4), (4, 4), (8, 4), (12, 4)], 3, [0x80001000], finite=True)
+        words = struct.unpack(">16I", data)
+        for w in words[:4]:
+            self.assertFalse(inputs.is_nan_word(w))
+            self.assertIn(w, inputs._NORMAL_FLOATS + [0x80001000, 0, 1, 0xFFFFFFFF, 0x7FFFFFFF, 0x80000000, 2, 16][:12])
+        self.assertTrue(sum(w in inputs._NORMAL_FLOATS for w in words) >= 8)

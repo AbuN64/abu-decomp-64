@@ -49,6 +49,7 @@ def is_nan_word(word: int) -> bool:
 
 
 _STATE = [1, 2, 3, 0, 4, 0xFFFFFFFF, 8, 0x10, 0x100, 0x3F800000, 100, 0x7FFFFFFF, 5, 6, 7]
+_NORMAL_FLOATS = [0x3F800000, 0x3F000000, 0x40000000, 0xBF800000, 0x42C80000, 0x40400000, 0xC0000000, 0x3FC00000]
 _FLOAT_BITS = [0x3F800000, 0x3F000000, 0x40000000, 0xBF800000, 0x42C80000, 0x00000000]
 _HOT = [
     0,
@@ -298,8 +299,16 @@ def fill(
             rng.choice(_WORDS) if roll < 0.7 else rng.choice(_FLOAT_BITS) if roll < 0.85 else rng.getrandbits(32)
         )
     if finite:
+        # the original asserted on a NaN operand; the integer filler (0, 1, 2 are zero and denormals as floats) made
+        # singular matrices and zero divisors, so most filler words become ordinary floats (InvertMatrix: 23 of 26
+        # untestable cases were the NaN check, TOOL-SPEED-13)
+        words = [rng.choice(_NORMAL_FLOATS) if rng.random() < 0.75 else w for w in words]
         words = [w if not is_nan_word(w) else 0 for w in words]
     pool = [w for w in (*_HOT, *bases) if not (finite and is_nan_word(w))]
+    if (
+        finite
+    ):  # the swept offsets of a function that asserts on NaN are float operands: ordinary floats, not 0/1/2 denormals
+        pool = [*_NORMAL_FLOATS, *_NORMAL_FLOATS, *pool[:4]]
     targets = pointers or {}
     for position, offset in enumerate(sorted({o & ~3 for o, _ in hot})):
         if offset + 4 <= size and offset not in targets:

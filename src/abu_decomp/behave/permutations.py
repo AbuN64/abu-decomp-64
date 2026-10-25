@@ -177,6 +177,12 @@ def _pointerish(seen: list[int]) -> bool:
     return bool(seen) and all(v == 0 or RAM_BASE <= v < RAM_BASE + (64 << 20) for v in seen)
 
 
+def _dereferenced(seen: list[int], reads: set[int]) -> bool:
+    """Whether the original read just behind a non-null pointer value the real cases held: it is used, so NULL only
+    faults it (96 of 100 generated cases of one function were unmapped-at-NULL, TOOL-SPEED-13)."""
+    return any(v and any(v <= a < v + 0x400 for a in reads) for v in seen)
+
+
 def _factors(
     real: list[dict[str, Any]],
     results: list[dict[str, Any]],
@@ -187,6 +193,7 @@ def _factors(
     readonly: tuple[tuple[int, int], ...] = (),
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
+    reads = {a for r in results for a, _ in r.get("reads", [])}
     registers = [c.get("registers", {}) for c in real]
     for slot in prototype.argument_slots(proto):
         kind, place = slot.param.kind, slot.where[0]
@@ -198,11 +205,13 @@ def _factors(
         if not all(key in r for r in registers):
             continue
         seen = [int(str(r[key]), 0) for r in registers]
+        guarded: list[int] = []
         if kind in ("float", "double"):
             bits = 32 if kind == "float" else 64
             domain = _mix(seen, list(_FLOATS[bits]))
         elif kind in ("pointer", "funcptr", "word") and _pointerish(seen):
             domain = _mix(seen, [0])
+            guarded = [0] if _dereferenced(seen, reads) else []
         else:
             bits = {"int8": 8, "uint8": 8, "int16": 16, "uint16": 16}.get(kind, 32)
             signed = kind.startswith("int")
@@ -225,6 +234,7 @@ def _factors(
                 "register": key,
                 "domain": domain,
                 "bits": 64 if kind == "double" else 32,
+                "alone": [v for v in guarded if v in domain],
             }
         )
     count: dict[tuple[int, int], int] = {}
@@ -245,7 +255,9 @@ def _factors(
         if not seen:
             continue
         bits = 8 * width
-        domain = _mix(seen, [0]) if _pointerish(seen) and width == 4 else _integer(seen, bits, False, [])
+        pointer = _pointerish(seen) and width == 4
+        domain = _mix(seen, [0]) if pointer else _integer(seen, bits, False, [])
+        guarded = [0] if pointer and _dereferenced(seen, reads) else []
         out.append(
             {
                 "kind": "memory",
@@ -254,6 +266,7 @@ def _factors(
                 "width": width,
                 "domain": domain,
                 "bits": bits,
+                "alone": [v for v in guarded if v in domain],
             }
         )
     return [f for f in out if len(f["domain"]) > 1]
@@ -304,7 +317,9 @@ def generate(
     report["inputs"] = [{"kind": f["kind"], "name": f["name"], "values": len(f["domain"])} for f in factors]
     if not factors:
         return [], {**report, "generated": 0, "why": "no input with more than one value"}
-    domains = [f["domain"] for f in factors]
+    # a dereferenced pointer's NULL runs once on its own (the original faults on it anywhere it is combined with others)
+    domains = [[v for v in f["domain"] if v not in f.get("alone", ())] for f in factors]
+    alone = [(i, v) for i, f in enumerate(factors) for v in f.get("alone", ())]
     size = 1
     for domain in domains:
         size *= len(domain)
@@ -312,6 +327,7 @@ def generate(
     if size <= CROSS_LIMIT:
         report["mode"] = "cross-product"
         rows = [tuple(r) for r in itertools.product(*domains)]
+        rows += [tuple(v if j == i else None for j in range(len(factors))) for i, v in alone]
     else:
         report["mode"] = "single+pairwise"
         none = (None,) * len(factors)
@@ -319,6 +335,7 @@ def generate(
             rows += [(*none[:i], v, *none[i + 1 :]) for v in domain]
         rng = random.Random(SEED)
         rows += [tuple(domains[i][j] for i, j in enumerate(r)) for r in inputs.pairwise(domains, rng, budget)]
+        rows += [tuple(v if j == i else None for j in range(len(factors))) for i, v in alone]
     generated: list[dict[str, Any]] = []
     seen: set[str] = set()
     for n, row in enumerate(rows):

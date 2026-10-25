@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import time
 import tomllib
 from collections.abc import Iterator
@@ -780,6 +781,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         findings.append({"key": "behave.real_required", "blocking": False, "message": summary["reason"]})
     notes = sorted({n for row in rows for n in row["notes"]})
     shown = [dict(r, inputs=labels[i]) for i, r in enumerate(rows) if r["verdict"] != compare.SAME][:12]
+    untestable_reasons = untestable_by_reason(rows, labels)
     classification = classify.classify(
         summary,
         original["cases"],
@@ -812,10 +814,24 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         **({"arity": disagreement} if disagreement else {}),
         **({"opaque_callees": sorted(opaque)} if opaque else {}),
         "cases_detail": shown,
+        **({"untestable_reasons": untestable_reasons} if untestable_reasons else {}),
         "timing": timing(stages, started, cache),
         "cache": cache,
     }
     return result, 0, findings
+
+
+def untestable_by_reason(rows: list[dict[str, Any]], labels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every untestable case counted by its reason, addresses and numbers blanked (`cases_detail` shows twelve), most
+    frequent first: the top reason is what to fix for the function (lanes saw 3/0/45 and could not say why)."""
+    counts: dict[str, list[Any]] = {}
+    for row, label in zip(rows, labels, strict=False):
+        if row["verdict"] != compare.UNTESTABLE:
+            continue
+        key = re.sub(r"\b[0-9A-Fa-f]{8}\b|\b\d+\b", "N", str(row.get("reason") or "no reason"))[:120]
+        counts.setdefault(key, [0, label])[0] += 1
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1][0])
+    return [{"reason": k, "cases": n, "example": ex} for k, (n, ex) in ranked[:6]]
 
 
 def sources(cases: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[str, int]:
