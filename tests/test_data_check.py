@@ -100,3 +100,23 @@ def test_since_judges_a_committed_diff_not_the_index(tmp_path):
     assert seen[0][-1] == "abc"
     assert check.changed_units(tmp_path, run, "", "abc") == ["src/a/u1.CPP"]
     assert seen[1][-1] == "abc"
+
+
+def test_a_function_the_diff_renames_is_scored_by_its_new_name(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/map-a.json").write_text(json.dumps({"fns": [["func_80001000", 0, 0, 100, "src/a/u.CPP"]]}))
+    sym = "-func_80001000 = 0x80001000;\n+Math_Sqrtf = 0x80001000;\n-other = 0x80002000;\n+Other = 0x80003000;\n"
+    seen = []
+
+    def run(cmd, **kw):
+        return done(sym if "symbol_addrs" in cmd[-1] else "")
+
+    def score(v, fn, unit):
+        seen.append(fn)
+        return 0 if fn == "Math_Sqrtf" else None
+
+    builder = SimpleNamespace(
+        cfg=CFG, tree=tmp_path, run=run, objects=lambda v, u, keep_going=False: (0, ""), score=score
+    )
+    res = check.check(builder, "a", ["src/a/u.CPP"])
+    assert seen == ["Math_Sqrtf"] and res["broken"] == []

@@ -106,15 +106,39 @@ def exact_fns(cfg: DataConfig, tree: Path, version: str, units: list[str]) -> di
     return out
 
 
-def broken(b: Builder, version: str, units: list[str]) -> list[tuple[str, str, str]]:
-    """[(unit, fn, why)] for every exact function of UNITS whose rebuilt object no longer scores 0."""
+def renamed(b: Builder) -> dict[str, str]:
+    """old name -> new name for the symbol rows the working diff renames at the same address. The map rows of a tree
+    that has not synced still carry the old names while the re-extracted asm and the rebuilt objects carry the new ones:
+    scoring by the old name finds no function (10-24 REV1-ONE-17: 11-25 false edits on a mixed rename diff)."""
+    from abu_decomp.data import stamp
+
+    run = getattr(b, "run", subprocess.run)
+    cmd = [
+        "git",
+        "-C",
+        str(b.tree),
+        "diff",
+        "-U0",
+        *([getattr(b, "diff_base", None)] if getattr(b, "diff_base", None) else []),
+    ]
+    out = run([*cmd, "--", ":(glob)**/symbol_addrs*.txt"], capture_output=True, text=True).stdout
+    return stamp.renames_of(out) if isinstance(out, str) else {}
+
+
+def broken(
+    b: Builder, version: str, units: list[str], names: dict[str, str] | None = None
+) -> list[tuple[str, str, str]]:
+    """[(unit, fn, why)] for every exact function of UNITS whose rebuilt object no longer scores 0 (a function the diff
+    renames is looked up by its new name; NAMES: old -> new)."""
     bad = []
+    names = names or {}
     for unit, fns in exact_fns(b.cfg, b.tree, version, units).items():
         if getattr(b, "unchanged", lambda *_: False)(
             version, unit
         ):  # same bytes as the clean build: every exact function there still matches
             continue
         for fn in fns:
+            fn = names.get(fn, fn)
             sc = b.score(version, fn, unit)
             if sc != 0:
                 bad.append((unit, fn, "edit=%s" % sc if sc is not None else "no-score"))
@@ -159,7 +183,7 @@ def check(b: Builder, version: str, units: list[str] | None = None, baseline: di
     ):  # make failed with no unit named (a missing rule, a toolchain error): nothing can be judged
         errs = [x for x in log.splitlines() if re.search(r"error", x, re.I)][:5]
         return {"version": version, "units": len(units), "built": False, "broken": [], "errors": errs}
-    bad = broken(b, version, [u for u in units if u not in failed and u not in old])
+    bad = broken(b, version, [u for u in units if u not in failed and u not in old], renamed(b))
     return {
         "version": version,
         "units": len(units),
