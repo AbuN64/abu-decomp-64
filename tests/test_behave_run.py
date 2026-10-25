@@ -677,3 +677,15 @@ class RunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_an_assert_of_the_recompiled_code_is_named_not_only_printed():
+    """RO2 (REV1-ONE-74): NAN_CHECK aborted 14 cases on a NaN operand; the harness caught it, behave said "same"."""
+    from abu_decomp.behave import run as behave_run
+
+    nan = {"status": "fatal", "detail": "check failed (NaN operand) last 8080109C"}
+    ok = {"status": "ok", "detail": ""}
+    said = behave_run.check_stops([nan, ok, nan], [ok])
+    assert said.startswith("an assert of the recompiled code stopped") and "original 2 (first: check failed" in said
+    assert "candidate" not in said
+    assert behave_run.check_stops([ok], [ok]) == ""

@@ -802,6 +802,9 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
     if summary["verdict"] == compare.SAME and options.reach and not real_compared:
         summary.update(verdict=compare.UNTESTABLE, reason="coverage reach exists but zero real cases compared")
         findings.append({"key": "behave.real_required", "blocking": False, "message": summary["reason"]})
+    if checked := check_stops(original["cases"], changed["cases"]):
+        findings.append({"key": "behave.check_failed", "blocking": False, "message": checked})
+        summary["check_failed"] = checked
     notes = sorted({n for row in rows for n in row["notes"]})
     shown = [dict(r, inputs=labels[i]) for i, r in enumerate(rows) if r["verdict"] != compare.SAME][:12]
     untestable_reasons = untestable_by_reason(rows, labels)
@@ -842,6 +845,28 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         "cache": cache,
     }
     return result, 0, findings
+
+
+CHECK_STOP = "check failed"  # the harness's detail for an assert of the recompiled code (NAN_CHECK) it caught
+
+
+def check_stops(original: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> str:
+    """A line naming the cases an assert of the recompiled code stopped (a NaN operand on a float op), per side, or "".
+    The harness catches the abort and the case is untestable, but the verdict said only "same" while the run printed
+    `Assertion ... failed` (REV1-ONE-74: ctx->f2.fl == ctx->f2.fl, the original's dead read of an unset $f2)."""
+
+    def stopped(cases: list[dict[str, Any]]) -> list[str]:
+        return [
+            str(c.get("detail", ""))
+            for c in cases
+            if c.get("status") == "fatal" and CHECK_STOP in str(c.get("detail", ""))
+        ]
+
+    sides = {"original": stopped(original), "candidate": stopped(candidate)}
+    said = [f"{side} {len(found)} (first: {found[0]})" for side, found in sides.items() if found]
+    if not said:
+        return ""
+    return "an assert of the recompiled code stopped case(s), which compared nothing: " + "; ".join(said)
 
 
 def untestable_by_reason(rows: list[dict[str, Any]], labels: list[dict[str, Any]]) -> list[dict[str, Any]]:
