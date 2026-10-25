@@ -202,3 +202,32 @@ class RemapTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_a_json_fact_naming_an_alias_the_source_stopped_defining_is_dropped(tmp_path: Path) -> None:
+    """PF2 (PORT-FIX-O1): the source removed `#define D_80146398 fz_D_80146398`; the port's manifest kept
+    "fz_D_80146398" and its build failed. A JSON fact member naming a dead alias is dropped; a live alias stays."""
+    source, tree = tmp_path / "source", tmp_path / "port"
+    (source / "versions/v").mkdir(parents=True)
+    (source / "src").mkdir()
+    git(source, "init", "-q", "-b", "main")
+    (source / "versions/v/symbol_addrs.txt").write_text("D_800E0000 = 0x800E0000;\nD_800E0010 = 0x800E0010;\n")
+    (source / "src/a.c").write_text("#define D_800E0000 fz_D_800E0000\n#define D_800E0010 fz_D_800E0010\n")
+    git(source, "add", ".")
+    git(source, "commit", "-q", "-m", "old")
+    old = git(source, "rev-parse", "HEAD").strip()
+    (source / "src/a.c").write_text("#define D_800E0010 fz_D_800E0010\n")
+    git(source, "commit", "-qam", "new")
+    new = git(source, "rev-parse", "HEAD").strip()
+    (tree / "platform/port").mkdir(parents=True)
+    manifest = tree / "platform/port/manifest.json"
+    manifest.write_text(
+        '{\n  "data": {\n    "fz_D_800E0010": "0x800E0010",\n    "fz_D_800E0000": "0x800E0000"\n  }\n}\n'
+    )
+    pin = {"source": source, "remap": {"facts": ["versions/v/symbol_addrs.txt"], "paths": ["platform/port"]}}
+    result, findings = remap.remap(run_process, tree, pin, old, new)
+    assert findings == [] and result["dropped_aliases"] == {"platform/port/manifest.json": ["fz_D_800E0000"]}
+    assert json.loads(manifest.read_text()) == {"data": {"fz_D_800E0010": "0x800E0010"}}
+    (tree / "platform/port/notes.md").write_text("fz_D_800E0000 is read here\n")
+    _, findings = remap.remap(run_process, tree, pin, old, new, write=False)
+    assert [(f["key"], f["blocking"]) for f in findings] == [("remap.stale", True)]

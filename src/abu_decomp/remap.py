@@ -6,10 +6,14 @@ address tables: an address that lost exactly one name and gained exactly one is 
 whole-word spelling of an old name in the tree's fact paths; a name the source dropped without a successor and the
 tree still spells is a finding, never a guess. `land.trees.<tree>.pin.remap` names the source's fact files and the
 tree's paths (project facts live in the profile, not here); `decomp repin` runs it with every pin move.
+A source may also spell a table name by an alias (`#define D_80146398 fz_D_80146398`: the object holds the alias); a
+fact naming an alias the source no longer defines is dropped from a JSON fact file (the entry has no symbol to bind),
+and named as stale anywhere else.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -19,6 +23,8 @@ from abu_decomp import DecompError
 
 Run = Callable[[Sequence[str], Path, "dict[str, str] | None", "float | None"], "tuple[int, str, str]"]
 FACT = re.compile(r"^\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)\s*;(.*)$")
+ALIAS = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)[ \t]+(\w+)[ \t]*(?://.*|/\*.*\*/)?$", re.M)
+MEMBER = r'^[ \t]*"{}"[ \t]*:[ \t]*(?:"[^"\n]*"|[\w.+-]+)[ \t]*,?[ \t]*\n'  # a one-line JSON member
 TOKEN = re.compile(r"\w+")
 MAX_BYTES = 8 << 20
 SKIP_DIRS = frozenset({".git", "build", ".unbake", "__pycache__"})
@@ -51,6 +57,18 @@ def facts(run: Run, source: Path, rev: str, files: Sequence[str]) -> dict[tuple[
         for key, names in parse(out).items():
             merged.setdefault(key, set()).update(names)
     return merged
+
+
+def aliases(run: Run, source: Path, rev: str, table: dict[tuple[int, str], set[str]]) -> set[str]:
+    """The alias spellings the source's C defines at `rev` for names of its address `table`: `#define NAME ALIAS` with
+    NAME in the table and ALIAS not."""
+    code, out, _err = run(
+        ["git", "-C", str(source), "grep", "-h", "-I", "-E", r"^\s*#\s*define\s+\w+\s+\w+", rev], source, None, 120
+    )
+    if code not in (0, 1):
+        raise RemapError("remap.aliases", f"git grep #define at {rev[:12]} failed in {source}")
+    names = {name for found in table.values() for name in found}
+    return {m.group(2) for m in ALIAS.finditer(out) if m.group(1) in names and m.group(2) not in names}
 
 
 def renames(old: dict[tuple[int, str], set[str]], new: dict[tuple[int, str], set[str]]) -> dict[str, Any]:
@@ -99,8 +117,10 @@ def apply(tree: Path, paths: Sequence[str], found: dict[str, Any], write: bool =
     """Rewrite every whole-word spelling of a renamed symbol in the tree's fact paths. `files` is file -> spellings
     changed; `stale` is file -> dropped names (no successor) the tree still spells: findings the caller refuses."""
     ren, gone = found["renames"], found["gone"]
+    dead = found.get("dead_aliases", set())
     changed: dict[str, int] = {}
     stale: dict[str, list[str]] = {}
+    dropped: dict[str, list[str]] = {}
     for path in files_under(tree, paths):
         text = read_text(path)
         if text is None:
@@ -117,14 +137,37 @@ def apply(tree: Path, paths: Sequence[str], found: dict[str, Any], write: bool =
 
         out = TOKEN.sub(swap, text)
         rel = str(path.relative_to(tree))
+        if path.suffix == ".json" and (gone_here := sorted(dead & set(TOKEN.findall(out)))):
+            pruned, cut = _drop_members(out, gone_here)
+            if cut:
+                out, dropped[rel], count = pruned, cut, count + len(cut)
         if count:
             changed[rel] = count
             if write:
                 path.write_text(out)
-        left = sorted({t for t in TOKEN.findall(out) if t in gone})
+        left = sorted({t for t in TOKEN.findall(out) if t in gone or t in dead})
         if left:
             stale[rel] = left
-    return {"files": changed, "spellings": sum(changed.values()), "stale": stale}
+    return {"files": changed, "spellings": sum(changed.values()), "stale": stale, "dropped": dropped}
+
+
+def _drop_members(text: str, names: Sequence[str]) -> tuple[str, list[str]]:
+    """TEXT without the one-line members keyed by NAMES (a comma left before a closing brace removed), and the names
+    cut; the text unchanged when it is no JSON before or after."""
+    try:
+        json.loads(text)
+    except ValueError:
+        return text, []
+    out, cut = text, []
+    for name in names:
+        pruned = re.sub(MEMBER.format(re.escape(name)), "", out, flags=re.M)
+        if pruned != out:
+            out, cut = re.sub(r",(\s*\n[ \t]*[}\]])", r"\1", pruned), [*cut, name]
+    try:
+        json.loads(out)
+    except ValueError:
+        return text, []
+    return out, cut
 
 
 def remap(
@@ -135,11 +178,15 @@ def remap(
     if not config:
         raise RemapError("remap.config", "the tree's land.trees pin has no `remap` (facts, paths)")
     source = pin["source"]
-    found = renames(facts(run, source, old, config["facts"]), facts(run, source, new, config["facts"]))
+    before, after = facts(run, source, old, config["facts"]), facts(run, source, new, config["facts"])
+    found = renames(before, after)
+    survivors = {n for names in after.values() for n in names} | aliases(run, source, new, after)
+    found["dead_aliases"] = aliases(run, source, old, before) - survivors
     done = apply(tree, config["paths"], found, write)
     result = {
         "tree": str(tree), "from": old, "to": new, "renamed": len(found["renames"]), "files": done["files"],
         "spellings": done["spellings"], "ambiguous": len(found["ambiguous"]), "written": write,
+        "dropped_aliases": done["dropped"],
     }  # fmt: skip
     findings = [
         {"key": "remap.stale", "blocking": True,
