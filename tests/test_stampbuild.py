@@ -7,7 +7,7 @@ from dataclasses import replace
 
 from abu_decomp import worktree
 from abu_decomp.data import stamp as stamp_mod
-from abu_decomp.data import stampbuild
+from abu_decomp.data import stampbuild, trial
 from abu_decomp.data.config import DataConfig
 
 CFG = DataConfig(reference="a", versions=("a", "b"), source_suffixes=(".c",))
@@ -470,9 +470,7 @@ def test_a_diff_renameproof_proves_is_stamped_without_a_build(tmp_path, monkeypa
     from abu_decomp import tools
 
     monkeypatch.setattr(tools, "invoke", lambda *a, **k: type("R", (), {"ok": True})())
-    monkeypatch.setattr(
-        subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "c0ffee\n", "")
-    )
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "c0ffee\n", ""))
     monkeypatch.setattr(stampbuild, "slot", lambda *a, **k: (_ for _ in ()).throw(AssertionError("built")))
     result, code, _f = stampbuild.build(CFG, object(), tmp_path, diff, tmp_path / "stamps")
     assert code == 0 and result["proof"] == "renameproof" and stamp_mod.stamped(tmp_path / "stamps", diff.read_text())
@@ -480,8 +478,10 @@ def test_a_diff_renameproof_proves_is_stamped_without_a_build(tmp_path, monkeypa
 
 def test_a_stamp_build_holds_its_jobs_in_the_slot_pool_behind_the_train(tmp_path, monkeypatch):
     from dataclasses import replace
+
     from abu_decomp import slots
     from abu_decomp.data import trial
+
     held = []
 
     class Hold:
@@ -501,3 +501,15 @@ def test_a_stamp_build_holds_its_jobs_in_the_slot_pool_behind_the_train(tmp_path
     cfg = replace(CFG, make=("make",), jobs=())
     trial.Builder(cfg, tmp_path, run=run).build("us", "u")
     assert held == [("batch", 1, "stamp build")] and ran[0][:3] == ["nice", "-n", "10"]
+
+
+def test_a_failed_link_keeps_its_log_and_names_the_missing_objects(tmp_path):
+    tree = tmp_path / "trees" / "STAMP-S0"
+    tree.mkdir(parents=True)
+    builder = trial.Builder.__new__(trial.Builder)
+    builder.tree = tree
+    log = "ld: cannot find build/us/src/MENU_2/A.CPP.o: No such file or directory\nmake: *** [check] Error 1\n"
+    path = builder.keep_failure(1, 2, log)
+    assert path and path.parent == tmp_path / "trees" / ".stamp-link-failures"
+    assert "build/us/src/MENU_2/A.CPP.o" in path.read_text().splitlines()[0]
+    assert builder.missing_objects("make: *** No rule to make target 'build/eu/B.o'.  Stop.") == ["build/eu/B.o"]

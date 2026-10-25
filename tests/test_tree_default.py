@@ -62,7 +62,7 @@ class TreeDefault(unittest.TestCase):
 
     def test_cleanup_count_and_behave_hand_the_lane_tree_on(self):
         self.stand_in(self.lane)
-        self.args.verb, self.args.dir, self.args.top = "count", None, 0
+        self.args.verb, self.args.dir, self.args.top, self.args.evidence = "count", None, 0, False
         with mock.patch("abu_decomp.cleanup.count", return_value={"folders": {}, "total": 0, "classes": {}}) as count:
             cli._run_cleanup(self.args)
         self.assertEqual(count.call_args.args[0], self.lane)

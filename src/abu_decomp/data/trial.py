@@ -109,6 +109,7 @@ class Builder:
             log = (r.stdout or "") + (r.stderr or "")
             with contextlib.suppress(OSError):
                 (self.tree / self.LOG).write_text(log)
+            self.keep_failure(attempt, r.returncode, log)
             report = self.rom_report(r.returncode, log)
             if (
                 "no ROM was linked" in report
@@ -119,6 +120,40 @@ class Builder:
             if attempt == 2 or not (report.startswith("make exited") or "no ROM was linked" in report):
                 return r.returncode, report
         return r.returncode, report
+
+    KEPT = (
+        ".stamp-link-failures"  # beside the stamp trees: a retry that passes must not erase why the first link failed
+    )
+
+    MISSING = re.compile(
+        r"(?:cannot find|No rule to make target|No such file or directory)[^\n]*?[`'\"]?([\w./+-]+\.o)\b"
+        r"|([\w./+-]+\.o): (?:No such file|file not recognized)"
+    )
+
+    @staticmethod
+    def missing_objects(log: str) -> list[str]:
+        """The object files a link log names as absent (ld `cannot find X.o`, make `No rule to make target X.o`)."""
+        return sorted({a or b for a, b in Builder.MISSING.findall(log)})
+
+    def keep_failure(self, attempt: int, rc: int, log: str) -> Path | None:
+        """Write a failed link's whole make output to `<trees>/.stamp-link-failures/<tree>-<time>-aN.log`, headed by the
+        objects it names missing, and print one line naming them: the first-make-check link failures left no log (the
+        retry overwrote `.stamp-rom.log`, then a pass released the tree), so none could be traced to a rule."""
+        import time
+
+        folder = self.tree.parent / self.KEPT
+        path = folder / f"{self.tree.name}-{time.strftime('%m%d-%H%M%S')}-a{attempt}.log"
+        missing = self.missing_objects(log)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"# rc={rc} attempt={attempt} missing={missing}\n{log}")
+        except OSError:
+            return None
+        print(
+            f"stamp link failed (attempt {attempt}, rc {rc}): missing {missing[:6] or 'none named'}; log {path}",
+            flush=True,
+        )
+        return path
 
     def rom_report(self, rc: int, log: str) -> str:
         """One line per version whose ROM is missing or differs from the original, else the make error lines."""

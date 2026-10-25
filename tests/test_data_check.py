@@ -221,7 +221,9 @@ def test_every_exact_function_of_a_version_is_scored_by_one_fncmp_batch(tmp_path
         if cmd[:2] == ["git", "-C"] or "--batch" not in cmd:
             return subprocess.CompletedProcess(cmd, 0, "", "")
         names = [line.split()[0] for line in kw["input"].splitlines()]
-        return subprocess.CompletedProcess(cmd, 0, "".join(f"{n} ALIGNED edit={0 if n != 'f3' else 4}\n" for n in names), "")
+        return subprocess.CompletedProcess(
+            cmd, 0, "".join(f"{n} ALIGNED edit={0 if n != 'f3' else 4}\n" for n in names), ""
+        )
 
     cfg = dataclasses.replace(CFG, fncmp_batch=("fncmp", "--batch", "{v}"), fncmp=("fncmp", "{v}", "{fn}", "{obj}"))
     (tmp_path / "docs").mkdir()

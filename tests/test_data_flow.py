@@ -265,7 +265,11 @@ def test_member_accepted_when_the_rom_gives_it_its_own_lui(tmp_path: Path):
     diff = "+++ b/src/b.c\n+extern s32 D_80100004;\n"
     cfg = _ev_cfg(tmp_path)
     assert gate.check_diff(cfg, cj, diff)[0].startswith("src/b.c: MEMBER")  # no asm yet: unchanged behaviour
-    _asm(tmp_path, "f", "lui $v0, %hi(D_80100004)\nlw $v0, %lo(D_80100004)($v0)\nlui $a0, %hi(D_80100000)\naddiu $a0, $a0, %lo(D_80100000)\n")
+    _asm(
+        tmp_path,
+        "f",
+        "lui $v0, %hi(D_80100004)\nlw $v0, %lo(D_80100004)($v0)\nlui $a0, %hi(D_80100000)\naddiu $a0, $a0, %lo(D_80100000)\n",
+    )
     assert gate.check_diff(cfg, cj, diff) == []
     assert gate.check_diff(CFG, cj, diff)[0].startswith("src/b.c: MEMBER")  # no evidence_tree configured: refuses
 
@@ -274,7 +278,11 @@ def test_member_refused_when_any_function_reaches_it_as_owner_plus_offset(tmp_pa
     cj = census_json(tmp_path)
     diff = "+++ b/src/b.c\n+extern s32 D_80100004;\n"
     cfg = _ev_cfg(tmp_path)
-    _asm(tmp_path, "f", "lui $v0, %hi(D_80100004)\nlw $v0, %lo(D_80100004)($v0)\nlui $a0, %hi(D_80100004)\nlw $a0, %lo(D_80100004)($a0)\n")
+    _asm(
+        tmp_path,
+        "f",
+        "lui $v0, %hi(D_80100004)\nlw $v0, %lo(D_80100004)($v0)\nlui $a0, %hi(D_80100004)\nlw $a0, %lo(D_80100004)($a0)\n",
+    )
     assert gate.check_diff(cfg, cj, diff) == []
     _asm(tmp_path, "g", "lui $v1, %hi(D_80100000)\nlw $v0, %lo(D_80100004)($v1)\n")  # base register of the owner
     assert gate.check_diff(cfg, cj, diff)[0].startswith("src/b.c: MEMBER")
@@ -321,7 +329,12 @@ def test_check_diff_already_committed_in_the_tree_is_no_refusal(tmp_path: Path):
     from abu_decomp.data import command
 
     def git(*a):
-        return subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True, capture_output=True, text=True).stdout
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", *a],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
 
     git("init", "-q")
     (tmp_path / "a.c").write_text("one\n")
@@ -391,8 +404,12 @@ def test_a_check_in_a_tree_holding_another_diff_stamps_by_building_alone(tmp_pat
     tree = tmp_path / "wt" / "L1"
     tree.mkdir()
     diff = tmp_path / "x.diff"
-    diff.write_text("diff --git a/include/a.h b/include/a.h\n--- a/include/a.h\n+++ b/include/a.h\n@@ -1 +1 @@\n-x\n+y\n")
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="include/a.h\ninclude/other.h\n", returncode=0))
+    diff.write_text(
+        "diff --git a/include/a.h b/include/a.h\n--- a/include/a.h\n+++ b/include/a.h\n@@ -1 +1 @@\n-x\n+y\n"
+    )
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="include/a.h\ninclude/other.h\n", returncode=0)
+    )
     monkeypatch.setattr(cli, "_profile", lambda p: "profile")
     seen = {}
 
@@ -401,7 +418,17 @@ def test_a_check_in_a_tree_holding_another_diff_stamps_by_building_alone(tmp_pat
         return {"stamp": "stamps/ok"}, 0, []
 
     monkeypatch.setattr(stampbuild, "build", fake_build)
-    args = argparse.Namespace(version=None, unit=None, diff=diff, tree=tree, since=None, stamps=tmp_path / "st", config=None, profile=None, reextract=False)
+    args = argparse.Namespace(
+        version=None,
+        unit=None,
+        diff=diff,
+        tree=tree,
+        since=None,
+        stamps=tmp_path / "st",
+        config=None,
+        profile=None,
+        reextract=False,
+    )
     assert command._stamp(args, None) == "stamps/ok" and seen["shared"] == pool
     monkeypatch.setattr(stampbuild, "build", lambda *a, **k: ({}, 1, [{"message": "bad rom"}]))
     assert "built alone and failed: bad rom" in command._stamp(args, None)
@@ -428,7 +455,9 @@ def test_behind_counts_main_commits_a_tree_lacks(tmp_path):
     from abu_decomp import worktree
 
     def git(*a, cwd=tmp_path):
-        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=cwd, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=cwd, check=True, capture_output=True
+        )
 
     git("init", "-q", "-b", "main")
     git("commit", "-q", "--allow-empty", "-m", "a")
@@ -469,8 +498,12 @@ def test_stamp_accepts_a_lane_tree_that_committed_its_diff(tmp_path: Path, monke
     tree, origin = tmp_path / "tree", tmp_path / "origin"
 
     def git(where, *a):
-        return subprocess.run(["git", "-C", str(where), "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True,
-                              capture_output=True, text=True).stdout
+        return subprocess.run(
+            ["git", "-C", str(where), "-c", "user.name=t", "-c", "user.email=t@t", *a],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
 
     origin.mkdir()
     git(origin, "init", "-q", "-b", "main")
@@ -485,8 +518,20 @@ def test_stamp_accepts_a_lane_tree_that_committed_its_diff(tmp_path: Path, monke
     written = []
     monkeypatch.setattr(stamp_mod, "write", lambda d, text: written.append(text) or tmp_path / "stamp")
     monkeypatch.setattr(stamp_mod, "stamp_dir", lambda *a: tmp_path / "stamps")
-    args = type("A", (), {"diff": diff, "tree": tree, "since": None, "version": None, "unit": None, "stamps": None,
-                          "config": None, "profile": None})()
+    args = type(
+        "A",
+        (),
+        {
+            "diff": diff,
+            "tree": tree,
+            "since": None,
+            "version": None,
+            "unit": None,
+            "stamps": None,
+            "config": None,
+            "profile": None,
+        },
+    )()
     assert command._stamp(args, None) == str(tmp_path / "stamp")
     assert written == [diff.read_text()]
 

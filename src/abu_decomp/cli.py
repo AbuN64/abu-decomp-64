@@ -1127,12 +1127,20 @@ def _run_owes(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 
 
 def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("verb", choices=["count"], help="count: placeholder names (func_/D_/unk/pad/spNN) per folder")
+    parser.add_argument(
+        "verb", choices=["count"], help="count: placeholder names (func_/D_/unk/pad/spNN/var_/argN) per folder"
+    )
     parser.add_argument(
         "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
     )
     parser.add_argument("--dir", help="only this folder and below (src/game/MENU_2, game/MENU_2 or the leaf MENU_2)")
     parser.add_argument("--top", type=int, default=15, help="folders listed, most placeholders first (0 = every one)")
+    parser.add_argument(
+        "--evidence",
+        action="store_true",
+        help="per listed folder, how many locals (L), data (N4) and functions (N5) Recipe Maker can name from source"
+        " evidence and how many have none (runs those steps read-only; seconds per folder)",
+    )
 
 
 def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -1143,9 +1151,32 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
     rows = sorted(got["folders"].items(), key=lambda kv: (-kv[1]["count"], kv[0]))
     shown = rows if args.top == 0 else rows[: args.top]
     print(f"placeholders {got['total']} " + " ".join(f"{k}={v}" for k, v in got["classes"].items()), file=sys.stderr)
+    found: dict[str, Any] = {}
+    if args.evidence:
+        profile = _profile(args.profile)
+
+        def ask(step: str, target: str) -> dict[str, Any]:
+            called = tools.invoke(
+                "recipe",
+                profile,
+                ["name", "next", "--step", step, "--target", target, "--no-apply", "--count", "100000"],
+                project=root,
+            )
+            return dict(called.document) if called.ok else {}
+
+        found = cleanup.evidence(dict(shown), ask)
     for folder, row in shown:
-        print(f"  {row['count']:>6}  {folder}", file=sys.stderr)
-    return {**got, "folders": dict(shown), "folder_count": len(rows)}, 0, []
+        names = " ".join(f"{what}={v['namable']}/{v['no_evidence']}" for what, v in found.get(folder, {}).items())
+        print(f"  {row['count']:>6}  {folder}" + (f"  namable/no-evidence: {names}" if names else ""), file=sys.stderr)
+    return (
+        {
+            **got,
+            "folders": {k: {**v, **({"evidence": found[k]} if k in found else {})} for k, v in shown},
+            "folder_count": len(rows),
+        },
+        0,
+        [],
+    )
 
 
 def _sweep_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1317,7 +1348,7 @@ COMMANDS: dict[str, Command] = {
         _run_owes,
     ),
     "cleanup": Command(
-        "placeholder-name counts (func_/D_/unk/pad/spNN) per folder: the one number lanes and WATCH share",
+        "placeholder-name counts (func_/D_/unk/pad/spNN/var_/argN) per folder: the one number lanes and WATCH share",
         _cleanup_arguments,
         _run_cleanup,
     ),

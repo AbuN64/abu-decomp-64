@@ -108,10 +108,13 @@ def test_a_rename_may_drop_the_alias_row_of_the_symbol_it_renames():
 
 def test_a_msg_line_added_after_the_check_keeps_the_stamp(tmp_path):
     from abu_decomp.data import stamp
+
     diff = "diff --git a/a.c b/a.c\n--- a/a.c\n+++ b/a.c\n@@ -1 +1 @@\n-x\n+y\n"
     stamp.write(tmp_path, diff)
     assert stamp.stamped(tmp_path, "# MSG: Exact Foo\n" + diff)
     assert stamp.stamped(tmp_path, "# MSG: Exact Foo, other words\n# note\n" + diff)
     assert not stamp.stamped(tmp_path, "# MSG: Exact Foo\n" + diff.replace("+y", "+z"))
-    (tmp_path / f"{stamp.digest('# MSG: old\n' + diff)}.ok").write_text("a.c\n")  # a stamp keyed by the whole text before
+    (tmp_path / f"{stamp.digest('# MSG: old\n' + diff)}.ok").write_text(
+        "a.c\n"
+    )  # a stamp keyed by the whole text before
     assert stamp.stamped(tmp_path, "# MSG: old\n" + diff)
