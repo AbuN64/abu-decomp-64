@@ -55,6 +55,8 @@ class Bridge:
         self.signal_name = None
         self.inferior_exit = None
         self.command_reader = None
+        self.watch_hits = 0
+        self.fpe_hits = 0
 
     async def read_output(self):
         while True:
@@ -158,6 +160,21 @@ class Bridge:
                     await self.cli(command)
                 self.stack_mode = None
                 (self.run_dir / "signal-context.txt").write_text("\n".join(self.full_stack_lines) + "\n")
+                # Lane-supplied reads at the fault (N64C_FAULT_GDB = a file of gdb commands, one per line): the
+                # sprite, glyph or batch the faulting frame holds, written beside the stacks as signal-extra.txt.
+                script = os.environ.get("N64C_FAULT_GDB")
+                if script and Path(script).is_file():
+                    self.full_stack_lines = []
+                    self.stack_mode = "artifact"
+                    for command in Path(script).read_text().splitlines():
+                        if command.strip() and not command.startswith("#"):
+                            self.full_stack_lines.append("(gdb) " + command)
+                            try:
+                                await self.cli(command)
+                            except Exception as error:  # a bad command must not lose the rest or the stop report
+                                self.full_stack_lines.append("(error) " + repr(error))
+                    self.stack_mode = None
+                    (self.run_dir / "signal-extra.txt").write_text("\n".join(self.full_stack_lines) + "\n")
         print("C_STACK_END " + label, flush=True)
 
     @staticmethod
@@ -206,8 +223,18 @@ class Bridge:
             # The shim takes SIGSEGV (guest TLB-miss service) and SIGUSR2 (resume) on purpose and handles them
             # itself. Without this gdb stops on each one and the bridge reports a crash (tile stuck at 75/932).
             # A genuine host fault is named at the breakpoint by the shim (host-fault-<addr>) while traced.
-            for body in ("handle SIGSEGV nostop noprint pass", "handle SIGUSR2 nostop noprint pass"):
+            handles = ["handle SIGSEGV nostop noprint pass", "handle SIGUSR2 nostop noprint pass"]
+            if os.environ.get("N64C_GDB_FPE_TOLERATE"):
+                handles.append("handle SIGFPE stop print nopass")
+            for body in handles:
                 await self.cli(body)
+            # Lane-supplied setup before the run (N64C_GDB_INIT = a file of gdb commands, e.g. a `watch`): each
+            # watchpoint hit appends its stack to watch.txt in the run folder and the run goes on (200 hits at most).
+            init = os.environ.get("N64C_GDB_INIT")
+            if init and Path(init).is_file():
+                for command in Path(init).read_text().splitlines():
+                    if command.strip() and not command.startswith("#"):
+                        await self.cli(command)
             token = await self.send("-exec-run")
             response = await self.result(token)
             if response.startswith(str(token) + "^error"):
@@ -243,6 +270,40 @@ class Bridge:
                         if response.startswith(str(token) + "^error"):
                             print("[gdb] continue failed: " + response, flush=True)
                             return 125
+                    elif 'reason="watchpoint-trigger"' in record and self.watch_hits < 200:
+                        self.watch_hits += 1
+                        self.full_stack_lines = [f"watch hit {self.watch_hits}: {record[:400]}"]
+                        self.stack_mode = "artifact"
+                        await self.cli("bt 8")
+                        self.stack_mode = None
+                        self.run_dir.mkdir(parents=True, exist_ok=True)
+                        with (self.run_dir / "watch.txt").open("a") as out:
+                            out.write("\n".join(self.full_stack_lines) + "\n")
+                        token = await self.send("-exec-continue")
+                        await self.result(token)
+                    elif ('reason="signal-received"' in record and 'signal-name="SIGFPE"' in record
+                          and os.environ.get("N64C_GDB_FPE_TOLERATE") and self.fpe_hits < 100000):
+                        # Experiment mode (a lane asks what the original would do if this divide did not trap): log the
+                        # faulting frame, mask the trap for the one instruction, restore the trap and go on.
+                        self.fpe_hits += 1
+                        if self.fpe_hits <= 20:
+                            self.full_stack_lines = []
+                            self.stack_mode = "artifact"
+                            await self.cli("bt 6")
+                            self.stack_mode = None
+                            self.run_dir.mkdir(parents=True, exist_ok=True)
+                            with (self.run_dir / "fpe-tolerated.txt").open("a") as out:
+                                out.write(f"fpe {self.fpe_hits}\n" + "\n".join(self.full_stack_lines) + "\n")
+                        await self.cli("set $mxcsr = $mxcsr | 0x200")
+                        token = await self.send("-exec-step-instruction")
+                        await self.result(token)
+                        while True:
+                            kind, record = await self.next_event()
+                            if kind == "stopped" or kind == "eof":
+                                break
+                        await self.cli("set $mxcsr = ($mxcsr & ~0x200) & ~0x3f")
+                        token = await self.send("-exec-continue")
+                        await self.result(token)
                     elif 'reason="signal-received"' in record:
                         name = re.search(r"signal-name=\"([^\"]+)\"", record)
                         self.signal_name = name.group(1) if name else "unknown"
