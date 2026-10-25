@@ -22,6 +22,17 @@ def decode_stream(record):
         return record[1:].strip().strip('"')
 
 
+_MI_ASYNC = re.compile(r"[=*+][a-z][a-z-]*(,|$)")
+
+
+def is_mi_async(record):
+    """An MI async record (`=thread-created,...`, `*running,...`, `+download,...`): a class word right after the sign.
+    Inferior output that only starts with one of those signs is not one: AddressSanitizer opens every report with
+    `==PID==ERROR: AddressSanitizer: ...` and a `=====` rule; dropping them hid every ASan report from the
+    findings."""
+    return bool(_MI_ASYNC.match(record))
+
+
 def exit_code(record):
     match = re.search(r"exit-code=\"([^\"]+)\"", record)
     if not match:
@@ -85,7 +96,7 @@ class Bridge:
                 await self.queue.put(("group-exit", record))
             elif "^" in record and record.split("^", 1)[0].isdigit():
                 await self.queue.put(("result", record))
-            elif record and record.strip() != "(gdb)" and not record.startswith(("=", "*", "+")):
+            elif record and record.strip() != "(gdb)" and not is_mi_async(record):
                 # Some inferior output bypasses MI stream quoting.
                 print(record, flush=True)
 

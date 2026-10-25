@@ -11,7 +11,7 @@ from unittest import mock
 
 from abu_decomp.cli import main as public_main
 from abu_decomp.supervisor.artifact import current, show
-from abu_decomp.supervisor.gdb import Bridge, exit_code
+from abu_decomp.supervisor.gdb import Bridge, exit_code, is_mi_async
 from abu_decomp.supervisor.supervisor import Supervisor
 
 
@@ -289,6 +289,23 @@ class PanesTests(unittest.TestCase):
             for name in ("SIGSEGV", "SIGUSR2"):
                 self.assertIn(f"handle {name} nostop noprint pass", sent)
                 self.assertLess(sent.index(f"handle {name}"), sent.index("-exec-run"))
+
+    def test_gdb_bridge_keeps_inferior_lines_that_only_start_like_mi_records(self):
+        for record in (
+            '=thread-created,id="2",group-id="i1"',
+            '*running,thread-id="all"',
+            "=library-loaded,id=1",
+            "*stopped",
+            '+download,{section=".text"}',
+        ):
+            self.assertTrue(is_mi_async(record), record)
+        for record in (
+            "==4242==ERROR: AddressSanitizer: stack-buffer-overflow on address 0x6020d58c",
+            "=================================================================",
+            "== a note",
+            "*** stack smashing",
+        ):
+            self.assertFalse(is_mi_async(record), record)
 
     def test_gdb_exit_code_reads_the_real_exit_code(self):
         assert exit_code('*stopped,reason="exited",exit-code="01"') == 1
