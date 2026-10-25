@@ -69,3 +69,25 @@ def test_refusals(tmp_path):
         diffonto.run(t, "HEAD", ["src/a.c"], hunks="nomatch")
     with pytest.raises(DecompError, match="starts no line"):
         diffonto.run(t, "HEAD", [], rename="missing=New")
+
+
+def test_function_filter_keeps_one_functions_hunks_and_its_rows(tmp_path):
+    t = repo(tmp_path)
+    src = (
+        "int Other(void)\n{\n    return 1;\n}\n\n"
+        "int Foo_Bar(int x)\n{\n    if (x) {\n        return 2;\n    }\n    return 3;\n}\n\n"
+        "int Third(void)\n{\n    return 4;\n}\n"
+    )
+    (t / "src/f.c").write_text(src)
+    g(t, "add", "-A")
+    g(t, "commit", "-qm", "add f")
+    new = src.replace("return 1;", "return 11;").replace("return 3;", "return 33;").replace("return 4;", "return 44;")
+    (t / "src/f.c").write_text(new)
+    (t / "versions/us/symbol_addrs.txt").write_text("func_1 = 0x80000000; // x\nFoo_Bar = 0x80000010;\n")
+    out = tmp_path / "o.diff"
+    diffonto.run(t, "HEAD", ["src/f.c", "versions"], function="Foo_Bar", out=out)
+    text = out.read_text()
+    assert "+    return 33;" in text and "+Foo_Bar = 0x80000010;" in text
+    assert "return 11" not in text and "return 44" not in text
+    with pytest.raises(DecompError):
+        diffonto.run(t, "HEAD", ["src/f.c"], function="Nope_Fn")

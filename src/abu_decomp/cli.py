@@ -1035,6 +1035,10 @@ def _diff_arguments(parser: argparse.ArgumentParser) -> None:
         "--from", dest="base", default="HEAD", help="revision the tree's change is measured from (default HEAD)"
     )
     parser.add_argument("--hunks", help="keep only hunks with a changed line matching this regex")
+    parser.add_argument(
+        "--function",
+        help="keep only this function's hunks: inside its definition or naming it (symbol, size and layout rows too)",
+    )
     parser.add_argument("--rename-symbol", help="OLD=NEW: also rename the symbol in every version's symbol_addrs.txt")
     parser.add_argument("--msg", help="written as the first line `# MSG: ...` of the diff")
     parser.add_argument("--out", type=Path, help="write the diff here (default: report only)")
@@ -1053,6 +1057,7 @@ def _run_diff(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
             args.paths,
             base=args.base,
             hunks=args.hunks,
+            function=args.function,
             rename=args.rename_symbol,
             msg=args.msg,
             out=args.out,
