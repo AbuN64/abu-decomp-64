@@ -409,3 +409,23 @@ class FinishTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HostTraceTests(unittest.TestCase):
+    """TAS-COVER-3: an original host that never reads N64R_TAS_STATE replayed every movie for nothing."""
+
+    def test_a_host_without_the_state_trace_turns_the_state_diff_off_with_its_reason(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        bare, traced = tmp / "bare", tmp / "traced"
+        bare.write_bytes(b"\x7fELF host without it")
+        traced.write_bytes(b"\x7fELF ... N64R_TAS_STATE ...")
+        self.assertFalse(sd.host_traces(bare))
+        self.assertTrue(sd.host_traces(traced))
+        with mock.patch.object(sd.tas_oracle, "settings", return_value={"host": bare}):
+            self.assertIn("no state trace", sd.available(object()))
+        with (
+            mock.patch.object(sd.tas_oracle, "settings", return_value={"host": traced}),
+            mock.patch.object(sd, "_units", return_value=tmp),
+        ):
+            self.assertIsNone(sd.available(object()))

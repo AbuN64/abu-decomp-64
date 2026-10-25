@@ -1363,6 +1363,8 @@ def play(
                 record["state_diff"] = {"error": str(error)}
             if state:
                 env.update(state.port_env())
+            elif "state_diff" not in record and (why := tas_statediff.available(profile)):
+                record["state_diff"] = {"skipped": why}  # said once per run, not a silent "no trace" after a replay
         oracle_process, oracle_end, oracle_waiter = None, {}, None
         if original:
             env.update(tas_oracle.port_env(original, run))

@@ -76,10 +76,33 @@ _UNDEFINED = re.compile(r"^(.*?):\s+U\s+(\S+)$")
 KIND_BYTES = {"b": 1, "h": 2, "w": 4, "d": 8, "p": 4}
 
 
+_HOST_TRACES: dict[tuple[str, int], bool] = {}
+
+
+def host_traces(host: Path) -> bool:
+    """Whether the original's host binary implements the state trace (it reads N64R_TAS_STATE): a host without it
+    replays the whole movie and leaves nothing to compare (TAS-COVER-3: every play ended "the original left no state
+    trace"). Read once per binary (path and date)."""
+    try:
+        key = (str(host), host.stat().st_mtime_ns)
+    except OSError:
+        return False
+    if key not in _HOST_TRACES:
+        try:
+            _HOST_TRACES[key] = b"N64R_TAS_STATE" in host.read_bytes()
+        except OSError:
+            _HOST_TRACES[key] = False
+    return _HOST_TRACES[key]
+
+
 def available(profile: Profile) -> str | None:
     """None when the original and the unit sources are there; else why a run has no state diff."""
-    if tas_oracle.settings(profile) is None:
+    settings = tas_oracle.settings(profile)
+    if settings is None:
         return "no tas.oracle section"
+    host = settings.get("host") if isinstance(settings, dict) else None
+    if host and not host_traces(Path(host)):
+        return f"the original's host {host} has no state trace (N64R_TAS_STATE): no state diff, no oracle replay for it"
     units = _units(profile)
     if units is None or not units.is_dir():
         return "no tas.build.units folder (the port's preprocessed units)"
