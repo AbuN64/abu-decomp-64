@@ -458,3 +458,34 @@ def test_a_link_that_left_no_rom_names_the_make_state(tmp_path):
     fake = SimpleNamespace(tree=tmp_path, _tail=trial.Builder._tail)
     text = trial.Builder._diag(fake, 245, "\n")
     assert "make rc=245" in text and "no output at all" in text and "locks: .extract-lock-us" in text
+
+
+def test_stamp_accepts_a_lane_tree_that_committed_its_diff(tmp_path: Path, monkeypatch):
+    """REV1-ONE-32B: a splat.yaml diff checked with --reextract in a lane tree that had committed it was refused as 'holds
+    edits of another diff' (HEAD shows no change). The merge-base with main is the diff's base, so it is stamped."""
+    from abu_decomp.data import command
+    from abu_decomp.data import stamp as stamp_mod
+
+    tree, origin = tmp_path / "tree", tmp_path / "origin"
+
+    def git(where, *a):
+        return subprocess.run(["git", "-C", str(where), "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True,
+                              capture_output=True, text=True).stdout
+
+    origin.mkdir()
+    git(origin, "init", "-q", "-b", "main")
+    (origin / "versions").mkdir()
+    (origin / "versions/splat.yaml").write_text("a: 1\n")
+    git(origin, "add", "-A"), git(origin, "commit", "-qm", "base")
+    subprocess.run(["git", "clone", "-q", str(origin), str(tree)], check=True)
+    (tree / "versions/splat.yaml").write_text("a: 2\n")
+    diff = tmp_path / "split.diff"
+    diff.write_text(git(tree, "diff"))
+    git(tree, "commit", "-qam", "lane change")
+    written = []
+    monkeypatch.setattr(stamp_mod, "write", lambda d, text: written.append(text) or tmp_path / "stamp")
+    monkeypatch.setattr(stamp_mod, "stamp_dir", lambda *a: tmp_path / "stamps")
+    args = type("A", (), {"diff": diff, "tree": tree, "since": None, "version": None, "unit": None, "stamps": None,
+                          "config": None, "profile": None})()
+    assert command._stamp(args, None) == str(tmp_path / "stamp")
+    assert written == [diff.read_text()]

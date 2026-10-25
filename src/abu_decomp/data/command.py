@@ -295,6 +295,18 @@ def _place(args: argparse.Namespace) -> Result:
     )
 
 
+def _main_bases(tree) -> list[str]:
+    """The merge-base of HEAD with main (github/main, origin/main): a lane tree that committed its diff (REV1-ONE-32B: a
+    splat.yaml edit needs --reextract, which refused an uncommitted second diff) is checked against where it left main."""
+    import subprocess
+    out = []
+    for ref in ("github/main", "origin/main"):
+        mb = subprocess.run(["git", "-C", str(tree), "merge-base", "HEAD", ref], capture_output=True, text=True)
+        if mb.returncode == 0 and mb.stdout.strip() and mb.stdout.strip() not in out:
+            out.append(mb.stdout.strip())
+    return out
+
+
 def _stamp(args: argparse.Namespace, cfg) -> str:
     """Write the stamp of --diff after a clean check; the reason it was not written otherwise."""
     import subprocess
@@ -302,12 +314,14 @@ def _stamp(args: argparse.Namespace, cfg) -> str:
     if args.version or args.unit:
         return "not stamped: --version/--unit narrowed the check; a stamp needs every version"
     text = args.diff.read_text(errors="replace")
-    done = subprocess.run(
-        ["git", "-C", str(args.tree), "diff", "--name-only", args.since or "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if sorted(done.stdout.split()) != stamp_mod.files_of(text):
+    want = stamp_mod.files_of(text)
+
+    def changed(since: str) -> list[str]:
+        out = subprocess.run(["git", "-C", str(args.tree), "diff", "--name-only", since], capture_output=True, text=True)
+        return sorted(out.stdout.split()) if out.returncode == 0 else []
+
+    bases = [args.since] if args.since else ["HEAD"] + _main_bases(args.tree)
+    if not any(changed(b) == want for b in bases):
         # The tree holds a second diff's edits, so this check cannot vouch for the named diff alone: build it alone on a
         # clean slot of the pool (the --build path) instead of leaving the lane stuck (REV1-ONE-16B, 10-24).
         from abu_decomp import cli, worktree
