@@ -20,9 +20,66 @@ def files_of(text: str) -> list[str]:
     return sorted(set(re.findall(r"^diff --git a/(\S+) b/", text, re.M)))
 
 
+_FACT = re.compile(r"^[+-]\s*(\w+)\s*=\s*(0[xX][0-9A-Fa-f]+)\s*;")
+
+
+def renames_of(text: str) -> dict[str, str]:
+    """old name -> new name for every symbol row of the diff that keeps its address and changes its name."""
+    old: dict[str, str] = {}
+    new: dict[str, str] = {}
+    for line in text.splitlines():
+        m = _FACT.match(line) if line[:3] not in ("+++", "---") else None
+        if m:
+            (old if line[0] == "-" else new)[m.group(2).lower()] = m.group(1)
+    return {old[a]: new[a] for a in old if a in new and old[a] != new[a]}
+
+
+_COMMENT = re.compile(r"/\*.*?\*/|//.*$")
+
+
+def pure_rename(text: str, code: tuple[str, ...] = ()) -> bool:
+    """The diff only renames symbols: it holds symbol rows that change a name at the same address, and every other changed
+    line becomes its replacement when those names are substituted (comments aside); a file that is no source or header
+    (a name table) may also gain rows. No type, size or value moves, so the diff changes no byte, `unbake renameproof` is
+    its proof and the all-version data check (295 s for 74 files, 10-24) has nothing to judge."""
+    names = renames_of(text)
+    if not names:
+        return False
+    sub = re.compile(r"\b(" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True)) + r")\b")
+    plain = lambda line: _COMMENT.sub("", line).strip()  # noqa: E731
+    gone: list[str] = []
+    came: list[str] = []
+    current = ""
+
+    def settled() -> bool:
+        table = not current.lower().endswith((*code, ".h")) and not gone
+        ok = table or (
+            len(gone) == len(came)
+            and all(sub.sub(lambda m: names[m.group(1)], plain(g)) == plain(c) for g, c in zip(gone, came, strict=True))
+        )
+        gone.clear()
+        came.clear()
+        return ok
+
+    for line in text.splitlines():
+        if line.startswith("diff --git "):
+            if (gone or came) and not settled():
+                return False
+            current = line.split(" b/", 1)[-1]
+        elif line.startswith("-") and not line.startswith("---") and not came:
+            gone.append(line[1:])
+        elif line.startswith("+") and not line.startswith("+++"):
+            came.append(line[1:])
+        elif (gone or came) and not settled():
+            return False
+    return settled() if (gone or came) else True
+
+
 def touches_data(cfg: DataConfig, text: str) -> bool:
     """A header changed, or an `extern` line or a data symbol changed in a C source file (a Makefile or a note never
-    declares data)."""
+    declares data). A diff that only renames symbols (`pure_rename`) touches none."""
+    if pure_rename(text, tuple(cfg.source_suffixes)):
+        return False
     suffixes = tuple(cfg.source_suffixes)
     token = re.compile(r"\b" + cfg.symbol_token)
     current = ""
