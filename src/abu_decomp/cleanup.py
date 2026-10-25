@@ -44,25 +44,54 @@ def count_text(text: str) -> Counter[str]:
     return Counter({name: len(rx.findall(text)) for name, rx in CLASSES.items()})
 
 
-def tracked(root: Path) -> list[str]:
-    done = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", *ROOTS], capture_output=True, check=False)
+def tracked(root: Path, rev: str | None = None) -> list[str]:
+    """The source files under src/ and include/: tracked in the work tree, or held by commit REV."""
+    argv = ["ls-tree", "-r", "-z", "--name-only", rev, "--", *ROOTS] if rev else ["ls-files", "-z", "--", *ROOTS]
+    done = subprocess.run(["git", "-C", str(root), *argv], capture_output=True, check=False)
+    if rev and done.returncode:
+        raise ValueError(f"{rev} is no commit of {root}")
     paths = done.stdout.decode(errors="replace").split("\0")
     return sorted(p for p in paths if p.lower().endswith(SUFFIXES))
 
 
-def count(root: Path, only: str | None = None) -> dict[str, Any]:
-    """{"total", "classes", "folders": {folder: {"count", classes..., "files"}}} over the tracked tree; `only` keeps the
-    folders equal to it or under it (a leaf name such as MENU_2 also matches)."""
+def _texts(root: Path, rev: str, paths: list[str]) -> dict[str, str]:
+    """{path: text at REV}, read in one `git cat-file --batch`."""
+    done = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "--batch"],
+        input="".join(f"{rev}:{p}\n" for p in paths).encode(),
+        capture_output=True,
+        check=False,
+    )
+    out, at, data = {}, 0, done.stdout
+    for path in paths:
+        end = data.index(b"\n", at)
+        head = data[at:end].split()
+        at = end + 1
+        if len(head) == 3 and head[1] == b"blob":
+            size = int(head[2])
+            out[path] = data[at : at + size].decode(errors="replace")
+            at += size + 1
+    return out
+
+
+def count(root: Path, only: str | None = None, rev: str | None = None) -> dict[str, Any]:
+    """{"total", "classes", "folders": {folder: {"count", classes..., "files"}}} over the tracked tree, or over commit
+    REV without a checkout (CLEAN-PLAN-O1 counted commits with its own git grep); `only` keeps the folders equal to it
+    or under it (a leaf name such as MENU_2 also matches)."""
     folders: dict[str, Counter[str]] = {}
     files: Counter[str] = Counter()
     want = (only or "").strip("/").removeprefix("src/")
-    for path in tracked(root):
+    paths = [
+        p
+        for p in tracked(root, rev)
+        if not want or (f := folder_of(p)) == want or f.startswith(want + "/") or PurePosixPath(f).name == want
+    ]
+    held = _texts(root, rev, paths) if rev else {}
+    for path in paths:
         folder = folder_of(path)
-        if want and not (folder == want or folder.startswith(want + "/") or PurePosixPath(folder).name == want):
-            continue
         try:
-            text = (root / path).read_text(errors="replace")
-        except OSError:
+            text = held[path] if rev else (root / path).read_text(errors="replace")
+        except (OSError, KeyError):
             continue
         folders.setdefault(folder, Counter()).update(count_text(text))
         files[folder] += 1

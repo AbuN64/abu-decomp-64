@@ -55,3 +55,30 @@ def test_count_groups_by_folder_and_filters_by_dir_or_leaf(tmp_path):
     assert got["total"] == 6 and got["folders"]["game/A"]["count"] == 3 and got["folders"]["include/COMMON"]["sp"] == 1
     assert list(cleanup.count(tmp_path, "src/game/A")["folders"]) == ["game/A"]
     assert list(cleanup.count(tmp_path, "B")["folders"]) == ["game/B"]
+
+
+def test_count_rev_reads_a_commit_without_a_checkout(tmp_path):
+    """CLEAN-PLAN-O1: counting a commit needed a checkout; --rev reads the commit's blobs."""
+
+    def git(*a):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(tmp_path), *a],
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q")
+    (tmp_path / "src/game/A").mkdir(parents=True)
+    (tmp_path / "src/game/A/x.c").write_text("func_80000001 func_80000002")
+    git("add", "-A")
+    git("commit", "-qm", "one")
+    (tmp_path / "src/game/A/x.c").write_text("Actor_Spawn func_80000002")
+    git("commit", "-qam", "two")
+    assert cleanup.count(tmp_path, rev="HEAD~1")["total"] == 2 and cleanup.count(tmp_path, rev="HEAD")["total"] == 1
+    assert cleanup.count(tmp_path, "A", rev="HEAD~1")["folders"]["game/A"]["files"] == 1
+    try:
+        cleanup.count(tmp_path, rev="nosuch")
+    except ValueError as e:
+        assert "nosuch" in str(e)
+    else:
+        raise AssertionError("an unknown revision counted")

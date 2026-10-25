@@ -1163,6 +1163,7 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
         "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
     )
     parser.add_argument("--dir", help="only this folder and below (src/game/MENU_2, game/MENU_2 or the leaf MENU_2)")
+    parser.add_argument("--rev", help="count: the sources of this commit, read from git (no checkout)")
     parser.add_argument("--top", type=int, default=15, help="folders listed, most placeholders first (0 = every one)")
     parser.add_argument("--packs", type=Path, help="dead-decls: write one diff per layer here (dead-decls-L<n>.diff)")
     parser.add_argument("--apply", action="store_true", help="dead-decls: write layer 0 into the tree")
@@ -1187,7 +1188,13 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
         sizes = [row["declarations"] for row in found["layers"]]  # type: ignore[attr-defined]
         print(f"dead-decls {found['dead']} in {found['headers']} headers, layers {sizes}", file=sys.stderr)
         return found, 0, []
-    got = cleanup.count(root, args.dir)
+    rev = getattr(args, "rev", None)  # a hand-made Namespace (tests, other verbs) has none
+    if rev and args.evidence:
+        raise DecompError("cleanup.rev", "--evidence reads a built work tree: count --rev without it")
+    try:
+        got = cleanup.count(root, args.dir, rev)
+    except ValueError as e:
+        raise DecompError("cleanup.rev", str(e)) from None
     rows = sorted(got["folders"].items(), key=lambda kv: (-kv[1]["count"], kv[0]))
     shown = rows if args.top == 0 else rows[: args.top]
     print(f"placeholders {got['total']} " + " ".join(f"{k}={v}" for k, v in got["classes"].items()), file=sys.stderr)
