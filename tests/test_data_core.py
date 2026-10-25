@@ -12,7 +12,10 @@ from abu_decomp import DecompError
 from abu_decomp.data import asm, cdecl, clayout, config, literals, source
 
 
-def test_config_unknown_key_is_ignored_with_a_warning_and_a_missing_config_refused(tmp_path: Path, capsys):
+def test_config_unknown_key_is_ignored_with_a_warning_and_a_missing_config_refused(tmp_path: Path, capsys, monkeypatch):
+    # the host's own config (~/.config/abu-decomp/data.toml, a rig has one) and the env are not this test's input
+    monkeypatch.setattr(config, "user_config", lambda: tmp_path / "no-host-config.toml")
+    monkeypatch.delenv(config.ENV, raising=False)
     cfg = config.parse({"nope": 1, "reference": "ref"})  # a key from a newer config than this tool
     assert cfg.reference == "ref" and "ignoring unknown key(s) nope" in capsys.readouterr().err
     with pytest.raises(DecompError, match="no data config"):

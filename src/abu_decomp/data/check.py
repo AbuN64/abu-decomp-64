@@ -138,9 +138,9 @@ def expand_units(
     heads = [f for f in files if f.startswith("include/") or f.lower().endswith(".h")]
     deps = header_dependents(tree, version, heads, run)
     if cfg is not None and deps:
-        from abu_decomp.data import hdrnarrow
+        from unbake import hdrnarrow  # the build's own narrowing (one copy: unbake owns hdrkey)
 
-        deps, got = hdrnarrow.narrow(tree, version, heads, deps, cfg.object, flags=list(cfg.cpp or []))
+        deps, got = hdrnarrow.narrow_tree(tree, version, heads, deps, cfg.object, flags=list(cfg.cpp or []))
         if stats is not None:
             stats[version] = got
     return sorted(set(units) | set(deps))

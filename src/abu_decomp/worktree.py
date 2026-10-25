@@ -3,8 +3,10 @@ CPU-s of preprocessing and setup before its first build, over the 5-minute cap).
 
 A new git worktree has no extraction, no objects and fresh source times, so make preprocesses every unit again. The
 seed makes it what the shared tree is at the same commit: the extraction, the objects, the preprocessed texts and the
-unbake facts are copied (WITHOUT the tree lock, which a ship holds for its whole landing; a file a ship rewrote
-during the copy is dropped and the worktree's own build makes it again), and every
+unbake facts are copied under the shared tree's lock held shared (`unbake setup` holds it exclusively while it extracts,
+and make never remakes an extraction: 10-25 a seed copied during a pool refresh lacked build/de/undefined_syms_auto.txt
+and every link of the stamp failed; a build output make rewrote during the copy is dropped and the worktree's own
+build makes it again), and every
 tracked file whose bytes equal the shared tree's file gets that file's time, so make finds the copied outputs current
 and rebuilds only what the commit changed. The worktree keeps its own `.unbake` state: recipe leases, tries, the
 ledger and the inbox never touch the shared tree's. A lane lands only through `decomp ship --tree SHARED --patch`."""
@@ -98,9 +100,9 @@ def _files(root: Path) -> dict[str, tuple[int, int]]:
 
 
 def seed(shared: Path, target: Path) -> int:
-    """Copy the shared tree's outputs and facts without its lock: a ship holds that lock for the whole landing, and a
-    new lane must not wait behind it. A file a ship rewrote while it was copied (size or time differs from the source
-    afterwards) is deleted from the copy, and the worktree's own warm build makes it again. Returns files dropped."""
+    """Copy the shared tree's outputs and facts (the caller holds its tree lock shared, so no extraction runs). A file a
+    build rewrote while it was copied (size or time differs from the source afterwards) is deleted from the copy, and
+    the worktree's own warm build makes it again. Returns files dropped."""
     for name in LINKED:
         if (shared / name).exists() and not (target / name).exists():
             (target / name).symlink_to(shared / name)
@@ -131,6 +133,12 @@ def seed(shared: Path, target: Path) -> int:
     return dropped
 
 
+def seed_locked(shared: Path, target: Path, lane: str) -> int:
+    """`seed` under the shared tree's lock held shared: no extraction is half-written while the files are copied."""
+    with treelock.hold(shared, who=f"decomp worktree seed {lane}"):
+        return seed(shared, target)
+
+
 def new(
     profile: Profile, shared: Path, lane: str, rev: str | None = None
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -145,8 +153,8 @@ def new(
         rev = _git(shared, "rev-parse", "--verify", "FETCH_HEAD^{commit}").strip()
     target.parent.mkdir(parents=True, exist_ok=True)
     _git(shared, "worktree", "add", "--detach", "-q", str(target), rev)
-    epoch = treelock.epoch(shared)  # the shared tree's lock is never taken: a ship may hold it for an hour
-    dropped = seed(shared, target)
+    epoch = treelock.epoch(shared)
+    dropped = seed_locked(shared, target, lane)
     aligned = align_times(shared, target)
     if treelock.epoch(shared) != epoch:
         print("worktree.seed: a ship ended while the outputs were copied; torn files were dropped", flush=True)
