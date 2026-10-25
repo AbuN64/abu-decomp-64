@@ -301,11 +301,13 @@ class Bridge:
                 await self.cli(body)
             # Lane-supplied setup before the run (N64C_GDB_INIT = a file of gdb commands, e.g. a `watch`): each
             # watchpoint hit appends its stack to watch.txt in the run folder and the run goes on (200 hits at most).
+            # The file is sourced whole: gdb reads a `commands ... end` block from it, where the same lines sent one
+            # by one over MI left gdb waiting at its ">" prompt for the block's end (PORT-FIX-O1 FRICTION, 10-25).
             init = os.environ.get("N64C_GDB_INIT")
             if init and Path(init).is_file():
-                for command in Path(init).read_text().splitlines():
-                    if command.strip() and not command.startswith("#"):
-                        await self.cli(command)
+                response = await self.cli(f"source {Path(init).resolve()}")
+                if "^error" in response:
+                    print("[gdb] N64C_GDB_INIT refused: " + response[-200:], flush=True)
             events = os.environ.get("N64C_TRACE_EVENTS")
             if events:
                 await self.cli("set dprintf-style gdb")

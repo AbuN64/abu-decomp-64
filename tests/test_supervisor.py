@@ -290,6 +290,43 @@ class PanesTests(unittest.TestCase):
                 self.assertIn(f"handle {name} nostop noprint pass", sent)
                 self.assertLess(sent.index(f"handle {name}"), sent.index("-exec-run"))
 
+    def test_gdb_bridge_sources_the_init_file_whole_so_a_commands_block_never_stalls(self):
+        """PF8 (PORT-FIX-O1): N64C_GDB_INIT lines sent one by one over MI left gdb at its ">" prompt after `commands`
+        (every later MI line became block text, the bridge waited forever). The file is sourced in one command."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "commands.txt"
+            init = root / "init.gdb"
+            init.write_text("break abort\ncommands\nsilent\ncontinue\nend\n")
+            fake = root / "gdb"
+            fake.write_text(
+                "#!/usr/bin/env python3\nimport sys\n"
+                f"log = open({str(log)!r}, 'w')\n"
+                "for line in sys.stdin:\n"
+                "    log.write(line); log.flush()\n"
+                "    token = line.split('-', 1)[0]\n"
+                "    print(token + '^done', flush=True)\n"
+                "    if '-exec-run' in line:\n"
+                "        print('*stopped,reason=\"exited-normally\"', flush=True)\n"
+                "    if '-gdb-exit' in line:\n"
+                "        break\n"
+            )
+            fake.chmod(0o755)
+            read, write = os.pipe()
+            self.addCleanup(os.close, write)
+            bridge = Bridge(
+                ["prog"], gdb_path=fake, library_dir=None, breakpoint="Failure", reason_expression="x", run_dir=root
+            )
+            with (
+                mock.patch.object(sys, "stdin", os.fdopen(read, "rb", 0)),
+                mock.patch.dict(os.environ, {"N64C_GDB_INIT": str(init)}),
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(asyncio.run(bridge.run()), 0)
+            sent = log.read_text()
+            self.assertIn(f"source {init.resolve()}", sent)
+            self.assertNotIn('"commands"', sent)
+
     def test_gdb_bridge_keeps_inferior_lines_that_only_start_like_mi_records(self):
         for record in (
             '=thread-created,id="2",group-id="i1"',
