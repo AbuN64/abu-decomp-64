@@ -49,7 +49,10 @@ class ArityError(DecompError):
 
 
 def _blank(match: re.Match[str]) -> str:
-    return re.sub(r"[^\n]", " ", match.group(0))
+    text = match.group(0)
+    if text[0] in "\"'":  # a literal stays one token (its commas gone): a trailing string argument must still count
+        return text[0] + "".join("\n" if c == "\n" else "s" for c in text[1:-1]) + text[-1]
+    return re.sub(r"[^\n]", " ", text)
 
 
 def clean(text: str) -> str:

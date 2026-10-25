@@ -253,3 +253,12 @@ def test_census_top_zero_lists_every_offender(monkeypatch):
     profile = SimpleNamespace(source_file="w.json")
     every = arity.run(profile, "census", None, None, None, 0)["worst"]
     assert len(every) >= 2 and len(arity.run(profile, "census", None, None, None, 1)["worst"]) == 1
+
+
+def test_string_literal_argument_counts():
+    src = (
+        'void f(void) { func_80209CD8_de(0, a, "Vis, Info"); func_80209CD8_de("\',\'", "x");'
+        ' func_80209CD8_de("only"); }'
+    )
+    rows = arity.rows_of(src, SYM)
+    assert [r[3] for r in rows if r[1] == "c"] == [3, 2, 1]
