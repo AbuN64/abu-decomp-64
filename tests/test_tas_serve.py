@@ -560,10 +560,15 @@ class HttpTests(Base):
         self.assertEqual(self.post("/api/input", {"id": "r7", "release": True})[0], 400)  # not taken
         self.post("/api/take", {"id": "r7"})
         self.assertEqual(sock.recv(64), b"take")
-        self.assertEqual(self.post("/api/input", {"id": "r7", "release": True}), (200, {"released": True}))
+        self.assertEqual(self.post("/api/input", {"id": "r7", "release": True}), (200, {"id": "r7", "released": True}))
         self.assertEqual(sock.recv(64), b"release")
-        self.assertFalse((run / "taken").exists())
+        self.assertTrue((run / "taken").exists())  # still a take
         self.assertIsNone(self.server.human_running())
+        self.assertEqual(self.post("/api/input", {"id": "r7", "seq": 1, "buttons": 0, "x": 0, "y": 0})[0], 400)
+        self.assertEqual({r["id"]: r for r in self.live()["runs"]}["r7"]["input"], "movie")
+        self.post("/api/take", {"id": "r7"})  # a take after a release re-takes the run
+        self.assertEqual(sock.recv(64), b"take")
+        self.assertEqual(self.server.human_running(), "r7")
 
     def test_retry_from_a_poll_and_pin(self):
         source = self.make_run("src", movie="boot-idle", status="done", started=1.0, outcome="crash", polls_reached=3)

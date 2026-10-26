@@ -137,12 +137,20 @@ def wav_header(rate: int) -> bytes:
     )
 
 
+RELEASED = "released"  # in a taken run's folder once given back: the run stays a take, live input drives it no more
+
+
+def driven(run: Path) -> bool:
+    """Whether live input drives the run now: taken and not given back since."""
+    return (run / tas.TAKEN).exists() and not (run / RELEASED).exists()
+
+
 def realtime(run: Path, record: dict[str, Any]) -> bool:
     """The actual pacing, including a turbo prefix and a live takeover, shared by state and audio."""
     if record.get("speed") == 1:
         return True
     # TAKEN is written before a retry's prefix starts. Only the port's acknowledgement means 1x.
-    if not (run / tas.TAKEN).exists():
+    if not driven(run):
         return False
     try:
         return "live input took over at poll " in (run / "output.txt").read_text(errors="replace")
@@ -375,7 +383,7 @@ class Server:
     def row(self, run: Path, record: dict[str, Any]) -> dict[str, Any]:
         """One runs[] row (contract) of a run folder and its record."""
         running = record.get("status") == "running"
-        taken = (run / tas.TAKEN).exists()
+        taken = driven(run)
         return {
             "id": run.name,
             "movie": record.get("movie", ""),
@@ -574,7 +582,7 @@ class Server:
     def human_running(self) -> str | None:
         """The run live input drives now, if any (one at a time)."""
         for run, row in tas.run_rows(self.cfg):
-            if row.get("status") == "running" and (run / tas.TAKEN).exists():
+            if row.get("status") == "running" and driven(run):
                 return run.name
         with self.lock:
             return next((k for k, r in self.queued.items() if r.get("input") == "human"), None)
@@ -631,22 +639,25 @@ class Server:
         if busy and busy != run_id:
             raise DecompError("tas.take", f"live input already drives {busy}; stop it first")
         (run / tas.TAKEN).write_text("page\n")
+        (run / RELEASED).unlink(missing_ok=True)
         self.send(run, tas.TAKE_DATAGRAM)
+        self.live.touch()
         return {"id": run_id, "taken": True}
 
     def release(self, run_id: str) -> dict[str, Any]:
-        """Give a taken run back: it returns to turbo with neutral input, and another run may be taken."""
+        """Give a taken run back: it returns to turbo with neutral input, and another run may be taken. `taken` stays
+        (the run is still saved as a take); `released` says live input no longer drives it."""
         run = self.run_dir(run_id)
-        if not run or not (run / tas.TAKEN).exists():
+        if not run or not driven(run):
             raise DecompError("tas.release", f"run {run_id} is not driven by live input")
         self.send(run, tas.RELEASE_DATAGRAM)
-        (run / tas.TAKEN).unlink(missing_ok=True)
+        (run / RELEASED).write_text("page\n")
         self.live.touch()
-        return {"released": True}
+        return {"id": run_id, "released": True}
 
     def input(self, run_id: str, seq: int, buttons: int, x: int, y: int, pad: int = 0) -> dict[str, Any]:
         run = self.run_dir(run_id)
-        if not run or not (run / tas.TAKEN).exists():
+        if not run or not driven(run):
             raise DecompError("tas.input", f"run {run_id} is not driven by live input")
         if not (0 <= buttons <= 0xFFFF and -128 <= x <= 127 and -128 <= y <= 127 and seq >= 0):
             raise DecompError("tas.input", "buttons 0..0xffff, x and y -128..127, seq >= 0")
@@ -658,8 +669,7 @@ class Server:
 
     def send(self, run: Path, data: bytes) -> None:
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
-                sock.sendto(data, "\0" + tas.input_address(run)[1:])
+            tas.send_input(run, data)
         except OSError as error:
             raise DecompError("tas.input", f"the run's input socket is not there yet: {error}") from error
 
@@ -896,7 +906,7 @@ class Live:
     def relevant(self, events: list[tuple[Path, int]]) -> bool:
         plays = self.server.cfg["runs"] / "plays"
         for path, _mask in events:
-            if path.parent == plays or path.name in (tas.RECORD, tas.TAKEN, "stopped", tas.PINNED):
+            if path.parent == plays or path.name in (tas.RECORD, tas.TAKEN, RELEASED, "stopped", tas.PINNED):
                 return True
         return False
 
