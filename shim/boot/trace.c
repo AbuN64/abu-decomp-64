@@ -124,7 +124,6 @@ NOINST static int expected_entry(void)
  * trampoline, eax/edx/st(0) at its return. N64C_LOCKSTEP_WATCH=<addr> records every change of that RDRAM word seen
  * at an instrumented entry or exit, naming the function. Nothing here runs unless N64C_LOCKSTEP=1. */
 extern void *n64c_memory_ram(unsigned physical, unsigned bytes) __attribute__((weak));
-extern void n64c_clock_work(void) __attribute__((weak)); /* shim/n64c_sched.c: the virtual clock's cost of one entry */
 enum { LS_PAGE = 4096, LS_CALLS = 8, LS_SHADOW = 256, LS_WATCH_LINES = 20000 };
 static int ls_on, ls_log = -1, ls_store = -1;
 static const unsigned char *ls_ram;
@@ -729,8 +728,6 @@ NOINST RAWSTACK static void trace_enter(void *fn, void *call_site, const unsigne
 {
     if (!__atomic_load_n(&armed, __ATOMIC_ACQUIRE))
         return;
-    if (n64c_clock_work)
-        n64c_clock_work();
     HookSlot *h = &hooks[slot_of(fn) & hook_mask];
     while (h->fn && h->fn != fn)
         h = &hooks[(unsigned)(h + 1 - hooks) & hook_mask];
