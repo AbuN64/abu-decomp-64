@@ -29,6 +29,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Fast {
@@ -79,6 +80,8 @@ struct N64cF3d {
     N64cDlArena sub_arena = {};                 // the interpolated draws translate with their own arena and
     std::map<uint32_t, int> sub_surfaces;       // their own framebuffers: the game's colour images stay exactly as it drew them
     uint32_t sub_surface = 0;
+    // The game memory each texture cache entry was decoded from, as it was then (see check_textures).
+    std::unordered_map<Fast::TextureCacheKey, std::vector<uint8_t>, Fast::TextureCacheKey::Hasher> decoded;
 };
 // n64c_dl hook: the framebuffer of this colour image, created on first use at the game's size (its
 // scissor's height; the configured one until the game has set a scissor).
@@ -200,6 +203,7 @@ struct SubPlan {
     float alpha;
 };
 static MtxF lerp_matrix(const MtxF& a, const MtxF& b, float t);
+static void check_textures(N64cF3d* f3d, const N64cGfxMem* mem, bool after);
 static int render(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N64cDlArena* arena, N64cDlStats* stats,
                   const SubPlan* plan)
 {
@@ -245,7 +249,9 @@ extern "C" int n64c_f3d_run(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N6
         f3d->rdp_start = *f3d->interpreter->mRdp;
         f3d->rsp_start = *f3d->interpreter->mRsp;
     }
+    check_textures(f3d, mem, false);
     const int commands = render(f3d, mem, dl, &f3d->arena, stats, nullptr);
+    check_textures(f3d, mem, true);
     f3d->capture = nullptr;
     if (f3d->unlock) {
         f3d->rdp_end = *f3d->interpreter->mRdp;
@@ -275,6 +281,17 @@ extern "C" void n64c_f3d_unlock(N64cF3d* f3d, int on)
     f3d->prev = {};
     f3d->have_cur = f3d->interp = false;
 }
+// Remove one texture cache entry and unbind it, so its next use decodes its source again.
+static Fast::TextureCacheMap::iterator drop_texture(N64cF3d* f3d, Fast::TextureCacheMap::iterator it)
+{
+    auto& cache = f3d->interpreter->mTextureCache;
+    for (auto& bound : f3d->interpreter->mRenderingState.mTextures)
+        if (bound == &*it)
+            bound = nullptr;
+    cache.lru.erase(it->second.lru_location);
+    cache.free_texture_ids.push_back(it->second.texture_id);
+    return cache.map.erase(it);
+}
 // Fast3D caches textures by address, and the copy of game memory has the same addresses for every frame: before the
 // game's next tasks run, drop the cache entries the interpolated draws made, so the cache is what it would be without
 // them (a texture the game rewrote in place is reloaded for the next frame's draws, and the game's own pictures are
@@ -285,17 +302,51 @@ static void purge_snapshot_textures(N64cF3d* f3d)
         return;
     const uint8_t *lo = f3d->snapshot.data(), *hi = lo + f3d->snapshot.size();
     auto& cache = f3d->interpreter->mTextureCache;
-    for (auto it = cache.map.begin(); it != cache.map.end();) {
-        if (it->first.texture_addr >= lo && it->first.texture_addr < hi) {
-            for (auto& bound : f3d->interpreter->mRenderingState.mTextures)
-                if (bound == &*it)
-                    bound = nullptr;
-            cache.lru.erase(it->second.lru_location);
-            cache.free_texture_ids.push_back(it->second.texture_id);
-            it = cache.map.erase(it);
-        } else {
+    for (auto it = cache.map.begin(); it != cache.map.end();)
+        it = it->first.texture_addr >= lo && it->first.texture_addr < hi ? drop_texture(f3d, it) : std::next(it);
+}
+// The game memory a key was decoded from (game memory as n64c_dl maps it): its pixels, then each palette half a
+// TLUT load filled (256 bytes at most). False when the pixels are not game memory (n64c_dl's private views).
+static bool texture_source(const N64cGfxMem* mem, const Fast::TextureCacheKey& key, std::vector<uint8_t>* out)
+{
+    const uint8_t* lo = mem->base ? mem->base : (const uint8_t*)(uintptr_t)0x80000000u;
+    const uint8_t* hi = lo + (size_t)mem->mask + 1;
+    if (key.texture_addr < lo || key.texture_addr >= hi)
+        return false;
+    out->clear();
+    auto add = [&](const uint8_t* p, size_t n) {
+        if (p >= lo && p < hi)
+            out->insert(out->end(), p, p + std::min(n, (size_t)(hi - p)));
+    };
+    add(key.texture_addr, key.size_bytes);
+    for (const uint8_t* palette : key.palette_addrs)
+        add(palette, 256);
+    return true;
+}
+// Fast3D also caches the game's own textures by the address of their pixels and palettes, but the RDP reads RDRAM at
+// every load and a game may rewrite an image in place between tasks (a menu sets its text into glyph images: the
+// options menu showed SKIKS for SKINS). Before a task, drop the entries whose source changed since they were decoded;
+// after it, keep the source of the entries it decoded.
+static void check_textures(N64cF3d* f3d, const N64cGfxMem* mem, bool after)
+{
+    auto& cache = f3d->interpreter->mTextureCache;
+    std::vector<uint8_t> now;
+    if (after) {
+        for (auto& entry : cache.map)
+            if (!f3d->decoded.count(entry.first) && texture_source(mem, entry.first, &now))
+                f3d->decoded.emplace(entry.first, now);
+        return;
+    }
+    for (auto it = f3d->decoded.begin(); it != f3d->decoded.end();) {
+        auto entry = cache.map.find(it->first);
+        const bool same = entry != cache.map.end() && texture_source(mem, it->first, &now) && now == it->second;
+        if (same) {
             ++it;
+            continue;
         }
+        if (entry != cache.map.end())
+            drop_texture(f3d, entry);
+        it = f3d->decoded.erase(it);
     }
 }
 extern "C" void n64c_f3d_group_begin(N64cF3d* f3d)
