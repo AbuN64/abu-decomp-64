@@ -63,7 +63,7 @@ class Scan:
     local_names: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # file -> names it spells itself
     includes: dict[str, list[str]] = field(default_factory=dict)  # file -> raw include targets
     texts: dict[str, str] = field(default_factory=dict)
-    types: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # type/macro name -> files declaring it
+    types: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # type/macro -> declaring files
     tags: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # struct/union/enum tag -> files
 
 
@@ -319,7 +319,8 @@ def plan(
             w = csv.writer(handle, delimiter="\t", lineterminator="\n")
             w.writerow(["id", "owner", "to", "reason", "proto", "units"])
             for m in moves:
-                w.writerow([m["id"], m["owner"], m["to"], m["reason"], m["proto"], len(m["units"])])  # type: ignore[arg-type]
+                row = [m["id"], m["owner"], m["to"], m["reason"], m["proto"], len(m["units"])]
+                w.writerow(row)  # type: ignore[arg-type]
     return result
 
 

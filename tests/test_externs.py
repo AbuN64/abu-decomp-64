@@ -145,7 +145,8 @@ def test_a_crlf_tree_keeps_its_line_endings_and_the_diff_names_each_file(tmp_pat
 
 def test_a_prototype_spelling_a_type_the_destination_cannot_see_is_refused(tmp_path: Path) -> None:
     extra = {
-        "src/b/b.c": '#include "B/B.H"\ntypedef struct Vec { int x; } Vec;\nextern Vec gPos;\nint useb(void) { return gPos.x; }\n',
+        "src/b/b.c": '#include "B/B.H"\ntypedef struct Vec { int x; } Vec;\nextern Vec gPos;\n'
+        "int useb(void) { return gPos.x; }\n",
         "src/a/a.c": '#include "A/A.H"\ntypedef struct Vec { int x; } Vec;\nVec gPos;\nint gScore = 1;\n',
     }
     _, found = moved(tmp_path, extra)
