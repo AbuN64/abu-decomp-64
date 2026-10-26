@@ -470,11 +470,17 @@ def compare_symbol(sym: Sym, a: bytes, b: bytes, limit: int = FIELDS_SHOWN) -> d
     return {"differing": differing, "fields": fields}
 
 
+def is_text(word: bytes) -> bool:
+    """True for four bytes of printable ASCII or NUL with at least one printable: a string chunk either way round."""
+    return any(32 <= c < 127 for c in word) and all(c == 0 or 32 <= c < 127 for c in word)
+
+
 def byte_order_only(sym: Sym, a: bytes, b: bytes) -> bool:
     """True when `a` and `b` differ only by the order of the bytes inside the unit the two ABIs lay out differently:
-    a double's two words, the halves of an aligned word of u16s, the four bytes of an aligned word of u8s. Such a
-    symbol holds the same data in the other word order (the declared type disagrees with how the data was loaded);
-    it is not a state that the run drove apart. Units the symbol does not hold whole stay as they are."""
+    a double's two words, the four bytes of a word that holds text (a string chunk typed as a word), the halves of an
+    aligned word of u16s, the four bytes of an aligned word of u8s. Such a symbol holds the same data in the other word
+    order (the declared type disagrees with how the data was loaded); it is not a state that the run drove apart. Units
+    the symbol does not hold whole stay as they are."""
     if a == b:
         return False
     fixed = bytearray(a)
@@ -488,6 +494,8 @@ def byte_order_only(sym: Sym, a: bytes, b: bytes) -> bool:
     for kind, at in elements:
         if kind == "d":
             fixed[at : at + 4], fixed[at + 4 : at + 8] = a[at + 4 : at + 8], a[at : at + 4]
+        elif kind == "w" and is_text(a[at : at + 4]):
+            fixed[at : at + 4] = a[at : at + 4][::-1]
         elif kind in "bh":
             groups.setdefault((sym.address + at) // 4, []).append((kind, at))
     for group in groups.values():

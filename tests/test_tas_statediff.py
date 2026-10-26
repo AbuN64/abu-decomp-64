@@ -412,6 +412,8 @@ class FinishTests(unittest.TestCase):
         self.assertFalse(sd.byte_order_only(straddle, bytes([1, 2]), bytes([2, 1])))  # the word is not held whole
         word = sd.Sym(0, "gW", "R", BASE + 0x2000, 0, 4, [["w", 1]], ["k", "w"])
         self.assertFalse(sd.byte_order_only(word, bytes([1, 2, 3, 4]), bytes([4, 3, 2, 1])))
+        self.assertTrue(sd.byte_order_only(word, b"triV", b"Virt"))  # a string chunk typed as a word
+        self.assertFalse(sd.byte_order_only(word, b"triV", b"Virs"))
 
     def test_a_static_difference_and_a_later_one_are_two_findings(self):
         # gFlag differs from the first poll; gItems only from poll 3
