@@ -571,7 +571,7 @@ async function wallLoop() {
 
 // ---------- stage: the watched run's picture (/video while it runs, /frame or /shot when done), sound, reach records ----------
 const ST = { gen: 0, abort: null };
-function stopStage() { ST.gen++; if (ST.abort) ST.abort.abort(); ST.abort = null; stopFeed(); stopAudio(); clearInterval(ST.orc); lockstepPlay(false); }
+function stopStage() { ST.gen++; if (ST.abort) ST.abort.abort(); ST.abort = null; stopFeed(); stopAudio(); clearInterval(ST.orc); clearInterval(LS.play); LS.play = 0; }
 async function paintBlob(blob, gen, id = "scr") {
   const bmp = await createImageBitmap(blob);
   try {
@@ -618,16 +618,19 @@ async function shotPair(r, poll) {
 // Both sides replay the run's poll-keyed movie.raw on the deterministic clock and picture every N polls (tas_oracle), so a
 // pair of shots with one poll index is the same input frame on both; /diff lists the compared polls, /shot serves each side.
 // One scrubber and the step keys move both canvases together; the diff toggle paints the port's differing pixels.
-const LS = { run: null, rows: [], i: -1, diff: false, play: 0, follow: true, share: null };
+const LS = { run: null, rows: [], i: -1, diff: false, play: 0, playing: false, follow: true, share: null };
 async function lockstepStart(r, gen) {
-  LS.run = r.id; LS.rows = []; LS.i = -1; LS.follow = true; LS.share = null;
-  const tick = async () => {
+  // a re-render of the same run (diff, play, sound, pin) keeps the compared poll; only another run starts at the newest
+  if (LS.run !== r.id || LS.i < 0) Object.assign(LS, { run: r.id, rows: [], i: -1, follow: true, share: null, playing: false });
+  const tick = async (fresh = false) => {
     if (gen !== ST.gen) return;
     try { const res = await fetch(`/diff/${encodeURIComponent(r.id)}`, { cache: "no-store" }); if (res.ok) LS.rows = (await res.json()).rows || []; } catch (e) {}
-    if (gen === ST.gen && LS.follow && LS.rows.length && LS.i !== LS.rows.length - 1) await lockstepShow(LS.rows.length - 1, gen);
+    if (gen === ST.gen && LS.follow && LS.rows.length && (fresh || LS.i !== LS.rows.length - 1)) await lockstepShow(LS.rows.length - 1, gen);
+    else if (gen === ST.gen && fresh && LS.i >= 0) await lockstepShow(LS.i, gen);
     else lockstepInfo();
   };
-  await tick();
+  await tick(true);
+  if (gen === ST.gen && LS.playing) lockstepPlay(true);
   if (r.status === "running") { clearInterval(ST.orc); ST.orc = setInterval(tick, 2000); }
 }
 async function lockstepShow(i, gen = ST.gen) {
@@ -653,7 +656,7 @@ function lockstepPick(poll) {  // the compared poll nearest the scrubbed one
   LS.follow = i === LS.rows.length - 1; if (i !== LS.i) lockstepShow(i);
 }
 function lockstepPlay(on) {
-  clearInterval(LS.play); LS.play = 0;
+  clearInterval(LS.play); LS.play = 0; LS.playing = on;
   if (on) { LS.follow = false; LS.play = setInterval(() => { if (LS.i < LS.rows.length - 1) lockstepShow(LS.i + 1); else { lockstepPlay(false); renderWatch(); } }, 200); }
 }
 function diffPaint() {
@@ -771,7 +774,7 @@ function renderWatch() {
           <button class="ib" title="Retry from the picked poll (r)" ${r.id ? "" : "disabled"} data-act="retry">${icon("rotate-ccw")}</button>
           <button class="ib" title="Replay at turbo (space)" ${r.id ? "" : "disabled"} data-act="replay">${icon("play")}</button><i class="sep"></i>
           <button class="ib ${UI.split ? "on" : ""}" title="Original beside the port (o)" data-act="split" ${r.oracle ? "" : "disabled"}>${icon("columns-2")}</button>
-          ${UI.split ? `<button class="ib" title="Previous compared poll (←)" data-act="lsprev">${icon("chevron-left")}</button><button class="ib" title="Play both sides in lockstep (k)" data-act="lsplay">${icon(LS.play ? "square" : "play")}</button><button class="ib" title="Next compared poll (→)" data-act="lsnext">${icon("chevron-right")}</button><button class="ib ${LS.diff ? "on" : ""}" title="Highlight the port's pixels that differ from the original (d)" data-act="diff">${icon("zoom-in")}</button>` : ""}
+          ${UI.split ? `<button class="ib" title="Previous compared poll (←)" data-act="lsprev">${icon("chevron-left")}</button><button class="ib" title="Play both sides in lockstep (k)" data-act="lsplay">${icon(LS.playing ? "square" : "play")}</button><button class="ib" title="Next compared poll (→)" data-act="lsnext">${icon("chevron-right")}</button><button class="ib ${LS.diff ? "on" : ""}" title="Highlight the port's pixels that differ from the original (d)" data-act="diff">${icon("zoom-in")}</button>` : ""}
           <button class="ib" title="Sound (m)" data-act="sound">${icon(UI.sound ? "volume-2" : "volume-x")}</button><i class="sep"></i>
           <button class="ib ${r.pinned ? "on" : ""}" title="Pin (p)" ${r.id ? "" : "disabled"} data-act="pin">${icon("pin")}</button>
           <button class="ib" title="Full screen (f)" data-act="full">${icon("maximize")}</button>
@@ -810,7 +813,7 @@ async function action(a, r) {
   if (a === "split") { UI.split = !UI.split; renderWatch(); }
   else if (a === "lsprev") lockstepStep(-1);
   else if (a === "lsnext") lockstepStep(1);
-  else if (a === "lsplay") { lockstepPlay(!LS.play); renderWatch(); }
+  else if (a === "lsplay") { lockstepPlay(!LS.playing); renderWatch(); }
   else if (a === "diff") { LS.diff = !LS.diff; renderWatch(); }
   else if (a === "sound") { UI.sound = !UI.sound; wake(); if (!UI.sound) stopAudio(); else startAudio(r); renderWatch(); }
   else if (a === "full") $("player").requestFullscreen?.();

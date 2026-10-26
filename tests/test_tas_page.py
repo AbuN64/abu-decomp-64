@@ -658,7 +658,7 @@ class RenderedPageTests(unittest.TestCase):
                 {
                     "eval": "[LS.i, document.getElementById('lsp').textContent, document.getElementById('lso').textContent]"
                 },
-                {"eval": "lockstepPick(190), 1"},
+                {"eval": "lockstepPick(90), 1"},
                 {"wait": 400},
                 {"eval": "action('diff', watchedRun()), 1"},
                 {"wait": 800},
@@ -669,7 +669,28 @@ class RenderedPageTests(unittest.TestCase):
         )
         self.assertEqual(d["results"][1], [2, 1, "port · poll 200", "original · poll 200", "2/2 · diff 25.0%"])
         self.assertEqual(d["results"][3], [0, "port · poll 100", "original · poll 100"])
-        self.assertEqual(d["results"][6], [1, True, 0, True])  # the same picture on both sides differs nowhere
+        self.assertEqual(
+            d["results"][6], [0, True, 0, True]
+        )  # diff keeps the picked poll; equal pictures differ nowhere
+
+    def test_lockstep_play_steps_to_the_newest_poll_and_stops(self):
+        s = self.stub()
+        d = self.drive(
+            s,
+            "#/w/r-done",
+            [
+                {"wait": 1200},
+                {"eval": "action('split', watchedRun()), 1"},
+                {"wait": 800},
+                {"eval": "lockstepPick(90), action('lsplay', watchedRun()), 1"},
+                {"wait": 150},
+                {"eval": "[LS.i, LS.playing]"},
+                {"wait": 1200},
+                {"eval": "[LS.i, LS.playing, LS.play, document.getElementById('lsp').textContent]"},
+            ],
+        )
+        self.assertEqual(d["results"][2], [0, True])  # the re-render kept the picked poll and the player running
+        self.assertEqual(d["results"][3], [1, False, 0, "port · poll 200"])
         self.assertIn("/diff/r-done", s.gets)
         self.assertNotIn("/oracle/r-done", s.gets)
 
