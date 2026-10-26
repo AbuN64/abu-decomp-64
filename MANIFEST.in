@@ -1,0 +1,2 @@
+# setuptools package-data globs skip dot-dirs; graft takes every file of the template (.github/workflows/ci.yml, tools/.gitkeep)
+graft src/abu_decomp/port/template

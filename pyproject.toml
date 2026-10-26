@@ -32,10 +32,12 @@ decomp = "abu_decomp.cli:main"
 where = ["src"]
 include = ["abu_decomp", "abu_decomp.*"]
 
+# The port template (dot-dirs and .gitkeep included) ships through MANIFEST.in: setuptools package-data globs skip dot-files.
 [tool.setuptools.package-data]
-"abu_decomp.port" = ["template/**/*", "template/**/.*"]
 "abu_decomp.build" = ["SCHEMA.md"]
-"abu_decomp" = ["tas_page.html", "tas_fn.html"]
+"abu_decomp" = ["runner.html", "static/*"]
+[tool.pytest.ini_options]
+pythonpath = ["src"]  # a bare pytest imports this tree, never the venv copy
 
 [tool.ruff]
 line-length = 120
