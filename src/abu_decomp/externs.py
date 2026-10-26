@@ -371,7 +371,7 @@ def write_batches(
             if end == len(cur) and cur and not cur[-1].endswith("\n"):
                 cur[-1] += eol(cur)
             texts[dest] = [*cur[:end], *new, *cur[end:]]
-        diff: list[str] = []
+        diff = [f"# MSG: Hoist {len(batch)} unit externs into their owning headers (batch {number})\n"]
         for n in sorted(edited):
             diff += [f"diff --git a/{n} b/{n}\n", *difflib.unified_diff(before[n], texts[n], f"a/{n}", f"b/{n}")]
         name = f"externs-batch-{number:02d}.diff"
