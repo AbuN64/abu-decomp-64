@@ -79,6 +79,7 @@ class Chunk:
     defs: set[str] = field(default_factory=set)
     refs: set[str] = field(default_factory=set)
     opaque: bool = False  # a directive or a construct not understood: every name it spells is live
+    enforced: bool = False  # the compiler checks it (an array bound that fails to compile): a root, with what it spells
 
 
 def _depth(line: str) -> int:
@@ -160,6 +161,16 @@ def _declared(text: str) -> set[str]:
     return {name for seg in _segments(text.strip().rstrip(";")) if (name := _declarator(seg))}
 
 
+def _enforced(text: str) -> bool:
+    """Whether a declaration holds a compile-time check: an array whose bound is a condition or a comparison
+    (`typedef char T_size_check[(sizeof(T) == 8) ? 1 : -1];`), which fails the build when false and needs no user."""
+    if "{" in text:
+        return False
+    return any(
+        re.search(r"\?|[=!<>]=|[<>]", bound) for bound in re.findall(r"\[([^\[\]]*(?:\([^\]]*\)[^\[\]]*)*)\]", text)
+    )
+
+
 def analyse(chunk: Chunk) -> None:
     """Fill `defs` and `refs`; a chunk with no recognizable definition becomes opaque."""
     if chunk.opaque:
@@ -207,6 +218,7 @@ def analyse(chunk: Chunk) -> None:
         return
     chunk.defs = defs
     chunk.refs = {w for w in IDENT.findall(text) if w not in KEYWORDS} - defs
+    chunk.enforced = _enforced(text)
 
 
 def outside_words(root: Path, exclude: set[str]) -> set[str]:
@@ -252,7 +264,9 @@ def dead_layers(files: dict[str, list[Chunk]], outside: set[str]) -> list[list[t
     every = [(p, c) for p, chunks in files.items() for c in chunks]
     live = set(outside)
     for _, c in every:
-        if c.opaque:
+        if c.enforced:
+            live |= c.defs | c.refs  # the check stays, and so does everything it measures
+        elif c.opaque:
             live |= set(IDENT.findall(c.text)) - KEYWORDS
         else:
             live |= directive_words(c.text)  # a directive inside a declaration chunk still uses its names

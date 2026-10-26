@@ -18,6 +18,11 @@ static inline int Helper(Vec *v) { return (int)v->x + sizeof(Dead); }
 void Only_In_Inline(void);
 static inline int User(void) { Only_In_Inline(); return 0; }
 #define USES_KIND(k) ((k) == KIND_Y)
+typedef struct Meter { int m; } Meter;
+typedef struct Sized { Meter m; } Sized;
+typedef char Sized_size_check[(sizeof(Sized) == 8) ? 1 : -1];
+typedef int Table[4];
+typedef struct Dropped { int a; } Dropped;
 """
 
 OTHER = '#include "common.h"\nint main(void) { return gLive + MODE_B; }\nint K(void) { return USES_KIND(1); }\n'
@@ -95,3 +100,10 @@ def test_names_in_preprocessor_lines_inside_a_chunk_are_live_in_every_branch(tmp
     dead = {n for layer in found["layers"] for n in layer["names"]}
     assert "OnlyMacro" not in dead and "gOnlyIf" not in dead
     assert "gDead" in dead
+
+
+def test_a_size_assertion_is_a_root_with_the_types_it_measures(tmp_path: Path) -> None:
+    found = deaddecls.run(project(tmp_path), "include/COMMON")
+    every = set().union(*(names(found, k) for k in range(len(found["layers"]))))
+    assert not every & {"Sized", "Sized_size_check", "Meter"}  # the assertion, its record and that record's types stay
+    assert {"Table", "Dropped"} <= every  # an ordinary array typedef and an unused record are still dead
