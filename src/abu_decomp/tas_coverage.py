@@ -113,7 +113,7 @@ def read_gcovr(path: Path) -> dict[str, int] | None:
 
 
 def _first_body_line(fn: dict[str, Any], lines: dict[int, int]) -> int:
-    """The count of the first line after a function's signature line (0 when gcovr gave no span or the body has none)."""
+    """The count of the first line after a function's signature line (0 when gcovr gave no span or no body line)."""
     try:
         first, last = (int(p.split(":")[0]) for p in fn["pos"])
     except (KeyError, ValueError, TypeError):
@@ -313,8 +313,9 @@ def oracle_bracket(run: Path, poll: int) -> tuple[dict[str, int], dict[str, int]
 
 def behaviour(port: dict[str, int], bracket: tuple[dict[str, int], dict[str, int] | None]) -> dict[str, str]:
     """Per function the port's build defines and either side entered: `behaves` when the port's entry count at its last
-    poll lies inside the oracle_bracket (at least the lower bound when the oracle ended earlier), `missing` when the port never entered what the original had by then, `port-only` when the
-    original never entered it by the next snapshot, else `differs`. Count granularity: lanes/TAS-CORPUS-OPUS-1."""
+    poll lies inside the oracle_bracket (at least the lower bound when the oracle ended earlier), `missing` when the
+    port never entered what the original had by then, `port-only` when the original never entered it by the next
+    snapshot, else `differs`. Count granularity: lanes/TAS-CORPUS-OPUS-1."""
     low, high = bracket
     out: dict[str, str] = {}
     for name, count in port.items():
