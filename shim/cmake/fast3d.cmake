@@ -179,8 +179,17 @@ endif()
 string(REPLACE "${texture_resolve}" "${texture_resolve}
     if (!N64c::TextureAddressValid(cmd->words.w1, i)) return false;"
     fast3d_interpreter "${fast3d_interpreter}")
+# A viewport or scissor set inside a framebuffer takes that framebuffer's row order (f3d_area.h).
+set(fb_area_y "        area->y = mActiveFrameBuffer->second.orig_height - area->y;")
+string(FIND "${fast3d_interpreter}" "${fb_area_y}" fb_area_y_at)
+if(fb_area_y_at LESS 0)
+    message(FATAL_ERROR "Fast3D framebuffer viewport/scissor contract changed; review the pinned source")
+endif()
+string(REPLACE "${fb_area_y}" "        area->y = N64c::FramebufferAreaY(area->y, area->height, mActiveFrameBuffer->second.orig_height,
+                                         mRapi->GetClipParameters().invertY);"
+    fast3d_interpreter "${fast3d_interpreter}")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fast3d-generated/interpreter.cpp.in"
-    "#include \"${fast3d_dir}/f3d_address.h\"\n${fast3d_interpreter}")
+    "#include \"${fast3d_dir}/f3d_address.h\"\n#include \"${fast3d_dir}/f3d_area.h\"\n${fast3d_interpreter}")
 configure_file("${CMAKE_CURRENT_BINARY_DIR}/fast3d-generated/interpreter.cpp.in"
     "${CMAKE_CURRENT_BINARY_DIR}/fast3d-generated/interpreter.cpp" COPYONLY)
 list(REMOVE_ITEM fast3d_sources "${lus_src}/fast/interpreter.cpp")
@@ -270,3 +279,7 @@ add_test(NAME n64c_f3d_surface COMMAND n64c_test_f3d_surface)
 add_executable(n64c_test_f3d_address "${fast3d_dir}/../tests/test_f3d_address.cpp")
 target_compile_options(n64c_test_f3d_address PRIVATE -Wall -Wextra -Werror)
 add_test(NAME n64c_f3d_address COMMAND n64c_test_f3d_address)
+
+add_executable(n64c_test_f3d_area "${fast3d_dir}/../tests/test_f3d_area.cpp")
+target_compile_options(n64c_test_f3d_area PRIVATE -Wall -Wextra -Werror)
+add_test(NAME n64c_f3d_area COMMAND n64c_test_f3d_area)
