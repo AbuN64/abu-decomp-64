@@ -53,19 +53,33 @@ SOURCE_BYTES = 60000  # most of a candidate's source one record keeps
 
 
 def behave_detail(document: dict[str, Any]) -> dict[str, Any]:
-    """What the TAS page's per-function view shows about one behave run: mode, case counts, the first difference and
-    the differing cases (recomp = original vs decomp = candidate values), the candidate file and a copy of its text."""
+    """Keep a byte-bounded, deterministic sample of each observed case verdict for the function view.
+
+    The producer supplies inputs and both outputs together; missing observations are never reconstructed from
+    scratch files. Round-robin sampling keeps matching cases even when differences precede them in the run.
+    """
     found: dict[str, Any] = {"mode": document.get("mode")}
-    for key in ("counts", "compared", "total", "reason", "version", "first_difference"):
+    for key in ("counts", "compared", "total", "reason", "version", "first_difference", "prototype"):
         if document.get(key) is not None:
             found[key] = document[key]
-    detail: list[Any] = []
-    size = 0
+    groups: dict[str, list[Any]] = {}
     for case in document.get("cases_detail") or []:
-        size += len(json.dumps(case, default=str))
-        if size > DETAIL_BYTES:
-            break
-        detail.append(case)
+        groups.setdefault(case.get("verdict", "unknown"), []).append(case)
+    queues = [iter(groups[key]) for key in sorted(groups)]
+    detail: list[Any] = []
+    size = 2  # JSON list brackets; count encoded bytes including separators, not characters
+    while queues:
+        pending = []
+        for queue in queues:
+            case = next(queue, None)
+            if case is None:
+                continue
+            pending.append(queue)
+            cost = len(json.dumps(case, default=str).encode()) + (2 if detail else 0)
+            if size + cost <= DETAIL_BYTES:
+                detail.append(case)
+                size += cost
+        queues = pending
     if detail:
         found["cases_detail"] = detail
     candidate = document.get("candidate")

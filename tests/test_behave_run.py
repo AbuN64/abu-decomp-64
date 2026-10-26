@@ -149,6 +149,29 @@ class RunTests(unittest.TestCase):
         self.assertIn("candidate", self.probes[-1][1])
         self.assertEqual(self.probes[-1][1]["cases"], self.probes[1][1]["cases"])  # one input set for both
 
+    def test_matching_input_output_samples_survive_the_public_command_record(self):
+        _, envelope = self.invoke("--candidate", str(self.candidate), "--cases", "8")
+        result = envelope["result"]
+        matching = [c for c in result["cases_detail"] if c["verdict"] == "same"]
+        self.assertGreaterEqual(len(matching), 3)
+        original = next(r for n, r in self.probes if n == "original")
+        requested = {c["name"]: c for c in original["cases"]}
+        for row in matching:
+            self.assertEqual(row["input"]["registers"], requested[row["name"]]["registers"])
+            self.assertEqual(row["original"]["ret"], row["candidate"]["ret"])
+        saved = json.loads(next((self.root / "invocations").glob("*.json")).read_text())
+        self.assertGreaterEqual(sum(c["verdict"] == "same" for c in saved["cases_detail"]), 3)
+        self.assertEqual(saved["prototype"], result["prototype"])
+        self.assertLessEqual(len(json.dumps(saved["cases_detail"]).encode()), 6000)
+
+    def test_describe_samples_keep_actual_inputs_without_inventing_a_candidate(self):
+        _, envelope = self.invoke("--cases", "6")
+        rows = envelope["result"]["cases_detail"]
+        self.assertGreaterEqual(sum(c["verdict"] == "described" for c in rows), 3)
+        self.assertTrue(all(c["candidate"] is None for c in rows))
+        self.assertTrue(all("registers" in c["input"] for c in rows))
+        self.assertTrue(all("ret" in c["original"] for c in rows))
+
     def test_the_time_spent_queued_behind_another_isolated_repro_is_in_the_timing(self):
         _, envelope = self.invoke("--candidate", str(self.candidate), "--cases", "8")
         self.assertEqual([n for n, _ in self.probes], ["learn", "original", "candidate"])

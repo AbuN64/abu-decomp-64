@@ -435,7 +435,114 @@ def claim_index(path: Path | None, names: set[str]) -> dict[str, list[str]]:
     return out
 
 
+def decode_case(name: str, signature: dict[str, Any] | None, case: dict[str, Any]) -> dict[str, Any] | None:
+    """Decode the observed o32 values, never infer a missing side or compare scratch files."""
+    from abu_decomp.behave import prototype
+
+    if not isinstance(case.get("input"), dict) or not isinstance(case.get("original"), dict):
+        return None
+    if signature and signature.get("source") != "inferred":
+        proto = prototype.Prototype(
+            name,
+            str(signature.get("returns", "")),
+            prototype.classify(str(signature.get("returns", ""))),
+            tuple(prototype.Param(p["name"], p["type"], p["kind"]) for p in signature.get("params", [])),
+            bool(signature.get("variadic")),
+            str(signature.get("source", "inferred")),
+        )
+    else:
+        proto = prototype.inferred(name)
+    given = case["input"]
+    registers, stack = given.get("registers", {}), given.get("stack", [])
+
+    def number(raw: Any) -> int | None:
+        try:
+            return int(raw, 0) if isinstance(raw, str) else int(raw) if isinstance(raw, int) else None
+        except ValueError:
+            return None
+
+    def value(kind: str, words: list[Any]) -> str:
+        numbers = [number(word) for word in words]
+        if not numbers or any(n is None for n in numbers):
+            return "?"
+        bits = 64 if kind in ("int64", "uint64", "double") else 32
+        raw = numbers[0] if len(numbers) == 1 else ((numbers[0] & 0xFFFFFFFF) << 32) | (numbers[1] & 0xFFFFFFFF)
+        raw &= (1 << bits) - 1
+        if kind in ("float", "double"):
+            return repr(struct.unpack(">f" if bits == 32 else ">d", raw.to_bytes(bits // 8, "big"))[0])
+        if kind.startswith(("int", "uint")):
+            width = int(kind.removeprefix("uint").removeprefix("int"))
+            raw &= (1 << width) - 1
+            if kind.startswith("int") and raw >= 1 << (width - 1):
+                raw -= 1 << width
+            return str(raw)
+        return f"0x{raw:0{bits // 4}x}"
+
+    arguments = []
+    for slot in prototype.argument_slots(proto):
+        words = []
+        for place in slot.where:
+            if place.startswith("stack:"):
+                index = (int(place[6:]) - 16) // 4
+                words.append(stack[index] if index < len(stack) else None)
+            else:
+                native = f"r{4 + int(place[1:])}" if place.startswith("a") else place
+                words.append(registers.get(place, registers.get(native)))
+        arguments.append(
+            {
+                "name": slot.param.name,
+                "where": ":".join(slot.where),
+                "kind": slot.param.kind,
+                "value": value(slot.param.kind, words),
+            }
+        )
+
+    def output(side: dict[str, Any] | None) -> dict[str, Any] | None:
+        if side is None:
+            return None
+        status = side.get("status", "unknown")
+        ret = side.get("ret") or {}
+        where = (
+            ("f0",)
+            if proto.ret in ("float", "double")
+            else ("v0", "v1")
+            if proto.ret in ("int64", "uint64")
+            else ("v0",)
+        )
+        returned = (
+            "void" if proto.ret == "void" else f"{':'.join(where)}={value(proto.ret, [ret.get(r) for r in where])}"
+        )
+        return {"status": status, "return": returned if status == "ok" else None, "detail": side.get("detail")}
+
+    original, candidate = output(case["original"]), output(case.get("candidate"))
+    verdict = case.get("verdict", "untestable")
+    oracle_ok = original["status"] == "ok"
+    port_ok = (
+        None if candidate is None or verdict == "untestable" else candidate["status"] == "ok" and verdict == "same"
+    )
+    call = f"{name}({', '.join(a['where'] + '=' + a['value'] for a in arguments)})"
+    original_text = original["return"] or original["status"]
+    if candidate is None:
+        returned = f"original {original_text}; port not run"
+    elif oracle_ok and port_ok and original["return"] == candidate["return"]:
+        returned = original_text
+    else:
+        returned = f"original {original_text}; port {candidate['return'] or candidate['status']}"
+    return {
+        "text": f"{call} -> {returned}",
+        "port": port_ok,
+        "oracle": oracle_ok,
+        "verdict": verdict,
+        "arguments": arguments,
+        "outputs": {"oracle": original, "port": candidate},
+        "signature_known": not proto.blind,
+        "reason": case.get("reason"),
+        "difference": case.get("difference"),
+    }
+
+
 def behave_rows(inputs: Inputs, names: set[str]) -> dict[str, list[dict[str, Any]]]:
+    """The page consumes case rows directly, folding identical observations within each recorded run."""
     index = tas_fn.behave_index(inputs.invocations)
     out = {}
     for name, records in index.items():
@@ -443,10 +550,17 @@ def behave_rows(inputs: Inputs, names: set[str]) -> dict[str, list[dict[str, Any
             continue
         shown = []
         for record in records[:MAX_BEHAVE]:
-            view = tas_fn.run_view(record, name, None)
-            view["source"] = None  # the candidate diff is the function view's own, not a baked file's
-            view["cases"] = view["cases"][:MAX_CASES]
-            shown.append(view)
+            folded: dict[bytes, dict[str, Any]] = {}
+            for case in record.get("cases_detail") or []:
+                row = decode_case(name, record.get("prototype"), case)
+                if row is None:
+                    continue
+                key = dump(row)
+                if key in folded:
+                    folded[key]["count"] += 1
+                elif len(folded) < MAX_CASES:
+                    folded[key] = dict(row, count=1, invocation=record.get("invocation"), mode=record.get("mode"))
+            shown.extend(folded.values())
         out[name] = shown
     return out
 

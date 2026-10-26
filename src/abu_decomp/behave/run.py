@@ -337,6 +337,37 @@ def _candidate_dir(work: Path, candidate: Path, function: str) -> Path:
     return work / f"cand-{hashlib.sha256(candidate.read_bytes()).hexdigest()[:16]}-{function}"
 
 
+def case_details(
+    cases: list[dict[str, Any]],
+    original: list[dict[str, Any]],
+    candidate: list[dict[str, Any]] | None = None,
+    rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Keep the input and both observed outputs together before the recorder bounds the sample."""
+
+    def side(result: dict[str, Any]) -> dict[str, Any]:
+        return {key: result[key] for key in ("status", "detail", "ret") if key in result}
+
+    details = []
+    for i, (case, result) in enumerate(zip(cases, original, strict=True)):
+        row = (
+            rows[i]
+            if rows is not None
+            else {"verdict": "described" if result["status"] == "ok" else compare.UNTESTABLE}
+        )
+        details.append(
+            {
+                **row,
+                "name": case["name"],
+                "inputs": case.get("labels", {}),
+                "input": {"registers": case.get("registers", {}), "stack": case.get("stack", [])},
+                "original": side(result),
+                "candidate": side(candidate[i]) if candidate is not None else None,
+            }
+        )
+    return details
+
+
 def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     if options.candidate is None:
         return _run(profile, options)
@@ -724,6 +755,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         result = {
             "mode": "describe",
             "verdict": "described",
+            "cases_detail": case_details(cases, original["cases"]),
             **common,
             **describe.describe(original["cases"], regions, proto, names, stack, learned.pointers, learned.returns),
             "timing": timing(stages, started, cache),
@@ -806,7 +838,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
         findings.append({"key": "behave.check_failed", "blocking": False, "message": checked})
         summary["check_failed"] = checked
     notes = sorted({n for row in rows for n in row["notes"]})
-    shown = [dict(r, inputs=labels[i]) for i, r in enumerate(rows) if r["verdict"] != compare.SAME][:12]
+    shown = case_details(cases, original["cases"], changed["cases"], rows)
     untestable_reasons = untestable_by_reason(rows, labels)
     classification = classify.classify(
         summary,
