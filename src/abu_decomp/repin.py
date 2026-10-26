@@ -52,6 +52,25 @@ def read(pin: dict[str, Any], tree: Path) -> dict[str, list[str]]:
     return found
 
 
+def refresh(run: Run, repo: Path) -> None:
+    """Bring `repo`'s remote-tracking refs to the remote's tips (a repo with no remote is its own source of truth):
+    a pin that follows `origin/main` must read the tip a ship pushed a minute ago, never a checkout's old state."""
+    code, out, err = run(["git", "-C", str(repo), "remote"], repo, None, 60)
+    if code or not out.split():
+        return
+    code, out, err = run(["git", "-C", str(repo), "fetch", "-q", "--no-tags", out.split()[0]], repo, None, 600)
+    if code:
+        raise RepinError("repin.fetch", f"{repo} did not fetch its remote: {(err or out).strip()[-200:]}")
+def forward(run: Run, repo: Path, old: str, new: str) -> None:
+    """RepinError unless `new` contains `old`: a pin moves along the source's history, and the renames between two
+    commits of different lines are not the renames the tree's files need."""
+    code, _, _ = run(["git", "-C", str(repo), "merge-base", "--is-ancestor", old, new], repo, None, 60)
+    if code:
+        raise RepinError(
+            "repin.rewind",
+            f"{new[:12]} does not contain the pinned {old[:12]} in {repo}: a repin moves forward only "
+            "(name a descendant with --to, or fix the pin's ref)",
+        )
 def check(pin: dict[str, Any], tree: Path, run: Run, profile_file: Path | None = None) -> dict[str, Any]:
     """{"pin": the tree's pin or None, "findings": [...]}: the pin gate's reading of the tree as it is."""
     findings: list[dict[str, Any]] = []
@@ -198,8 +217,11 @@ def repin(
     pin = land.settings(profile, tree)["pin"]
     if pin is None:
         raise RepinError("repin.config", f"land.trees has no pin for {tree}")
+    refresh(run, pin["source"])
     sha = commit(run, pin["source"], to or pin["ref"])
     before = check(pin, tree, run)["pin"]
+    if before and before != sha:
+        forward(run, pin["source"], before, sha)
     carried: tuple[dict[str, Any], list[dict[str, Any]]] | None = None
     if pin.get("remap") and before and before != sha:  # the source's renames between the two pins, before the pin moves
         dry = remap.remap(run, tree, pin, before, sha, write=False)  # read first: a dropped name writes nothing

@@ -221,13 +221,40 @@ class PortTreeTests(unittest.TestCase):
         _, code, findings = repin.repin(profile, self.tree, None, self.runner)
         self.assertEqual((code, findings[0]["key"]), (1, "repin.build"))
         self.commands.clear()
-        repin.repin(profile, self.tree, self.pin1, self.runner, rebuild=False)
+        repin.repin(profile, self.tree, self.pin2, self.runner, rebuild=False)
         self.assertEqual(self.commands, [])
 
     def test_repin_to_a_commit_the_source_lacks_is_refused_and_writes_nothing(self) -> None:
         with self.assertRaises(repin.RepinError):
             repin.repin(self.profile, self.tree, SHA_B)
         self.assertIn(self.pin1, (self.tree / "decomp.cmake").read_text())
+
+    def test_repin_refuses_a_commit_that_does_not_contain_the_pin_and_writes_nothing(self) -> None:
+        git(self.source, "checkout", "-q", "--detach", self.pin1)
+        (self.source / "s.c").write_text("int other;\n")
+        git(self.source, "commit", "-qam", "side")  # a commit of a different line: it lacks pin1's successors only
+        side = git(self.source, "rev-parse", "HEAD").strip()
+        repin.repin(self.profile, self.tree, self.pin2)  # forward: pin1 -> pin2
+        with self.assertRaises(repin.RepinError) as raised:
+            repin.repin(self.profile, self.tree, side)
+        self.assertEqual(raised.exception.key, "repin.rewind")
+        self.assertIn(self.pin2, (self.tree / "decomp.cmake").read_text())
+
+    def test_repin_follows_the_remote_tip_of_a_source_checkout_that_lags(self) -> None:
+        upstream = self.root / "upstream"
+        git(self.root, "clone", "-q", str(self.source), str(upstream))
+        git(upstream, "checkout", "-q", "--detach", self.pin1)  # the clone sits where it was, like a stale HEAD
+        git(self.source, "checkout", "-q", "main")
+        (self.source / "s.c").write_text("int s3;\n")
+        git(self.source, "commit", "-qam", "s3")
+        tip = git(self.source, "rev-parse", "HEAD").strip()
+        data = json.loads((self.root / "seat.json").read_text())
+        pin = data["land"]["trees"]["port"]["pin"]
+        pin["source"], pin["ref"], pin["fetched"] = "upstream", "origin/main", "upstream"
+        (self.root / "follow.json").write_text(json.dumps(data))
+        result, code, _ = repin.repin(load_profile(self.root / "follow.json"), self.tree, None)
+        self.assertEqual((code, result["to"]), (0, tip))
+        self.assertIn(tip, (self.tree / "decomp.cmake").read_text())
 
     def test_a_port_ship_pushes_the_trees_change_to_its_own_remote(self) -> None:
         (self.tree / "decomp.cmake").write_text(f"GIT_TAG {self.pin1}\nset(x -DZ)\n")
