@@ -7,8 +7,10 @@ import contextlib
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 
+from abu_decomp import meter
 from abu_decomp.data import source
 from abu_decomp.data.config import DataConfig
 from abu_decomp.data.trial import Builder, fn_unit  # noqa: F401  re-export for callers
@@ -413,7 +415,9 @@ def check(b: Builder, version: str, units: list[str] | None = None, baseline: di
     units = sorted({u for u in units if u})  # a path the diff removed has no source to build
     if not units:
         return {"version": version, "units": 0, "built": True, "broken": [], **_narrow_note(narrowed, version)}
+    mark = (time.monotonic(), meter.cpu())
     rc, log = b.objects(version, units, keep_going=True)
+    made = (time.monotonic() - mark[0], meter.cpu() - mark[1])
     failed = failures(b, version, units, log)
     old = {u: why for u, why in failed.items() if baseline and baseline.get(u) == why}
     failed = {u: why for u, why in failed.items() if u not in old}
@@ -425,7 +429,13 @@ def check(b: Builder, version: str, units: list[str] | None = None, baseline: di
             [x for x in lines if re.search(r"error", x, re.I)][:5] or lines[-5:] or [f"make exited {rc} with no output"]
         )
         return {"version": version, "units": len(units), "built": False, "broken": [], "errors": errs}
+    mark = (time.monotonic(), meter.cpu())
     bad = broken(b, version, [u for u in units if u not in failed and u not in old], renamed(b), moved)
+    print(  # which half of the check holds the CPU: the objects' make, or the scoring of what they built
+        f"check {version}: {len(units)} units, make wall={made[0]:.0f}s cpu={made[1]:.0f}s,"
+        f" score wall={time.monotonic() - mark[0]:.0f}s cpu={meter.cpu() - mark[1]:.0f}s",
+        flush=True,
+    )
     return {
         "version": version,
         "units": len(units),
