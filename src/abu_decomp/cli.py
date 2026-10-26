@@ -222,101 +222,6 @@ def _run_event(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
     return {"path": str(path), "events": report["events"], "schemas": report["schemas"]}, int(bool(findings)), findings
 
 
-def _lane_arguments(parser: argparse.ArgumentParser) -> None:
-    actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
-    launch = actions.add_parser(
-        "launch", help="start a lane as a systemd user unit after the ladder and overlap checks"
-    )
-    launch.add_argument("--name", required=True)
-    launch.add_argument("--kind", required=True, choices=("tooling", "impl"))
-    launch.add_argument("--model", required=True)
-    launch.add_argument("--effort", required=True)
-    launch.add_argument("--track", required=True, choices=("official", "experiment"))
-    launch.add_argument("--owns", required=True, action="append", help="absolute path the lane may write (repeatable)")
-    launch.add_argument(
-        "--export", action="append", help="absolute file under an owned path whose changed content counts as progress"
-    )
-    launch.add_argument("--dir", type=Path, required=True, help="lane directory holding brief.md")
-    launch.add_argument("--cwd", type=Path, required=True)
-    launch.add_argument("--wall", type=int, required=True, help="wall seconds")
-    launch.add_argument("--continues", type=int, required=True)
-    launch.add_argument("--done-when", required=True, choices=("identical", "result"))
-    launch.add_argument("--fanout", required=True, choices=("enabled", "disabled"))
-    launch.add_argument("--max-agents", type=int, required=True)
-    launch.add_argument("--owner-override", help="the owner's reason for a model outside the ladder")
-    register = actions.add_parser("register", help="record a lane that has no unit (a Claude agent) in the registry")
-    register.add_argument("--name", required=True)
-    register.add_argument("--transcript", type=Path, required=True, help="absolute path of the agent's task output")
-    register.add_argument("--kind", required=True, choices=("tooling", "impl"))
-    register.add_argument("--model", required=True)
-    register.add_argument("--track", choices=("official", "experiment"), default="official")
-    register.add_argument("--owner-override", help="the owner's reason for a model outside the ladder")
-    steer = actions.add_parser("steer", help="append the text of a file to a lane's active turn")
-    steer.add_argument("--name", help="a registered live lane")
-    steer.add_argument("--dir", type=Path, help="lane directory (a lane launched elsewhere)")
-    steer.add_argument("--socket", type=Path, help="lane socket (a lane launched elsewhere)")
-    steer.add_argument("file", type=Path, help="file holding the instruction text")
-    cont = actions.add_parser("continue", help="launch a fresh lane that continues a closed one from its handoff")
-    cont.add_argument("--from", dest="old_dir", type=Path, required=True, help="the closed lane's directory")
-    cont.add_argument("--name", required=True, help="the new lane; its directory is a sibling of --from")
-    cont.add_argument("--owns", action="append", help="owned path, overrides the old lane's value (repeatable)")
-    cont.add_argument("--export", action="append", help="export file, overrides the old lane's value (repeatable)")
-    cont.add_argument("--track", choices=("official", "experiment"), help="overrides the old lane's value")
-    cont.add_argument("--kind", choices=("tooling", "impl"), help="overrides the old lane's value")
-    # A lane with no registry row, LAUNCH.json or unit (launched before LAUNCH.json): every setting comes from these.
-    cont.add_argument("--model", help="overrides the old lane's value")
-    cont.add_argument("--effort", help="overrides the old lane's value")
-    cont.add_argument("--wall", type=int, help="wall seconds; overrides the old lane's value")
-    cont.add_argument("--continues", type=int, help="overrides the old lane's value")
-    cont.add_argument("--done-when", choices=("identical", "result"), help="overrides the old lane's value")
-    cont.add_argument("--fanout", choices=("enabled", "disabled"), help="overrides the old lane's value")
-    cont.add_argument("--max-agents", type=int, help="overrides the old lane's value")
-    cont.add_argument("--wait", type=int, default=0, help="seconds to wait for the old lane's unit to close")
-    end = actions.add_parser("end", help="mark a lane ended in the registry")
-    end.add_argument("--name", required=True)
-    end.add_argument("--reason", required=True)
-    end.add_argument("--stop", action="store_true", help="also stop the lane's running unit")
-
-
-def _run_lane(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    from abu_decomp.lanes import control
-
-    profile = _profile(args.profile)
-    if args.action == "launch":
-        spec = {key: value for key, value in vars(args).items() if key not in {"command", "action", "profile"}}
-        spec["owns"] = [str(path) for path in args.owns]
-        spec["export"] = list(args.export or [])
-        return control.launch(profile, spec), 0, []
-    if args.action == "register":
-        return (
-            control.register(
-                profile, {k: v for k, v in vars(args).items() if k not in {"command", "action", "profile"}}
-            ),
-            0,
-            [],
-        )
-    if args.action == "continue":
-        flags = ("track", "kind", "model", "effort", "wall", "continues", "done_when", "fanout", "max_agents")
-        given = {
-            "owns": [str(path) for path in args.owns or []],
-            "export": list(args.export or []),
-            **{key: getattr(args, key) for key in flags},
-        }
-        try:
-            return control.continue_lane(profile, args.old_dir, args.name, given, args.wait), 0, []
-        except DecompError as error:
-            if (
-                args.wait
-            ):  # the runner's detached relaunch unit: nobody reads its log, so the registry carries the failure
-                control.mark_continue_failed(
-                    profile, args.old_dir.expanduser().resolve(), f"{args.name}: {error.detail}"
-                )
-            raise
-    if args.action == "steer":
-        return control.steer_lane(profile, args.name, args.dir, args.socket, args.file), 0, []
-    return control.end(profile, args.name, args.reason, args.stop), 0, []
-
-
 def _tools_arguments(parser: argparse.ArgumentParser) -> None:
     actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
     deploy = actions.add_parser(
@@ -1481,7 +1386,6 @@ COMMANDS: dict[str, Command] = {
     "taste": Command("run Cake Taste with the profile's Taste profile", _tool_arguments, _run_tool),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
     "tools": Command("deploy the pinned tools into venvs", _tools_arguments, _run_tools),
-    "lane": Command("launch, register, steer and end AI lanes", _lane_arguments, _run_lane),
     "supervisor": Command("supervise a role headless, or stage an artifact", _supervisor_arguments, _run_supervisor),
     "build": Command("build committed sources and promote verified releases", _build_arguments, _run_build),
     "probe": Command("queue oracle probe requests and join them to PROBE events", _probe_arguments, _run_probe),

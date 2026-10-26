@@ -14,10 +14,8 @@ class ImportsTests(unittest.TestCase):
             "from abu_decomp import tas, tas_coverage",
             "import abu_decomp.tas_coverage",
             "from abu_decomp.tas_coverage import gcovr",
-            "from abu_decomp.lanes import runner",
         ):
-            module = "abu_decomp.lanes.runner" if "runner" in line else "abu_decomp.tas_coverage"
-            self.assertTrue(changed_tests.imports(line + "\n", module), line)
+            self.assertTrue(changed_tests.imports(line + "\n", "abu_decomp.tas_coverage"), line)
 
     def test_other_modules_do_not_match(self):
         for line in (
