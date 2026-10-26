@@ -316,11 +316,11 @@ def refused_by_gate(
     gate: Callable[[str], list[str]],
     unattributed: list[str],
 ) -> dict[str, str]:
-    """The ids whose batch the project's stamp gate would refuse, each with the violation that names it; a violation that
-    names none of its batch's ids is kept in `unattributed` (the plan cannot drop it)."""
+    """The ids whose batch the project's stamp gate would refuse, each with the violation that names it; a
+    violation that names none of its batch's ids is kept in `unattributed` (the plan cannot drop it)."""
     refusing: dict[str, str] = {}
     diffs = write_batches(found, batches, None, sees, unit_cpu)[1]
-    for batch, text in zip(batches, diffs):
+    for batch, text in zip(batches, diffs, strict=True):
         for violation in gate(text):
             named = [str(m["id"]) for m in batch if re.search(r"\b" + re.escape(str(m["id"])) + r"\b", violation)]
             for ident in named:
@@ -376,8 +376,8 @@ def write_batches(
     found: Scan, batches: list[list[dict[str, object]]], packs: Path | None, sees: dict[str, set[str]], unit_cpu: float
 ) -> tuple[list[dict[str, object]], list[str]]:
     """One diff per batch over the tree the earlier ones leave: declarations leave their units, one extern per id joins
-    the destination header before its closing `#endif`, a unit that no longer sees the destination includes it. Returns the
-    batch records and the diff texts; the files are written only when `packs` is given."""
+    the destination header before its closing `#endif`, a unit that no longer sees the destination
+    includes it. Returns the batch records and the diff texts; the files are written only when `packs` is given."""
     texts = {n: rows(t) for n, t in found.texts.items()}
     seen = {n: set(h) for n, h in sees.items()}
     written: list[dict[str, object]] = []
