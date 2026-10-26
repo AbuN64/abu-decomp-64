@@ -58,6 +58,7 @@ import re
 import resource
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -1016,6 +1017,16 @@ def human_movie_name(now: datetime | None = None) -> str:
 
 _TAKE_SUFFIX = re.compile(r"(?:-take-\d{8}-\d+)+$")
 _TOOK_OVER = re.compile(r"live input took over at poll (\d+)")
+
+
+TAKE_DATAGRAM, RELEASE_DATAGRAM = b"take", b"release"  # the control datagrams a run accepts on its input socket
+
+
+def send_input(run: Path, data: bytes) -> None:
+    """Send one datagram (a pad line, TAKE_DATAGRAM or RELEASE_DATAGRAM) to the run's input socket; OSError when
+    nothing listens there yet."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+        sock.sendto(data, "\0" + input_address(run)[1:])
 
 
 def take_root(name: str) -> str:

@@ -18,7 +18,9 @@
  * socket there ("@name": Linux abstract namespace). One input path, two sources: channel 0 comes from the movie until live input takes over, then from
  * the socket for the rest of the run. Without a movie live input holds from the first poll; with one, the datagram
  * "take" switches at the poll that reads it (the movie stops, N64C_TAS_EXIT_AFTER no longer applies, and the frame
- * loop drops to real time, n64c_tas_live_taken); N64C_TAS_TAKE_AT=P makes the same switch by itself at poll P (the first
+ * loop drops to real time, n64c_tas_live_taken); the datagram "release" after a take hands the run back: neutral input from
+ * the next poll, the frame loop returns to the run's own speed (n64c_tas_live_released), the movie does not resume and
+ * recording goes on; N64C_TAS_TAKE_AT=P makes the same switch by itself at poll P (the first
  * P polls come from the movie, poll P+1 on from the socket), so a retry from a chosen poll is exact. Each datagram "SEQ BUTTONS STICK_X STICK_Y" (decimal SEQ, hex
  * buttons) is the pad from the next poll on; pads sent before a take are dropped. Every poll reads all waiting
  * datagrams: the pad is the newest, plus any button held in an older one, so a press shorter than one poll still
@@ -63,7 +65,7 @@ static int pads = 1; /* N64C_PADS: controllers the guest sees (1..MAXCONTROLLERS
 static OSContPad live_pad[MAXCONTROLLERS];
 static unsigned live_held[MAXCONTROLLERS];
 static int live_fresh[MAXCONTROLLERS];
-static atomic_int taken;
+static atomic_int taken, released;
 static atomic_ulong live_seq;
 
 #ifdef _WIN32
@@ -112,6 +114,18 @@ static void live_drain(void)
         msg[n] = 0;
         if (!strncmp(msg, "take", 4)) {
             if (!atomic_exchange(&taken, 1)) fprintf(stderr, "n64c-tas: live input took over at poll %ld\n", polls + 1);
+            atomic_store(&released, 0);
+            continue;
+        }
+        if (!strncmp(msg, "release", 7)) {
+            if (atomic_load(&taken)) {
+                atomic_store(&released, 1);
+                atomic_store(&taken, 0);
+                memset(live_pad, 0, sizeof live_pad);
+                memset(live_held, 0, sizeof live_held);
+                memset(live_fresh, 0, sizeof live_fresh);
+                fprintf(stderr, "n64c-tas: live input released at poll %ld\n", polls + 1);
+            }
             continue;
         }
         unsigned long seq;
@@ -326,7 +340,7 @@ void n64c_tas_poll(OSContPad *pad)
     if (take_at >= 0 && polls >= take_at && !atomic_exchange(&taken, 1))
         fprintf(stderr, "n64c-tas: live input took over at poll %ld (N64C_TAS_TAKE_AT)\n", polls + 1);
     if (live >= 0) live_drain();
-    if (play && !atomic_load(&taken)) {
+    if (play && !atomic_load(&taken) && !atomic_load(&released)) {
         if (!play_done && !next(pad)) {
             play_done = 1;
             fprintf(stderr, "n64c-tas: movie ended at poll %ld\n", played);
@@ -341,7 +355,9 @@ void n64c_tas_poll(OSContPad *pad)
             }
         }
     }
-    if (atomic_load(&taken))
+    if (atomic_load(&released))
+        for (int i = 0; i < pads; i++) pad[i] = (OSContPad){0}; /* let go: neutral input, the run and its recording go on */
+    else if (atomic_load(&taken))
         for (int i = 0; i < pads; i++) {
             pad[i] = live_pad[i];
             pad[i].button |= (u16)live_held[i];
@@ -390,3 +406,4 @@ long n64c_tas_take_shot(void) { return atomic_exchange(&shot_due, -1); }
 const char *n64c_tas_shot_dir(void) { return shot_dir; }
 unsigned long n64c_tas_live_seq(void) { return atomic_load(&live_seq); }
 int n64c_tas_live_taken(void) { return atomic_load(&taken); }
+int n64c_tas_live_released(void) { return atomic_load(&released); }

@@ -544,11 +544,18 @@ int n64c_boot_frame_live(void)
         }
         fprintf(stderr,"boot-fps: unlock on, %u pictures a second at most\n",unlock.hz);
     }
+    const u32 run_speed=speed; /* the speed a release (live input handed back) returns to */
+    const long long run_interval=view.interval_ns;
     u32 base=0; /* retraces before the pacing restarted (a run taken over by live input plays at 1x from there) */
     for (u32 n=1;!frame.closed;n++) {
         if (speed!=1 && n64c_tas_live_taken()) {
             fprintf(stderr,"boot-frame: live input: real time from retrace %u\n",osViGetRetraceCount());
             speed=live_speed=1;base=n-1;clock_gettime(CLOCK_MONOTONIC,&start);
+        }
+        if (speed!=run_speed && n64c_tas_live_released()) {
+            fprintf(stderr,"boot-frame: live input released: speed %u from retrace %u\n",run_speed,osViGetRetraceCount());
+            speed=live_speed=run_speed;base=n-1;clock_gettime(CLOCK_MONOTONIC,&start);
+            view.interval_ns=run_interval;
         }
         if (n64c_tas_live_taken() && view.path) view.interval_ns=1000000000ll/60-2000000ll;
         if (unlock.on) n64c_f3d_group_begin(frame.f3d);

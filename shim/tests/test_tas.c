@@ -137,6 +137,59 @@ static void take_over(const char *movie)
     close(go[0]); close(go[1]); close(ready[0]); close(ready[1]);
 }
 
+/* take -> release: two movie polls, a taken pad for two polls, then "release": neutral input, the run keeps going (the
+ * ended movie's EXIT_AFTER 0 does not end it) and keeps recording; a pad sent after the release is dropped. */
+static void release_after_take(const char *movie)
+{
+    char sock[64];
+    snprintf(sock, sizeof sock, "@n64c-test-tas-rel-%ld", (long)getpid());
+    const char *log = "n64c_test_tas.released";
+    remove(log);
+    int go[2], ready[2];
+    CHECK(pipe(go) == 0 && pipe(ready) == 0);
+    pid_t child = fork();
+    if (child == 0) {
+        setenv("N64C_TAS_PLAY", movie, 1);
+        setenv("N64C_TAS_EXIT_AFTER", "0", 1);
+        unsetenv("N64C_TAS_HASH");
+        setenv("N64C_INPUT", sock, 1);
+        setenv("N64C_TAS_RECORD", log, 1);
+        n64c_cont_set_input(NULL, NULL);
+        OSContPad pads[MAXCONTROLLERS];
+        char c;
+        int code = 0;
+        for (int i = 0; i < 7 && !code; i++) {
+            osContStartReadData(NULL);
+            osContGetReadData(pads);
+            if (i == 2 && !(n64c_tas_live_taken() && !n64c_tas_live_released() && pads[0].button == 0x0010)) code = 5;
+            if (i >= 4 && (n64c_tas_live_taken() || !n64c_tas_live_released() || pads[0].button || pads[0].stick_x)) code = 6;
+            if (write(ready[1], "r", 1) != 1 || read(go[0], &c, 1) != 1) code = 7;
+        }
+        _Exit(code);
+    }
+    char c;
+    CHECK(read(ready[0], &c, 1) == 1); /* poll 1 done */
+    CHECK(write(go[1], "g", 1) == 1 && read(ready[0], &c, 1) == 1); /* poll 2 done */
+    send_pad(sock, "take");
+    send_pad(sock, "8 0010 0 0");
+    CHECK(write(go[1], "g", 1) == 1 && read(ready[0], &c, 1) == 1); /* poll 3: taken pad */
+    CHECK(write(go[1], "g", 1) == 1 && read(ready[0], &c, 1) == 1); /* poll 4: the pad is still held */
+    send_pad(sock, "release");
+    send_pad(sock, "9 0040 5 5"); /* after the release: dropped */
+    for (int i = 0; i < 3; i++) CHECK(write(go[1], "g", 1) == 1 && read(ready[0], &c, 1) == 1); /* polls 5, 6, 7 */
+    CHECK(write(go[1], "g", 1) == 1);
+    int status = 0;
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    char got[256] = {0};
+    FILE *f = fopen(log, "r");
+    CHECK(f != NULL);
+    if (f) { CHECK(fread(got, 1, sizeof got - 1, f) > 0); fclose(f); }
+    CHECK(strcmp(got, "8000 0 0\n1000 -80 80\n0010 0 0\n0010 0 0\n0000 0 0\n0000 0 0\n0000 0 0\n") == 0);
+    remove(log);
+    close(go[0]); close(go[1]); close(ready[0]); close(ready[1]);
+}
+
 /* N64C_TAS_TAKE_AT=2: two movie polls, then the socket's pad from poll 3 with no "take" sent; the pad sent before
  * that poll counts, exit_after no longer ends the run. */
 static void take_at(const char *movie)
@@ -305,6 +358,7 @@ int main(void)
     remove("n64c_test_tas.san");
     take_over(movie);
     take_at(movie);
+    release_after_take(movie);
     remove(movie);
     remove(log);
     remove(hashes);
