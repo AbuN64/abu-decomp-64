@@ -143,7 +143,7 @@ def _run_port(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
         from abu_decomp import land, remap, repin
 
         profile = _profile(args.profile)
-        tree = args.tree.expanduser().resolve()
+        tree = land.resolve_tree(profile, args.tree)
         registered = args.like.expanduser().resolve() if args.like else tree
         pin = land.settings(profile, registered)["pin"]
         if pin is None:
@@ -862,9 +862,13 @@ def _repin_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _run_repin(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import land
     from abu_decomp.repin import repin
 
-    return repin(_profile(args.profile), args.tree, args.to, rebuild=not args.no_rebuild, dry_run=args.check)
+    profile = _profile(args.profile)
+    return repin(
+        profile, land.resolve_tree(profile, args.tree), args.to, rebuild=not args.no_rebuild, dry_run=args.check
+    )
 
 
 def _standalone_arguments(parser: argparse.ArgumentParser) -> None:

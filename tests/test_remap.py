@@ -178,6 +178,15 @@ class RemapTests(unittest.TestCase):
         self.assertEqual((code, [f["key"] for f in findings]), (1, ["remap.stale"]))
         self.assertEqual(self.manifest.read_text(), before)
 
+    def test_a_bare_tree_name_is_the_land_trees_key_of_that_name(self) -> None:
+        from abu_decomp import land
+
+        self.assertEqual(land.resolve_tree(self.profile, Path("port")), self.tree)
+        self.assertEqual(land.resolve_tree(self.profile, self.tree), self.tree)
+        other = (self.root / "other").resolve()
+        self.assertEqual(land.resolve_tree(self.profile, other), other)  # not a key: as given
+        self.assertEqual(land.resolve_tree(self.profile, Path("nokey")), Path("nokey").resolve())
+
     def test_like_carries_the_renames_into_a_clone_with_the_registered_trees_pin(self) -> None:
         import shutil
 

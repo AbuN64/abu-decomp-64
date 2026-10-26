@@ -449,6 +449,18 @@ TREE_INHERITED = frozenset({"actor", "author", "lock_weight", "subject_limit", "
 TREE_KEYS = (LAND_KEYS - {"claims"}) | {"mode", "steps", "pin"}
 
 
+def resolve_tree(profile: Profile, tree: Path) -> Path:
+    """The directory a --tree argument means: a path as given, except a bare name (one component, nothing of that
+    name in the working directory) that is the directory name of exactly one `land.trees` key, which is that key."""
+    tree = tree.expanduser()
+    if len(tree.parts) != 1 or tree.exists():
+        return tree.resolve()
+    table = profile.section("land").get("trees")
+    keys = [profile.path(f"land.trees.{key}", key) for key in table] if isinstance(table, dict) else []
+    named = [key for key in keys if key.name == tree.name]
+    return named[0] if len(named) == 1 else tree.resolve()
+
+
 def tree_entry(profile: Profile, table: dict[str, Any], tree: Path | None) -> dict[str, Any] | None:
     """The `land.trees` entry for this work tree (keys are paths, relative to the profile file), None when the tree
     has none: it then lands as the profile-wide `land` table says."""
