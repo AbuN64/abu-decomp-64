@@ -427,8 +427,8 @@ static void test_fx_config_padding(void)
     }
 }
 
-/* Compact sequence: one track with a tempo, a program change, a pan, then two notes (the second after a
- * delta) and a track end; played through a one-instrument bank over a raw wave. */
+/* Compact sequence: one track with a tempo, a program change, a pan, then two notes (the second one beat later,
+ * a back-up copy of the first's five bytes) and a track end; played through a one-instrument bank over a raw wave. */
 enum { SEQ_OFF = 0x340000, BANK_OFF = 0x341000 };
 static u32 put_seq(u32 at, const u8 *b, u32 n) { for (u32 i = 0; i < n; i++) put8(at + i, b[i]); return at + n; }
 
@@ -445,8 +445,7 @@ static void test_csp(u32 bank_rate)
         0x00, 0xc0, 0x00,                      /* program 0 */
         0x00, 0xb0, 0x0a, 0x40,                /* pan centre */
         0x00, 0x90, 0x3c, 0x7f, 0x83, 0x60,    /* middle C for 480 ticks */
-        0x83, 0x60, 0x3e, 0x7f, 0x83, 0x60,    /* running status: next note one beat later */
-        0x00, 0xfe, 0x00, 0x10,                /* carried, no effect */
+        0x83, 0x60, 0xfe, 0x00, 0x07, 0x05,    /* one beat later: replay the 5 bytes 7 + 4 back (the note above) */
         0x83, 0x60, 0xff, 0x2f };
     put_seq(SEQ_OFF + 0x44, trk, sizeof trk);
     ALWaveTable w;
@@ -499,6 +498,56 @@ static void test_csp(u32 bank_rate)
     (void)peak_gap;
 }
 
+/* libultra counts a loop down in the sequence data: FF 2D count left u32-back; left 1 -> 0 on the jump, reset to
+ * the count when the loop ends. */
+static void test_csp_loop(void)
+{
+    start_synth(4);
+    for (u32 i = 0; i < 0x80; i++) put8(SEQ_OFF + i, 0);
+    put8(SEQ_OFF + 3, 0x44);
+    put8(SEQ_OFF + 0x42, 0x01); put8(SEQ_OFF + 0x43, 0xe0);
+    static const u8 trk[] = {
+        0x00, 0xff, 0x51, 0x07, 0xa1, 0x20,
+        0x00, 0xc0, 0x00,
+        0x00, 0xff, 0x2e, 0x00, 0x00,          /* loop start */
+        0x00, 0x90, 0x3c, 0x7f, 0x10,          /* +14: a 16-tick note */
+        0x10, 0xff, 0x2d, 0x01, 0x01, 0x00, 0x00, 0x00, 0x0e,  /* loop end at +20, left at +23, back to +14 */
+        0x00, 0xff, 0x2f };
+    put_seq(SEQ_OFF + 0x44, trk, sizeof trk);
+    ALWaveTable w;
+    make_raw(&w, 0x1000, 8000, 6000);
+    ALEnvelope env = {.releaseTime = 1000, .attackVolume = 127, .decayVolume = 127};
+    ALKeyMap km = {.velocityMax = 127, .keyMax = 127, .keyBase = 60};
+    ALSound snd = {.envelope = &env, .keyMap = &km, .wavetable = &w, .samplePan = 64, .sampleVolume = 127};
+    ALInstrument *inst = (ALInstrument *)(ram + BANK_OFF);
+    memset(inst, 0, sizeof *inst);
+    inst->volume = 127; inst->soundCount = 1; inst->soundArray[0] = &snd;
+    ALBank *bank = (ALBank *)(ram + BANK_OFF + 0x100);
+    memset(bank, 0, sizeof *bank);
+    bank->instCount = 1; bank->sampleRate = 22050; bank->instArray[0] = inst;
+    ALCSPlayer csp;
+    ALSeqpConfig sc = {.maxVoices = 4, .maxEvents = 16, .maxChannels = 16, .heap = &heap};
+    alCSPNew(&csp, &sc);
+    ALCSeq seq;
+    alCSeqNew(&seq, ram + SEQ_OFF);
+    alCSPSetSeq(&csp, &seq);
+    alCSPSetBank(&csp, bank);
+    alCSPSetVol(&csp, 0x7fff);
+    alCSPPlay(&csp);
+    N64aAbi *abi = n64a_abi_create(N64A_FLAVOUR_AUDIO);
+    const u32 left = SEQ_OFF + 0x44 + 23;
+    int least = 0xff;
+    for (int f = 0; f < 40; f++) {
+        run_frame(abi, 256);
+        if (ram[left] < least) least = ram[left];
+    }
+    CHECK(least == 0);                         /* the jump counted the loop down in place */
+    CHECK(ram[left] == 1);                     /* and the loop end reset it */
+    CHECK(alCSPGetState(&csp) == AL_STOPPED);
+    n64a_abi_destroy(abi);
+    alClose(&globals);
+}
+
 int main(void)
 {
     test_heap_and_links();
@@ -510,6 +559,7 @@ int main(void)
     test_fx_config_padding();
     test_csp(22050);
     test_csp(44100);
+    test_csp_loop();
     printf("n64c_al: %s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;
 }

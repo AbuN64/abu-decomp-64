@@ -10,9 +10,12 @@
  *   8x note off / Ax pressure / Bx controller / Ex bend: two data bytes, Cx program / Dx pressure: one,
  *   9x note on: note, velocity, then the note's length in ticks as a variable-length number;
  *   FF 51 + 3 bytes tempo (microseconds per quarter note), FF 2F track end,
- *   FF 2E + 2 bytes loop start, FF 2D + count, 1 byte, u32 distance back (measured from the end of this
- *   event) to the first event after the loop start; count 0xFF repeats forever.
- *   FE + 2 bytes is carried but has no effect here. */
+ *   FF 2E + 2 bytes loop start, FF 2D + loop count, loops left, u32 distance back (measured from the end of this
+ *   event) to the first event after the loop start; loops left 0xFF repeats forever. As in libultra, the loops left
+ *   byte is counted down in the sequence data itself and reset to the loop count when the loop ends.
+ * Every byte but the loop end's six is read through libultra's back-up compression (cseq.c __getTrackByte):
+ *   FE hi lo len repeats the len bytes that start (hi << 8 | lo) + 4 bytes before the end of these four; FE FE
+ *   is one literal FE. A meta event clears the running status. */
 #include "n64c_al.h"
 #include <math.h>
 #include <string.h>
@@ -30,7 +33,7 @@ static u32 rd32be(const u8 *base, u32 off)
 typedef struct CspTrack {
     u32 pos;
     u32 nextTick;
-    u32 loopsLeft;     /* 0: not counting */
+    u32 buPos, buLen;  /* back-up copy being replayed: its next byte, bytes left */
     u8 run;            /* running status */
     u8 done;
 } CspTrack;
@@ -63,11 +66,34 @@ typedef struct N64cCsp {
     u32 division;
 } N64cCsp;
 
-static u32 rd_varlen(const u8 *d, u32 *pos)
+/* libultra __getTrackByte: the next byte of a track, inside a back-up copy or starting one at FE hi lo len. */
+static u8 track_byte(const u8 *d, CspTrack *t)
+{
+    if (t->buLen) {
+        t->buLen--;
+        return rd8(d, t->buPos++);
+    }
+    u8 b = rd8(d, t->pos++);
+    if (b != 0xfe) return b;
+    u8 hi = rd8(d, t->pos++);
+    if (hi == 0xfe) return b;
+    u32 back = ((u32)hi << 8 | rd8(d, t->pos)) + 4u;
+    u8 len = rd8(d, t->pos + 1);
+    t->pos += 2;
+    if (back > t->pos || len == 0) {        /* a copy from before the data: the track is corrupt */
+        t->done = 1;
+        return 0;
+    }
+    t->buPos = t->pos - back;
+    t->buLen = len - 1u;
+    return rd8(d, t->buPos++);
+}
+
+static u32 rd_varlen(const u8 *d, CspTrack *t)
 {
     u32 v = 0;
     for (int i = 0; i < 5; i++) {
-        u8 c = rd8(d, (*pos)++);
+        u8 c = track_byte(d, t);
         v = (v << 7) | (c & 0x7fu);
         if (!(c & 0x80)) break;
     }
@@ -161,67 +187,60 @@ static void note_on(N64cCsp *cp, int chan, int key, int vel, u32 durTicks)
 /* Executes one event of track t at its current position. */
 static void run_event(N64cCsp *cp, CspTrack *t)
 {
-    const u8 *d = cp->seq->data;
-    u8 s = rd8(d, t->pos);
-    if (s & 0x80) { t->pos++; if (s != 0xff) t->run = s; }
-    else s = t->run;
-    const int hi = s & 0xf0, ch = s & 15;
+    u8 *d = cp->seq->data;
+    u8 s = track_byte(d, t);
     if (s == 0xff) {
-        u8 m = rd8(d, t->pos++);
+        u8 m = track_byte(d, t);
+        t->run = 0;
         if (m == 0x51) {
-            cp->tempo = (u32)rd8(d, t->pos) << 16 | (u32)rd8(d, t->pos + 1) << 8 | rd8(d, t->pos + 2);
+            u32 a = track_byte(d, t), b = track_byte(d, t), c = track_byte(d, t);
+            cp->tempo = a << 16 | b << 8 | c;
             if (cp->tempo == 0) cp->tempo = 500000;
-            t->pos += 3;
         } else if (m == 0x2f) {
             t->done = 1;
-            return;
         } else if (m == 0x2e) {
-            t->pos += 2;
-            t->loopsLeft = 0;
+            track_byte(d, t);
+            track_byte(d, t);
         } else if (m == 0x2d) {
-            u8 cnt = rd8(d, t->pos);
+            /* libultra reads the loop end in place: loop count, loops left, u32 distance back from its end */
+            u8 count = d[t->pos], left = d[t->pos + 1];
             u32 back = rd32be(d, t->pos + 2);
-            t->pos += 6;
-            if (back <= t->pos) {
-                if (cnt == 0xff) t->pos -= back;
-                else {
-                    if (t->loopsLeft == 0) t->loopsLeft = (u32)cnt + 1;
-                    if (--t->loopsLeft > 0) t->pos -= back;
-                }
-            }
+            if (left == 0) {
+                d[t->pos + 1] = count;
+                t->pos += 6;
+            } else if (back <= t->pos + 6) {
+                if (left != 0xff) d[t->pos + 1] = (u8)(left - 1);
+                t->pos = t->pos + 6 - back;
+            } else t->done = 1;
         } else t->done = 1;                 /* unknown meta: stop reading this track */
         return;
     }
-    if (s == 0xfe) { t->pos += 2; return; }
+    u8 b1;
+    if (s & 0x80) {
+        t->run = s;
+        b1 = track_byte(d, t);
+    } else {
+        b1 = s;
+        s = t->run;
+    }
+    const int hi = s & 0xf0, ch = s & 15;
+    u8 b2 = hi == 0xc0 || hi == 0xd0 ? 0 : track_byte(d, t);
     switch (hi) {
-    case 0x90: {
-        u8 note = rd8(d, t->pos), vel = rd8(d, t->pos + 1);
-        t->pos += 2;
-        u32 dur = rd_varlen(d, &t->pos);
-        note_on(cp, ch, note, vel, dur);
+    case 0x90: note_on(cp, ch, b1, b2, rd_varlen(d, t)); break;
+    case 0xb0:
+        if (b1 == 7) { cp->chanVol[ch] = b2; update_vols(cp, ch); }
+        else if (b1 == 10) cp->chanPan[ch] = b2;
+        else if (b1 == 91) cp->chanFx[ch] = b2;
         break;
-    }
-    case 0xb0: {
-        u8 c = rd8(d, t->pos), v = rd8(d, t->pos + 1);
-        t->pos += 2;
-        if (c == 7) { cp->chanVol[ch] = v; update_vols(cp, ch); }
-        else if (c == 10) cp->chanPan[ch] = v;
-        else if (c == 91) cp->chanFx[ch] = v;
-        break;
-    }
-    case 0xc0: cp->program[ch] = rd8(d, t->pos++); break;
-    case 0xd0: t->pos += 1; break;
-    case 0x80: case 0xa0: case 0xe0: t->pos += 2; break;
+    case 0xc0: cp->program[ch] = b1; break;
+    case 0x80: case 0xa0: case 0xd0: case 0xe0: break;
     default: t->done = 1; break;           /* data byte with no status to repeat */
     }
 }
 
 static int track_read_delta(N64cCsp *cp, CspTrack *t)
 {
-    u32 p = t->pos;
-    u32 dl = rd_varlen(cp->seq->data, &p);
-    t->pos = p;
-    t->nextTick += dl;
+    t->nextTick += rd_varlen(cp->seq->data, t);
     return 0;
 }
 

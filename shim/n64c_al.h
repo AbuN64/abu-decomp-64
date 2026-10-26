@@ -229,7 +229,7 @@ enum { AL_STOPPED = 0, AL_PLAYING = 1, AL_STOPPING = 2 };
 /* ---- compact sequence player ---- */
 /* The game reserves 0xF8 bytes per sequence object and 0x7C per player. */
 typedef struct ALCSeq {
-    const u8 *data;
+    u8 *data;          /* libultra counts loops down inside the sequence */
     u8 reserved[0xF4];
 } ALCSeq;
 typedef struct ALCSPlayer {
