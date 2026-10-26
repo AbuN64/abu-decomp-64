@@ -2,6 +2,7 @@
 /* Boot hit census: the -finstrument-functions entry hook of the original units. */
 #define _GNU_SOURCE
 #include "trace.h"
+#include "reach.h"
 #include <elf.h>
 #include <link.h>
 #include <fcntl.h>
@@ -11,6 +12,10 @@
 #include <unistd.h>
 #include <inttypes.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <time.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -387,6 +392,179 @@ NOINST static void ls_call(Slot *slot, void *call_site, const unsigned long *reg
     (void)call_site;
 #endif
 }
+/* Reach stream (GAME-RUNNER 10a). N64C_REACH_ROWS names the bake's fnrows.txt, one function name per fns.json row: every
+ * function of the image's own symbol table with such a name gets its row. The entry hook counts entries per row, and
+ * n64c_trace_reach_tick (once per poll, at most 30 a second) turns the counts into records for the datagram socket
+ * N64C_INPUT + ".reach", which the run's server reads. A name the image does not link, or a build without both
+ * variables, simply has no rows or no stream. */
+typedef struct {
+    void *fn;
+    unsigned row;
+} RowSlot;
+static RowSlot *row_slots;
+static unsigned row_mask;
+static unsigned *row_entered;
+static N64cReach reach;
+static int reach_fd = -1;
+static socklen_t reach_addr_len;
+static struct sockaddr_un reach_addr;
+static unsigned long long reach_last_ms;
+static long reach_poll;
+static unsigned row_hash(const char *name)
+{
+    unsigned h = 2166136261u;
+    for (; *name; name++)
+        h = (h ^ (unsigned char)*name) * 16777619u;
+    return h;
+}
+NOINST static unsigned long long now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000 + (unsigned long long)ts.tv_nsec / 1000000;
+}
+/* The rows file's names, one per line; row i is line i. Returns the row count (0: no stream). */
+NOINST static unsigned reach_names(const char *path, char **text, const char ***names)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return 0;
+    fseek(f, 0, SEEK_END);
+    const long size = ftell(f);
+    rewind(f);
+    char *buf = size > 0 ? malloc((size_t)size + 1) : NULL;
+    if (!buf || fread(buf, 1, (size_t)size, f) != (size_t)size) {
+        free(buf);
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+    buf[size] = 0;
+    unsigned rows = 0;
+    for (long i = 0; i < size; i++)
+        rows += buf[i] == '\n';
+    const char **list = malloc((rows + 1) * sizeof *list);
+    if (!list) {
+        free(buf);
+        return 0;
+    }
+    unsigned n = 0;
+    for (char *line = buf, *nl; n < rows && (nl = strchr(line, '\n')); line = nl + 1) {
+        *nl = 0;
+        list[n++] = line;
+    }
+    *text = buf;
+    *names = list;
+    return n;
+}
+NOINST static void reach_init(void)
+{
+    const char *rows_path = getenv("N64C_REACH_ROWS"), *input = getenv("N64C_INPUT");
+    if (!rows_path || !*rows_path || !input || input[0] != '@' || !syms)
+        return;
+    char *text = NULL;
+    const char **names = NULL;
+    const unsigned rows = reach_names(rows_path, &text, &names);
+    if (!rows)
+        return;
+    unsigned size = 1024;
+    while (size < rows * 2)
+        size <<= 1;
+    unsigned *by_name = calloc(size, sizeof *by_name); /* name hash table: row + 1 */
+    row_entered = calloc(rows, sizeof *row_entered);
+    if (!by_name || !row_entered || !n64c_reach_init(&reach, rows, row_entered))
+        goto out;
+    for (unsigned i = 0; i < rows; i++) {
+        unsigned s = row_hash(names[i]) & (size - 1);
+        while (by_name[s] && strcmp(names[by_name[s] - 1], names[i]))
+            s = (s + 1) & (size - 1);
+        if (!by_name[s]) /* a repeated name keeps its first row */
+            by_name[s] = i + 1;
+    }
+    unsigned matches = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass) {
+            unsigned slots_size = 1024;
+            while (slots_size < matches * 2)
+                slots_size <<= 1;
+            row_slots = calloc(slots_size, sizeof *row_slots);
+            if (!row_slots)
+                goto out;
+            row_mask = slots_size - 1;
+        }
+        for (unsigned i = 0; i < sym_count; i++) {
+            if (ELF32_ST_TYPE(syms[i].st_info) != STT_FUNC || !syms[i].st_value)
+                continue;
+            const char *name = strings + syms[i].st_name;
+            unsigned s = row_hash(name) & (size - 1);
+            while (by_name[s] && strcmp(names[by_name[s] - 1], name))
+                s = (s + 1) & (size - 1);
+            if (!by_name[s])
+                continue;
+            if (!pass) {
+                matches++;
+                continue;
+            }
+            void *fn = (void *)(uintptr_t)syms[i].st_value;
+            unsigned t = slot_of(fn) & row_mask;
+            while (row_slots[t].fn && row_slots[t].fn != fn)
+                t = (t + 1) & row_mask;
+            if (!row_slots[t].fn) { /* an alias of the same address keeps the first row */
+                row_slots[t].fn = fn;
+                row_slots[t].row = by_name[s] - 1;
+            }
+        }
+    }
+    reach_fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    const size_t len = strlen(input) + strlen(".reach");
+    if (reach_fd < 0 || len >= sizeof reach_addr.sun_path) {
+        if (reach_fd >= 0)
+            close(reach_fd);
+        reach_fd = -1;
+        goto out;
+    }
+    reach_addr.sun_family = AF_UNIX; /* the abstract namespace: sun_path[0] stays 0 */
+    snprintf(reach_addr.sun_path + 1, sizeof reach_addr.sun_path - 1, "%s.reach", input + 1);
+    reach_addr_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + len);
+    fprintf(stderr, "boot-step: reach stream: %u rows, %u linked, to %s.reach\n", rows, matches, input);
+out:
+    free(by_name);
+    free(text);
+    free(names);
+    if (reach_fd < 0) {
+        free(row_slots);
+        row_slots = NULL;
+        free(row_entered);
+        row_entered = NULL;
+        n64c_reach_free(&reach);
+    }
+}
+/* Once per poll: at most 30 records a second, each a datagram that is dropped when nothing listens or its queue is full
+ * (the next full record heals the receiver). The first one is the full set so far. */
+NOINST void n64c_trace_reach_tick(long poll)
+{
+    if (reach_fd < 0)
+        return;
+    reach_poll = poll;
+    const unsigned long long now = now_ms();
+    if (reach.started && now - reach_last_ms < 33)
+        return;
+    reach_last_ms = now;
+    unsigned char record[N64C_REACH_MAX];
+    const size_t size = n64c_reach_next(&reach, (uint32_t)poll, record);
+    if (size)
+        sendto(reach_fd, record, size, MSG_DONTWAIT | MSG_NOSIGNAL, (const struct sockaddr *)&reach_addr, reach_addr_len);
+}
+/* At the run's end: one last full record, so the receiver's set is the final one however the throttle or a dropped datagram left it. */
+NOINST static void reach_final(void)
+{
+    if (reach_fd < 0)
+        return;
+    unsigned char record[N64C_REACH_MAX];
+    n64c_reach_next(&reach, (uint32_t)reach_poll, record); /* takes up the counts since the last tick */
+    const size_t size = n64c_reach_full(&reach, (uint32_t)reach_poll, record);
+    sendto(reach_fd, record, size, MSG_DONTWAIT | MSG_NOSIGNAL, (const struct sockaddr *)&reach_addr, reach_addr_len);
+}
 NOINST void n64c_trace_init(void)
 {
     const unsigned total = n64c_trace_count;
@@ -450,6 +628,7 @@ NOINST void n64c_trace_init(void)
             eligible, total, shim_bound, unresolved);
     fflush(stderr);
     ls_init();
+    reach_init();
     __atomic_store_n(&armed, 1, __ATOMIC_RELEASE);
 }
 NOINST static void first_hit(unsigned i)
@@ -515,6 +694,12 @@ NOINST RAWSTACK static void trace_enter(void *fn, void *call_site, const unsigne
         }
         pthread_mutex_unlock(&lock);
     }
+    if (row_slots)
+        for (unsigned s = slot_of(fn) & row_mask; row_slots[s].fn; s = (s + 1) & row_mask)
+            if (row_slots[s].fn == fn) {
+                __atomic_fetch_add(&row_entered[row_slots[s].row], 1, __ATOMIC_RELAXED);
+                break;
+            }
     push_frame(fn, call_site, regs);
     if (ls_watch)
         ls_watch_check(fn, "enter");
@@ -625,6 +810,7 @@ NOINST void n64c_trace_event(const char *kind)
 }
 NOINST void n64c_trace_summary(void)
 {
+    reach_final();
     pthread_mutex_lock(&lock);
     if (armed && !summarised) {
         summarised = 1;

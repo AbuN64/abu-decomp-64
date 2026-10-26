@@ -1011,6 +1011,20 @@ def input_address(run: Path) -> str:
     return "@abu-tas-" + hashlib.sha1(str(run.resolve()).encode()).hexdigest()[:24]
 
 
+def reach_address(run: Path) -> str:
+    """The run's reach stream, the datagram socket the port sends its reach records on: the input socket's name + `.reach`."""
+    return input_address(run) + ".reach"
+
+
+def reach_rows(cfg: dict[str, Any]) -> Path | None:
+    """The baked fnrows file (one function name per fns.json row) the port maps its entered functions to, or None before the first bake."""
+    site = cfg["runs"] / "site"
+    try:
+        return site / json.loads((site / "manifest.json").read_text())["fnrows"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 def human_movie_name(now: datetime | None = None) -> str:
     return "play-" + (now or datetime.now(UTC)).strftime("%Y%m%d-%H%M%S")
 
@@ -1326,6 +1340,9 @@ def play(
         "N64C_AUDIO_OUT": str(run / AUDIO),
         "GCOV_PREFIX": str(run / "gcov"),  # a coverage build leaves its counters here (tas_coverage)
     }
+    rows = reach_rows(cfg)
+    if rows and rows.is_file():
+        env["N64C_REACH_ROWS"] = str(rows)  # the port streams the functions the run enters (reach_address)
     if pads > 1:
         env["N64C_PADS"] = str(pads)  # the guest sees that many controllers; every movie line holds that many pads
     if human:

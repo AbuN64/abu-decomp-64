@@ -315,6 +315,25 @@ class MovieTests(unittest.TestCase):
         self.assertIsNone(result["same_twice"])  # nothing to compare with yet
         self.assertEqual(tas.last_poll(run / "hash.txt"), 2)
 
+    def test_a_baked_site_gives_the_port_its_reach_rows(self):
+        self.movie()
+        site = self.root / "runs" / "site"
+        site.mkdir(parents=True)
+        (site / "manifest.json").write_text(json.dumps({"fnrows": "fnrows.abc.txt"}))
+        (site / "fnrows.abc.txt").write_text("main\nfoo\n")
+        seen = []
+        with self.port("1 aa\n", seen):
+            result = tas.play(self.profile, "m", now=T0)
+        self.assertEqual(seen[0]["N64C_REACH_ROWS"], str(site / "fnrows.abc.txt"))
+        self.assertEqual(tas.reach_address(Path(result["run"])), seen[0]["N64C_INPUT"] + ".reach")
+
+    def test_an_unbaked_site_gives_the_port_no_reach_rows(self):
+        self.movie()
+        seen = []
+        with self.port("1 aa\n", seen):
+            tas.play(self.profile, "m", now=T0)
+        self.assertNotIn("N64C_REACH_ROWS", seen[0])
+
     def test_a_lane_runs_its_own_build_under_its_label(self):
         self.movie()
         exe = self.root / "lane-port"

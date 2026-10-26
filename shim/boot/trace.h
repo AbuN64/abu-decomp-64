@@ -68,4 +68,6 @@ int n64c_runon_end(int rc) __attribute__((weak));
 /* Lockstep (N64C_LOCKSTEP=1 with N64C_LOCKSTEP_DIR, N64C_LOCKSTEP_WATCH; see trace.c and lockstep.py): page hashes of
  * RDRAM at each first hit plus the first calls' arguments and returns, compared offline with the oracle's. */
 uint64_t n64c_lockstep_hash(const unsigned char *page);
+/* The reach stream (boot/reach.h): once per poll n64c_trace_reach_tick (n64c_hook.h) sends the run's newly entered functions
+ * on the datagram socket N64C_INPUT + ".reach", for the rows named by the file N64C_REACH_ROWS. */
 #endif

@@ -13,9 +13,11 @@
 /* boot/trace.c census, used by the shim and the boot driver */
 #define n64c_trace_event N64C_ABSENT(void (*)(const char *))
 #define n64c_trace_summary N64C_ABSENT(void (*)(void))
+#define n64c_trace_reach_tick N64C_ABSENT(void (*)(long))
 #else
 #define N64C_LINKED(function) ((function) != 0)
 void n64c_trace_event(const char *kind) __attribute__((weak));
 void n64c_trace_summary(void) __attribute__((weak));
+void n64c_trace_reach_tick(long poll) __attribute__((weak));
 #endif
 #endif
