@@ -393,7 +393,10 @@ def check(b: Builder, version: str, units: list[str] | None = None, baseline: di
     if (
         rc and not failed and not old
     ):  # make failed with no unit named (a missing rule, a toolchain error): nothing can be judged
-        errs = [x for x in log.splitlines() if re.search(r"error", x, re.I)][:5]
+        lines = [x for x in log.splitlines() if x.strip()]
+        errs = (
+            [x for x in lines if re.search(r"error", x, re.I)][:5] or lines[-5:] or [f"make exited {rc} with no output"]
+        )
         return {"version": version, "units": len(units), "built": False, "broken": [], "errors": errs}
     bad = broken(b, version, [u for u in units if u not in failed and u not in old], renamed(b), moved)
     return {

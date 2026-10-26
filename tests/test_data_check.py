@@ -65,6 +65,9 @@ def test_data_only_units_build_in_every_version_and_build_errors_block(tmp_path)
     failed = True
     result = check.check(builder, "a", ["src/data.c"])
     assert result["units"] == 1 and not result["built"]
+    assert result["errors"] == ["make: *** No rule to make target 'build/a/src/data.c.o'.  Stop."]  # never empty
+    builder.objects = lambda version, units, keep_going=False: (2, "")
+    assert check.check(builder, "a", ["src/data.c"])["errors"] == ["make exited 2 with no output"]
 
 
 def test_a_failing_unit_is_named_with_its_error_and_the_rest_still_scored(tmp_path):
