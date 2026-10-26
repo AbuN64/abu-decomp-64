@@ -21,6 +21,8 @@ _libc.inotify_init1.argtypes = [ctypes.c_int]
 _libc.inotify_init1.restype = ctypes.c_int
 _libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
 _libc.inotify_add_watch.restype = ctypes.c_int
+_libc.inotify_rm_watch.argtypes = [ctypes.c_int, ctypes.c_int]
+_libc.inotify_rm_watch.restype = ctypes.c_int
 
 
 def watch(directory: Path, mask: int) -> int:
@@ -49,6 +51,13 @@ class Watcher:
         if wd < 0:
             raise OSError(ctypes.get_errno(), "inotify_add_watch " + str(directory))
         self.directories[wd] = directory
+
+    def remove(self, directory: Path) -> None:
+        """Stop watching `directory` (a no-op when it is not watched or already gone)."""
+        for wd, known in list(self.directories.items()):
+            if known == directory:
+                del self.directories[wd]
+                _libc.inotify_rm_watch(self.fd, wd)
 
     def read(self) -> list[tuple[Path, int]]:
         """Every queued event; an empty list when none is queued."""

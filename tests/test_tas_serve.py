@@ -1,10 +1,13 @@
-"""`tas serve` against the page contract (orch plans/TAS-PAGE-CONTRACT.md): state from run folders, frames, logs,
-the 1x sound as a growing WAV, play / play-all / stop. Mocked: no port runs."""
+"""`tas serve` against the Runner contract (orch plans/GAME-RUNNER.md): live.json from run folders, the baked site
+under /data, /wall, the reach relay on /video, frames, logs, the 1x sound as a growing WAV, play / stop. Mocked: no
+port runs."""
 
+import gzip
 import hashlib
 import io
 import json
 import os
+import socket
 import struct
 import tempfile
 import threading
@@ -42,6 +45,68 @@ def capture_bmp(width=3, height=2, bits=24, top_down=False, seq=42):
 def png_rgb(png):
     with Image.open(io.BytesIO(png)) as image:
         return *image.size, image.convert("RGB").tobytes()
+
+
+def varint(value):
+    out = bytearray()
+    while value > 127:
+        out.append(value & 127 | 128)
+        value >>= 7
+    return bytes(out + bytes([value]))
+
+
+def reach_record(kind, poll, first, second=()):
+    """The reach wire format (GAME-RUNNER 10a): a full record carries the bitset bytes in `first`; a delta carries the
+    fresh rows and then the hot rows, each as a count and delta-coded sorted rows."""
+    head = struct.pack("<BI", kind, poll)
+    if kind == 1:
+        return head + bytes(first)
+    out = bytearray(head)
+    for rows in (first, second):
+        out += varint(len(rows))
+        last = 0
+        for row in sorted(rows):
+            out += varint(row - last)
+            last = row
+    return bytes(out)
+
+
+def bitset(rows, size=8):
+    bits = bytearray(size)
+    for row in rows:
+        bits[row >> 3] |= 1 << (row & 7)
+    return bytes(bits)
+
+
+class Stream:
+    """A raw HTTP client reading a tas frame stream: (length field, stamp, seq[, index]) headers and bodies."""
+
+    def __init__(self, base, path, header):
+        host, _, port = base.removeprefix("http://").partition(":")
+        self.sock = socket.create_connection((host, int(port)), timeout=10)
+        self.sock.sendall(f"GET {path} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+        self.header = header
+        self.buffer = b""
+        while b"\r\n\r\n" not in self.buffer:
+            self.buffer += self.sock.recv(65536)
+        _, _, self.buffer = self.buffer.partition(b"\r\n\r\n")
+
+    def take(self, count):
+        while len(self.buffer) < count:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise EOFError
+            self.buffer += chunk
+        out, self.buffer = self.buffer[:count], self.buffer[count:]
+        return out
+
+    def record(self):
+        fields = self.header.unpack(self.take(self.header.size))
+        flagged = bool(fields[0] & 0x80000000)
+        return flagged, fields, self.take(fields[0] & 0x7FFFFFFF)
+
+    def close(self):
+        self.sock.close()
 
 
 class PictureTests(unittest.TestCase):
@@ -149,7 +214,8 @@ class ServeTests(Base):
         )  # fmt: skip
         self.make_run("20261022T150000Z-boot-idle", movie="boot-idle", status="running", pid=2**22 + 7, started=1.0)
         state = server.state()
-        self.assertEqual(set(state), {"now", "build", "runs", "movies", "lanes", "inbox"})
+        self.assertEqual(set(state), {"now", "build", "runs"})
+        self.assertTrue(all("port" not in r for r in state["runs"]))  # live.json rows carry no port path
         self.assertEqual(state["build"]["port"], str(self.root / "port"))
         self.assertGreater(state["build"]["built"], 0)
         runs = {r["id"]: r for r in state["runs"]}
@@ -161,7 +227,7 @@ class ServeTests(Base):
         self.assertEqual(runs["20261022T150000Z-boot-idle"]["status"], "done")  # its process is gone
         done = runs["20261022T160000Z-model-preview"]
         self.assertEqual((done["outcome"], done["poll"], done["subject"]), ("crash", 611, "host-fault-10"))
-        movies = {m["name"]: m for m in state["movies"]}
+        movies = {m["name"]: m for m in server.movies()}
         self.assertEqual(movies["boot-idle"]["polls"], 900)
         self.assertIsNone(movies["boot-idle"]["fn"])
         preview = movies["model-preview"]
@@ -170,9 +236,6 @@ class ServeTests(Base):
         self.assertEqual(preview["train"], {"line": "L1 /x/final-func_80256C90_de.diff exact", "mark": "LANDED"})
         self.assertEqual(preview["last_run"], 6.0)
         self.assertEqual((preview["root"], preview["from"], preview["at"]), ("model-preview", None, None))
-        self.assertEqual(state["lanes"], [])  # no lanes folder configured
-        self.assertEqual([row["mark"] for row in state["inbox"]], ["LANDED", "DROPPED", None])
-        self.assertEqual(state["inbox"][1]["line"], "DEPLOY: decomp 1e51919")
 
     def test_takes_fold_under_their_root_movie(self):
         sha = hashlib.sha1(b"rom").hexdigest()
@@ -183,7 +246,7 @@ class ServeTests(Base):
         (movies / "boot-idle-take-20261023-010101-take-20261023-020202.tas").write_text(
             f"# tas 1\n# rom-sha1 {sha}\n- *9\n"
         )
-        rows = {m["name"]: m for m in tas_serve.Server(self.profile()).state()["movies"]}
+        rows = {m["name"]: m for m in tas_serve.Server(self.profile()).movies()}
         take = rows["boot-idle-take-20261023-010101"]
         self.assertEqual((take["root"], take["from"], take["at"], take["polls"]), ("boot-idle", "boot-idle", 400, 500))
         self.assertEqual(rows["boot-idle-take-20261023-010101-take-20261023-020202"]["root"], "boot-idle")
@@ -202,69 +265,6 @@ class ServeTests(Base):
         self.assertEqual(server.keep("r1", False)["pinned"], False)
         with self.assertRaises(DecompError):
             server.keep("nope", True)
-
-    def test_board_reads_progress_history_landed_and_the_ranked_list(self):
-        states = self.root / "states.json"
-        states.write_text(json.dumps({
-            "generated": 5, "head": "abc", "head_subject": "s",
-            "bridge": {"versions": {"us-rev1": {"linked": True, "booted": True, "units_in": 3, "units_out": 1}}},
-            "versions": {"us-rev1": {"exact_percent": 90.5, "fuzzy_percent": 100.0, "bytes_total": 10,
-                                     "code": {"exact": 9, "fuzzy": 1, "none": 0}, "functions": {"exact": 4},
-                                     "none_fns": [["func_8000_de", 4, "src/a.c"]]}},
-        }))  # fmt: skip
-        (self.root / "history.jsonl").write_text('{"generated": 1, "pct": {"us-rev1": [89.0, 99.0]}}\nbad\n'
-                                                 '{"generated": 2, "pct": {"us-rev1": [90.5, 100.0]}}\n')  # fmt: skip
-        ranked = mock.patch.object(tas_serve.Server, "ranked", return_value=[{"rank": 1, "kind": "owes a match"}])
-        landed = mock.patch.object(
-            tas_serve.tas_board, "landed", return_value=[{"sha": "f", "time": 1, "subject": "Match x"}]
-        )
-        with ranked, landed:
-            server = tas_serve.Server(self.profile())
-            board = server.board()
-            for _ in range(200):
-                if server.work.view()["rows"] is not None:
-                    break
-                time.sleep(0.01)
-            work = server.work.view()
-        version = board["decomp"]["versions"][0]
-        self.assertEqual(
-            (version["name"], version["exact_pct"], version["none_fns"]), ("us-rev1", 90.5, ["func_8000_de"])
-        )
-        self.assertEqual(version["spark"], [[1, 89.0, 99.0], [2, 90.5, 100.0]])
-        self.assertEqual(version["bridge"]["units_in"], 3)
-        self.assertEqual(board["landed"][0]["subject"], "Match x")
-        self.assertEqual(work["rows"], [{"rank": 1, "kind": "owes a match"}])
-        self.assertIsNone(work["error"])
-
-    def test_lanes_and_labelled_runs(self):
-        lanes = self.root / "lanes"
-        for name, brief in (("TAS-CYCLE-1", "KIND: cycle\nOWNER\n# TAS-CYCLE-1 (Sonnet): splash off center.\n"),
-                            ("TAS-CYCLE-2", "KIND: cycle\n# TAS-CYCLE-2: texturing\n"),
-                            ("FUZZY-A", "KIND: impl\n# not a cycle\n"), ("OTHER", "")):  # fmt: skip
-            (lanes / name).mkdir(parents=True)
-            (lanes / name / "brief.md").write_text(brief)
-        (lanes / "OTHER" / "cycle.json").write_text('{"title": "from cycle.json"}')
-        (lanes / "TAS-CYCLE-1" / "STATUS.md").write_text("17:47 start\n17:55 found it\n\n")
-        (lanes / "TAS-CYCLE-2" / "STATUS.md").write_text("17:47 start\n")
-        (lanes / "TAS-CYCLE-2" / "RESULT.md").write_text("\nDONE: fixed\nmore\n")
-        server = tas_serve.Server(self.profile(lanes="lanes"))
-        self.make_run("r1", movie="boot-idle", status="running", speed=1, started=1.0, pid=os.getpid(),
-                      label="TAS-CYCLE-1", port="/x/ragewars")  # fmt: skip
-        state = server.state()
-        rows = {r["name"]: r for r in state["lanes"]}
-        self.assertEqual(set(rows), {"TAS-CYCLE-1", "TAS-CYCLE-2", "FUZZY-A", "OTHER"})  # every lane with a brief
-        self.assertEqual(
-            (rows["FUZZY-A"]["kind"], rows["TAS-CYCLE-1"]["kind"], rows["OTHER"]["kind"]), ("impl", "cycle", "cycle")
-        )
-        self.assertEqual([r["name"] for r in state["lanes"]][-1], "TAS-CYCLE-2")  # done goes last
-        one = rows["TAS-CYCLE-1"]
-        self.assertEqual((one["title"], one["status"], one["result"], one["runs"]),
-                         ("TAS-CYCLE-1 (Sonnet): splash off center.", "17:55 found it", None, 1))  # fmt: skip
-        self.assertGreater(one["status_at"], 0)
-        self.assertEqual(rows["TAS-CYCLE-2"]["result"], "DONE: fixed")
-        self.assertEqual(rows["OTHER"]["title"], "from cycle.json")
-        run = state["runs"][0]
-        self.assertEqual((run["label"], run["port"]), ("TAS-CYCLE-1", "/x/ragewars"))
 
     def test_fn_state_reads_the_source_and_the_progress_states(self):
         server = tas_serve.Server(self.profile())
@@ -307,6 +307,11 @@ class HttpTests(Base):
         with urllib.request.urlopen(self.base + path, timeout=10) as reply:
             return reply.status, reply.headers.get("Content-Type"), reply.read()
 
+    def live(self):
+        """live.json as the writer would leave it now."""
+        self.server.live.write()
+        return json.loads((self.server.site / "live.json").read_bytes())
+
     def post(self, path, body):
         request = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method="POST")
         try:
@@ -330,8 +335,8 @@ class HttpTests(Base):
     def test_page_state_frame_and_log(self):
         status, kind, body = self.get("/")
         self.assertEqual((status, kind), (200, "text/html; charset=utf-8"))
-        self.assertIn(b"/api/state", body)
-        self.assertEqual(json.loads(self.get("/api/state")[2])["runs"], [])
+        self.assertIn(b"<html", body.lower())
+        self.assertEqual(self.live()["runs"], [])
         run = self.make_run("r1", movie="boot-idle", status="done", speed=0, started=1.0, outcome="ok")
         self.assertEqual(self.status("/frame/r1"), 404)  # no picture yet
         bmp, rgb = capture_bmp()
@@ -355,22 +360,20 @@ class HttpTests(Base):
             return error.code, error.headers, error.read()
 
     def test_text_replies_gzip_and_answer_a_matching_etag_with_304(self):
-        import gzip
-
-        self.make_run("r1", movie="boot-idle", status="done", speed=0, started=1.0, outcome="ok")
-        status, head, plain = self.fetch("/api/state")
+        for n in range(1, 6):
+            self.make_run(f"r{n}", movie="boot-idle", status="done", speed=0, started=float(n), outcome="ok")
+        status, head, plain = self.fetch("/api/runs")
         self.assertEqual((status, head.get("Content-Encoding")), (200, None))
-        status, head, packed = self.fetch("/api/state", **{"Accept-Encoding": "gzip"})
+        status, head, packed = self.fetch("/api/runs", **{"Accept-Encoding": "gzip"})
         self.assertEqual((status, head["Content-Encoding"], head["Vary"]), (200, "gzip", "Accept-Encoding"))
         self.assertLess(len(packed), len(plain))
         self.assertEqual(json.loads(gzip.decompress(packed))["runs"], json.loads(plain)["runs"])
         tag = head["ETag"]
-        status, head, body = self.fetch("/api/state", **{"If-None-Match": tag, "Accept-Encoding": "gzip"})
-        self.assertEqual((status, body), (304, b""))  # the clock moved, the state did not
-        self.assertIn("X-Now", head)
-        self.assertEqual(self.fetch("/api/state", **{"If-None-Match": f'W/{tag}, "x"'})[0], 304)
-        self.make_run("r2", movie="model-preview", status="done", speed=0, started=2.0, outcome="ok")
-        self.assertEqual(self.fetch("/api/state", **{"If-None-Match": tag})[0], 200)  # a changed state is sent again
+        status, head, body = self.fetch("/api/runs", **{"If-None-Match": tag, "Accept-Encoding": "gzip"})
+        self.assertEqual((status, body), (304, b""))
+        self.assertEqual(self.fetch("/api/runs", **{"If-None-Match": f'W/{tag}, "x"'})[0], 304)
+        self.make_run("r9", movie="model-preview", status="done", speed=0, started=9.0, outcome="ok")
+        self.assertEqual(self.fetch("/api/runs", **{"If-None-Match": tag})[0], 200)  # a changed state is sent again
         status, head, _ = self.fetch("/")
         self.assertEqual(self.fetch("/", **{"If-None-Match": head["ETag"]})[0], 304)
         self.assertEqual(self.fetch("/frame/r1")[0], 404)
@@ -427,7 +430,7 @@ class HttpTests(Base):
         (early / "audio-oracle.pcm.rate").write_text("22050\n")
         self.assertEqual(self.get("/audio/r4?side=oracle")[2][44:], b"")  # not yet due in the run's own time
 
-    def test_play_play_all_and_stop(self):
+    def test_play_and_stop(self):
         started = []
 
         def fake_play(profile, movie, *, speed=0, run_id=None, port=None, label=None, **kwargs):
@@ -452,8 +455,8 @@ class HttpTests(Base):
             exe.chmod(0o755)
             status, reply = self.post("/api/play", {"movie": "boot-idle", "speed": 1, "port": str(exe), "label": "L-1"})
             self.assertEqual(status, 200)
-            queued = {r["id"]: r for r in json.loads(self.get("/api/state")[2])["runs"]}[reply["id"]]
-            self.assertEqual((queued["label"], queued["port"]), ("L-1", str(exe)))
+            queued = {r["id"]: r for r in self.live()["runs"]}[reply["id"]]
+            self.assertEqual((queued["label"], "port" in queued), ("L-1", False))
             for _ in range(100):
                 if len(started) == 2:
                     break
@@ -463,19 +466,6 @@ class HttpTests(Base):
             self.assertEqual(self.post("/api/play", {"movie": "boot-idle", "port": str(self.root / "nope")})[0], 400)
             self.assertEqual(self.post("/api/play", {"movie": "boot-idle", "label": "bad label!"})[0], 400)
         self.assertEqual(self.post("/api/play", {"movie": "nope", "speed": 0})[0], 400)
-        release = threading.Event()
-        with mock.patch.object(tas, "play_all", side_effect=lambda *a, **k: release.wait(10)) as play_all:
-            status, reply = self.post("/api/play-all", {})
-            self.assertEqual(len(reply["ids"]), 2)
-            state = json.loads(self.get("/api/state")[2])
-            queued = {r["id"]: r for r in state["runs"]}
-            self.assertEqual({queued[i]["status"] for i in reply["ids"]}, {"queued"})
-            for _ in range(100):
-                if play_all.called:
-                    break
-                time.sleep(0.01)
-            self.assertEqual(set(play_all.call_args.kwargs["run_ids"].values()), set(reply["ids"]))
-            release.set()
         run = self.make_run("r3", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid(), pgid=4242)
         with mock.patch.object(tas_serve.os, "killpg") as kill, mock.patch.object(tas_serve, "STOP_GRACE", 0.05):
             self.assertEqual(self.post("/api/stop", {"id": "r3"}), (200, {"id": "r3", "stopped": True}))
@@ -510,7 +500,7 @@ class HttpTests(Base):
                     break
                 time.sleep(0.01)
             self.assertEqual(started, [(None, 1, reply["id"], "owner")])
-            row = {r["id"]: r for r in json.loads(self.get("/api/state")[2])["runs"]}[reply["id"]]
+            row = {r["id"]: r for r in self.live()["runs"]}[reply["id"]]
             self.assertEqual((row["input"], row["label"], row["speed"], row["pak"]), ("human", "owner", 1, "off"))
             self.assertEqual(row["cpak"], "none")  # the page shows an empty slot for a run without the card
             self.assertEqual(paks, [("off", "off")])
@@ -536,7 +526,7 @@ class HttpTests(Base):
         )
         self.assertEqual(sock.recv(64), b"7 9000 -80 5")
         self.assertEqual(self.post("/api/input", {"id": "r5", "seq": 8, "buttons": 0x10000})[0], 400)
-        state = {r["id"]: r for r in json.loads(self.get("/api/state")[2])["runs"]}
+        state = {r["id"]: r for r in self.live()["runs"]}
         self.assertEqual(state["r5"]["input"], "human")
         self.assertEqual(self.post("/api/play", {})[0], 400)  # r5 is driven by live input now
         self.assertEqual(self.post("/api/take", {"id": "nope"})[0], 400)
@@ -559,8 +549,21 @@ class HttpTests(Base):
         self.assertEqual(
             self.post("/api/input", {"id": "r6", "seq": 3, "buttons": 16, "x": 0, "y": 0, "pad": 2})[0], 400
         )
-        state = {r["id"]: r for r in json.loads(self.get("/api/state")[2])["runs"]}
+        state = {r["id"]: r for r in self.live()["runs"]}
         self.assertEqual(state["r6"]["pads"], 2)
+
+    def test_release_returns_a_taken_run_and_frees_live_input(self):
+        run = self.make_run("r7", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid())
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(sock.close)
+        sock.bind("\0" + tas.input_address(run)[1:])
+        self.assertEqual(self.post("/api/input", {"id": "r7", "release": True})[0], 400)  # not taken
+        self.post("/api/take", {"id": "r7"})
+        self.assertEqual(sock.recv(64), b"take")
+        self.assertEqual(self.post("/api/input", {"id": "r7", "release": True}), (200, {"released": True}))
+        self.assertEqual(sock.recv(64), b"release")
+        self.assertFalse((run / "taken").exists())
+        self.assertIsNone(self.server.human_running())
 
     def test_retry_from_a_poll_and_pin(self):
         source = self.make_run("src", movie="boot-idle", status="done", started=1.0, outcome="crash", polls_reached=3)
@@ -578,7 +581,7 @@ class HttpTests(Base):
             self.assertEqual(self.post("/api/play", {"from": "nope", "at": 1})[0], 400)
             status, reply = self.post("/api/play", {"from": "src", "at": 2, "label": "owner"})
             self.assertEqual((status, reply["movie"]), (200, "boot-idle"))
-            row = {r["id"]: r for r in json.loads(self.get("/api/state")[2])["runs"]}[reply["id"]]
+            row = {r["id"]: r for r in self.live()["runs"]}[reply["id"]]
             self.assertEqual(
                 (row["input"], row["from"], row["at"], row["took_at"], row["polls"]), ("human", "src", 2, 2, 2)
             )
@@ -623,64 +626,6 @@ class HttpTests(Base):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(self.base + "/coverage/../secret.txt", timeout=10)
         self.assertEqual(caught.exception.code, 404)
-
-    def test_function_page_maze_and_call_tree_are_served_read_only(self):
-        runs = self.root / "runs"
-        invocations = self.root / "inv" / "LANE-A" / "invocations"
-        invocations.mkdir(parents=True)
-        record = {
-            "invocation": "x1",
-            "command": "behave",
-            "ok": True,
-            "time": 50.0,
-            "function": "func_80256C90_de",
-            "argv": ["behave"],
-            "verdict": "differs",
-            "mode": "compare",
-            "counts": {"same": 3, "differs": 1, "untestable": 0},
-            "compared": 4,
-            "total": 4,
-            "candidate_source": "void func_80256C90_de(int a)\n{\n    a = 1;\n}\n",
-            "first_difference": {"case": "c1", "kind": "return", "expected": "0x0", "got": "0x1"},
-        }
-        (invocations / "x1.json").write_text(json.dumps(record))
-        (self.root / "claims.md").write_text("func_80256C90_de LANE-A 12:00\nother LANE-B\n")
-        (self.project / "docs").mkdir()
-        rows = [["func_80256C90_de", 1, 12, 91.5, "src/t.CPP", 0], ["b", 1, 8, 100.0, "src/t.CPP", 0]]
-        (self.project / "docs" / "map-us-rev1.json").write_text(json.dumps({"fns": rows}))
-        hit = {"hit": True, "movie": "boot-idle", "count": 1, "poll": 1}
-        miss = {"hit": False, "movie": None, "count": 0, "poll": None}
-
-        def row(name, size, port):
-            fields = {"in_version": True, "scope": "game", "versions": ["us-rev1"], "behaviour": None}
-            return {**fields, "name": name, "size": size, "file": "src/t.CPP", "port": port, "oracle": miss}
-
-        table = {
-            "generated": 2,
-            "summary": {"version": "us-rev1"},
-            "functions": [row("func_80256C90_de", 12, hit), row("b", 8, miss)],
-            "runs": [{"movie": "boot-idle", "run": "r1", "covered": [0]}],
-        }
-        (runs / "coverage-table.json").write_text(json.dumps(table))
-        server = tas_serve.Server(self.profile(invocations=["inv/*/invocations"], claims="claims.md"))
-        fn = server.fn_page("func_80256C90_de")
-        self.assertEqual((fn["map"]["state"], fn["map"]["score"], fn["runs_total"]), ("fuzzy", 91.5, 1))
-        self.assertEqual(fn["claims"], ["func_80256C90_de LANE-A 12:00"])
-        run = fn["runs"][0]
-        self.assertEqual(
-            (run["lane"], run["mode"], run["verdict"], run["same"], run["differs"]),
-            ("LANE-A", "candidate", "differs", 3, 1),
-        )
-        self.assertEqual(run["source"]["state"], "diff")
-        maze = server.maze()
-        self.assertEqual((maze["total"], maze["covered"], maze["replays"][0]["cells"]), (2, 1, [0]))
-        for_calls = server.fn_calls("func_80256C90_de", "boot-idle")
-        self.assertEqual(
-            (for_calls["self"]["covered"], for_calls["self"]["by_movie"], for_calls["graph"]), (True, True, False)
-        )
-        with urllib.request.urlopen(self.base + "/fn/func_80256C90_de", timeout=10) as reply:
-            self.assertIn(b"/api/fn/", reply.read())
-        self.assertEqual(self.status("/fn/bad%20name"), 404)
 
     def test_every_frame_source_uses_the_same_decoder(self):
         run = self.make_run("r6", movie="boot-idle", status="running", speed=1, started=1.0, pid=os.getpid())
@@ -740,6 +685,311 @@ class HttpTests(Base):
         with mock.patch.object(self.server, "capture", return_value=(1, b"png", 7)) as grab:
             h.video(run)
         grab.assert_called_once()
+
+
+class LiveTests(Base):
+    """live.json: written from an inotify watch on the run folders, never per request."""
+
+    def start(self):
+        self.server = tas_serve.Server(self.profile())
+        self.server.live.start()
+        self.path = self.server.site / "live.json"
+        self.wait(lambda: self.path.is_file())
+        return self.server
+
+    def wait(self, check, seconds=3.0):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            result = check()
+            if result:
+                return result
+            time.sleep(0.005)
+        self.fail("timed out")
+
+    def runs(self):
+        try:
+            return {r["id"]: r for r in json.loads(self.path.read_bytes())["runs"]}
+        except (OSError, ValueError):
+            return {}
+
+    def test_run_changes_reach_live_json_within_half_a_second(self):
+        server = self.start()
+        time.sleep(0.7)  # the writer is idle: no rate limit pending
+        began = time.monotonic()
+        run = self.make_run("a", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid())
+        self.wait(lambda: "a" in self.runs())
+        self.assertLess(time.monotonic() - began, 0.5)
+        self.assertEqual(self.runs()["a"]["status"], "running")
+        self.assertNotIn("port", self.runs()["a"])
+        time.sleep(0.7)
+        began = time.monotonic()
+        record = run / tas.RECORD
+        tmp = run / "run.json.tmp"
+        tmp.write_text(json.dumps({"id": "a", "movie": "boot-idle", "status": "done", "outcome": "ok", "started": 1.0}))
+        tmp.replace(record)  # how the port's run rewrites its record
+        self.wait(lambda: self.runs()["a"]["status"] == "done")
+        self.assertLess(time.monotonic() - began, 0.5)
+        self.assertEqual(self.runs()["a"]["outcome"], "ok")
+        began = time.monotonic()
+        server.keep("a", True)  # the pin route: it nudges the writer, the finished run is no longer watched
+        self.wait(lambda: self.runs()["a"]["pinned"])
+        self.assertLess(time.monotonic() - began, 0.5)
+
+    def test_poll_ticks_follow_a_running_run_and_a_queued_run_shows(self):
+        self.start()
+        run = self.make_run("b", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid())
+        self.wait(lambda: "b" in self.runs())
+        (run / "hash.txt").write_text("1 aa\n2 bb\n3 cc\n")
+        self.wait(lambda: self.runs()["b"]["poll"] == 3)
+        (run / "hash.txt").write_text("1 aa\n2 bb\n3 cc\n4 dd\n5 ee\n")
+        self.wait(lambda: self.runs()["b"]["poll"] == 5)
+        self.server._placeholder("q1", "boot-idle", 0, self.server.cfg["port"], None)
+        self.wait(lambda: self.runs().get("q1", {}).get("status") == "queued")
+        self.server._forget("q1")
+        self.wait(lambda: "q1" not in self.runs())
+
+    def test_live_json_is_small_and_holds_running_queued_and_the_newest_finished(self):
+        for n in range(60):
+            self.make_run(
+                f"d{n:02d}", movie="boot-idle", status="done", speed=0, started=float(n), outcome="ok", ended=n + 1.0
+            )
+        for n in range(3):
+            self.make_run(f"r{n}", movie="boot-idle", status="running", speed=0, started=100.0 + n, pid=os.getpid())
+        self.start()
+        runs = json.loads(self.path.read_bytes())["runs"]
+        self.assertEqual(len(runs), tas_serve.RECENT_SHOWN + 3)
+        self.assertEqual({r["id"] for r in runs if r["status"] == "done"}, {f"d{n:02d}" for n in range(36, 60)})
+        self.assertLess(len(self.path.read_bytes()), 15 * 1024)
+
+    def test_an_unchanged_state_is_not_rewritten(self):
+        self.start()
+        stamp = self.path.stat().st_mtime_ns
+        self.assertFalse(self.server.live.write())
+        self.assertEqual(self.path.stat().st_mtime_ns, stamp)
+
+
+class WallTests(Base):
+    def test_one_connection_carries_a_thumb_of_every_running_run(self):
+        server = tas_serve.Server(self.profile())
+        http = ThreadingHTTPServer(("127.0.0.1", 0), tas_serve.handler(server))
+        http.daemon_threads = True
+        threading.Thread(target=http.serve_forever, daemon=True).start()
+        self.addCleanup(http.server_close)
+        self.addCleanup(http.shutdown)
+        bmp, _ = capture_bmp(320, 240)
+        for n in range(12):
+            run = self.make_run(
+                f"w{n:02d}", movie="boot-idle", status="running", speed=0, started=float(n), pid=os.getpid()
+            )
+            (run / "view.bmp").write_bytes(bmp)
+        self.make_run("old", movie="boot-idle", status="done", started=0.5, outcome="ok")
+        wall = Stream(f"http://127.0.0.1:{http.server_address[1]}", "/wall", tas_serve.VIDEO_HEADER)
+        self.addCleanup(wall.close)
+        names, shown = {}, set()
+        while len(shown) < 12:
+            flagged, (_length, _stamp, index), body = wall.record()
+            if flagged:
+                names[index] = json.loads(body)["id"]
+            else:
+                with Image.open(io.BytesIO(body)) as image:
+                    self.assertEqual((image.format, image.size), ("JPEG", (192, 144)))
+                shown.add(index)
+        self.assertEqual(sorted(names.values()), [f"w{n:02d}" for n in range(12)])
+        self.assertEqual(shown, set(names))  # every index was named before its first picture
+
+
+class ReachTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.server = tas_serve.Server(self.profile())
+        self.http = ThreadingHTTPServer(("127.0.0.1", 0), tas_serve.handler(self.server))
+        self.http.daemon_threads = True
+        threading.Thread(target=self.http.serve_forever, daemon=True).start()
+        self.addCleanup(self.http.server_close)
+        self.addCleanup(self.http.shutdown)
+        self.base = f"http://127.0.0.1:{self.http.server_address[1]}"
+
+    def sender(self, run):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(sock.close)
+        address = "\0" + tas.input_address(run)[1:] + ".reach"
+
+        def send(data):
+            sock.sendto(data, address)
+
+        return send
+
+    def until(self, check):
+        end = time.monotonic() + 5
+        while time.monotonic() < end:
+            if check():
+                return
+            time.sleep(0.005)
+        self.fail("timed out")
+
+    def test_records_reach_a_video_client_in_order_full_first_and_end_in_reach_bin(self):
+        run = self.make_run("x", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid())
+        bmp, _ = capture_bmp(320, 240)
+        (run / "view.bmp").write_bytes(bmp)
+        self.server.reach.sync([run])
+        relay = self.server.reach.runs["x"]
+        send = self.sender(run)
+        self.assertTrue(relay.listening.wait(5))
+        send(reach_record(1, 10, bitset([0, 1])))
+        send(reach_record(2, 11, [9], [0]))
+        self.until(lambda: relay.count == 2)
+        video = Stream(self.base, "/video/x", tas_serve.VIDEO_HEADER)
+        self.addCleanup(video.close)
+        flagged, (_length, _stamp, _seq), body = video.record()
+        self.assertTrue(flagged)
+        self.assertEqual(body, reach_record(1, 11, bitset([0, 1, 9], 8)[:2] + bytes(6)))  # a viewer joins on the sum
+        later = [reach_record(2, 12, [17, 18], [1]), reach_record(2, 13, [], [9]), reach_record(2, 14, [30], [])]
+        for record in later:
+            send(record)
+        got = []
+        while len(got) < len(later):
+            flagged, _, body = video.record()
+            if flagged:
+                got.append(body)
+            else:
+                self.assertTrue(body.startswith(b"\xff\xd8"))  # the JPEG frames keep coming between records
+        self.assertEqual(got, later)
+        final = bitset([0, 1, 9, 17, 18, 30], 8)
+        record = run / tas.RECORD
+        record.write_text(json.dumps({"id": "x", "status": "done"}))
+        self.until(lambda: (run / "reach.bin").is_file())
+        self.assertEqual((run / "reach.bin").read_bytes(), final)
+        self.assertTrue(relay.done)
+
+    def test_a_malformed_datagram_is_dropped_and_a_laggard_is_resynced_with_a_full_record(self):
+        run = self.make_run("y", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid())
+        self.server.reach.sync([run])
+        relay = self.server.reach.runs["y"]
+        self.assertTrue(relay.listening.wait(5))
+        send = self.sender(run)
+        send(reach_record(1, 1, bitset([2])))
+        self.until(lambda: relay.count == 1)
+        for bad in (b"", b"\x09\0\0\0\0", reach_record(2, 2, [1], [])[:-1], reach_record(2, 2, [1], []) + b"x"):
+            send(bad)
+        send(reach_record(2, 3, [3], []))
+        self.until(lambda: relay.count == 2)
+        self.assertEqual(relay.rejected, 4)
+        self.assertEqual(relay.bits, bytearray(bitset([2, 3])))
+        feed = self.server.reach.feed_for(run)
+        self.assertEqual(feed.first(), reach_record(1, 3, bitset([2, 3])))
+        with mock.patch.object(tas_serve, "REACH_KEPT_RECORDS", 2):
+            for poll in range(4, 9):
+                relay.feed(reach_record(2, poll, [poll + 8], []))
+        records = feed.pending()
+        self.assertEqual(records, [reach_record(1, 8, relay.bits)])  # the gap is one full record, not stale deltas
+        self.assertEqual(feed.pending(), [])
+
+    def test_a_finished_run_serves_its_reach_bin_once_as_a_full_record(self):
+        run = self.make_run("z", movie="boot-idle", status="done", speed=0, started=1.0, polls_reached=77)
+        (run / "reach.bin").write_bytes(bitset([5], 4))
+        feed = self.server.reach.feed_for(run)
+        self.assertEqual(feed.first(), reach_record(1, 77, bitset([5], 4)))
+        self.assertEqual(feed.pending(), [])
+        self.assertIsNone(self.server.reach.feed_for(self.make_run("n", status="done")))
+
+
+class DataTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.server = tas_serve.Server(self.profile())
+        self.http = ThreadingHTTPServer(("127.0.0.1", 0), tas_serve.handler(self.server))
+        self.http.daemon_threads = True
+        threading.Thread(target=self.http.serve_forever, daemon=True).start()
+        self.addCleanup(self.http.server_close)
+        self.addCleanup(self.http.shutdown)
+        self.base = f"http://127.0.0.1:{self.http.server_address[1]}"
+        self.site = self.server.site
+        (self.site / "fn").mkdir(parents=True)
+
+    def fetch(self, path, **headers):
+        request = urllib.request.Request(self.base + path, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=10) as reply:
+                return reply.status, reply.headers, reply.read()
+        except urllib.error.HTTPError as error:
+            return error.code, error.headers, error.read()
+
+    def test_static_files_of_the_page_are_typed_gzipped_and_confined(self):
+        with mock.patch.object(tas_serve, "STATIC", self.root / "static"):
+            (self.root / "static").mkdir()
+            (self.root / "static" / "u.js").write_text("var u;" * 500)
+            (self.root / "static" / "icons.svg").write_text("<svg>" + "<path/>" * 500 + "</svg>")
+            (self.root / "secret.txt").write_text("no")
+            status, head, body = self.fetch("/static/u.js", **{"Accept-Encoding": "gzip"})
+            self.assertEqual((status, head["Content-Type"], head["Content-Encoding"]), (200, "text/javascript", "gzip"))
+            self.assertEqual(gzip.decompress(body), ("var u;" * 500).encode())
+            status, head, body = self.fetch("/static/icons.svg", **{"Accept-Encoding": "gzip"})
+            self.assertEqual((status, head["Content-Type"], head["Content-Encoding"]), (200, "image/svg+xml", "gzip"))
+            self.assertEqual(self.fetch("/static/u.js", **{"If-None-Match": head["ETag"]})[0], 200)  # a tag per file
+            tag = self.fetch("/static/u.js")[1]["ETag"]
+            self.assertEqual(self.fetch("/static/u.js", **{"If-None-Match": tag})[0], 304)
+            for path in ("/static/nope.js", "/static/../secret.txt", "/static/%2e%2e/secret.txt"):
+                self.assertEqual(self.fetch(path)[0], 404, path)
+
+    def test_baked_files_with_gz_siblings_etags_and_cache_rules(self):
+        plain = json.dumps({"rows": list(range(500))}).encode()
+        (self.site / "fns.1a2b3c4d.json").write_bytes(plain)
+        (self.site / "fns.1a2b3c4d.json.gz").write_bytes(gzip.compress(plain))
+        (self.site / "live.json").write_bytes(plain)
+        (self.site / "manifest.json").write_bytes(b"{}")
+        (self.site / "movies.json").write_bytes(plain)
+        (self.site / "fn" / "Foo.json").write_bytes(b'{"c": 1}')
+        (self.site / "reach").mkdir()
+        (self.site / "reach" / "m.bin").write_bytes(b"\x01\x02")
+        status, head, body = self.fetch("/data/fns.1a2b3c4d.json", **{"Accept-Encoding": "gzip"})
+        self.assertEqual((status, head["Content-Encoding"], head["Content-Type"]), (200, "gzip", "application/json"))
+        self.assertEqual(gzip.decompress(body), plain)
+        self.assertEqual(head["Cache-Control"], "public, max-age=31536000, immutable")
+        tag = head["ETag"]
+        self.assertEqual(
+            self.fetch("/data/fns.1a2b3c4d.json", **{"If-None-Match": tag, "Accept-Encoding": "gzip"})[::2], (304, b"")
+        )
+        status, head, body = self.fetch("/data/fns.1a2b3c4d.json")  # no gzip accepted: the plain bytes
+        self.assertEqual((status, head.get("Content-Encoding"), body), (200, None, plain))
+        self.assertNotEqual(head["ETag"], tag)
+        status, head, body = self.fetch("/data/live.json", **{"Accept-Encoding": "gzip"})  # compressed once per tag
+        self.assertEqual(
+            (head["Cache-Control"], head["Content-Encoding"], gzip.decompress(body)), ("no-store", "gzip", plain)
+        )
+        self.assertEqual(self.fetch("/data/manifest.json")[1]["Cache-Control"], "no-store")
+        self.assertEqual(self.fetch("/data/movies.json")[1]["Cache-Control"], "no-cache")
+        status, head, body = self.fetch("/data/fn/Foo.json", **{"Accept-Encoding": "gzip"})
+        self.assertEqual((head.get("Content-Encoding"), body), (None, b'{"c": 1}'))  # small: sent as it is
+        status, head, body = self.fetch("/data/reach/m.bin")
+        self.assertEqual((head["Content-Type"], body), ("application/octet-stream", b"\x01\x02"))
+
+    def test_other_paths_are_404(self):
+        (self.site / "x.json.gz").write_bytes(b"z")
+        (self.root / "runs" / "secret.txt").write_text("no")
+        for path in (
+            "/data/nope.json",
+            "/data/x.json.gz",
+            "/data/",
+            "/data/../secret.txt",
+            "/data/%2e%2e/secret.txt",
+            "/data/fn",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(self.fetch(path)[0], 404)
+
+    def test_the_routes_the_runner_page_replaced_are_gone(self):
+        for path in (
+            "/api/state", "/api/board", "/api/corpus", "/api/points", "/api/maze", "/api/fn/func_80256C90_de",
+            "/api/calls/func_80256C90_de", "/fn/func_80256C90_de", "/api/phase/map",
+        ):  # fmt: skip
+            with self.subTest(path=path):
+                self.assertEqual(self.fetch(path)[0], 404)
+        request = urllib.request.Request(self.base + "/api/play-all", data=b"{}", method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=10)
+        self.assertEqual(caught.exception.code, 404)
+        for path in ("/api/pool", "/api/runs", "/api/coverage", "/"):  # the kept ones still answer
+            self.assertEqual(self.fetch(path)[0], 200)
 
 
 if __name__ == "__main__":

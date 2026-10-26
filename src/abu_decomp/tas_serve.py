@@ -1,22 +1,26 @@
-"""`decomp tas serve`: the TAS page and the API behind it (orch plans/TAS-PAGE-CONTRACT.md).
-
-Section `tas.serve`: {"listen": "HOST:PORT", "jobs": N, "inbox": path, "states": path, "pin": path, "lanes": path,
-"keep_days": days}. Every run (started here, by `tas play` in a shell, or by `play --all`) is a folder under
-`runs/plays` whose `run.json` the port's run writes (module tas); the page sees all of them: the port's own latest
-picture (`view.bmp`), its log and its sound (`audio.pcm`, served as a growing WAV). `/api/state` carries what is live
-(running and queued runs, the newest finished ones, movies, lanes, the train inbox); `/api/runs` pages the whole run
-history; `/api/board` the slow side (module tas_board: decomp progress, landed commits, the ranked work list).
+"""`decomp tas serve`: the Runner page's server (orch plans/GAME-RUNNER.md, sections 7 and 10a).
+Section `tas.serve`: {"listen": "HOST:PORT", "jobs": N, "inbox": path, "states": path, "pin": path, "keep_days": days,
+"phase_frame_minutes": m, "port_source": path}; `lanes`, `invocations` and `claims` are still accepted (the bake reads
+the last two). Every run (started here, by `tas play` in a shell, or by `play --all`) is a folder under `runs/plays`
+whose `run.json` the port's run writes (module tas); the page sees all of them: the port's own latest picture
+(`view.bmp`), its log and its sound (`audio.pcm`, served as a growing WAV).
+The page is static files: `/data/*` serves `<tas.runs>/site/` (module tas_bake writes it; a `.gz` sibling goes out to
+a client that accepts gzip, hashed names are immutable). The one file serve writes there is `live.json`: the running,
+queued and newest finished runs, rewritten from an inotify watch on the run folders (class Live), never per request.
+`/video/RUN` is the run's sampled JPEG stream; `/wall` one multiplexed stream of 192 px thumbs of every running run;
+the live reach stream (class Reach, GAME-RUNNER 10a) arrives from the port as datagrams on `<input socket>.reach`, is
+kept as a cumulative bitset, written to RUN/reach.bin at run end, and rides in-band on `/video` (a record whose length
+field has REACH_FLAG set; a new viewer gets one full record first).
 Any running run can be taken over by live input (`/api/take`, `/api/input`: datagrams to the run's input socket,
 tas.input_address), `/api/play` without a movie starts a human run, and `/api/play` with `from` + `at` retries a run
 from a poll (tas.play `source`/`take_at`); one run is driven by live input at a time. `/api/pin` keeps a run; every
 hour runs older than `keep_days` (default 3) that are neither pinned nor their movie's newest are deleted
 (tas.archive). `inbox` is the integration train's inbox, `states` the decomp progress states, `pin` the git folder of
-the decomp source the port was built from, `lanes` the folder of lane dirs mirrored from the orchestrator. `/api/corpus`
-is the regression corpus and its last gate (module tas_corpus); serve gates the corpus itself whenever the port binary
-is a build it has not been gated on and nothing runs. Function
-state (exact / fuzzy / none) is read from the decomp source, as the progress states define it: a NON_MATCHING body is
-fuzzy, INCLUDE_ASM alone is none. A run played with the oracle (module tas_oracle) also shows the original game: its
-latest picture (/oracle/<id>), both sides' pictures at each compared poll (/shot/<id>) and the scores (/diff/<id>).
+the decomp source the port was built from. Serve gates the regression corpus (module tas_corpus) whenever the port
+binary is a build it has not been gated on and nothing runs. Function state (exact / fuzzy / none) is read from the
+decomp source, as the progress states define it. A run played with the oracle (module tas_oracle) also shows the
+original game: its latest picture (/oracle/<id>), both sides' pictures at each compared poll (/shot/<id>) and the
+scores (/diff/<id>).
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ import hashlib
 import io
 import json
 import os
+import re
+import select
 import signal
 import socket
 import struct
@@ -34,7 +40,7 @@ import threading
 import time
 import urllib.parse
 import zlib
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,13 +52,11 @@ from PIL import Image
 from abu_decomp import (
     DecompError,
     evidence,
+    inotify,
     tas,
     tas_board,
-    tas_buckets,
     tas_corpus,
     tas_coverage,
-    tas_findings,
-    tas_fn,
     tas_health,
     tas_oracle,
     tas_phasemap,
@@ -76,22 +80,46 @@ _SERVE_KEYS = frozenset(
         "port_source",
     }
 )
-RECENT_SHOWN = 12  # newest finished runs in /api/state (all running and queued ones are always there)
+RECENT_SHOWN = 24  # newest finished runs in live.json (all running and queued ones are always there)
 HISTORY_PAGE = 60  # runs per /api/runs page
-INBOX_SHOWN = 12
-TRIAGE_ROWS = 30  # buckets in /api/board `triage`
 CACHE_SECONDS = 30.0
 GZIP_MIN = 1024  # smaller bodies go out as they are
 GZIP_KEPT = 16  # compressed bodies kept by tag, so a repeat fetch of an unchanged body costs no compression
-TEXT_KINDS = ("application/json", "text/html", "text/css", "text/javascript")
+TEXT_KINDS = ("application/json", "text/html", "text/css", "text/javascript", "image/svg+xml")
 ARCHIVE_SECONDS = 3600.0  # how often old runs are archived
 GATE_CHECK_SECONDS = 60.0  # how often serve looks for a port build the regression corpus has not been gated on
 STOP_GRACE = 3.0  # seconds a stopped run gets before its process group is killed
 VIDEO_FPS = 30  # latest frame sampled at wall pace; no backlog or replay of missed pictures
 VIDEO_HEADER = struct.Struct(">IQI")  # JPEG length, capture stamp (microseconds), input sequence
 AUDIO_LEAD_SECONDS = 0.25  # a listener joins this far behind the live end of the sound
-PAGE = Path(__file__).with_name("tas_page.html").read_text
-FN_PAGE = Path(__file__).with_name("tas_fn.html").read_text
+PAGE = Path(__file__).with_name("tas_page.html").read_text  # the page file (RUNNER-PAGE-2 renames it)
+STATIC = Path(__file__).with_name("static")  # files of the page (uFuzzy, the icon sprite), served at /static/NAME
+REACH_FLAG = 0x80000000  # set in a /video header's length field: the body is a reach record, not a JPEG
+WALL_TABLE = REACH_FLAG  # set in a /wall header's length field: the body is JSON {"id": run id} naming run index `seq`
+WALL_KEEPALIVE_INDEX = 0xFFFFFFFF  # a flagged, empty /wall record: nothing to show, but a closed client is noticed
+WALL_FPS = 4
+WALL_WIDTH = 192
+WALL_KEEPALIVE_SECONDS = 10.0
+LIVE_SECONDS = 0.5  # while a run goes, live.json is refreshed at least this often (poll ticks)
+LIVE_GAP_SECONDS = 0.2  # live.json is rewritten at most this often: a change shows well inside 0.5 s
+LIVE_IDLE_SECONDS = 60.0  # with nothing running, live.json is refreshed this often (its clock, an abandoned run)
+REACH_FILE = "reach.bin"  # RUN/reach.bin: the run's final reach bitset over fns.json rows
+REACH_MAX_RECORD = 65536
+REACH_MAX_ROW = 1 << 17
+REACH_KEPT_RECORDS = 2048  # records a slow /video client may lag behind before it is given a fresh full record
+REACH_KEPT_BYTES = 1 << 20
+REACH_RUNS_KEPT = 64  # finished runs whose relay stays in memory
+HASHED_NAME = re.compile(r"\.[0-9a-f]{6,}\.[a-z]+$")  # fns.1a2b3c4d.json: the content hash is in the name
+NO_STORE_DATA = frozenset({"live.json", "manifest.json"})
+DATA_KINDS = {
+    ".json": "application/json",
+    ".txt": "text/plain; charset=utf-8",
+    ".bin": "application/octet-stream",
+    ".jpg": "image/jpeg",
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css",
+    ".js": "text/javascript",
+}
 
 
 def wav_header(rate: int) -> bytes:
@@ -123,7 +151,7 @@ def realtime(run: Path, record: dict[str, Any]) -> bool:
 
 
 def picture(data: bytes, kind: str = "PNG") -> tuple[bytes, int]:
-    """One capture decoder for live BMP, archived BMP and PPM shots; PNG stills, JPEG video.
+    """One capture decoder for live BMP, archived BMP and PPM shots; PNG stills, JPEG video, THUMB wall tiles.
 
     Pillow owns offset, signed height, padded stride and channel conversion. Validate the capture contract
     before decoding, preserving the shim's reserved input acknowledgement independently of the pixel bytes.
@@ -144,7 +172,10 @@ def picture(data: bytes, kind: str = "PNG") -> tuple[bytes, int]:
     with Image.open(io.BytesIO(data)) as image:
         rgb = image.convert("RGB")
         out = io.BytesIO()
-        if kind == "JPEG":
+        if kind == "THUMB":  # the wall's tile: WALL_WIDTH px wide
+            size = (WALL_WIDTH, max(1, round(rgb.height * WALL_WIDTH / rgb.width)))
+            rgb.resize(size, Image.Resampling.BILINEAR, reducing_gap=2.0).save(out, "JPEG", quality=70)
+        elif kind == "JPEG":
             rgb.save(out, "JPEG", quality=82, subsampling=0)
         else:
             rgb.save(out, "PNG", compress_level=1)
@@ -166,21 +197,13 @@ class Server:
         self.inbox = profile.path("tas.serve.inbox", serve["inbox"]) if "inbox" in serve else None
         self.states = profile.path("tas.serve.states", serve["states"]) if "states" in serve else None
         self.pin_dir = profile.path("tas.serve.pin", serve["pin"]) if "pin" in serve else None
-        self.lanes_dir = profile.path("tas.serve.lanes", serve["lanes"]) if "lanes" in serve else None
         self.keep_days = float(serve.get("keep_days", 3))
-        given = serve.get("invocations", [])
-        self.invocations = [
-            str(profile.path("tas.serve.invocations", item)) for item in ([given] if isinstance(given, str) else given)
-        ]
         self.port_source = (
             profile.path("tas.serve.port_source", serve["port_source"]) if "port_source" in serve else None
         )
-        self.claims = profile.path("tas.serve.claims", serve["claims"]) if "claims" in serve else None
         self.phase = tas_phasemap.Phase(
             profile, self.cfg, self.pin_dir, self.table, float(serve.get("phase_frame_minutes", 10))
         )
-        self.work = tas_board.Work(self.ranked, self.cfg["runs"] / "standing.json")
-        self.triage = tas_board.Work(self.buckets, tas_findings.path(self.cfg["runs"]))
         self.oracles: dict[str, tuple[int, Any]] = {}  # run id -> (record mtime, summary) of finished runs
         self.pool = ThreadPoolExecutor(max_workers=max(1, self.jobs))
         self.lock = threading.Lock()
@@ -188,6 +211,9 @@ class Server:
         self.cache: dict[Any, tuple[float, Any]] = {}
         self.gating = False
         self.gz: dict[str, bytes] = {}
+        self.site = self.cfg["runs"] / "site"  # the baked site (module tas_bake) and live.json
+        self.live = Live(self)
+        self.reach = Reach()
 
     # --- cached facts ---
 
@@ -264,28 +290,6 @@ class Server:
             ("movie", str(path), path.stat().st_mtime_ns), read, float("inf")
         )  # the key holds the mtime
 
-    def ranked(self) -> list[dict[str, Any]]:
-        """The ranked open-work list over the recorded standing (what `tas play --all` ended with)."""
-        from abu_decomp import tas_health
-
-        health = tas_health.read(self.cfg, self.profile)
-        return tas.ranked_work(self.profile, self.cfg, health, tas.standing_rows(self.cfg))
-
-    def buckets(self) -> list[dict[str, Any]]:
-        """The findings feed grouped by root cause (module tas_buckets), the first TRIAGE_ROWS buckets."""
-        rows = tas_buckets.build(tas_findings.read(self.cfg["runs"]), str(self.profile.source_file), None, TRIAGE_ROWS)
-        tas_buckets.enrich(tas_triage._project(self.profile), rows)
-        return rows
-
-    def board(self) -> dict[str, Any]:
-        project = tas_triage._project(self.profile)
-        return {
-            "decomp": self._cached("progress", lambda: tas_board.progress(self.states)),
-            "landed": self._cached("landed", lambda: tas_board.landed(project)),
-            "work": self.work.view(),
-            "triage": self.triage.view(),
-        }
-
     def slot_pool(self) -> dict[str, Any]:
         """The host slot pool (module slots): who holds which slots, who waits, and the last landed->live seconds
         (page-port.py's landings.jsonl beside the runs folder)."""
@@ -322,125 +326,6 @@ class Server:
             return self._cached(("table", path.stat().st_mtime_ns), lambda: tas_coverage.read_table(self.cfg) or {})
         except OSError:
             return {}
-
-    def version(self) -> str:
-        cov = tas_coverage.settings(self.profile, self.cfg)
-        return cov["version"] if cov else "us-rev1"
-
-    def mapped(self) -> dict[str, dict[str, Any]]:
-        project = tas_triage._project(self.profile)
-        return self._cached(("map", self.version()), lambda: tas_fn.map_rows(project, self.version()))
-
-    def calls(self) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-        """(callers, callees) of the static call graph of the coverage ELF; ({}, {}) without one."""
-
-        def read() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-            cov = tas_coverage.settings(self.profile, self.cfg)
-            if not cov:
-                return {}, {}
-            elf = Path(cov["elf"].format(version=cov["version"]))
-            funcs = tas_coverage.elf_functions(elf)
-            out = tas_fn.elf_calls(elf, funcs)
-            return tas_fn.invert(out), out
-
-        return self._cached(("calls", self.version()), read)
-
-    def tiles(self, table: dict[str, Any]) -> list[dict[str, Any]]:
-        """The replay tiles of the maze: movie, how its newest run started and ended."""
-        out = []
-        for run in table.get("runs") or []:
-            record = tas.read_record(self.cfg["runs"] / "plays" / str(run.get("run"))) or {}
-            out.append(
-                {
-                    "name": run["movie"],
-                    "start": record.get("from") or "power-on",
-                    "status": "stopped"
-                    if record.get("stopped")
-                    else record.get("outcome") or record.get("status") or "?",
-                    "polls": int(run.get("polls") or record.get("polls_reached") or 0),
-                }
-            )
-        return out
-
-    def maze(self) -> dict[str, Any]:
-        table = self.table()
-        if not table.get("functions"):
-            return {}
-        return self._cached(
-            ("maze", table.get("generated")), lambda: tas_fn.maze_view(table, self.mapped(), self.tiles(table))
-        )
-
-    def fn_calls(self, name: str, movie: str | None) -> dict[str, Any]:
-        table = self.table()
-        callers, callees = self.calls()
-        index = tas_fn.fn_index(table)
-        mapped = self.mapped()
-        funcs = table.get("functions") or []
-        sets, _ = tas_fn.movie_covered(table)
-        chosen = None
-        for m, run in enumerate(table.get("runs") or []):
-            if run["movie"] == movie:
-                chosen = set(sets[m])
-
-        def node(other: str) -> dict[str, Any]:
-            i = index.get(other)
-            row = funcs[i] if i is not None else None
-            hit = bool(row and (row["port"]["hit"] or row["oracle"]["hit"]))
-            return {
-                "name": other,
-                "size": row["size"] if row else None,
-                "state": (mapped.get(other) or {}).get("state"),
-                "covered": hit,
-                "by_movie": None if chosen is None or i is None else i in chosen,
-            }
-
-        live = None if chosen is None else {funcs[i]["name"] for i in chosen}
-        return {
-            "name": name,
-            "self": node(name),
-            "callers": [node(c) for c in sorted(callers.get(name, []))],
-            "callees": [node(c) for c in callees.get(name, [])],
-            "path": tas_fn.static_path(callers, name, live),
-            "path_kind": "static (jal targets of the ELF"
-            + (", through functions the replay covered)" if live is not None else ")"),
-            "graph": bool(callers or callees),
-        }
-
-    def fn_page(self, name: str) -> dict[str, Any]:
-        project = tas_triage._project(self.profile)
-        site = tas_triage.definition_site(project, name) if project else None
-        main = tas_fn.main_source(project, name, site)
-        index = self._cached(("behave", len(self.invocations)), lambda: tas_fn.behave_index(self.invocations))
-        runs = [tas_fn.run_view(r, name, main.get("text")) for r in index.get(name, [])[: tas_fn.RUNS_SHOWN]]
-        row = (self.mapped() or {}).get(name)
-        table = self.table()
-        i = tas_fn.fn_index(table).get(name)
-        cov = (table.get("functions") or [])[i] if i is not None else None
-        return {
-            "name": name,
-            "version": self.version(),
-            "map": row,
-            "main": main,
-            "coverage": cov and {k: cov.get(k) for k in ("size", "file", "state", "port", "oracle", "behaviour")},
-            "claims": tas_fn.claim_lines(self.claims, name),
-            "runs": runs,
-            "runs_total": len(index.get(name, [])),
-        }
-
-    def corpus(self) -> dict[str, Any]:
-        """The regression corpus, its problem spots and the last gate (module tas_corpus); {} before the first one."""
-
-        def stamp(path: Path) -> int:
-            try:
-                return path.stat().st_mtime_ns
-            except OSError:
-                return 0
-
-        key = ("corpus", stamp(tas_corpus.corpus_path(self.cfg)), stamp(tas_corpus.gate_path(self.cfg)))
-        try:
-            return {**self._cached(key, lambda: tas_corpus.view(self.cfg)), "gating": self.gating}
-        except DecompError as error:
-            return {"error": str(error), "gating": self.gating}
 
     def gatekeeper(self) -> None:
         """Gate the corpus whenever the port binary is a build it was not gated on (page-port.py rebuilds it after each
@@ -483,7 +368,7 @@ class Server:
                 body, seq = picture(handle.read(), kind)
             self.pictures[key] = (info.st_mtime_ns, info.st_size, body, seq)
             self.pictures.move_to_end(key)
-            while len(self.pictures) > 32:
+            while len(self.pictures) > 64:
                 self.pictures.popitem(last=False)
             return info.st_mtime_ns // 1000, body, seq
 
@@ -554,6 +439,8 @@ class Server:
         return value if isinstance(value, int) and not isinstance(value, bool) else None
 
     def state(self) -> dict[str, Any]:
+        """The body of live.json: running and queued runs and the newest finished ones (the contract run row minus
+        its port path), the build and the clock."""
         rows = tas.run_rows(self.cfg)
         on_disk = {row["id"] for _, row in rows if "id" in row}
         with self.lock:
@@ -562,9 +449,11 @@ class Server:
             queued = list(self.queued.values())
         live = [(run, row) for run, row in rows if row.get("status") == "running"]
         done = [(run, row) for run, row in rows if row.get("status") != "running"][-RECENT_SHOWN:]
-        runs = [self.row(run, row) for run, row in live + done] + queued
+        runs = [
+            {k: v for k, v in r.items() if k != "port"}
+            for r in [self.row(run, row) for run, row in live + done] + queued
+        ]
         runs.sort(key=lambda r: r["started"])
-        inbox = tas_board.inbox_lines(self.inbox)
         port = self.cfg["port"]
         try:
             built = port.stat().st_mtime
@@ -574,10 +463,13 @@ class Server:
             "now": time.time(),
             "build": {"port": str(port), "pin": self.pin_sha(), "built": built, "format": self.port_format()},
             "runs": runs,
-            "movies": self.movies(rows, inbox),
-            "lanes": tas_board.lanes(self.lanes_dir, runs),
-            "inbox": inbox[-INBOX_SHOWN:],
         }
+
+    def running_runs(self) -> list[Path]:
+        """The folders of the runs going now (at most a second old: the wall asks 4 times a second)."""
+        return self._cached(
+            "running", lambda: [run for run, row in tas.run_rows(self.cfg) if row.get("status") == "running"], 1.0
+        )
 
     def history(self, before: float | None, limit: int) -> dict[str, Any]:
         """Finished runs newest first, older than `before` (a `started` time), `limit` at most; `more` when older
@@ -590,7 +482,12 @@ class Server:
         limit = max(1, min(limit, HISTORY_PAGE))
         return {"runs": [self.row(run, row) for run, row in rows[:limit]], "more": len(rows) > limit}
 
-    def movies(self, rows: list[tuple[Path, dict[str, Any]]], inbox: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def movies(
+        self, rows: list[tuple[Path, dict[str, Any]]] | None = None, inbox: list[dict[str, Any]] | None = None
+    ) -> list[dict[str, Any]]:
+        """Every kept movie's row (what the baked movies.json is made from)."""
+        rows = tas.run_rows(self.cfg) if rows is None else rows
+        inbox = tas_board.inbox_lines(self.inbox) if inbox is None else inbox
         try:
             standing = json.loads((self.cfg["runs"] / "standing.json").read_text())
         except (OSError, ValueError):
@@ -667,10 +564,12 @@ class Server:
         row.update(pak=pak or "on", oracle=None, fps_unlock=fps_unlock, shown=None, **{"from": None, "at": None})
         with self.lock:
             self.queued[run_id] = row
+        self.live.touch()
 
     def _forget(self, run_id: str) -> None:
         with self.lock:
             self.queued.pop(run_id, None)
+        self.live.touch()
 
     def human_running(self) -> str | None:
         """The run live input drives now, if any (one at a time)."""
@@ -701,6 +600,7 @@ class Server:
         self._placeholder(run_id, movie, 1, exe, label or tas.HUMAN_LABEL, pak or "on", cpak or "on", fps_unlock)
         with self.lock:
             self.queued[run_id]["input"] = "human"
+        self.live.touch()
 
         def go() -> None:
             try:
@@ -731,8 +631,18 @@ class Server:
         if busy and busy != run_id:
             raise DecompError("tas.take", f"live input already drives {busy}; stop it first")
         (run / tas.TAKEN).write_text("page\n")
-        self.send(run, b"take")
+        self.send(run, tas.TAKE_DATAGRAM)
         return {"id": run_id, "taken": True}
+
+    def release(self, run_id: str) -> dict[str, Any]:
+        """Give a taken run back: it returns to turbo with neutral input, and another run may be taken."""
+        run = self.run_dir(run_id)
+        if not run or not (run / tas.TAKEN).exists():
+            raise DecompError("tas.release", f"run {run_id} is not driven by live input")
+        self.send(run, tas.RELEASE_DATAGRAM)
+        (run / tas.TAKEN).unlink(missing_ok=True)
+        self.live.touch()
+        return {"released": True}
 
     def input(self, run_id: str, seq: int, buttons: int, x: int, y: int, pad: int = 0) -> dict[str, Any]:
         run = self.run_dir(run_id)
@@ -831,6 +741,7 @@ class Server:
                 polls=len(point["polls"]),
                 pads=tas.pad_count(point["polls"]),
             )
+        self.live.touch()
 
         def go() -> None:
             try:
@@ -852,9 +763,6 @@ class Server:
         threading.Thread(target=go, daemon=True).start()  # never takes a replay slot
         return {"id": run_id, "movie": movie, "start": start}
 
-    def points(self) -> dict[str, Any]:
-        return tas_points.listing(self.profile)
-
     def retry(
         self, source: str, take_at: int | None, port: str | None, label: str | None, fps_unlock: bool = False
     ) -> dict[str, Any]:
@@ -873,6 +781,7 @@ class Server:
         with self.lock:
             self.queued[run_id].update(input="human", took_at=take_at, polls=len(found["polls"]), pads=found["pads"])
             self.queued[run_id].update({"from": source, "at": take_at})
+        self.live.touch()
 
         def go() -> None:
             try:
@@ -889,7 +798,9 @@ class Server:
         return {"id": run_id, "movie": found["movie"]}
 
     def keep(self, run_id: str, keep: bool) -> dict[str, Any]:
-        return tas.pin(self.cfg, run_id, keep)
+        out = tas.pin(self.cfg, run_id, keep)
+        self.live.touch()
+        return out
 
     def archive(self) -> None:
         """Every ARCHIVE_SECONDS: delete runs past keep_days (tas.archive); a failure waits for the next round."""
@@ -899,28 +810,6 @@ class Server:
                 if gone:
                     print(f"tas page: archived {len(gone)} runs older than {self.keep_days:g} days", flush=True)
             time.sleep(ARCHIVE_SECONDS)
-
-    def play_all(self) -> dict[str, Any]:
-        folder = self.cfg["movies"]
-        names = sorted(p.stem for p in folder.glob("*.tas")) if folder.is_dir() else []
-        ids = {}
-        with self.lock:
-            for name in names:
-                ids[name] = tas.new_run_id(self.cfg, name)
-        for name, run_id in ids.items():
-            self._placeholder(run_id, name, 0, self.cfg["port"], None)
-
-        def go() -> None:
-            try:
-                tas.play_all(self.profile, jobs=self.jobs, run_ids=ids)
-            except Exception:  # the runs' records say how each ended
-                pass
-            finally:
-                for run_id in ids.values():
-                    self._forget(run_id)
-
-        threading.Thread(target=go, daemon=True).start()
-        return {"ids": list(ids.values())}
 
     def run_dir(self, run_id: str) -> Path | None:
         return tas.run_folder(self.cfg, run_id)
@@ -947,6 +836,294 @@ class Server:
         if tas.running(run):
             with contextlib.suppress(OSError):
                 os.killpg(group, signal.SIGKILL)
+
+
+class Live:
+    """live.json (`<site>/live.json`): the body of `Server.state()` written whenever the runs change, never per request.
+    An inotify watch on `runs/plays` and on every folder of a run that is not done reports a new run, a rewritten
+    `run.json`, and the `taken` / `stopped` / `pinned` marks; while anything runs the file is also refreshed every
+    LIVE_SECONDS for the poll counter (the port appends to `hash.txt` without closing it, so that file raises no event).
+    Writes are at most one per LIVE_GAP_SECONDS and carry no change of their own when only the clock moved."""
+
+    def __init__(self, server: Server) -> None:
+        self.server = server
+        self.path = server.site / "live.json"
+        self.wake_r, self.wake_w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+        self.last = b""
+        self.running: list[Path] = []
+        self.watched: set[Path] = set()
+        self.watcher: inotify.Watcher | None = None
+
+    def touch(self) -> None:
+        """Something the watch cannot see changed (a queued run, a pin): rewrite soon."""
+        with contextlib.suppress(OSError):
+            os.write(self.wake_w, b"x")
+
+    def write(self) -> bool:
+        """Write live.json if its content changed (not just `now`); True when it did. Atomic: temp file + rename."""
+        doc = self.server.state()
+        self.running = [self.server.cfg["runs"] / "plays" / r["id"] for r in doc["runs"] if r["status"] == "running"]
+        body = json.dumps({**doc, "now": 0}, separators=(",", ":")).encode()
+        if body == self.last and self.path.is_file():
+            return False
+        self.last = body
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_bytes(json.dumps(doc, separators=(",", ":")).encode())
+        tmp.replace(self.path)
+        return True
+
+    def sync(self) -> None:
+        """Watch the folders of runs that are not done, drop the others, and give the reach relay its running set."""
+        watcher, plays = self.watcher, self.server.cfg["runs"] / "plays"
+        if watcher is None:
+            return
+        for run in sorted(plays.iterdir()) if plays.is_dir() else []:
+            if run in self.watched or not run.is_dir():
+                continue
+            record = tas.read_record(run)
+            if record is None or record.get("status") == "running":
+                with contextlib.suppress(OSError):
+                    watcher.add(run, inotify.CREATE | inotify.MOVED_TO | inotify.CLOSE_WRITE | inotify.DELETE)
+                    self.watched.add(run)
+        for run in list(self.watched):
+            record = tas.read_record(run) if run.is_dir() else None
+            if record is not None and record.get("status") != "running":
+                watcher.remove(run)
+                self.watched.discard(run)
+        self.server.reach.sync([run for run in self.watched if tas.running(run)])
+
+    def relevant(self, events: list[tuple[Path, int]]) -> bool:
+        plays = self.server.cfg["runs"] / "plays"
+        for path, _mask in events:
+            if path.parent == plays or path.name in (tas.RECORD, tas.TAKEN, "stopped", tas.PINNED):
+                return True
+        return False
+
+    def loop(self) -> None:
+        plays = self.server.cfg["runs"] / "plays"
+        plays.mkdir(parents=True, exist_ok=True)
+        self.watcher = inotify.Watcher()
+        self.watcher.add(plays, inotify.CREATE | inotify.MOVED_TO | inotify.DELETE)
+        self.sync()
+        dirty, written = True, -LIVE_IDLE_SECONDS
+        while True:
+            now = time.monotonic()
+            beat = LIVE_SECONDS if self.running else LIVE_IDLE_SECONDS
+            if (dirty and now - written >= LIVE_GAP_SECONDS) or now - written >= beat:
+                self.sync()  # also finds a run that died without a record, and drops watches of finished ones
+                self.write()
+                dirty, written = False, now
+            wait = max(0.0, written + (LIVE_GAP_SECONDS if dirty else beat) - time.monotonic())
+            ready = select.select([self.watcher.fd, self.wake_r], [], [], wait)[0]
+            if self.wake_r in ready:
+                inotify.drain(self.wake_r)
+                dirty = True
+            if self.watcher.fd in ready and self.relevant(self.watcher.read()):
+                self.sync()  # a new run's reader must listen before its port sends its first record
+                dirty = True
+
+    def run(self) -> None:
+        while True:
+            try:
+                self.loop()
+            except Exception as error:  # a bad record or a full disk must not end the writer: start the watch again
+                print(f"tas page: live.json writer: {error}", flush=True)
+                time.sleep(1)
+
+    def start(self) -> None:
+        threading.Thread(target=self.run, daemon=True, name="live").start()
+
+
+def varint(data: bytes, pos: int) -> tuple[int, int]:
+    """One LEB128 integer of a reach record at `pos`: (value, next position); ValueError when it is cut off."""
+    value = shift = 0
+    while True:
+        if pos >= len(data) or shift > 28:
+            raise ValueError("bad varint")
+        byte = data[pos]
+        pos += 1
+        value |= (byte & 127) << shift
+        if byte < 128:
+            return value, pos
+        shift += 7
+
+
+def reach_rows(data: bytes, pos: int) -> tuple[list[int], int]:
+    count, pos = varint(data, pos)
+    rows, row = [], 0
+    for _ in range(count):
+        step, pos = varint(data, pos)
+        row += step
+        if row >= REACH_MAX_ROW:
+            raise ValueError("row out of range")
+        rows.append(row)
+    return rows, pos
+
+
+def reach_full(poll: int, bits: bytes) -> bytes:
+    """A full reach record (type 1): the poll and the bitset over fns.json rows."""
+    return struct.pack("<BI", 1, poll) + bytes(bits)
+
+
+class RunReach:
+    """One run's reach stream: the cumulative bitset, the poll of the last record and the records not yet forgotten."""
+
+    def __init__(self, run: Path) -> None:
+        self.run = run
+        self.lock = threading.Lock()
+        self.bits = bytearray()
+        self.poll = 0
+        self.count = 0  # records accepted
+        self.rejected = 0
+        self.seq = 0  # sequence number of the newest kept record
+        self.records: deque[tuple[int, bytes]] = deque()
+        self.size = 0
+        self.done = False
+        self.listening = threading.Event()  # set once the socket is bound: the port's datagrams are no longer dropped
+
+    def feed(self, data: bytes) -> bool:
+        """Apply one datagram. A malformed one is dropped (False), never half applied."""
+        try:
+            if len(data) < 5 or data[0] not in (1, 2):
+                raise ValueError("not a reach record")
+            poll = struct.unpack_from("<I", data, 1)[0]
+            if data[0] == 2:
+                fresh, pos = reach_rows(data, 5)
+                hot, pos = reach_rows(data, pos)
+                if pos != len(data):
+                    raise ValueError("trailing bytes")
+        except ValueError:
+            with self.lock:
+                self.rejected += 1
+            return False
+        with self.lock:
+            if data[0] == 1:
+                self.bits = bytearray(data[5:])
+            else:
+                for row in fresh + hot:
+                    if row >> 3 >= len(self.bits):
+                        self.bits.extend(bytes((row >> 3) + 1 - len(self.bits)))
+                    self.bits[row >> 3] |= 1 << (row & 7)
+            self.poll, self.count, self.seq = poll, self.count + 1, self.seq + 1
+            self.records.append((self.seq, bytes(data)))
+            self.size += len(data)
+            while len(self.records) > REACH_KEPT_RECORDS or self.size > REACH_KEPT_BYTES:
+                self.size -= len(self.records.popleft()[1])
+        return True
+
+    def snapshot(self) -> tuple[bytes, int]:
+        """(a full record of everything so far, the sequence number it is current to), taken together."""
+        with self.lock:
+            return reach_full(self.poll, self.bits), self.seq
+
+    def since(self, seq: int) -> tuple[list[bytes], int]:
+        """(records after `seq` in order, the newest sequence number). A reader that fell behind what is kept gets
+        one fresh full record instead of the gap."""
+        with self.lock:
+            if self.seq == seq:
+                return [], seq
+            if not self.records or self.records[0][0] > seq + 1:
+                return [reach_full(self.poll, self.bits)], self.seq
+            return [r for n, r in self.records if n > seq], self.seq
+
+    def finish(self) -> None:
+        """Write RUN/reach.bin: the final bitset, if the run sent any record. Atomic, like run.json."""
+        with self.lock:
+            bits, got = bytes(self.bits), self.count
+        if got:
+            with contextlib.suppress(OSError):  # the run folder was archived under the reader
+                tmp = self.run / (REACH_FILE + ".tmp")
+                tmp.write_bytes(bits)
+                tmp.replace(self.run / REACH_FILE)
+        self.done = True
+
+    def serve(self) -> None:
+        """The reader: datagrams on the run's reach socket (the input socket's name + `.reach`, abstract namespace;
+        the port sends, non-blocking, and drops when nobody listens) until the run ends, then reach.bin."""
+        address = "\0" + tas.input_address(self.run)[1:] + ".reach"
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+                sock.bind(address)
+            except OSError as error:  # another serve already listens for this run
+                print(f"tas page: no reach stream for {self.run.name}: {error}", flush=True)
+                self.done = True
+                return
+            sock.settimeout(1.0)
+            self.listening.set()
+            while True:
+                try:
+                    self.feed(sock.recv(REACH_MAX_RECORD + 1))
+                    continue
+                except TimeoutError:
+                    if tas.running(self.run):
+                        continue
+                except OSError:
+                    pass
+                break
+            sock.settimeout(0)
+            while True:  # whatever the port sent before it exited
+                try:
+                    self.feed(sock.recv(REACH_MAX_RECORD + 1))
+                except OSError:
+                    break
+        self.finish()
+
+
+class ReachFeed:
+    """One /video viewer's cursor on a run's reach records: a full record first, then each later one once, in order."""
+
+    def __init__(self, relay: RunReach | None, final: bytes | None = None) -> None:
+        self.relay, self.final = relay, final
+        self.seq = 0
+
+    def first(self) -> bytes | None:
+        if self.relay is None:
+            return self.final
+        record, self.seq = self.relay.snapshot()
+        return record
+
+    def pending(self) -> list[bytes]:
+        if self.relay is None:
+            return []
+        records, self.seq = self.relay.since(self.seq)
+        return records
+
+
+class Reach:
+    """The reach relay of all runs (GAME-RUNNER 10a): a RunReach per running run, kept a while after the run ends."""
+
+    def __init__(self) -> None:
+        self.runs: OrderedDict[str, RunReach] = OrderedDict()
+        self.lock = threading.Lock()
+
+    def sync(self, running: list[Path]) -> None:
+        """Listen for every running run that has no reader yet."""
+        with self.lock:
+            for run in running:
+                if run.name not in self.runs:
+                    relay = self.runs[run.name] = RunReach(run)
+                    threading.Thread(target=relay.serve, daemon=True, name=f"reach-{run.name}").start()
+            while len(self.runs) > REACH_RUNS_KEPT:
+                oldest = next(iter(self.runs))
+                if not self.runs[oldest].done:
+                    break
+                del self.runs[oldest]
+
+    def feed_for(self, run: Path) -> ReachFeed | None:
+        """The records of `run` for one viewer: its live relay, else the final set a finished run left in reach.bin
+        (sent once as a full record), else None."""
+        with self.lock:
+            relay = self.runs.get(run.name)
+        if relay is not None:
+            return ReachFeed(relay)
+        try:
+            bits = (run / REACH_FILE).read_bytes()
+        except OSError:
+            return None
+        record = tas.read_record(run) or {}
+        return ReachFeed(None, reach_full(int(record.get("polls_reached") or 0), bits))
 
 
 def body_tag(body: bytes) -> str:
@@ -1005,16 +1182,8 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
-        def json(self, value: Any, status: int = HTTPStatus.OK, volatile: tuple[str, ...] = ()) -> None:
-            """`volatile` keys (a clock) stay out of the ETag, so an unchanged value is a 304; each is also sent as
-            X-<Key> for the client to read on that 304."""
-            body = json.dumps(value).encode()
-            tag = None
-            extra: dict[str, str] = {}
-            if volatile and isinstance(value, dict):
-                tag = body_tag(json.dumps({k: v for k, v in value.items() if k not in volatile}).encode())
-                extra = {f"X-{k.title()}": str(value[k]) for k in volatile if k in value}
-            self.reply(body, "application/json", status, tag, extra)
+        def json(self, value: Any, status: int = HTTPStatus.OK) -> None:
+            self.reply(json.dumps(value).encode(), "application/json", status)
 
         def missing(self) -> None:
             self.json({"error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -1025,39 +1194,26 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             try:
                 if path == "/":
                     self.reply(PAGE().encode(), "text/html; charset=utf-8")
-                elif path == "/api/state":
-                    self.json(server.state(), volatile=("now",))
                 elif path == "/api/coverage":
                     self.json(server.coverage())
                 elif path == "/api/pool":
                     self.json(server.slot_pool())
-                elif path == "/api/corpus":
-                    self.json(server.corpus())
-                elif path == "/api/points":
-                    self.json(server.points())
-                elif path == "/api/board":
-                    self.json(server.board())
                 elif path == "/api/runs":
                     args = dict(part.partition("=")[::2] for part in query.split("&") if part)
                     before = float(args["before"]) if args.get("before") else None
                     self.json(server.history(before, int(args.get("limit") or HISTORY_PAGE)))
                 elif path == "/api/phase":
                     self.json(*server.phase.phase())
-                elif path == "/api/phase/map":
-                    self.phase_map(query)
                 elif path == "/phase/shot":
                     self.phase_shot(query)
                 elif path == "/phase/frame.png":
                     self.phase_frame(query)
-                elif path == "/api/maze":
-                    self.json(server.maze())
-                elif head == "fn" and run_id and tas_fn.NAME.match(run_id):
-                    self.reply(FN_PAGE().encode(), "text/html; charset=utf-8")
-                elif path.startswith("/api/fn/") and tas_fn.NAME.match(path[8:]):
-                    self.json(server.fn_page(path[8:]))
-                elif path.startswith("/api/calls/") and tas_fn.NAME.match(path[11:]):
-                    args = dict(part.partition("=")[::2] for part in query.split("&") if part)
-                    self.json(server.fn_calls(path[11:], urllib.parse.unquote(args.get("movie", "")) or None))
+                elif head == "data" and run_id:
+                    self.data(run_id)
+                elif path == "/wall":
+                    self.wall()
+                elif head == "static" and run_id:
+                    self.static(STATIC, run_id)
                 elif head == "coverage":
                     self.static(server.cfg["runs"] / tas_coverage.HTML, run_id or "index.html")
                 elif head == "video" and run_id:
@@ -1079,20 +1235,6 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             except (BrokenPipeError, ConnectionResetError):
                 return
 
-        def phase_map(self, query: str) -> None:
-            version = dict(p.partition("=")[::2] for p in query.split("&") if p).get("version") or server.phase.focus()
-            tag = server.phase.etag(version) if version else None
-            body, status = ({"error": "no version"}, 404) if not version else (None, 200)
-            if tag and tag_matches(self.headers.get("If-None-Match"), tag):
-                self.send_response(HTTPStatus.NOT_MODIFIED)
-                self.send_header("ETag", tag)
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
-                return
-            if version:
-                body, status = server.phase.map(version)
-            self.reply(json.dumps(body).encode(), "application/json", status, tag if status == HTTPStatus.OK else None)
-
         def phase_shot(self, query: str) -> None:
             platform = dict(p.partition("=")[::2] for p in query.split("&") if p).get("platform") or ""
             found = server.phase.shot(platform)
@@ -1110,11 +1252,16 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 self.reply(image, "image/png")
 
         def static(self, root: Path, name: str) -> None:
-            """A file of the gcovr HTML report (runs/coverage); a name that leaves the folder is a 404."""
+            """A file below `root` (the gcovr HTML report, the page's static files); a name that leaves it is a 404."""
             path = (root / name).resolve()
             if root.resolve() not in path.parents or not path.is_file():
                 return self.missing()
-            kind = {".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript"}
+            kind = {
+                ".html": "text/html; charset=utf-8",
+                ".css": "text/css",
+                ".js": "text/javascript",
+                ".svg": "image/svg+xml",
+            }
             self.reply(path.read_bytes(), kind.get(path.suffix, "application/octet-stream"))
 
         def frame(self, run: Path | None, name: str = tas.VIEW) -> None:
@@ -1140,20 +1287,29 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             # A stalled phone cannot accumulate seconds of pictures in the server's socket buffer.
             self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
             self.connection.settimeout(5)
-            stamp, deadline = 0, time.monotonic()
+            stamp, deadline, sent_seq = 0, time.monotonic(), 0
+            feed = server.reach.feed_for(run)  # the run's reach records (section 10a), None when it has none
+            first = feed.first() if feed else None
             while True:
                 try:
                     current, body, seq = server.capture(run / tas.VIEW, "JPEG")
                 except (OSError, ValueError):
                     current, body, seq = stamp, b"", 0
                 changed = current != stamp
+                # Reach records go out ahead of the picture they belong to; a new viewer's first bytes are a full one.
+                records = ([first] if first else []) + (feed.pending() if feed else [])
+                first = None
+                out = b"".join(VIDEO_HEADER.pack(len(r) | REACH_FLAG, current, sent_seq) + r for r in records)
                 if changed:
+                    out += VIDEO_HEADER.pack(len(body), current, seq) + body
+                if out:
                     try:
-                        self.wfile.write(VIDEO_HEADER.pack(len(body), current, seq) + body)
+                        self.wfile.write(out)
                         self.wfile.flush()
                     except OSError:
                         return  # disconnect/backpressure timeout: release this viewer immediately
-                    stamp = current
+                if changed:
+                    stamp, sent_seq = current, seq
                 if not tas.running(run):
                     return
                 now = time.monotonic()
@@ -1161,6 +1317,100 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     deadline = max(deadline + 1 / VIDEO_FPS, now)
                 # When the producer is late, wait for its next capture without losing another whole period.
                 time.sleep(max(0.002, deadline - now))
+
+        def wall(self) -> None:
+            """One multiplexed stream of WALL_WIDTH px JPEG thumbs of every running run, WALL_FPS a second. A frame is
+            VIDEO_HEADER (length, stamp, run index in the place of the input sequence) + JPEG. The first time a run
+            shows, a record with WALL_TABLE set in its length (body: JSON {"id": run id}) names its index; indices are
+            per connection and never reused. Browsers allow six connections per host, so twelve per-tile streams
+            would stall."""
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/x-tas-wall")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Wall-Fps", str(WALL_FPS))
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
+            self.connection.settimeout(5)
+            index: dict[str, int] = {}
+            stamps: dict[str, int] = {}
+            quiet = due = time.monotonic()
+            while True:
+                out = b""
+                for run in server.running_runs():
+                    try:
+                        stamp, body, _ = server.capture(run / tas.VIEW, "THUMB")
+                    except (OSError, ValueError):
+                        continue
+                    if run.name not in index and len(index) < WALL_KEEPALIVE_INDEX:
+                        index[run.name] = len(index)
+                        name = json.dumps({"id": run.name}).encode()
+                        out += VIDEO_HEADER.pack(len(name) | WALL_TABLE, 0, index[run.name]) + name
+                    if run.name in index and stamps.get(run.name) != stamp:
+                        stamps[run.name] = stamp
+                        out += VIDEO_HEADER.pack(len(body), stamp, index[run.name]) + body
+                now = time.monotonic()
+                if not out and now - quiet >= WALL_KEEPALIVE_SECONDS:
+                    out = VIDEO_HEADER.pack(WALL_TABLE, 0, WALL_KEEPALIVE_INDEX)
+                if out:
+                    quiet = now
+                    try:
+                        self.wfile.write(out)
+                        self.wfile.flush()
+                    except OSError:
+                        return
+                due = max(due + 1 / WALL_FPS, time.monotonic())  # a round's own work does not slow the pace
+                time.sleep(max(0.0, due - time.monotonic()))
+
+        def data(self, name: str) -> None:
+            """A file of the baked site (`<tas.runs>/site/`). A client that accepts gzip gets the `.gz` sibling the bake
+            wrote (else a body over GZIP_MIN is compressed once per tag); hashed names are immutable, live.json and
+            manifest.json are never stored, the rest revalidate by ETag."""
+            rel = urllib.parse.unquote(name)
+            root = server.site.resolve()
+            target = (root / rel).resolve()
+            if root not in target.parents or target.suffix == ".gz" or not target.is_file():
+                return self.missing()
+            kind = DATA_KINDS.get(target.suffix, "application/octet-stream")
+            zipped = target.with_name(target.name + ".gz")
+            packed = "gzip" in self.headers.get("Accept-Encoding", "") and zipped.is_file()
+            try:
+                info = (zipped if packed else target).stat()
+                body = (zipped if packed else target).read_bytes()
+            except OSError:
+                return self.missing()
+            tag = f'"{info.st_mtime_ns:x}-{info.st_size:x}{"z" if packed else ""}"'
+            headers = {"ETag": tag, "Vary": "Accept-Encoding"}
+            if target.name in NO_STORE_DATA:
+                headers["Cache-Control"] = "no-store"
+            elif HASHED_NAME.search(target.name):
+                headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            else:
+                headers["Cache-Control"] = "no-cache"
+            if tag_matches(self.headers.get("If-None-Match"), tag):
+                self.send_response(HTTPStatus.NOT_MODIFIED)
+                for key, value in headers.items():
+                    self.send_header(key, value)
+                self.end_headers()
+                return
+            if packed:
+                headers["Content-Encoding"] = "gzip"
+            elif (
+                kind.split(";")[0] in TEXT_KINDS
+                and len(body) >= GZIP_MIN
+                and "gzip" in self.headers.get("Accept-Encoding", "")
+            ):
+                body = server.gzipped(f"data{tag}{target.name}", body)
+                headers["Content-Encoding"] = "gzip"
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            for key, value in headers.items():
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(body)
 
         def shot(self, run: Path | None, query: str) -> None:
             """One side's picture at one compared poll: ?side=port|oracle&poll=N."""
@@ -1274,14 +1524,14 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                             bool(body.get("take", False)),
                         )
                     )
-                elif self.path == "/api/play-all":
-                    self.json(server.play_all())
                 elif self.path == "/api/stop":
                     self.json(server.stop(str(body.get("id", ""))))
                 elif self.path == "/api/pin":
                     self.json(server.keep(str(body.get("id", "")), bool(body.get("pinned", True))))
                 elif self.path == "/api/take":
                     self.json(server.take(str(body.get("id", ""))))
+                elif self.path == "/api/input" and body.get("release"):
+                    self.json(server.release(str(body.get("id", ""))))
                 elif self.path == "/api/input":
                     self.json(
                         server.input(
@@ -1306,6 +1556,7 @@ def serve(profile: Profile) -> dict[str, Any]:
     host, _, port = server.listen.rpartition(":")
     http = ThreadingHTTPServer((host, int(port)), handler(server))
     http.daemon_threads = True
+    server.live.start()
     threading.Thread(target=server.archive, daemon=True).start()
     threading.Thread(target=server.gatekeeper, daemon=True).start()
     threading.Thread(target=server.phase.run_frames, daemon=True).start()

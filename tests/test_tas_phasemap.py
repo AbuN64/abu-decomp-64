@@ -200,15 +200,8 @@ class Routes(unittest.TestCase):
         self.assertEqual(self.get("/phase/shot?platform=windows")[0], 404)
         self.assertEqual(self.get("/phase/shot?platform=nope")[0], 404)
 
-    def test_map_has_an_etag_and_answers_304(self):
-        status, headers, body = self.get("/api/phase/map?version=t")
-        self.assertEqual(status, 200)
-        data = json.loads(body)
-        self.assertEqual(base64.b64decode(data["cells"]), EXPECTED)
-        self.assertEqual(data["files"][0], ["src/a.c", 0, 15])
-        self.assertEqual(self.get("/api/phase/map?version=t", **{"If-None-Match": headers["ETag"]})[0], 304)
-        self.assertEqual(self.get("/api/phase/map?version=nope")[0], 404)
-        self.assertEqual(json.loads(self.get("/api/phase/map")[2])["version"], "t")  # the focus
+    def test_the_map_route_is_retired(self):
+        self.assertEqual(self.get("/api/phase/map?version=t")[0], 404)  # the page reads /data/ files now
 
     def test_frame_png_is_identical_twice_and_frames_are_written_once(self):
         first, second = self.get("/phase/frame.png?version=t"), self.get("/phase/frame.png?version=t")
