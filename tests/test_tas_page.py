@@ -1,6 +1,11 @@
-"""The TAS page against the page contract (orch TAS-PAGE-CONTRACT.md), served by a stub with mock state."""
+# ruff: noqa: E501  (the embedded page-script probes are one line each)
+"""The Runner page (runner.html) against its contract (orch plans/RUNNER-CONTRACT.md), served by a stub with baked sample data.
 
-import html
+Pure parts of the page script (frame framing, reach decode, baked-file lookup, pad state) run under node; the rendered page
+runs in headless Chromium driven over CDP by tests/data/runner/drive.mjs.
+"""
+
+import base64
 import json
 import re
 import shutil
@@ -11,537 +16,296 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.request import urlopen
 
-PAGE = Path(__file__).resolve().parents[1] / "src" / "abu_decomp" / "tas_page.html"
+ROOT = Path(__file__).resolve().parents[1]
+PAGE = ROOT / "src" / "abu_decomp" / "runner.html"
+STATIC = ROOT / "src" / "abu_decomp" / "static"
+DRIVE = Path(__file__).with_name("data") / "runner" / "drive.mjs"
+NOW = 1_800_000_000
+# every path the page may request (prefixes end in "/"); the contract lists the same set
 CONTRACT = {
-    "/api/state",
-    "/api/board",
-    "/api/points",
-    "/api/runs",
-    "/api/pin",
-    "/api/coverage",
-    "/api/pool",
-    "/api/maze",
-    "/api/calls/",
-    "/fn/",
-    "/api/corpus",
-    "/api/phase",
-    "/api/phase/map",
-    "/coverage/",
-    "/frame/",
+    "/static/uFuzzy.iife.min.js",
+    "/static/icons.svg",
+    "/data/live.json",
+    "/data/manifest.json",
+    "/data/movies.json",
+    "/data/summary.json",
+    "/data/posters/",
+    "/data/reach/",
+    "/data/fn/",
+    "/data/",
+    "/wall",
     "/video/",
+    "/frame/",
     "/audio/",
-    "/log/",
-    "/api/play",
-    "/api/play-all",
-    "/api/stop",
-    "/api/take",
-    "/api/input",
     "/oracle/",
     "/shot/",
-    "/diff/",
+    "/api/play",
+    "/api/take",
+    "/api/stop",
+    "/api/input",
+    "/api/pin",
 }
-NOW = 1_800_000_000
+JPEG = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABQODxIPDRQSEBIXFRQYHjIhHhwcHj0sLiQySUBMS0dARkVQWnNiUFVtVkVGZIhlbXd7gYKBTmCNl4x9lnN+gXz/2wBDARUXFx4aHjshITt8U0ZTfHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHz/wAARCAAGAAgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwCrRRRXMe2f/9k="
+)
+
+STATES = ["named", "exact", "fuzzy", "asm"]
+FILES = ["src/game/MENU/menu.c", "src/game/ENGINE/engine.c", "src/sdk/libultra/a.c"]
 
 
-def _side(hit):
-    return {"hit": hit, "count": int(hit), "movie": "boot-idle" if hit else None, "poll": 12 if hit else None}
+def fn_rows():
+    rows = []
+    for i in range(30):
+        name = {0: "Menu_Draw", 1: "Engine_Tick", 2: "Gfx_Init"}.get(i, f"func_8000{i:04X}")
+        reach = "both" if i < 3 else ("port" if i < 9 else "none")
+        rows.append([name, 0x1000 + i * 64, 700 + i, STATES[i % 4], i % 3, reach, i == 1])
+    return rows
 
 
-def _pct(n):
-    return {"functions": n, "functions_pct": 12.5, "bytes": n * 10, "bytes_pct": 20.0}
-
-
-COVERAGE = {
-    "generated": NOW,
-    "summary": {
-        "version": "us-rev1",
-        "movies": 3,
-        "oracle_movies": 2,
-        "states": {"oracle-only": 1, "neither": 2},
-        "game": {"functions": 8, "bytes": 80, "port": _pct(1), "oracle": _pct(2), "either": _pct(2)},
-    },
-    "gcovr": {"line_percent": 14.9, "branch_percent": 8.1, "function_percent": 17.1},
-    "oracle_only": [
-        {
-            "name": "func_8025_missing_de",
-            "file": "src/game/A.CPP",
-            "size": 40,
-            "port_linked": True,
-            "port": _side(False),
-            "oracle": _side(True),
-        }
+FNS = {"version": "us-rev1", "ref": "abc", "files": FILES, "rows": fn_rows()}
+RUN_LIVE = {
+    "id": "r-live",
+    "movie": "boot-idle",
+    "status": "running",
+    "speed": 0,
+    "poll": 100,
+    "polls": 900,
+    "outcome": None,
+    "subject": None,
+    "started": NOW - 30,
+    "ended": None,
+    "label": "t",
+    "input": "movie",
+    "took_at": None,
+    "fps_unlock": False,
+    "oracle": {"frame": 1},
+    "pinned": False,
+}
+RUN_DONE = dict(
+    RUN_LIVE,
+    id="r-done",
+    movie="menu-crash",
+    status="done",
+    poll=300,
+    polls=300,
+    outcome="crash",
+    ended=NOW - 5,
+    oracle=None,
+)
+LIVE = {
+    "now": NOW,
+    "build": {"port": "/p", "pin": "0123456789abcdef", "built": NOW - 90, "format": 1},
+    "runs": [RUN_LIVE],
+    "recent": [RUN_DONE],
+}
+MOVIES = {
+    "cols": ["name", "polls", "outcome", "fn", "last_run", "kind", "run"],
+    "rows": [
+        ["boot-idle", 900, "ok", None, NOW - 10, None, "r-live"],
+        ["menu-crash", 300, "crash", "Menu_Draw", NOW - 50, None, "r-done"],
     ],
-    "neither": [],
-    "port_only": [],
 }
-
-
-CORPUS = {
-    "entries": [
-        {
-            "movie": "boot-idle",
-            "why": ["seed +300 fn +900 br"],
-            "polls": 900,
-            "outcome": "ok",
-            "baseline": "r1",
-            "oracle": "r0",
-            "spots": {"rng-seeded": "pass"},
-            "verdict": "fail",
-            "reasons": ["spot rng-seeded: pass -> fail (value 0)"],
-            "first_change": 412,
-        }
-    ],
-    "spots": [
-        {
-            "id": "rng-seeded",
-            "movie": "boot-idle",
-            "kind": "ram",
-            "expr": "u32@0x80111D24 != 0",
-            "at": 600,
-            "note": "the RNG is seeded",
-            "first": "pass",
-        }
-    ],
-    "features": {"functions": 300, "branches": 900, "ends": 0},
-    "gate": {
-        "at": NOW - 30,
-        "verdict": "fail",
-        "counts": {"fail": 1},
-        "wall_seconds": 7.1,
-        "cpu_seconds": 9.4,
-        "build": "abcdef0123",
-        "pins": {"rw": "6446a267306585b0"},
-        "dropped": [],
-        "failed": [{"movie": "boot-idle", "run": "r1", "reasons": ["spot rng-seeded: pass -> fail (value 0)"]}],
-    },
-    "gating": False,
-}
-
-
-def _phase_fixture() -> tuple[dict, dict]:
-    import base64
-
-    cells = bytearray(256)  # order 4: 16 x 16 cells of 8 B over one 2 KB segment
-    for i in range(256):
-        cells[i] = (2, 3, 4, 6, 7)[i * 5 // 256] | ((i % 11) << 4 if i * 5 // 256 == 4 else 0)
-    cells[250:] = b"\x00" * 6
-    fns = [
-        ["fnA", 0x1000, 400, 3, None, "src/a.c", True],
-        ["fnB", 0x1190, 800, 4, None, "src/b.c", False],
-        ["fnC", 0x14B0, 600, 7, 62.5, "src/c.c", False],
-    ]
-    mp = {
-        "version": "us-rev1",
-        "segments": [[0x1000, 0x1800]],
-        "cell_bytes": 8,
-        "order": 4,
-        "ref": "abc123",
-        "blobs": {"mapped": 600, "bytes": 1000},
-        "cells": base64.b64encode(bytes(cells)).decode(),
-        "fns": fns,
-        "files": [["src/a.c", 0, 49]],
-    }
-    row = lambda ph, key, value, thr, met: {  # noqa: E731
-        "phase": ph,
-        "game": "RageWars",
-        "version": "us-rev1",
-        "key": key,
-        "value": value,
-        "threshold": thr,
-        "met": met,
-        "source": "board",
-        "age_s": 30,
-    }
-    phase = {
-        "generated": NOW,
-        "focus": {"game": "RageWars", "version": "us-rev1"},
-        "rows": [
-            row(1, "p1.mapped_pct", 100.0, 100, True),
-            row(1, "p1.foundations_named_pct", 41.5, 100, False),
-            row(2, "p2.RageWars.port", True, True, True),
-            row(3, "p3.fn_reachable_pct", 31.9, 100, False),
-            row(4, "p4.byte_reach_pct", 42.5, 50, False),
-            {
-                **row(4, "linux.r0", {"installs": True, "title": True, "iface": "5/5"}, "R0", True),
-                "shot": "/phase/shot?platform=linux",
-            },
-            {**row(4, "android.r0", "no evidence", "R0", False), "age_s": None},
-        ],
-        "stage": None,
-        "next_stage": {"stage": "R1", "failing": [{"key": "byte_reach", "value": 42.5, "threshold": 50}]},
-        "next": [{"phase": 1, "fn": "fnA", "why": "not named", "next": "decomp name fnA"}],
-    }
-    return phase, mp
-
-
-def mock_state() -> dict:
-    movie = lambda name, **kw: {  # noqa: E731
-        "name": name,
-        "polls": 900,
-        "outcome": "ok",
-        "subject": None,
-        "reached": 900,
-        "same_twice": True,
-        "fn": None,
-        "train": None,
-        "last_run": NOW - 75,
-        "label": None,
-        "oracle_max": 0.012,
-        "root": name,
-        "from": None,
-        "at": None,
-        "kind": None,
-        **kw,
-    }
-    run = lambda rid, name, **kw: {  # noqa: E731
-        "id": rid,
-        "movie": name,
-        "status": "running",
-        "speed": 0,
-        "realtime": kw.get("speed") == 1,
-        "label": None,
-        "port": "/rig/tas/build/ragewars",
-        "poll": 300,
-        "polls": 900,
-        "outcome": None,
-        "subject": None,
-        "started": NOW - 5,
-        "ended": None,
-        "input": "movie",
-        "took_at": None,
-        "stopped": False,
-        "from": None,
-        "at": None,
-        "saved": None,
-        "pinned": False,
-        "pak": "on",
-        "cpak": "none",
-        "fps_unlock": True,
-        "shown": {"presented_per_s": 118.4, "game_per_s": 30.0},
-        "oracle": {
-            "frame": f"/oracle/{rid}",
-            "status": "done",
-            "poll": 1200,
-            "outcome": "ok",
-            "subject": None,
-            "every": 25,
-            "diff": 0.021,
-            "diff_poll": 275,
-            "max_diff": 0.4375,
-            "max_poll": 150,
-            "drift": 0,
-            "vi_drift": 3,
-            "fps": 912.0,
-        },
-        **kw,
-    }
-    return {
-        "now": NOW,
-        "build": {"port": "/rig/tas/build/ragewars", "pin": "2574d74ed0c1", "built": NOW - 600},
-        "runs": [
-            run("r1", "boot-idle"),
-            run(
-                "r2",
-                "model-preview",
-                speed=1,
-                poll=120,
-                polls=1400,
-                started=NOW - 4,
-                label="TAS-CYCLE-1",
-                port="/rig/lanes/TAS-CYCLE-1/build/ragewars",
-            ),
-            run(
-                "r3",
-                "title-to-player-select",
-                status="done",
-                outcome="crash",
-                poll=611,
-                polls=1200,
-                subject="func_80256C90_de+0x10",
-                started=NOW - 30,
-                ended=NOW - 20,
-                input="human",
-                took_at=400,
-                saved="title-to-player-select-take-20261023-010101",
-                pinned=True,
-                oracle=None,
-            ),
-        ],
-        "movies": [
-            movie("boot-idle"),
-            movie(
-                "model-preview",
-                polls=1400,
-                outcome="crash",
-                subject="func_80256C90_de+0x10",
-                reached=611,
-                same_twice=False,
-                fn={"name": "func_80256C90_de", "state": "fuzzy"},
-                train={"line": "final-80256C90.diff", "mark": None},
-            ),
-            movie(
-                "title-to-player-select",
-                polls=1200,
-                outcome="crash",
-                subject="func_80256C90_de+0x10",
-                reached=611,
-                fn={"name": "func_80256C90_de", "state": "exact"},
-                train={"line": "final-80256C90.diff", "mark": "LANDED"},
-            ),
-            movie("boot-missing", outcome="hang", reached=328, same_twice=None, last_run=None),
-            movie(
-                "title-to-player-select-take-20261023-010101",
-                root="title-to-player-select",
-                **{"from": "title-to-player-select", "at": 400},
-            ),
-        ],
-        "lanes": [
-            {
-                "name": "TAS-CYCLE-1",
-                "title": "copyright splash off center",
-                "kind": "cycle",
-                "status": "17:47 start",
-                "status_at": NOW - 40,
-                "result": None,
-                "runs": 1,
-            },
-            {
-                "name": "TAS-CYCLE-0",
-                "title": "old cycle",
-                "kind": "cycle",
-                "status": "17:00 done",
-                "status_at": NOW - 4000,
-                "result": "DONE: splash centred",
-                "runs": 0,
-            },
-        ],
-        "inbox": [
-            {"line": "final-80256C90.diff  func_80256C90_de", "mark": "LANDED"},
-            {"line": "final-80209CD8.diff  func_80209CD8_de", "mark": None},
-        ],
-    }
-
-
-BOARD = {
-    "decomp": {
-        "generated": NOW - 100,
-        "head": "ba2d6977ff76",
-        "head_subject": "Update progress",
-        "head_time": NOW - 120,
-        "versions": [
-            {
-                "name": "us-rev1",
-                "exact_pct": 90.72,
-                "fuzzy_pct": 100.0,
-                "bytes": 1370404,
-                "code": {"exact": 1002424, "fuzzy": 127100, "handwritten": 0, "none": 0},
-                "functions": {"exact": 4183, "fuzzy": 162, "none": 0},
-                "none_fns": [],
-                "bridge": {"linked": True, "booted": True, "units_in": 71, "units_out": 73},
-                "spark": [[NOW - 900, 90.1, 100.0], [NOW - 100, 90.72, 100.0]],
-            }
-        ],
-    },
-    "landed": [{"sha": "718492a18aa", "time": NOW - 300, "subject": "Match func_802013E0_de"}],
-    "triage": {
-        "generated": NOW - 20,
-        "error": None,
-        "rows": [
-            {
-                "rank": 1,
-                "key": "datum D_800E42D8",
-                "level": "datum",
-                "title": "datum D_800E42D8 [unsigned int D_800E42D8[35]] touched at +0x2",
-                "count": 8,
-                "movies": ["model-preview", "boot-idle"],
-                "sites": 8,
-                "kinds": {"crash": 7, "sweep": 1},
-                "offsets": [2],
-                "datum": "D_800E42D8",
-                "fn": "func_8041F2A0_us_rev1",
-                "callers": ["func_80402000_de"],
-                "site": "src/game/DATA/OVLTBL_8/800E42D8.CPP:3",
-                "declared": "unsigned int D_800E42D8[35]",
-                "members": [{"kind": "crash", "movie": "model-preview", "poll": 40, "run": "r1", "evidence": "/r/r1"}],
-                "next": "decomp --profile p.json tas play model-preview --speed 1",
-            }
-        ],
-    },
-    "work": {
-        "generated": NOW - 30,
-        "error": None,
-        "rows": [
-            {
-                "rank": 1,
-                "kind": "host fault",
-                "where": "host-fault-00000010",
-                "blocks": ["model-preview"],
-                "layer": "game source",
-                "error": "crash host-fault-00000010",
-                "next": "decomp arity show func_80297310_de",
-                "owner": "func_80256C90_de at src/game/TEXTURE/80256220_13.CPP:48",
-            },
-            {
-                "rank": 2,
-                "kind": "owes a match",
-                "where": "func_80209CD8_de at src/a.CPP",
-                "layer": "game source",
-                "error": "C unproven, reached by 3 runs",
-                "next": "decomp arity show func_80209CD8_de",
-            },
-        ],
-    },
-}
-
-
-def bmp(width: int = 320, height: int = 240, rgb: tuple = (40, 90, 140)) -> bytes:
-    row = bytes(rgb[::-1]) * width
-    pixels = row * height
-    head = struct.pack("<2sIHHI", b"BM", 54 + len(pixels), 0, 0, 54)
-    info = struct.pack("<IiiHHIIiiII", 40, width, height, 1, 24, 0, len(pixels), 2835, 2835, 0, 0)
-    return head + info + pixels
-
-
-MAZE = {
-    "generated": 1,
+SUMMARY = {
     "version": "us-rev1",
-    "exact": True,
-    "total": 4,
-    "covered": 3,
-    "real_c": 3,
-    "covered_pct": 75.0,
-    "real_pct": 75.0,
-    "modules": [
-        {"name": "game/a", "cells": [["func_A_de", 16, "exact", 1, 0], ["func_B_de", 32, "fuzzy", 1, 1]]},
-        {"name": "game/b", "cells": [["func_C_de", 8, "none", 1, 1], ["func_D_de", 8, "exact", 0, -1]]},
-    ],
-    "replays": [
-        {"name": "movie-one", "start": "power-on", "status": "ok", "polls": 9, "cells": [0, 1]},
-        {"name": "movie-two", "start": "boot", "status": "crash", "polls": 3, "cells": [1, 2]},
-    ],
-    "movies": ["movie-one", "movie-two"],
+    "generated": NOW,
+    "game": {"either": {"functions_pct": 51.4}},
+    "behaviour": {"behaves": 108},
+    "gcovr": {"line_percent": 46.4, "branch_percent": 36.5},
+    "stage": None,
+    "next_stage": {"stage": "R1", "failing": [{"key": "line", "value": 33.6, "threshold": 40}]},
 }
-CALLS = {
-    "name": "func_A_de",
-    "self": {"name": "func_A_de", "size": 16, "state": "exact", "covered": True, "by_movie": None},
-    "callers": [{"name": "func_Caller_de", "size": 4, "state": "fuzzy", "covered": True, "by_movie": None}],
-    "callees": [{"name": "func_Callee_de", "size": 4, "state": "none", "covered": False, "by_movie": None}],
-    "path": ["func_Caller_de", "func_A_de"],
-    "path_kind": "static (jal targets of the ELF)",
-    "graph": True,
+FN_FILE = {
+    "name": "Menu_Draw",
+    "first": 10,
+    "html": ['<span class="kt">void</span> Menu_Draw(void) {', "  Engine_Tick();", "}"],
+    "lines": [[5], [5, 1, 2], [0]],
+    "callers": ["Engine_Tick"],
+    "callees": ["Gfx_Init"],
+    "movies": ["boot-idle"],
+    "movies_total": 1,
+    "port": {"count": 7},
+    "oracle": {"count": 3},
+    "behaviour": "differs",
+    "claims": [],
+    "behave": ["Menu_Draw(a0=1) -> v0=0"],
 }
+
+
+def varint(n):
+    out = bytearray()
+    while n > 127:
+        out.append((n & 127) | 128)
+        n >>= 7
+    out.append(n)
+    return bytes(out)
+
+
+def reach_full(poll, rows):
+    bits = bytearray(4)
+    for r in rows:
+        bits[r >> 3] |= 1 << (r & 7)
+    return b"\x01" + struct.pack("<I", poll) + bytes(bits)
+
+
+def reach_delta(poll, fresh, hot):
+    out = b"\x02" + struct.pack("<I", poll)
+    for lst in (fresh, hot):
+        out += varint(len(lst))
+        prev = 0
+        for v in sorted(lst):
+            out += varint(v - prev)
+            prev = v
+    return out
+
+
+def frame(body, seq=0, reach=False):
+    return struct.pack(">IQI", len(body) | (0x80000000 if reach else 0), 123, seq) + body
 
 
 class Stub:
-    """Serves the page and the contract endpoints from mock data; records POSTs."""
+    """Serves the page, its static files, baked data and the streams from fixtures; records POSTs."""
 
-    def __init__(self, state: dict, logs: dict | None = None, phase: bool = True) -> None:
-        self.state, self.logs, self.posts = state, logs or {}, []
-        self.phase, self.map = _phase_fixture() if phase else (None, None)
+    def __init__(self, release=True, input_human=False):
+        self.posts, self.gets, self.release = [], [], release
         stub = self
+        live = dict(LIVE, runs=[dict(RUN_LIVE, input="human" if input_human else "movie")])
 
         class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
             def log_message(self, *args):
                 pass
 
-            def reply(self, body: bytes, kind: str, status: int = 200) -> None:
+            def reply(self, body, kind, status=200):
                 self.send_response(status)
                 self.send_header("Content-Type", kind)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
 
+            def js(self, value, status=200):
+                self.reply(json.dumps(value).encode(), "application/json", status)
+
             def do_GET(self):
-                path, _, query = self.path.partition("?")
+                path = self.path.partition("?")[0]
+                stub.gets.append(path)
                 if path == "/":
                     self.reply(PAGE.read_bytes(), "text/html; charset=utf-8")
-                elif path == "/api/state":
-                    self.reply(json.dumps(stub.state).encode(), "application/json")
-                elif path == "/api/coverage":
-                    self.reply(json.dumps(COVERAGE).encode(), "application/json")
-                elif path == "/api/phase" and stub.phase:
-                    self.reply(json.dumps(stub.phase).encode(), "application/json")
-                elif path == "/api/phase/map" and stub.map:
-                    self.reply(json.dumps(stub.map).encode(), "application/json")
-                elif path == "/api/maze":
-                    self.reply(json.dumps(MAZE).encode(), "application/json")
-                elif path.startswith("/api/calls/"):
-                    self.reply(json.dumps(CALLS).encode(), "application/json")
-                elif path == "/api/corpus":
-                    self.reply(json.dumps(CORPUS).encode(), "application/json")
-                elif path == "/api/board":
-                    self.reply(json.dumps(BOARD).encode(), "application/json")
-                elif path == "/api/runs":
-                    done = [r for r in stub.state["runs"] if r["status"] == "done"]
-                    self.reply(json.dumps({"runs": done, "more": False}).encode(), "application/json")
-                elif path.startswith("/video/"):
-                    from abu_decomp.tas_serve import VIDEO_HEADER, picture
-
-                    png, _ = picture(bmp(), "JPEG")
-                    self.reply(VIDEO_HEADER.pack(len(png), 1, 0) + png, "application/x-tas-frames")
-                elif path.startswith(("/frame/", "/oracle/")):
-                    self.reply(bmp(), "image/bmp")
-                elif path.startswith("/shot/"):
-                    side = "oracle" if "side=oracle" in query else "port"
-                    self.reply(bmp(rgb=(40, 90, 140) if side == "port" else (240, 240, 240)), "image/bmp")
-                elif path.startswith("/diff/"):
-                    rows = [
-                        {"poll": p, "diff": 0.02, "drift": 25 if p == 150 else 0, "vi_drift": 3} for p in (25, 150, 275)
-                    ]
-                    self.reply(json.dumps({"every": 25, "rows": rows}).encode(), "application/json")
-                elif path.startswith("/log/"):
-                    text = stub.logs.get(path[5:], b"")
-                    start = int(dict(p.split("=", 1) for p in query.split("&") if "=" in p).get("from", 0))
-                    self.reply(text[start:], "text/plain; charset=utf-8")
+                elif path.startswith("/static/") and (STATIC / path[8:]).is_file():
+                    kind = "image/svg+xml" if path.endswith(".svg") else "text/javascript"
+                    self.reply((STATIC / path[8:]).read_bytes(), kind)
+                elif path == "/data/live.json":
+                    self.js(live)
+                elif path == "/data/manifest.json":
+                    self.js({"fns": "fns.abc123def.json", "fnrows": "fnrows.abc123def.txt"})
+                elif path == "/data/fns.abc123def.json":
+                    self.js(FNS)
+                elif path == "/data/movies.json":
+                    self.js(MOVIES)
+                elif path == "/data/summary.json":
+                    self.js(SUMMARY)
+                elif path == "/data/fn/Menu_Draw.json":
+                    self.js(FN_FILE)
+                elif path.startswith("/data/reach/"):
+                    self.reply(bytes([0xFF, 0x0F, 0, 0]), "application/octet-stream")
+                elif path.startswith("/data/posters/") or path in ("/frame/r-done", "/frame/r-live"):
+                    self.reply(JPEG, "image/jpeg")
+                elif path == "/video/r-live":
+                    body = frame(JPEG, 1) + frame(reach_full(10, [0, 1, 2]), 1, True) + frame(JPEG, 2)
+                    body += frame(reach_delta(15, [5], [1, 5]), 2, True)
+                    self.reply(body, "application/x-tas-frames")
+                elif path == "/wall":
+                    self.reply(frame(JPEG, 0), "application/x-tas-frames")
                 else:
-                    self.reply(b"", "text/plain", 404)
+                    self.js({"error": "not found"}, 404)
 
             def do_POST(self):
-                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
                 stub.posts.append((self.path, body))
-                self.reply(json.dumps({"id": "new", "ids": []}).encode(), "application/json")
+                if self.path == "/api/take":
+                    self.js({"id": body["id"], "taken": True})
+                elif self.path == "/api/input" and body.get("release"):
+                    self.js({"ok": True, "released": True} if stub.release else {"ok": True})
+                elif self.path == "/api/play":
+                    self.js({"id": "r-new", "movie": body.get("movie") or "owner"})
+                else:
+                    self.js({"ok": True})
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}/"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
-    def close(self) -> None:
+    def close(self):
         self.server.shutdown()
         self.server.server_close()
 
 
-def script() -> str:
-    return PAGE.read_text().split("<script>", 1)[1].split("</script>", 1)[0]
+def script():
+    return re.search(r"<script>\n(.*?)</script>", PAGE.read_text(), re.S).group(1)
 
 
-class PageTests(unittest.TestCase):
-    def test_page_is_one_self_contained_file(self):
+def pure():
+    return re.search(r"/\* pure:begin.*?\*/\n(.*?)/\* pure:end \*/", script(), re.S).group(1)
+
+
+def chrome():
+    return shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+
+
+class PageFileTests(unittest.TestCase):
+    def test_page_has_no_external_references(self):
         html = PAGE.read_text()
         self.assertNotRegex(html, r"https?://")
-        self.assertNotRegex(html, r"<script[^>]+src=|<link[^>]+href=|@import")
+        self.assertNotRegex(html, r"<link[^>]+href=\"(?!data:)|@import")
+        self.assertEqual(re.findall(r'<script[^>]+src="([^"]+)"', html), ["/static/uFuzzy.iife.min.js"])
 
-    def test_page_calls_only_contract_endpoints(self):
-        used = set(re.findall(r'["`](/[a-z\-/]*)', script()))
-        self.assertTrue(used, "no endpoints found")
-        self.assertLessEqual(used, CONTRACT)
-        self.assertLessEqual(CONTRACT, used)
+    def test_old_pages_are_gone(self):
+        src = PAGE.parent
+        self.assertFalse((src / "tas_page.html").exists())
+        self.assertFalse((src / "tas_fn.html").exists())
 
-    def test_page_renders_every_contract_field(self):
+    def test_static_files_and_licences(self):
+        for name in ("uFuzzy.iife.min.js", "icons.svg", "LICENSE.ufuzzy.txt", "LICENSE.lucide.txt"):
+            self.assertTrue((STATIC / name).is_file(), name)
+        sprite = (STATIC / "icons.svg").read_text()
+        self.assertEqual(len(re.findall(r"<symbol ", sprite)), 35)
+        self.assertEqual(set(re.findall(r'stroke-width="([\d.]+)"', sprite)), {"1.75"})
+        used = set(re.findall(r'icon\("([a-z0-9-]+)"', script())) | set(
+            re.findall(r'<use href="#i-([a-z0-9-]+)"', PAGE.read_text())
+        )
+        have = set(re.findall(r'symbol id="i-([a-z0-9-]+)"', sprite))
+        self.assertLessEqual(used - {"x"}, have, sorted(used - have))
+
+    def test_page_calls_only_contract_paths(self):
+        used = set(
+            re.findall(
+                r'["`](/(?:static|data|api|wall|video|frame|audio|oracle|shot)[A-Za-z0-9_.\-/]*)',
+                script() + PAGE.read_text(),
+            )
+        )
+        norm = set(used)
+        for u in norm:
+            self.assertTrue(u in CONTRACT or any(c.endswith("/") and u.startswith(c) for c in CONTRACT), u)
+        for c in CONTRACT:
+            self.assertTrue(any(u.startswith(c) for u in norm), f"contract path not used: {c}")
+
+    def test_deleted_routes_are_not_used(self):
         js = script()
-        state = mock_state()
-        fields = set(state["runs"][0]) | set(state["movies"][0]) | set(state["build"]) | set(state["lanes"][0])
-        fields |= set(state["runs"][0]["oracle"]) | set(state["inbox"][0])
-        version = BOARD["decomp"]["versions"][0]
-        fields |= set(BOARD) | set(BOARD["decomp"]) - {"head_subject", "head_time"} | set(version) - {"bytes"}
-        fields |= set(BOARD["work"]) | set(BOARD["work"]["rows"][0]) | set(BOARD["landed"][0])
-        fields |= set(CORPUS) | set(CORPUS["entries"][0]) - {"reasons"} | set(CORPUS["spots"][0])
-        fields |= set(CORPUS["gate"]) | set(CORPUS["gate"]["failed"][0])
-        fields |= set(BOARD["triage"]) | set(BOARD["triage"]["rows"][0])
-        fields -= {"frame", "vi_drift_note", "ends", "key", "kinds", "offsets", "datum", "declared"}
-        for name in sorted(fields | {"state", "more"}):
-            self.assertRegex(js, rf"\.{name}\b", name)
+        for gone in (
+            "/api/state",
+            "/api/board",
+            "/api/corpus",
+            "/api/points",
+            "/api/maze",
+            "/api/fn",
+            "/api/calls",
+            "/api/phase",
+            "/api/runs",
+            "/api/play-all",
+            "/api/pool",
+        ):
+            self.assertNotIn(gone, js, gone)
 
     def test_script_parses(self):
         node = shutil.which("node")
@@ -552,246 +316,302 @@ class PageTests(unittest.TestCase):
             path.write_text(script())
             subprocess.run([node, "--check", str(path)], check=True, timeout=30)
 
-    def test_stub_serves_page_and_state(self):
-        stub = Stub(mock_state())
-        self.addCleanup(stub.close)
-        self.assertIn(b"<title>TAS</title>", urlopen(stub.url, timeout=5).read())
-        self.assertEqual(json.load(urlopen(stub.url + "api/state", timeout=5))["now"], NOW)
 
-    def test_headless_render_shows_the_stage_strip_and_rail(self):
-        chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
-        if not chrome:
-            self.skipTest("no chromium")
-        stub = Stub(mock_state(), {"r2": b"boot ok\nstep 3 start\n"})
-        self.addCleanup(stub.close)
-        with tempfile.TemporaryDirectory() as profile:
-            dom = subprocess.run(
-                [
-                    chrome,
-                    "--headless=new",
-                    "--no-sandbox",
-                    "--disable-gpu",
-                    "--no-first-run",
-                    f"--user-data-dir={profile}",
-                    "--window-size=1920,1080",
-                    "--virtual-time-budget=3000",
-                    "--dump-dom",
-                    stub.url + "#work",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            ).stdout
-        self.assertEqual(
-            dom.count('class="tile'), 2
-        )  # the wall shows every running run (the stage's too), one tile each
-        for text in (
-            "model-preview",  # on the stage (newest live run)
-            "following live",
-            "Take over",
-            "boot-idle",
-            "TAS-CYCLE-1",
-            "Next up",
-            "host-fault-00000010",
-            "decomp arity show func_80297310_de",
-            "1 take",
-            "func_80256C90_de",
-            "RW 2574d74ed",
-            "Regression corpus",  # Work tab: the corpus, its last gate and problem spots
-            "gate fail",
-            "rng-seeded",
-            "decomp tas corpus accept boot-idle",
-        ):
-            self.assertIn(text, dom, text)
-        self.assertRegex(dom, r'id="conn" class="dot ok"')  # state fetched
-
-    def test_headless_render_of_each_rail_tab(self):
-        chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
-        if not chrome:
-            self.skipTest("no chromium")
-        stub = Stub(mock_state())
-        self.addCleanup(stub.close)
-        expect = {
-            "decomp": ("us-rev1", "90.72%", "Match func_802013E0_de", "LANDED", "units in"),
-            "lanes": ("copyright splash off center", "17:47 start", "watch 1"),
-            "runs": ("title-to-player-select", "taken @400", "★"),
-            "work": ("Buckets", "D_800E42D8", "blocks 2 movies", "func_8041F2A0_us_rev1 <- func_80402000_de"),
-        }
-        for tab, texts in expect.items():
-            with tempfile.TemporaryDirectory() as profile:
-                argv = [chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run"]
-                argv += [f"--user-data-dir={profile}", "--window-size=1600,1000", "--virtual-time-budget=4000"]
-                dom = subprocess.run(
-                    [*argv, "--dump-dom", stub.url + f"#{tab}"], capture_output=True, text=True, timeout=60
-                ).stdout
-            for text in texts:
-                self.assertIn(html.escape(text), dom, f"{tab}: {text}")
-
-    def _dom(self, stub, hash_, size="1600,1000"):
-        chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
-        if not chrome:
-            self.skipTest("no chromium")
-        with tempfile.TemporaryDirectory() as profile:
-            argv = [chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run"]
-            argv += [f"--user-data-dir={profile}", f"--window-size={size}", "--virtual-time-budget=4000"]
-            return subprocess.run(
-                [*argv, "--dump-dom", stub.url + hash_], capture_output=True, text=True, timeout=60
-            ).stdout
-
-    def test_page_has_the_wall_map_and_film_hooks(self):
-        html = PAGE.read_text()
-        for needle in (
-            'id="strip" class="wall"',
-            'id="p-map"',
-            '"map", "Map"',
-            "WALL_MAX = 12",
-            "WALL_MS = 500",
-            "/api/phase/map",
-            "phase data not deployed yet",
-            'dataset.top = "film"',
-            'data-top="film"',
-        ):
-            self.assertIn(needle, html, needle)
-        self.assertLess(html.index('["map", "Map"]'), html.index('["work", "Work"]'))  # Map is the first tab
-
-    def test_follow_and_audio_use_realtime_and_a_contiguous_clock(self):
+class PureTests(unittest.TestCase):
+    def run_node(self, body):
         node = shutil.which("node")
         if not node:
             self.skipTest("node not installed")
-        js = script()
-        policy = js[js.index("const isRealtime") : js.index("function pickFollow")]
-        audio = js[js.index("async function pcm(") : js.index("/* ---------- log of")]
-        stop = js[js.index("function stopAudio(") : js.index("function followAudio(")]
-        check = (
-            r"""
-const assert = require('node:assert/strict');
-const F = {policy:'realtime'};
-"""
-            + policy
-            + r"""
-const rows = [{id:'new',started:3,realtime:false}, {id:'play',started:1,realtime:true},
-              {id:'prefix',started:4,input:'human',realtime:false}];
-assert.equal(rows.slice().sort(followOrder)[0].id, 'play');
-F.policy = 'newest'; assert.equal(rows.slice().sort(followOrder)[0].id, 'prefix');
-const starts = [], stops = [], active = new Set(), AUDIO_BUFFER = .5, AUDIO_MAX = 2;
-const A = {ctx:{currentTime:0,state:'running',destination:{},
- createBuffer:(ch,n,rate)=>({duration:n/rate,getChannelData:()=>new Float32Array(n)}),
- createBufferSource:()=>Object.assign(new EventTarget(), {connect(){},disconnect(){},stop(){stops.push(this);},
- start(at){this.end=at+this.buffer.duration;active.add(this);starts.push([at, this.end]);}})}};
-function advance(t) { A.ctx.currentTime=t; for(const src of [...active]) if(src.end<=t) {
- active.delete(src);src.onended();src.dispatchEvent(new Event('ended'));
-}}
-(async () => {
-"""
-            + audio
-            + stop
-            + r"""
-const st = {abort:new AbortController(),head:0,sources:new Set(),underruns:0,gapSeconds:0,backpressure:0,scheduled:0};
-const fmt = {channels:2,rate:32000,align:4}, bytes = new Uint8Array(12800);
-for(let i=0;i<30;i++) { advance(i*.1 + (i%2 ? .04 : 0)); await pcm(st,bytes,fmt,3200); }
-assert.equal(st.underruns,0); assert.equal(st.backpressure,0);
-for(let i=1;i<starts.length;i++) assert.ok(Math.abs(starts[i][0]-starts[i-1][1])<1e-9);
-advance(st.head+.05); await pcm(st,bytes,fmt,3200); assert.equal(st.underruns,1);
-assert.ok(st.gapSeconds>.049); assert.ok(starts.at(-1)[0]>=A.ctx.currentTime+.25);
-const mark=starts.length;
-let done=false; const burst=pcm(st,new Uint8Array(96000*4),fmt,96000).then(()=>done=true);
-await Promise.resolve();assert.equal(done,false);assert.ok(st.backpressure>0);
-assert.ok(st.head-A.ctx.currentTime<=AUDIO_MAX+1e-9);assert.equal(stops.length,0);
-for(let i=0;i<4&&!done;i++) { advance(st.head-.2);await Promise.resolve();await Promise.resolve(); }
-await burst;assert.equal(done,true);
-for(let i=mark;i<starts.length;i++) assert.ok(Math.abs(starts[i][0]-starts[i-1][1])<1e-9);
-const pending=pcm(st,new Uint8Array(96000*4),fmt,96000);
-const count=starts.length; stopAudio(st);await pending;await pcm(st,bytes,fmt,3200);
-assert.equal(st.sources.size,0); assert.equal(starts.length,count);
-})().catch(e=>{console.error(e);process.exitCode=1;});
-"""
-        )
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "av.js"
-            path.write_text(check)
-            subprocess.run([node, str(path)], check=True, timeout=10)
-
-    def test_hilbert_mapping_is_the_standard_curve(self):
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("node not installed")
-        js = script()
-        a, b = js.index("function d2xy"), js.index("async function pollPhase")
-        check = (
-            js[a:b]
-            + "const n = 16; const seen = new Set(); let prev = null;\n"
-            + "for (let d = 0; d < n * n; d++) { const [x, y] = d2xy(n, d); seen.add(x + ',' + y);\n"
-            + "  if (xy2d(n, x, y) !== d) throw new Error('inverse ' + d);\n"
-            + "  if (prev && Math.abs(prev[0] - x) + Math.abs(prev[1] - y) !== 1) throw new Error('gap ' + d);\n"
-            + "  prev = [x, y]; }\n"
-            + "if (seen.size !== n * n) throw new Error('not a bijection');\n"
-            + "const q = [0, 1, 2, 3].map(d => d2xy(2, d).join());\n"
-            + "if (q.join('|') !== '0,0|0,1|1,1|1,0') throw new Error('order-1 curve ' + q);\n"
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "hilbert.js"
-            path.write_text(check)
+            path = Path(tmp) / "pure.js"
+            path.write_text("const assert = require('node:assert/strict');\n" + pure() + "\n" + body)
             subprocess.run([node, str(path)], check=True, timeout=30)
 
-    def test_headless_map_tab_shows_gates_ladder_and_canvas(self):
-        stub = Stub(mock_state())
-        self.addCleanup(stub.close)
-        dom = self._dom(stub, "#map")
-        shown = ('id="mapc"', "Phase 1", "p1.foundations_named_pct", "41.5 / 100")
-        for text in (*shown, "R1 needs", "byte_reach 42.5 / 50", "below R1"):
-            self.assertIn(text, dom, text)
-        self.assertNotIn('class="empty">phase data not deployed yet', dom)
+    def test_framer_splits_frames_across_chunks_and_flags_reach(self):
+        a, b = frame(b"JPEG1", 4), frame(b"\x01xxxx", 5, True)
+        data = base64.b64encode(a + b).decode()
+        self.run_node(f"""
+const all = Buffer.from("{data}", "base64"), got = [];
+const feed = makeFramer(r => got.push([r.reach, r.seq, Buffer.from(r.body).toString("latin1")]));
+for (let i = 0; i < all.length; i += 7) feed(new Uint8Array(all.subarray(i, i + 7)));
+assert.deepEqual(got, [[false, 4, "JPEG1"], [true, 5, "\\x01xxxx"]]);
+assert.throws(() => makeFramer(() => {{}})(new Uint8Array([0x7f, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])), /invalid frame length/);
+""")
 
-    def test_headless_release_strip_shows_ticks_age_and_screenshot_link(self):
-        stub = Stub(mock_state())
-        self.addCleanup(stub.close)
-        dom = self._dom(stub, "#map")
-        for text in (">Release</h2>", ">linux R0<", ">android R0<", "/phase/shot?platform=linux", ">no evidence<"):
-            self.assertIn(text, dom, text)
-        self.assertNotIn(">coverage unknown</span>", dom)
-        self.assertIn(">below R1</span>", dom)
+    def test_reach_full_then_delta_updates_bits_fresh_and_hot(self):
+        full, delta = reach_full(10, [0, 1, 2]), reach_delta(15, [5, 9], [1, 5])
+        f64, d64 = base64.b64encode(full).decode(), base64.b64encode(delta).decode()
+        self.run_node(f"""
+const F = {{ bits: null, n: 0, poll: 0, hot: new Map(), fresh: new Map(), bytes: 0, recs: 0, maxRec: 0 }};
+assert.equal(applyReach(F, new Uint8Array(Buffer.from("{f64}", "base64")), 1), true);
+assert.equal(F.n, 3); assert.equal(F.poll, 10);
+assert.equal(applyReach(F, new Uint8Array(Buffer.from("{d64}", "base64")), 2), true);
+assert.equal(F.n, 5); assert.equal(F.poll, 15);
+assert.deepEqual([...F.fresh.keys()].sort((a, b) => a - b), [5, 9]);
+assert.deepEqual([...F.hot.keys()].sort((a, b) => a - b), [1, 5, 9]);  // a fresh row is also a grown row
+assert.equal(F.recs, 2);
+const G = {{ bits: null, n: 0, hot: new Map(), fresh: new Map(), bytes: 0, recs: 0, maxRec: 0 }};
+assert.equal(applyReach(G, new Uint8Array(Buffer.from("{d64}", "base64")), 1), false);  // a delta before any full record is ignored
+""")
 
-    def test_headless_ladder_says_coverage_unknown(self):
-        stub = Stub(mock_state())
-        self.addCleanup(stub.close)
-        stub.phase["stage_unknown"] = "coverage report absent"
-        dom = self._dom(stub, "#map")
-        self.assertIn(">coverage unknown</span>", dom)
-        self.assertNotIn(">below R1</span>", dom)
+    def test_data_path_reads_the_manifest(self):
+        self.run_node("""
+assert.equal(dataPath({ fns: "fns.abc123.json" }, "fns", "fns.json"), "/data/fns.abc123.json");
+assert.equal(dataPath({ files: { fns: "fns.abc123.json" } }, "fns", "fns.json"), "/data/fns.abc123.json");
+assert.equal(dataPath({ files: ["movies.json", "fns.0a1b2c3d.json", "fnrows.0a1b2c3d.txt"] }, "fns", "fns.json"), "/data/fns.0a1b2c3d.json");
+assert.equal(dataPath({}, "fns", "fns.json"), "/data/fns.json");
+assert.equal(dataPath(null, "fns", "fns.json"), "/data/fns.json");
+""")
 
-    def test_headless_map_tab_degrades_when_phase_routes_are_missing(self):
-        stub = Stub(mock_state(), phase=False)
-        self.addCleanup(stub.close)
-        dom = self._dom(stub, "#map")
-        self.assertIn('class="empty">phase data not deployed yet', dom)
-        self.assertIn("boot-idle", dom)  # the rest of the page still works
+    def test_pad_state_maps_keys_gamepad_and_touch(self):
+        self.run_node("""
+const none = { buttons: 0, x: 0, y: 0 };
+assert.deepEqual(padState(new Set(["KeyX", "ArrowUp", "ArrowRight"]), none, []), { buttons: 0x8000, x: 80, y: 80 });
+assert.deepEqual(padState(new Set(), { buttons: 0x1000, x: 200, y: -5 }, []), { buttons: 0x1000, x: 80, y: -5 });
+const pad = { buttons: Array.from({ length: 16 }, (_, i) => ({ pressed: i === 0 || i === 9 })), axes: [1, 0, 0, 0] };
+assert.deepEqual(padState(new Set(), none, [pad]), { buttons: 0x8000 | 0x1000, x: 80, y: 0 });
+""")
 
-    def test_headless_film_hides_the_chrome(self):
-        stub = Stub(mock_state())
-        self.addCleanup(stub.close)
-        dom = self._dom(stub, "#film", "1920,1080")
-        self.assertIn('data-top="film"', dom)
-        self.assertIn('id="mapc"', dom)
-        self.assertIn('class="tile', dom)
 
-    def test_headless_render_of_the_maze_and_its_call_tree(self):
-        chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
-        if not chrome:
-            self.skipTest("no chromium")
-        stub = Stub(mock_state())
-        self.addCleanup(stub.close)
-        for hash_, texts in {
-            "maze": ("75.0% covered", "movie-one", "movie-two", "only here", "real C 75%"),
-            "maze:func_A_de": ("Call tree", "func_Caller_de", "func_Callee_de", "static path: func_Caller_de"),
-        }.items():
-            with tempfile.TemporaryDirectory() as profile:
-                argv = [chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run"]
-                argv += [f"--user-data-dir={profile}", "--window-size=390,900", "--virtual-time-budget=4000"]
-                dom = subprocess.run(
-                    [*argv, "--dump-dom", stub.url + f"#{hash_}"], capture_output=True, text=True, timeout=60
-                ).stdout
-            for text in texts:
-                self.assertIn(text, dom, f"{hash_}: {text}")
+@unittest.skipUnless(chrome() and shutil.which("node"), "needs chromium and node")
+class RenderedPageTests(unittest.TestCase):
+    def drive(self, stub, hash_, steps, size=(1440, 900)):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = Path(tmp) / "plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "url": stub.url + hash_,
+                        "width": size[0],
+                        "height": size[1],
+                        "chrome": chrome(),
+                        "profile": str(Path(tmp) / "p"),
+                        "steps": steps,
+                    }
+                )
+            )
+            out = subprocess.run(
+                ["node", "--experimental-websocket", str(DRIVE), str(plan)],
+                capture_output=True,
+                text=True,
+                timeout=90,
+                check=True,
+            ).stdout
+        data = json.loads(out)
+        self.assertEqual(data["errors"], [])
+        return data
+
+    def stub(self, **kw):
+        s = Stub(**kw)
+        self.addCleanup(s.close)
+        return s
+
+    def test_grid_shows_live_recent_and_movies(self):
+        s = self.stub()
+        d = self.drive(
+            s,
+            "",
+            [
+                {"wait": 1500},
+                {
+                    "eval": "[document.querySelectorAll('.tile[data-run]').length, document.querySelectorAll('.tile[data-movie]').length, document.querySelectorAll('img[data-wall]').length, document.title, document.getElementById('build').textContent]"
+                },
+            ],
+        )
+        self.assertEqual(d["results"][0], [2, 2, 1, "Runner", "01234567"])
+        self.assertIn("/wall", s.gets)
+
+    def test_first_view_request_budget(self):
+        s = self.stub()
+        d = self.drive(s, "", [{"wait": 1500}])
+        before_pictures = [
+            r for r in d["requests"] if not re.match(r"(/(data/posters|wall|video|frame)|blob:)", r["url"])
+        ]
+        # the page, uFuzzy, the sprite, live.json and the manifest come first; fns, movies and summary follow the first paint
+        self.assertLessEqual(len(before_pictures), 8, [r["url"] for r in before_pictures])
+
+    def test_watch_lights_the_grid_from_reach_records_in_the_video_stream(self):
+        s = self.stub()
+        d = self.drive(
+            s,
+            "#/w/r-live",
+            [
+                {"wait": 2000},
+                {"eval": "document.getElementById('feedtxt').textContent"},
+                {"eval": "document.getElementById('scr').getContext('2d').getImageData(0, 0, 1, 1).data[3] > 0"},
+                {
+                    "eval": "[FEED.n, FEED.recs, document.getElementById('map').width > 0, document.querySelectorAll('.mod').length > 0]"
+                },
+                {
+                    "eval": "document.querySelectorAll('.stat b').length + ':' + document.querySelector('.stat b').textContent"
+                },
+            ],
+        )
+        self.assertEqual(d["results"][0], "4 functions lit by this run")
+        self.assertTrue(d["results"][1])
+        n, recs, canvas, mods = d["results"][2]
+        self.assertEqual((n, canvas, mods), (4, True, True))
+        self.assertGreaterEqual(recs, 2)
+        self.assertEqual(d["results"][3], "4:46.4%")
+
+    def test_function_view_is_one_fetch_with_c_hops_and_cases(self):
+        s = self.stub()
+        d = self.drive(
+            s,
+            "#/f/Menu_Draw",
+            [
+                {"wait": 1800},
+                {"eval": "document.querySelector('.fnh h2').textContent"},
+                {"eval": "[...document.querySelectorAll('.hop')].map(h => h.textContent)"},
+                {
+                    "eval": "document.querySelector('.code').textContent.includes('Engine_Tick();') && document.querySelectorAll('.code tr.m').length"
+                },
+                {"eval": "document.querySelector('.cases').textContent"},
+                {"eval": "[...document.querySelectorAll('.movies .chip')].map(c => c.textContent)"},
+            ],
+        )
+        r = d["results"]
+        self.assertEqual(r[0], "Menu_Draw")
+        self.assertEqual(r[1], ["Engine_Tick", "Gfx_Init"])
+        self.assertEqual(r[2], 1)
+        self.assertIn("Menu_Draw(a0=1) -> v0=0", r[3])
+        self.assertEqual(r[4], ["boot-idle"])
+        self.assertEqual(s.gets.count("/data/fn/Menu_Draw.json"), 1)
+        self.assertTrue(s.gets.count("/video/r-live") >= 1)  # the stream plays while the code is open
+
+    def test_search_finds_functions_and_movies_and_opens_a_function(self):
+        s = self.stub()
+        d = self.drive(
+            s,
+            "#/w/r-live",
+            [
+                {"wait": 1500},
+                {
+                    "eval": "(() => { const q = document.getElementById('q'); q.value = 'menu'; q.dispatchEvent(new Event('input')); return [...document.querySelectorAll('.res .nm')].map(e => e.textContent); })()"
+                },
+                {
+                    "eval": "(() => { document.getElementById('q').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); return 1; })()"
+                },
+                {"wait": 600},
+                {"eval": "[UI.fn, document.querySelector('.fnh h2') && document.querySelector('.fnh h2').textContent]"},
+            ],
+        )
+        names = d["results"][0]
+        self.assertIn("Menu_Draw", names)
+        self.assertIn("menu-crash", names)
+        self.assertEqual(d["results"][2], ["Menu_Draw", "Menu_Draw"])
+
+    def test_grid_hover_card_and_touch_peek(self):
+        s = self.stub()
+        probe = "(() => { const L = MZ.layout, i = D.fnIndex.get('Gfx_Init'), p = L.pos.get(i), b = document.getElementById('map').getBoundingClientRect(); return [b.left + p[0] + 2, b.top + p[1] + 2]; })()"
+        d = self.drive(s, "#/w/r-done", [{"wait": 1500}, {"eval": probe}])
+        x, y = d["results"][0]
+        d = self.drive(
+            s,
+            "#/w/r-done",
+            [
+                {"wait": 1500},
+                {"move": [x, y]},
+                {"wait": 500},
+                {"eval": "[document.getElementById('hc').hidden, document.getElementById('hc').textContent]"},
+            ],
+        )
+        hidden, text = d["results"][0]
+        self.assertFalse(hidden)
+        self.assertIn("Gfx_Init", text)
+        self.assertIn("port + original", text)
+
+    def test_control_takes_drives_and_releases(self):
+        s = self.stub()
+        self.drive(
+            s,
+            "#/w/r-live",
+            [
+                {"wait": 1500},
+                {"eval": "document.getElementById('ctl').click()"},
+                {"wait": 400},
+                {
+                    "eval": "document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyX', key: 'x', bubbles: true }))"
+                },
+                {"wait": 300},
+                {
+                    "eval": "document.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyX', key: 'x', bubbles: true }))"
+                },
+                {"wait": 300},
+                {"eval": "document.getElementById('ctl').click()"},
+                {"wait": 600},
+            ],
+        )
+        paths = [p for p, _ in s.posts]
+        self.assertEqual(paths[0], "/api/take")
+        inputs = [b for p, b in s.posts if p == "/api/input" and not b.get("release")]
+        self.assertTrue(any(b["buttons"] == 0x8000 for b in inputs), inputs)
+        self.assertTrue(any(b["buttons"] == 0 for b in inputs[1:]))
+        self.assertEqual(s.posts[-1], ("/api/input", {"id": "r-live", "release": True}))
+        self.assertNotIn("/api/stop", paths)
+
+    def test_control_falls_back_to_stop_when_the_server_cannot_release(self):
+        s = self.stub(release=False)
+        self.drive(
+            s,
+            "#/w/r-live",
+            [
+                {"wait": 1500},
+                {"eval": "document.getElementById('ctl').click()"},
+                {"wait": 400},
+                {"eval": "document.getElementById('ctl').click()"},
+                {"wait": 600},
+            ],
+        )
+        driven = [
+            p for p, b in s.posts if not (p == "/api/input" and "buttons" in b)
+        ]  # pad heartbeats between take and release are not the contract
+        self.assertEqual(driven, ["/api/take", "/api/input", "/api/stop"])
+
+    def test_control_with_nothing_running_starts_a_human_run(self):
+        s = self.stub()
+        self.drive(s, "#/w/r-done", [{"wait": 1500}, {"eval": "document.getElementById('ctl').click()"}, {"wait": 600}])
+        self.assertEqual(s.posts[0][0], "/api/play")
+        self.assertEqual(s.posts[0][1].get("label"), "owner")
+        self.assertNotIn("movie", s.posts[0][1])
+
+    def test_movie_tile_starts_a_turbo_run(self):
+        s = self.stub()
+        self.drive(
+            s,
+            "",
+            [
+                {"wait": 1500},
+                {"eval": "document.querySelector('.tile[data-movie=\"menu-crash\"]').click()"},
+                {"wait": 500},
+            ],
+        )
+        path, body = s.posts[0]
+        self.assertEqual(path, "/api/play")
+        self.assertEqual((body["movie"], body["speed"]), ("menu-crash", 0))
+
+    def test_phone_layout_has_no_horizontal_scroll(self):
+        s = self.stub()
+        for h in ("", "#/w/r-live", "#/f/Menu_Draw"):
+            d = self.drive(
+                s, h, [{"wait": 1800}, {"eval": "[document.documentElement.scrollWidth, innerWidth]"}], size=(390, 844)
+            )
+            sw, iw = d["results"][0]
+            self.assertLessEqual(sw, iw, h)
+
+    def test_grid_redraw_is_fast(self):
+        s = self.stub()
+        d = self.drive(
+            s,
+            "#/w/r-done",
+            [
+                {"wait": 1500},
+                {
+                    "eval": "(() => { const t = performance.now(); for (let i = 0; i < 20; i++) drawMaze(); return (performance.now() - t) / 20; })()"
+                },
+            ],
+        )
+        self.assertLess(d["results"][0], 4)
 
 
 if __name__ == "__main__":
