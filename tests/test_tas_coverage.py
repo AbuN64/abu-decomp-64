@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import tempfile
@@ -6,6 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 from abu_decomp import tas_coverage as cov
+
+REAL_BAKE_COVERAGE = cov.bake_coverage  # the class below patches the module's name
 
 READELF = """Symbol table '.symtab' contains 4 entries:
    Num:    Value  Size Type    Bind   Vis      Ndx Name
@@ -169,6 +172,9 @@ class RunReportTests(unittest.TestCase):
         self.profile.section.return_value = {"coverage": {"elf": "e"}}
         self.profile.path.side_effect = lambda _name, value: Path(value)
         self.cfg = {"port": self.build / "ragewars", "runs": self.root / "runs"}
+        patch = mock.patch.object(cov, "bake_coverage")
+        self.bake = patch.start()
+        self.addCleanup(patch.stop)
 
     def counters(self):
         folder = self.run / "gcov" / str(self.build).lstrip("/") / "decomp" / "src"
@@ -263,6 +269,7 @@ class RunReportTests(unittest.TestCase):
                 html.append(args)
                 Path(args[args.index("--html-details") + 1]).write_text("new")
                 Path(args[args.index("--json-summary") + 1]).write_text(json.dumps({"function_covered": 3}))
+                Path(args[args.index("--json") + 1]).write_text("{}")
 
         cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None}
         with (
@@ -284,6 +291,128 @@ class RunReportTests(unittest.TestCase):
             (run / "coverage.json").write_text("{ }")
             cov.build(self.profile, self.cfg, oracle=False, jobs=1)
             self.assertEqual(len(html), 2)
+
+    def _build(self, run, gcovr, **kwargs):
+        """cov.build over one run with every collaborator mocked but `gcovr` and the oracle replay."""
+        runs = self.cfg["runs"]
+        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None}
+        replay = kwargs.pop("replay", mock.Mock(return_value=False))
+        with (
+            mock.patch.object(cov, "settings", return_value=cov_cfg),
+            mock.patch.object(cov, "latest_runs", return_value={"m": run}),
+            mock.patch.object(cov, "baseline", return_value=runs / "b.json"),
+            mock.patch.object(cov, "gcovr", side_effect=gcovr),
+            mock.patch.object(cov, "universe", return_value=([], {})),
+            mock.patch.object(cov, "union", side_effect=lambda *a, **k: {"covered": [[]], "summary": {}}),
+            mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
+            mock.patch.object(cov, "oracle_bracket", return_value=None),
+            mock.patch.object(cov, "read_oracle", return_value=None),
+            mock.patch.object(cov, "run_oracle", replay),
+            mock.patch("abu_decomp.tas.read_record", return_value={}),
+        ):
+            report = cov.build(self.profile, self.cfg, jobs=1, **kwargs)
+        return report, replay
+
+    def _page_gcovr(self, calls):
+        def fake(args, _cwd):
+            calls.append(args)
+            if "--html-details" in args:
+                Path(args[args.index("--html-details") + 1]).write_text("new")
+                Path(args[args.index("--json-summary") + 1]).write_text(json.dumps({"function_covered": 3}))
+            Path(args[args.index("--json") + 1]).write_text("{}")
+
+        return fake
+
+    def test_the_union_is_also_written_as_json_beside_the_html_report(self):
+        runs = self.cfg["runs"]
+        run = runs / "plays" / "r2"
+        run.mkdir(parents=True)
+        (run / "coverage.json").write_text("{}")
+        (runs / "b.json").write_text("{}")
+        calls = []
+        self._build(run, self._page_gcovr(calls), oracle=False)
+        page = next(args for args in calls if "--html-details" in args)
+        self.assertEqual(page[page.index("--json") + 1], str(runs / "coverage.new" / "union.json"))
+        self.assertEqual((runs / "coverage" / "union.json").read_text(), "{}")
+        # a page made before the union was written is not reused: it merges again and gains the file
+        (runs / "coverage" / "union.json").unlink()
+        self._build(run, self._page_gcovr(calls), oracle=False)
+        self.assertEqual(len([args for args in calls if "--html-details" in args]), 2)
+        self.assertTrue((runs / "coverage" / "union.json").is_file())
+
+    def test_the_page_data_is_baked_after_a_union_that_replaced_the_report_only(self):
+        runs = self.cfg["runs"]
+        run = runs / "plays" / "r4"
+        run.mkdir(parents=True)
+        (run / "coverage.json").write_text("{}")
+        (runs / "b.json").write_text("{}")
+        self._build(run, self._page_gcovr([]), oracle=False)
+        self.bake.assert_called_once_with(self.profile)
+        self.bake.reset_mock()
+        with mock.patch.object(cov, "refusal", return_value="covers fewer"):
+            report, _ = self._build(run, self._page_gcovr([]), oracle=False)
+        self.assertEqual(report["refused"], "covers fewer")
+        self.bake.assert_not_called()
+
+    def test_a_bake_that_cannot_run_never_fails_the_union(self):
+        from abu_decomp import tas_bake
+
+        with (
+            mock.patch.object(tas_bake, "bake", side_effect=RuntimeError("no site")),
+            mock.patch("sys.stderr", new_callable=io.StringIO) as err,
+        ):
+            REAL_BAKE_COVERAGE(self.profile)
+        self.assertIn("tas bake --what coverage: no site", err.getvalue())
+
+    def test_oracle_replays_start_only_inside_their_time_budget(self):
+        runs = self.cfg["runs"]
+        run = runs / "plays" / "r3"
+        run.mkdir(parents=True)
+        (run / "coverage.json").write_text("{}")
+        (runs / "b.json").write_text("{}")
+        report, replay = self._build(run, self._page_gcovr([]), oracle_seconds=0)
+        replay.assert_not_called()
+        self.assertEqual(report["oracle_pending"], 1)
+        report, replay = self._build(run, self._page_gcovr([]), oracle_seconds=3600)
+        replay.assert_called_once()
+        self.assertEqual(report["oracle_pending"], 1)  # the fake replay left no trace
+        report, replay = self._build(run, self._page_gcovr([]))
+        replay.assert_called_once()
+
+    def test_a_new_run_re_merges_one_group_of_a_big_build_not_all_of_it(self):
+        cache = self.root / "tree-cache"
+        cache.mkdir()
+        plays = self.root / "tree-plays"
+        paths = []
+        for i in range(60):
+            folder = plays / f"20261025T0{i:05d}Z-movie-{i}"
+            folder.mkdir(parents=True)
+            paths.append(folder / "coverage.json")
+        calls = []
+
+        def fake(args, _cwd):
+            calls.append(args)
+            Path(args[args.index("--json") + 1]).write_text("{}")
+
+        keep = set()
+        with (
+            mock.patch.object(cov, "gcovr", side_effect=fake),
+            mock.patch.object(cov, "_gcovr_base", return_value=[]),
+        ):
+            first = cov.merge_build("abcdef0123456789", paths, cache, self.build, keep)
+            first_calls = len(calls)
+            cov.merge_build("abcdef0123456789", paths, cache, self.build, keep)
+            self.assertEqual(len(calls), first_calls)  # same runs: nothing merges again
+            newer = plays / "20261025T999999Z-movie-7"
+            newer.mkdir()
+            paths[7] = newer / "coverage.json"  # movie-7 replayed: its group and the top merge again
+            second = cov.merge_build("abcdef0123456789", paths, cache, self.build, keep)
+        self.assertNotEqual(first, second)
+        self.assertEqual(len(calls) - first_calls, 2)
+        self.assertGreater(first_calls, 2)
+        self.assertLessEqual(first_calls, cov.BUCKETS + 1)
+        self.assertTrue({first.name, second.name} <= keep)
+        self.assertEqual(sum(a.count("--add-tracefile") for a in calls[: first_calls - 1]), 60)
 
     def test_a_union_covering_fewer_functions_is_written_beside_the_report(self):
         runs = self.cfg["runs"]

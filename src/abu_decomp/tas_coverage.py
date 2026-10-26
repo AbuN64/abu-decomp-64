@@ -149,13 +149,16 @@ def comparable(report: Path, changed: set[str], out: Path) -> Path:
     return out
 
 
-def merge_build(group: str, paths: list[Path], cache: Path, build: Path) -> Path:
-    """One gcovr JSON for the runs of one port build (same source, so gcovr's strict merge holds), kept in `cache`
-    under the run set's digest: an old build's runs are merged once, not on every union. A lone run is its own."""
-    if len(paths) == 1:
-        return paths[0]
+BUCKETS = 32  # a build's runs merge in this many stable groups (by movie): a new run re-merges one group of them
+SINGLE = 24  # a build with at most this many runs merges in one gcovr call
+
+
+def _merge_set(label: str, paths: list[Path], cache: Path, build: Path, keep: set[str] | None) -> Path:
+    """One gcovr `--add-tracefile` merge of `paths`, kept in `cache` under the digest of the set: merged once."""
     key = hashlib.md5("\n".join(sorted(str(p) for p in paths)).encode()).hexdigest()[:12]
-    out = cache / f"{group[:12]}-{key}.json"
+    out = cache / f"{label[:12]}-{key}.json"
+    if keep is not None:
+        keep.add(out.name)
     if not out.is_file():
         tmp = out.with_suffix(".tmp")
         args = [*_gcovr_base(build), "--json", str(tmp)]
@@ -164,6 +167,25 @@ def merge_build(group: str, paths: list[Path], cache: Path, build: Path) -> Path
         gcovr(args, build)
         tmp.replace(out)
     return out
+
+
+def merge_build(group: str, paths: list[Path], cache: Path, build: Path, keep: set[str] | None = None) -> Path:
+    """One gcovr JSON for the runs of one port build (same source, so gcovr's strict merge holds), kept in `cache`
+    under the run set's digest: an old build's runs are merged once, not on every union. A lone run is its own.
+    A big build merges as a tree: its runs fall into BUCKETS groups by movie name, each group merges (and is kept)
+    on its own, then the group files merge. A run that replaces its movie's older one changes one group, so the
+    next union re-merges ~1/BUCKETS of the runs (the whole set cost ~500 CPU s, and each new run repeated it).
+    `keep` collects the cache files this merge reads or writes."""
+    if len(paths) == 1:
+        return paths[0]
+    if len(paths) <= SINGLE:
+        return _merge_set(group, paths, cache, build, keep)
+    buckets: dict[int, list[Path]] = {}
+    for path in paths:
+        movie = path.parent.name.partition("Z-")[2] or path.parent.name
+        buckets.setdefault(int(hashlib.md5(movie.encode()).hexdigest(), 16) % BUCKETS, []).append(path)
+    parts = [_merge_set(f"{group[:8]}-b{i:02d}", ps, cache, build, keep) for i, ps in sorted(buckets.items())]
+    return _merge_set(group, parts, cache, build, keep)
 
 
 def mixed_builds(by_build: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
@@ -685,10 +707,13 @@ def build(
     jobs: int = 0,
     table_only: bool = False,
     rebaseline: bool = False,
+    oracle_seconds: float | None = None,
 ) -> dict[str, Any] | None:
     """Union the newest run of every movie: runs/coverage/ (gcovr `--html-details` over the baseline and every
     run's JSON), runs/coverage-table.json (the function table with the oracle). None without a `tas.coverage`
-    section. With `oracle`, a run with no oracle trace yet is replayed in the oracle first. With `table_only` the
+    section. With `oracle`, a run with no oracle trace yet is replayed in the oracle first, for at most
+    `oracle_seconds` (no new replay starts after that; the rest wait for the next call, so a catch-up over hundreds of
+    runs cannot eat the whole call and lose the union; None: no limit). With `table_only` the
     function table is rebuilt from the per-run function counts alone: no gcovr merge, no HTML page, no line summary
     (that final `--add-tracefile` over every report cost ~358 CPU s, past the 5-minute cap); the page, the line
     totals and the per-build fields stay those of the last full build."""
@@ -705,13 +730,20 @@ def build(
     rows, totals = universe(cov, symbols)
     resolve = resolver(rows, cov["version"], symbols[0])
 
+    deadline = None if oracle_seconds is None else time.monotonic() + oracle_seconds
+
     def one(item: tuple[str, Path]) -> dict[str, Any]:
         name, run = item
         if not (run / COVERAGE).is_file():
             run_report(profile, cfg, run)
         record = tas.read_record(run) or {}
         got = read_oracle(run)
-        if got is None and oracle and run_oracle(profile, cfg, run, record):
+        if (
+            got is None
+            and oracle
+            and (deadline is None or time.monotonic() < deadline)
+            and run_oracle(profile, cfg, run, record)
+        ):
             got = read_oracle(run)
         port = fold(read_gcovr(run / COVERAGE) or {}, resolve, _add)
         bracket = oracle_bracket(run, int(record.get("polls_reached") or 0))
@@ -752,7 +784,7 @@ def build(
         tag = base.stem.rsplit("-", 1)[-1]
         tracefiles, changed, keep = [base], {}, set()
         for group, paths in sorted(groups.items()):
-            merged = merge_build(group, paths, cache, build_tree)
+            merged = merge_build(group, paths, cache, build_tree, keep)
             changed[group] = {f for f, sig in file_signatures(merged).items() if current.get(f) != sig}
             key = merged.stem if merged.parent == cache else merged.parent.name
             out = comparable(merged, changed[group], cache / f"{key}.on-{tag}.json")
@@ -768,6 +800,7 @@ def build(
         if (
             (final_page / MERGE_KEY).is_file()
             and (final_page / MERGE_KEY).read_text() == merged_key
+            and (final_page / UNION_JSON).is_file()
             and final_summary.is_file()
         ):
             # the same tracefiles as the page in place: its HTML and summary are this merge (the --add-tracefile
@@ -789,6 +822,7 @@ def build(
     for r in collected:
         builds[r["build"]] = builds.get(r["build"], 0) + 1
     report["builds"] = dict(sorted(builds.items(), key=lambda kv: -kv[1]))
+    report["oracle_pending"] = sum(1 for r in collected if r["oracle"] is None) if oracle else 0
     old = read_table(cfg) or {}
     if table_only or base is None:
         # the page, the line totals and the per-build comparison are the last full build's
@@ -856,9 +890,23 @@ def build(
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(report, sort_keys=True) + "\n")
     tmp.replace(path)
+    bake_coverage(profile)
     return report
 
 
+def bake_coverage(profile: Profile) -> None:
+    """Bake the Runner page's coverage data (gutters from union.json, function rows) from the report just written.
+    Takes its own batch slot, so it runs after every gcovr hold has ended. A bake that cannot run never fails the
+    union; it says why on stderr and `decomp tas bake --what coverage` repeats it."""
+    from abu_decomp import tas_bake
+
+    try:
+        tas_bake.bake(profile, {"coverage"})
+    except Exception as error:
+        print(f"tas bake --what coverage: {error}", file=sys.stderr)
+
+
+UNION_JSON = "union.json"  # in the page folder: the gcovr union as JSON (files, lines, functions), for readers
 MERGE_KEY = ".merge-key"  # in the page folder: the tracefiles (path, size, date) the page was merged from
 
 
@@ -877,6 +925,8 @@ def _merge_page(build: Path, page: Path, summary: Path, tracefiles: list[Path]) 
         "Rage Wars game code: TAS movies",
         "--json-summary",
         str(summary),
+        "--json",
+        str(page / UNION_JSON),
     ]
     for path in tracefiles:
         args += ["--add-tracefile", str(path)]
@@ -948,6 +998,7 @@ def line(report: dict[str, Any]) -> str:
         f"{pct('function_percent')}; port {s['game']['port']['bytes_pct']}% of game bytes; oracle-only "
         f"{states.get('oracle-only', 0)}, neither {states.get('neither', 0)}; behaves "
         f"{s.get('behaviour', {}).get('behaves', 0)}, differs {s.get('behaviour', {}).get('differs', 0)} "
-        f"({s['movies']} movies, {s['oracle_movies']} with oracle; {len(report.get('builds') or {})} port builds, "
+        f"({s['movies']} movies, {s['oracle_movies']} with oracle, {report.get('oracle_pending', 0)} still to replay; "
+        f"{len(report.get('builds') or {})} port builds, "
         f"{len(report.get('mixed_build') or [])} mixed-build functions); report runs/{HTML}/index.html"
     )

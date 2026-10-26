@@ -422,6 +422,12 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     )
     coverage.add_argument("--no-oracle", action="store_true", help="do not replay runs that lack an oracle trace")
     coverage.add_argument(
+        "--oracle-seconds",
+        type=float,
+        default=None,
+        help="start no oracle replay after this many seconds (the rest wait for the next call); default: no limit",
+    )
+    coverage.add_argument(
         "--table-only",
         action="store_true",
         help="rebuild only the function table from the per-run counts (seconds, no gcovr merge or page); "
@@ -666,6 +672,7 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
             tas.settings(profile),
             oracle=not args.no_oracle,
             jobs=args.jobs,
+            oracle_seconds=args.oracle_seconds,
             table_only=args.table_only,
             rebaseline=getattr(args, "rebaseline", False),
         )
