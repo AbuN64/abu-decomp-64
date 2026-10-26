@@ -456,6 +456,9 @@ static void test_draw_trace(void)
     cmd(0xFAu << 24, 0x11223344u);                                 /* prim color */
     cmd(0xFCu << 24 | 0x127E24u, 0xFFFFFE38u);                     /* combiner */
     cmd(0xD7u << 24 | 1u, 0xFFFFFFFFu);                            /* G_TEXTURE on, tile 0 */
+    cmd(0xE200001Cu, 0x00404240u);                                 /* render mode (shift 3, 29 bits) */
+    cmd(0xE2001E01u, 0x00000003u);                                 /* alpha compare: dither */
+    cmd(0xE3000A01u, 0x00100000u);                                 /* cycle type: 2-cycle */
     cmd(0x05u << 24 | 2u << 16 | 4u << 8 | 6u, 0);                 /* one triangle, vertices never loaded */
     cmd(0xE4470324u, 0x00000318u);
     cmd(0xE1000000u, 0);
@@ -479,6 +482,7 @@ static void test_draw_trace(void)
     CHECK(strstr(text, "draw 1 texrect rect=(0.00,198.00)-(284.00,201.00)"));
     CHECK(strstr(text, "img=0x00002000 imgfmt=CI/4b imgwidth=32") && strstr(text, "pal=3") && strstr(text, "texels=32x32"));
     CHECK(strstr(text, "prim=11223344") && strstr(text, "cc=127e24:fffffe38"));
+    CHECK(strstr(text, "other=100000:00404243")); /* partial othermode sets reach the trace */
 }
 /* Adjacent binary32 coordinates must remain distinct in diagnostic output. */
 static void test_draw_trace_precision(void)
