@@ -135,8 +135,9 @@ def test_the_header_folder_mode_ignores_unit_externs(tmp_path: Path) -> None:
 def test_a_crlf_tree_keeps_its_line_endings_and_the_diff_names_each_file(tmp_path: Path) -> None:
     extra = {n: t.replace("\n", "\r\n") for n, t in FILES.items() if n != "docs/MODULES.tsv"}
     root, found = moved(tmp_path, extra)
-    diff = (tmp_path / "out" / found["batches"][0]["batch"]).read_bytes()
+    batch = tmp_path / "out" / found["batches"][0]["batch"]
+    diff = batch.read_bytes()
     assert diff.startswith(b"# MSG: Hoist ") and diff.index(b"\n") <= 79
     assert b"diff --git a/include/A/A.H b/include/A/A.H\n" in diff
-    subprocess.run(["git", "-C", str(root), "apply", "--check", str(tmp_path / "out" / found["batches"][0]["batch"])], check=True)
+    subprocess.run(["git", "-C", str(root), "apply", "--check", str(batch)], check=True)
     assert b"\n+extern int gScore;\r\n" in diff and b'+#include "A/A.H"\r\n' in diff
