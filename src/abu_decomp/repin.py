@@ -95,6 +95,15 @@ def check(pin: dict[str, Any], tree: Path, run: Run, profile_file: Path | None =
     return {"pin": current, "findings": findings}
 
 
+def differing(pin: dict[str, Any], tree: Path, sha: str) -> list[str]:
+    """The pin places that do not spell `sha` yet (what `apply` would change); a place with no pin is an error."""
+    places = read(pin, tree)
+    for path, rows in places.items():
+        if not rows:
+            raise RepinError("repin.pattern", f"{path} holds no pin its pattern reads")
+    return sorted(path for path, rows in places.items() if any(v != sha for v in rows))
+
+
 def apply(pin: dict[str, Any], tree: Path, sha: str) -> list[str]:
     """Set every pin place to `sha`; the files changed. A place whose pattern finds nothing is an error (no write)."""
     edits: list[tuple[Path, str]] = []

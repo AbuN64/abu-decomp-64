@@ -219,6 +219,42 @@ class RemapTests(unittest.TestCase):
             self.assertEqual(cli.main(argv), 0)
         self.assertIn("Math_Sqrtf", self.manifest.read_text())
 
+    def _two_places(self) -> list[str]:
+        """The tree spells its pin in a second place (the manifest's source_pin), as rage-ports does."""
+        seat = json.loads((self.root / "seat.json").read_text())
+        files = seat["land"]["trees"]["port"]["pin"]["files"]
+        files.append({"path": "platform/port/pin.json", "pattern": '"source_pin": "([0-9a-f]{40})"'})
+        (self.root / "seat.json").write_text(json.dumps(seat))
+        (self.tree / "platform/port/pin.json").write_text(f'{{"source_pin": "{self.old}"}}\n')
+        seat_file, tree = str(self.root / "seat.json"), str(self.tree)
+        return ["--profile", seat_file, "port", "remap", "--tree", tree, "--since", self.old]
+
+    def test_the_port_remap_moves_every_pin_place_with_the_unit_moves(self) -> None:
+        """PORT-CRASH-1: the train carried the manifest to 4490d30 while decomp.cmake and source_pin named e95dc26."""
+        argv, places = self._two_places(), ["cmake/decomp.cmake", "platform/port/pin.json"]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main([*argv, "--check"]), 0)
+        self.assertEqual(json.loads(out.getvalue())["result"]["pinned"], places)
+        self.assertIn(self.old, (self.tree / "cmake/decomp.cmake").read_text())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(argv), 0)
+        self.assertEqual(json.loads(out.getvalue())["result"]["pinned"], places)
+        for rel in ("cmake/decomp.cmake", "platform/port/pin.json"):
+            self.assertIn(self.new, (self.tree / rel).read_text())
+        self.assertIn("Math_Sqrtf", self.manifest.read_text())
+
+    def test_a_pin_place_the_remap_cannot_move_refuses_before_any_write(self) -> None:
+        argv = self._two_places()
+        (self.tree / "platform/port/pin.json").write_text("{}\n")
+        before = {p: p.read_text() for p in (self.manifest, self.tree / "cmake/decomp.cmake")}
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertNotEqual(cli.main(argv), 0)
+        self.assertIn("pin.json", err.getvalue())
+        self.assertEqual({p: p.read_text() for p in before}, before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -155,7 +155,9 @@ def _run_port(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
             raise remap.RemapError("remap.config", "remap needs --since COMMIT, or --renames TSV...")
         old = repin.commit(land.run_process, pin["source"], args.since)
         new = repin.commit(land.run_process, pin["source"], args.to or pin["ref"])
+        pinned = repin.apply(pin, tree, new) if not args.check else repin.differing(pin, tree, new)  # before any write
         result, findings = remap.remap(land.run_process, tree, pin, old, new, write=not args.check)
+        result["pinned"] = pinned
         return result, int(any(f["blocking"] for f in findings)), findings
     from abu_decomp.port import generate, load_spec
 
