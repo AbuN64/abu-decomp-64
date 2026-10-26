@@ -1206,11 +1206,13 @@ def _run_owes(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "verb",
-        choices=["count", "dead-decls", "slices", "ledger"],
+        choices=["count", "dead-decls", "slices", "ledger", "owners"],
         help="count: placeholder names (func_/D_/unk/pad/spNN/var_/argN) per folder; dead-decls: the declarations of"
         " --dir (a header folder) nothing reads, as layered removal packs; slices: one owner for every placeholder"
         " target (80-100 functions per slice), the lane ownership files the name ledger gates on; ledger: the name"
-        " ledger's queue, batches, rows accepted/refused per lane and slice progress (WATCH)",
+        " ledger's queue, batches, rows accepted/refused per lane and slice progress (WATCH); owners: the owning"
+        " module of every declaration of --dir (definer for externs, majority user for types and macros), as a"
+        " move list (--packs DIR writes owners.tsv and owners.json)",
     )
     parser.add_argument(
         "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
@@ -1221,10 +1223,16 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--hours", type=float, default=1.0, help="ledger: the window the per-lane rates cover")
     parser.add_argument("--book", type=Path, help="ledger: the name book directory (default ~/rig-state/names)")
     parser.add_argument("--top", type=int, default=15, help="folders listed, most placeholders first (0 = every one)")
-    parser.add_argument("--packs", type=Path, help="dead-decls: write one diff per layer here (dead-decls-L<n>.diff)")
+    parser.add_argument(
+        "--packs",
+        type=Path,
+        help="dead-decls: write one diff per layer here (dead-decls-L<n>.diff); owners: owners.tsv and owners.json",
+    )
     parser.add_argument("--apply", action="store_true", help="dead-decls: write layer 0 into the tree")
     parser.add_argument("--lanes", type=int, help="slices: the lane count (GLOBALS and STRUCT slices scale with it)")
-    parser.add_argument("--map", help="slices: a module map file (unit<TAB>module lines, e.g. MODULES.tsv)")
+    parser.add_argument(
+        "--map", help="slices, owners: a module map file (unit<TAB>module lines; default docs/MODULES.tsv)"
+    )
     parser.add_argument("--assign", action="append", default=[], metavar="LANE=ID[,ID]", help="slices: LANE owns these")
     parser.add_argument("--names", help="slices: the names directory (default: the name book's store)")
     parser.add_argument(
@@ -1269,6 +1277,23 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
         for line in cleanup.slices_lines(called.document):
             print(line, file=sys.stderr)
         return dict(called.document), 0, []
+    if args.verb == "owners":
+        from abu_decomp import owners
+
+        if not args.dir:
+            raise DecompError("cleanup.dir", "owners needs --dir (the header folder, e.g. include/COMMON)")
+        found = owners.run(root, args.dir, Path(args.map) if args.map else None, args.packs)
+        print(
+            f"owners {found['declarations']} declarations in {found['headers']} headers: {found['owned']} owned"
+            f" ({found['no_header']} of them by a module with no header yet), {found['shared']} shared,"
+            f" {found['unused']} unused",
+            file=sys.stderr,
+        )
+        for module, n in list(found["by_owner"].items())[: args.top or None]:  # type: ignore[attr-defined]
+            print(f"  {n:>6}  {module}", file=sys.stderr)
+        summary = {k: v for k, v in found.items() if k not in ("rows", "by_owner")}
+        summary["top_owners"] = dict(list(found["by_owner"].items())[:20])  # type: ignore[attr-defined]
+        return summary | ({"packs": str(args.packs)} if args.packs else {}), 0, []
     if args.verb == "dead-decls":
         from abu_decomp import deaddecls
 
