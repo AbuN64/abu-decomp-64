@@ -78,6 +78,18 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(cov.behaviour({"f": 10}, bracket), {"f": "behaves"})  # 25 behind the 35 at poll 50
         self.assertEqual(cov.behaviour({"f": 9}, bracket), {"f": "differs"})  # more than one interval behind
 
+    def test_a_port_one_snapshot_interval_ahead_of_the_oracle_still_behaves(self):
+        golden = self.root / cov.ORACLE_DIR
+        golden.mkdir()
+        head = "order\tsymbol\tfirst_vi\tfirst_thread\tcount\n"
+        for poll, count in ((25, 10), (50, 35), (75, 60), (100, 85)):
+            (golden / f"trace-poll-{poll}.tsv").write_text(head + f"1\tf\t0\t1\t{count}\n")
+        bracket = cov.oracle_bracket(self.root, 50)
+        self.assertEqual(cov.behaviour({"f": 60}, bracket), {"f": "behaves"})  # the 60 at poll 75, one interval on
+        self.assertEqual(cov.behaviour({"f": 61}, bracket), {"f": "differs"})  # more than one interval ahead
+        last = cov.oracle_bracket(self.root, 100)  # the oracle ended with the port's last poll: no bound beyond
+        self.assertEqual(cov.behaviour({"f": 90}, last), {"f": "behaves"})
+
     def test_oracle_trace_maps_vi_to_the_poll_count(self):
         golden = self.root / cov.ORACLE_DIR
         golden.mkdir()
