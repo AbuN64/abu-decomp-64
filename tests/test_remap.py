@@ -338,6 +338,35 @@ def test_a_merged_or_renamed_source_unit_is_carried_into_the_facts(tmp_path: Pat
     assert [(f["key"], "src/gone.c" in f["message"]) for f in findings] == [("remap.stale", True)]
 
 
+class MovesTests(unittest.TestCase):
+    def test_the_functions_of_all_deleted_units_are_looked_up_in_one_grep(self) -> None:
+        """Pin move 012d203..bc197e7 deleted 1903 files: 8 greps each over the repository took over 30 minutes."""
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "source"
+            (source / "src").mkdir(parents=True)
+            git(source, "init", "-q", "-b", "main")
+            (source / "src/keep.c").write_text("void f(void) {\n}\n")
+            for n in range(5):
+                (source / f"src/dead{n}.c").write_text(f"void g{n}(void) {{\n}}\nvoid h{n}(void) {{\n}}\n")
+            git(source, "add", ".")
+            git(source, "commit", "-q", "-m", "old")
+            old = git(source, "rev-parse", "HEAD").strip()
+            moved = "".join(f"void g{n}(void) {{\n}}\n" for n in range(5))
+            (source / "src/keep.c").write_text("void f(void) {\n}\n" + moved)
+            git(source, "rm", "-q", *[f"src/dead{n}.c" for n in range(5)])
+            git(source, "commit", "-qam", "new")
+            new = git(source, "rev-parse", "HEAD").strip()
+            greps: list[list[str]] = []
+
+            def counting(argv, cwd, env, timeout):
+                greps.extend([list(argv)] if "grep" in argv else [])
+                return run_process(argv, cwd, env, timeout)
+
+            found = remap.moves(counting, source, old, new)
+            self.assertEqual(found, {f"src/dead{n}.c": "src/keep.c" for n in range(5)})
+            self.assertEqual(len(greps), 1)
+
+
 class LedgerMapTests(unittest.TestCase):
     def test_a_ledger_batch_map_is_carried_into_the_tree_facts(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -178,11 +178,50 @@ DEFINED = re.compile(r"^[A-Za-z_][\w \t\*]*?\b([A-Za-z_]\w*)\s*\([^;{]*\)\s*\{?\
 SOURCE_DIRS = ("src",)
 
 
+DEFINITIONS_PER_GREP = 400
+
+
+def definitions(run: Run, source: Path, rev: str, names: Sequence[str]) -> dict[str, set[str]]:
+    """name -> the files of REV that declare or define a function of that name (a line starting at column 0 with a type
+    and ending in `name(`): one git grep per batch of names, never one per name."""
+    hits: dict[str, set[str]] = {}
+    for start in range(0, len(names), DEFINITIONS_PER_GREP):
+        batch = "|".join(re.escape(n) for n in names[start : start + DEFINITIONS_PER_GREP])
+        code, out, _err = run(
+            [
+                "git",
+                "-C",
+                str(source),
+                "grep",
+                "-o",
+                "-E",
+                rf"^[A-Za-z_][^;]*\b({batch})\s*\(",
+                rev,
+                "--",
+                *SOURCE_DIRS,
+            ],
+            source,
+            None,
+            300,
+        )
+        for line in out.splitlines() if code == 0 else []:
+            path, _, text = line.removeprefix(f"{rev}:").partition(":")
+            if named := re.search(r"(\w+)\s*\($", text):
+                hits.setdefault(named.group(1), set()).add(path)
+    return hits
+
+
 def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
     """Source files of `old` that `new` lacks: path -> the file that holds them now (a git rename, or for a deleted
     unit the one file defining most of its functions at `new`), or None when nothing does."""
-    code, out, err = run(
-        ["git", "-C", str(source), "diff", "--name-status", "-M", "-z", old, new, "--", *SOURCE_DIRS], source, None, 120
+    code, out, err = run(  # the rename limit is raised past the files a long range moves: none is left as delete + add
+        [
+            *("git", "-C", str(source), "-c", "diff.renameLimit=20000", "diff", "--name-status", "-M", "-z"),
+            *(old, new, "--", *SOURCE_DIRS),
+        ],
+        source,
+        None,
+        120,
     )
     if code:
         raise RemapError("remap.moves", f"git diff {old[:12]}..{new[:12]} failed in {source}: {err.strip()[-200:]}")
@@ -197,32 +236,17 @@ def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
         if status == "D":
             found[words[index + 1]] = None
         index += 2
-    for path, now in list(found.items()):
+    wanted: dict[str, list[str]] = {}
+    for path, now in found.items():
         if now is not None:
             continue
         code, text, _err = run(["git", "-C", str(source), "show", f"{old}:{path}"], source, None, 120)
-        names = list(dict.fromkeys(m.group(1) for m in DEFINED.finditer(text or ""))) if not code else []
+        wanted[path] = list(dict.fromkeys(m.group(1) for m in DEFINED.finditer(text or "")))[:8] if not code else []
+    hits = definitions(run, source, new, sorted({n for names in wanted.values() for n in names}))
+    for path, names in wanted.items():
         votes: dict[str, int] = {}
-        for name in names[:8]:
-            code, hits, _err = run(
-                [
-                    "git",
-                    "-C",
-                    str(source),
-                    "grep",
-                    "-l",
-                    "-E",
-                    rf"^[A-Za-z_][^;]*\b{name}\s*\(",
-                    new,
-                    "--",
-                    *SOURCE_DIRS,
-                ],
-                source,
-                None,
-                120,
-            )
-            for hit in hits.splitlines() if code == 0 else []:
-                hit = hit.split(":", 1)[1] if hit.startswith(f"{new}:") else hit
+        for name in names:
+            for hit in hits.get(name, ()):
                 votes[hit] = votes.get(hit, 0) + 1
         if votes:
             found[path] = max(sorted(votes), key=lambda f: votes[f])
