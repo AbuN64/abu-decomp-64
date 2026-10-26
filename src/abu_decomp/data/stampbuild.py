@@ -210,6 +210,17 @@ def missing_versions(cfg: DataConfig, shared: Path) -> list[str]:
     return [v for v in found if v not in cfg.versions]
 
 
+def msg_refusal(diff: Path) -> list[str]:
+    """Why the diff's `# MSG:` subject would be refused at the train, before any build: the one rule is claim-preflight.sh's
+    (`--msg`), the check claim.sh queues with, so a stamp or check never runs 10-20 min for a subject line. The script is
+    the rig's; a host without it has nothing to check against and does not block."""
+    script = Path.home() / "rig-state/bin/claim-preflight.sh"
+    if not script.is_file():
+        return []
+    done = subprocess.run(["sh", str(script), "--msg", str(diff.resolve())], capture_output=True, text=True)
+    return [line.strip() for line in done.stderr.splitlines() if line.strip()] if done.returncode == 1 else []
+
+
 def build(
     cfg: DataConfig,
     profile: Any,

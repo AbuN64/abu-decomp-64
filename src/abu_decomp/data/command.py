@@ -133,8 +133,10 @@ def _cfg(args: argparse.Namespace):
 
 
 def run(args: argparse.Namespace) -> Result:
-    cfg = _cfg(args)
     verb = args.verb
+    if verb in ("stamp", "check") and args.diff and (bad := stampbuild.msg_refusal(args.diff)):
+        return {"violations": bad}, 1, [{"key": "data.msg", "blocking": True, "message": m} for m in bad]
+    cfg = _cfg(args)
     if verb == "census":
         open_fns = set(args.open.read_text().split()) if args.open else None
         stats = census_mod.run(cfg, args.tree, args.out, open_fns, args.probe, args.queue, paths=not args.no_paths)
