@@ -43,7 +43,6 @@ def test_clean_pass_writes_the_stamp_and_removes_the_tree(tmp_path, monkeypatch)
     assert stamp_mod.stamped(tmp_path / "stamps", DIFF) and pruned[-1][0].startswith("STAMP-")
 
 
-
 def test_a_broken_function_refuses_the_stamp(tmp_path, monkeypatch):
     diff, pruned = setup(tmp_path, monkeypatch, True)
     _result, code, findings = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
@@ -630,7 +629,8 @@ def test_the_clean_trees_link_is_paid_before_the_diff_and_not_charged_to_it(tmp_
     out = capsys.readouterr().out
     assert code == 0 and order.index("link") < order.index("apply") and order.count("link") == 2
     assert "stamp phase tree (not charged): wall=0s cpu=0s\n" in out
-    assert "stamp phase settle (not charged): wall=0s cpu=688s\n" in out and "stamp phase rom_check: wall=0s cpu=24s\n" in out
+    assert "stamp phase settle (not charged): wall=0s cpu=688s\n" in out
+    assert "stamp phase rom_check: wall=0s cpu=24s\n" in out
     assert "stamp build: wall=0s cpu=24s" in out and "CPU-OVER" not in out
 
 

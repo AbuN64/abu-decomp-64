@@ -1143,7 +1143,8 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
         " target (80-100 functions per slice), the lane ownership files the name ledger gates on; ledger: the name"
         " ledger's queue, batches, rows accepted/refused per lane and slice progress (WATCH); owners: the owning"
         " module of every declaration of --dir (definer for externs, majority user for types and macros), as a"
-        " move list (--packs DIR writes owners.tsv and owners.json)",
+        " move list (--packs DIR writes owners.tsv and owners.json); without --dir: the unit-local externs of every"
+        " source hoisted into the owning header as batches (--packs DIR writes externs-batch-NN.diff, externs.json)",
     )
     parser.add_argument(
         "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
@@ -1163,6 +1164,12 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--lanes", type=int, help="slices: the lane count (GLOBALS and STRUCT slices scale with it)")
     parser.add_argument(
         "--map", help="slices, owners: a module map file (unit<TAB>module lines; default docs/MODULES.tsv)"
+    )
+    parser.add_argument(
+        "--batch-cpu", type=float, default=300.0, help="owners (no --dir): estimated stamp CPU s a batch may cost"
+    )
+    parser.add_argument(
+        "--unit-cpu", type=float, default=0.25, help="owners (no --dir): estimated stamp CPU s per recompiled unit"
     )
     parser.add_argument("--assign", action="append", default=[], metavar="LANE=ID[,ID]", help="slices: LANE owns these")
     parser.add_argument("--names", help="slices: the names directory (default: the name book's store)")
@@ -1223,7 +1230,22 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
         from abu_decomp import owners
 
         if not args.dir:
-            raise DecompError("cleanup.dir", "owners needs --dir (the header folder, e.g. include/COMMON)")
+            from abu_decomp import externs
+
+            hoist = externs.plan(root, Path(args.map) if args.map else None, args.packs, args.batch_cpu, args.unit_cpu)
+            print(
+                f"owners (unit externs) {hoist['unit_extern_lines_before']} lines / {hoist['unit_extern_ids_before']}"
+                f" ids -> {hoist['unit_extern_lines_after']} lines / {hoist['unit_extern_ids_after']} ids:"
+                f" {hoist['planned_ids']} ids planned, {hoist['refused_ids']} refused",
+                file=sys.stderr,
+            )
+            for batch in hoist["batches"]:  # type: ignore[attr-defined]
+                print(
+                    f"  {batch['batch']}: {batch['ids']} ids, {batch['files']} files,"
+                    f" ~{batch['estimated_cpu']} cpu s ({batch['recompiled_units']} units)",
+                    file=sys.stderr,
+                )
+            return {k: v for k, v in hoist.items() if k != "refused"} | {"refused": hoist["refused"][:50]}, 0, []  # type: ignore[index]
         found = owners.run(root, args.dir, Path(args.map) if args.map else None, args.packs)
         print(
             f"owners {found['declarations']} declarations in {found['headers']} headers: {found['owned']} owned"

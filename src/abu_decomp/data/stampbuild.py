@@ -316,7 +316,11 @@ def settle(cfg: DataConfig, tree: Path) -> str | None:
     if not cfg.rom_check:
         return None
     rc, report = trial.Builder(cfg, tree).rom_check()
-    return f"the clean tree does not link before the diff is applied, so it is not the diff's fault: {report}" if rc else None
+    return (
+        f"the clean tree does not link before the diff is applied, so it is not the diff's fault: {report}"
+        if rc
+        else None
+    )
 
 
 def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
