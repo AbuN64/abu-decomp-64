@@ -120,7 +120,10 @@ def header_dependents(tree: Path, version: str, headers: list[str], run=subproce
     cmd = ["grep", "-rlF", "--include=*.d", *[a for h in headers for a in ("-e", h)], f"build/{version}"]
     out = run(cmd, cwd=tree, capture_output=True, text=True).stdout.split()
     prefix = f"build/{version}/"
-    return sorted(p[len(prefix) : -2] for p in out if p.startswith(prefix) and p.endswith(".d"))
+    units = (p[len(prefix) : -2] for p in out if p.startswith(prefix) and p.endswith(".d"))
+    # a .d of an earlier build outlives its source: a unit moved or retired since (10-25 P2b: src/FRONTEND/... after the
+    # move to src/game/) is no unit to rebuild, and asking for it failed the stamp of a diff whose 5-ROM proof passed
+    return sorted(u for u in units if (tree / u).is_file())
 
 
 def expand_units(

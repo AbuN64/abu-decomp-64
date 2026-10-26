@@ -244,6 +244,9 @@ def test_expand_units_adds_dependents_of_a_changed_header(tmp_path: Path):
         out = "build/r1/src/a.c.d\nbuild/r1/src/b.c.d\n"
         return subprocess.CompletedProcess(cmd, 0, out, "")
 
+    (tmp_path / "src").mkdir()
+    for unit in ("a.c", "b.c"):
+        (tmp_path / "src" / unit).write_text("")  # a dependent is rebuilt only while its source is there
     got = check.expand_units(tmp_path, "r1", ["include/T.H", "src/c.c", "README"], run)
     assert got == ["src/a.c", "src/b.c", "src/c.c"]
     assert check.expand_units(tmp_path, "r1", ["src/c.c"], run) == ["src/c.c"]
@@ -599,3 +602,14 @@ def test_exact_fns_ask_for_the_current_name_of_a_function_the_map_still_files_un
     assert check.exact_fns(CFG, t, "r1", ["src/a.c"]) == {"src/a.c": ["Frontend_SetPreviewPosition", "func_b"]}
     (t / "versions" / "r1" / "symbol_addrs.txt").unlink()  # no table: the map's names stand
     assert check.exact_fns(CFG, t, "r1", ["src/a.c"]) == {"src/a.c": ["func_8041CDB0_de", "func_b"]}
+
+
+def test_header_dependents_skip_a_unit_whose_source_is_gone(tmp_path: Path):
+    (tmp_path / "build/us/src/game").mkdir(parents=True)
+    (tmp_path / "src/game").mkdir(parents=True)
+    (tmp_path / "src/game/a.c").write_text("")
+    for unit in ("src/game/a.c", "src/OLD/a.c"):  # src/OLD/a.c moved away; its .d of an earlier build stayed
+        d = tmp_path / f"build/us/{unit}.d"
+        d.parent.mkdir(parents=True, exist_ok=True)
+        d.write_text("x.o: include/h.h\n")
+    assert check.header_dependents(tmp_path, "us", ["include/h.h"]) == ["src/game/a.c"]
