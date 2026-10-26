@@ -237,12 +237,33 @@ def exact_fns(
     moved = moved or {}
     rows = json.loads((tree / cfg.path(cfg.map_file, version)).read_text())["fns"]
     c = cfg.map_columns
+    names, by_rom = current_symbols(tree, version)
     out: dict[str, list[str]] = {u: [] for u in units}
     for r in rows:
         unit = moved.get(r[c["unit"]]) or r[c["unit"]]
         if unit in out and r[c["score"]] >= 100:
-            out[unit].append(r[c["name"]])
+            name = r[c["name"]]
+            if names and name not in names and isinstance(r[1], int):
+                name = by_rom.get(r[1], name)  # the map lags a rename: the ROM offset still names the same function
+            out[unit].append(name)
     return out
+
+
+_SYMBOL_ROW = re.compile(r"^(\w+)\s*=\s*0x[0-9A-Fa-f]+\s*;.*?\brom:0x([0-9A-Fa-f]+)", re.M)
+
+
+def current_symbols(tree: Path, version: str) -> tuple[set[str], dict[int, str]]:
+    """(every name, ROM offset -> name of the functions) of the tree's own symbol table of VERSION. The map file is
+    written by the progress run and lags a rename; a function asked of fncmp by its stale name is "not found" and the
+    check then searched every other unit for it (10-25 CLEAN-P1-EXTERNS4: 212 CPU s on the first version). Resolving by
+    ROM offset asks for the name the objects and assembly carry. Empty when the table is not there."""
+    path = tree / "versions" / version / "symbol_addrs.txt"
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return set(), {}
+    names = set(re.findall(r"(?m)^\s*(\w+)\s*=", text))
+    return names, {int(rom, 16): name for name, rom in _SYMBOL_ROW.findall(text)}
 
 
 def renamed(b: Builder) -> dict[str, str]:

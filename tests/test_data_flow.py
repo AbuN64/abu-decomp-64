@@ -583,3 +583,19 @@ def test_gate_counts_a_git_rev_without_checkout(tmp_path: Path):
     with pytest.raises(ValueError):
         gate.count_rev(CFG, cj, tree, "nosuchrev")
     assert gate.evidence_rev(CFG) == ""  # no evidence_tree configured
+
+
+def test_exact_fns_ask_for_the_current_name_of_a_function_the_map_still_files_under_its_old_one(tmp_path: Path):
+    t = mini_tree(tmp_path)
+    (t / "docs" / "map-r1.json").write_text(
+        json.dumps(
+            {"fns": [["func_8041CDB0_de", 4096, 12, 100.0, "src/a.c", 1], ["func_b", 8192, 12, 100.0, "src/a.c", 1]]}
+        )
+    )
+    (t / "versions" / "r1").mkdir(parents=True, exist_ok=True)
+    (t / "versions" / "r1" / "symbol_addrs.txt").write_text(
+        "Frontend_SetPreviewPosition = 0x8041CDB0; // type:func rom:0x1000\nfunc_b = 0x80000200; // type:func rom:0x2000\n"
+    )
+    assert check.exact_fns(CFG, t, "r1", ["src/a.c"]) == {"src/a.c": ["Frontend_SetPreviewPosition", "func_b"]}
+    (t / "versions" / "r1" / "symbol_addrs.txt").unlink()  # no table: the map's names stand
+    assert check.exact_fns(CFG, t, "r1", ["src/a.c"]) == {"src/a.c": ["func_8041CDB0_de", "func_b"]}
