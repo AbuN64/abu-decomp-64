@@ -310,7 +310,7 @@ def test_a_renamed_source_file_is_built_and_scored_under_its_new_path(tmp_path):
     assert built == [["src/new/u.CPP"]] and scored == [("f1", "src/new/u.CPP")] and res["broken"] == []
 
 
-def test_data_check_brings_a_stale_extract_current_instead_of_refusing(monkeypatch):
+def test_data_check_brings_a_stale_extract_current_instead_of_refusing(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
     from abu_decomp.data import command
@@ -324,7 +324,9 @@ def test_data_check_brings_a_stale_extract_current_instead_of_refusing(monkeypat
     monkeypatch.setattr(command.check_mod, "reextract", fake)
     monkeypatch.setattr(command.check_mod, "changed_files", lambda *a, **k: [])
     cli = SimpleNamespace(_profile=lambda p: None)
-    args = SimpleNamespace(profile=None, tree=None, since=None, reextract=False)
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build/.pool-extracted-at").write_text("abc\n")
+    args = SimpleNamespace(profile=None, tree=tmp_path, since=None, reextract=False, unit=[])
     command._check(args, None, None, cli)
     assert seen["allow"] is True
 
@@ -366,3 +368,26 @@ def test_a_unit_the_version_already_built_stays_though_only_other_maps_list_it(t
     obj.parent.mkdir(parents=True)
     obj.write_bytes(b"")
     assert check.in_version(CFG, tmp_path, "b", units) == units
+
+
+def test_a_tree_without_the_pool_marker_is_refused_naming_the_marker_and_the_fix(tmp_path):
+    from abu_decomp.data import command
+
+    why = check.marker_refusal(tmp_path)
+    assert why and ".pool-extracted-at" in why and "worktree new" in why and "--lease" in why
+    result, code, findings = command._check(SimpleNamespace(unit=[], tree=tmp_path), CFG, None, None)
+    assert (
+        code == 1
+        and result == {}
+        and findings[0]["key"] == "data.marker"
+        and ".pool-extracted-at" in findings[0]["message"]
+    )
+
+
+def test_a_marked_tree_is_not_refused(tmp_path):
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build/.pool-extracted-at").write_text("abc\n")
+    assert check.marker_refusal(tmp_path) is None
+    (tmp_path / "build/.pool-extracted-at").unlink()
+    (tmp_path / "build/.pool-built-at").write_text("abc\n")
+    assert check.marker_refusal(tmp_path) is None

@@ -13,6 +13,7 @@ ledger and the inbox never touch the shared tree's. A lane lands only through `d
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -140,6 +141,35 @@ def seed_locked(shared: Path, target: Path, lane: str) -> int:
         return seed(shared, target)
 
 
+def mark(shared: Path, target: Path, rev: str) -> str:
+    """The pool's marker, the way `pool-mint.sh` writes it (`build/.pool-extracted-at`: the commit, written once the
+    extraction is current), so `hdrnarrow` narrows a header check on this tree. The marker's time is the instant from
+    which a unit's `.i.ok` counts as rebuilt since the base: the seed holds the base's objects only when the shared tree
+    is clean at the same tree content as REV, else the time is 0 and no unit is taken as untouched (a narrowing that
+    keeps every includer, never one that skips a stale unit). A built marker the seed copied from a shared tree at other
+    content is dropped (it would make `hdrnarrow` read a base this tree is not). Returns the marker's path."""
+    from unbake.hdrnarrow import BUILT_MARKER, EXTRACTED_MARKER
+
+    def tree_id(root: Path, what: str) -> str:
+        done = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", f"{what}^{{tree}}"], capture_output=True, text=True, check=False
+        )
+        return done.stdout.strip() if done.returncode == 0 else ""
+
+    clean = not _git(shared, "status", "--porcelain", "--untracked-files=no").strip()
+    exact = clean and tree_id(shared, "HEAD") != "" and tree_id(shared, "HEAD") == tree_id(target, rev)
+    built = target / BUILT_MARKER
+    with contextlib.suppress(OSError):
+        if built.exists() and (not exact or built.read_text().strip() != rev):
+            built.unlink()
+    path = target / EXTRACTED_MARKER
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(rev + "\n")
+    if not exact:
+        os.utime(path, (0, 0))
+    return str(path)
+
+
 def new(
     profile: Profile, shared: Path, lane: str, rev: str | None = None
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -160,12 +190,14 @@ def new(
     if treelock.epoch(shared) != epoch:
         print("worktree.seed: a ship ended while the outputs were copied; torn files were dropped", flush=True)
     called = tools.invoke("unbake", profile, ["setup", "--no-make"], project=target)
+    marker = mark(shared, target, rev) if called.ok else None
     result = {
         "worktree": str(target),
         "rev": rev,
         "aligned": aligned,
         "dropped": dropped,
         "setup_ok": called.ok,
+        "marker": marker,
         "seconds": round(time.monotonic() - started, 1),
         "cpu": round(meter.cpu() - cpu, 1),
         "ship": f"decomp --profile {profile.source_file} ship --tree {shared} --patch {lane}=PATH:MESSAGE",

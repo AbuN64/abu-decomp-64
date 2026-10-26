@@ -17,6 +17,21 @@ _MARK = ".unbake/data-extracted.json"
 _SPLAT = re.compile(r"(^|/)splat\.ya?ml$")
 
 
+def marker_refusal(tree: Path) -> str | None:
+    """Why a header check on TREE would silently prove only the changed units: `hdrnarrow` narrows a tree by the pool's
+    marker and, without one, keeps every includer out of its decision and says so only in `narrowed.why` (10-26
+    CLEAN-P1-DECLS14). None when the tree carries a marker."""
+    from unbake.hdrnarrow import BUILT_MARKER, EXTRACTED_MARKER
+
+    if any((tree / name).is_file() for name in (BUILT_MARKER, EXTRACTED_MARKER)):
+        return None
+    return (
+        f"{tree} has no pool marker ({EXTRACTED_MARKER}): the check cannot narrow the includers of a changed header and "
+        "would prove a weaker set than the build. Take the tree from `decomp worktree new LANE` or `pool-mint.sh --lease "
+        "LANE` (both write the marker), reapply the diff, and check there; or name the units with --unit"
+    )
+
+
 def _inputs(tree: Path, run=subprocess.run) -> tuple[str, list[str]]:
     """(sha1 of the working content of every extraction input the tree tracks, their paths)."""
     import hashlib
@@ -375,6 +390,10 @@ def prepare(b: Builder, versions: list[str]) -> dict[str, dict]:
         for v, p in plans.items():
             p["narrowed"].setdefault(v, {})["signed"] = len(p["skipped"])
         print(f"data check: {signed} stamps the narrowing proved signed under the new header bytes", flush=True)
+    for v, p in plans.items():
+        why = p["narrowed"].get(v, {}).get("why")
+        if why:
+            print(f"data check: narrowing dropped for {v}: {why}", flush=True)
     b.plans = plans
     return plans
 

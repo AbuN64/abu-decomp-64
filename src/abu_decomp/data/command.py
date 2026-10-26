@@ -222,6 +222,8 @@ def _apply_diff(args: argparse.Namespace) -> bool:
 
 
 def _check(args: argparse.Namespace, cfg, b, cli) -> Result:
+    if not args.unit and (why := check_mod.marker_refusal(args.tree)):
+        return {}, 1, [{"key": "data.marker", "blocking": True, "message": why}]
     why = check_mod.reextract(
         cli._profile(args.profile),
         args.tree,
