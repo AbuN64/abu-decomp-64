@@ -358,6 +358,61 @@ class FinishTests(unittest.TestCase):
         self.assertEqual(row["evidence"]["phase"], "first")
         self.assertFalse(next(r for r in rows if r["region"] == "CAMERA")["evidence"]["timing"])
 
+    def test_a_static_double_in_the_other_word_order_is_no_divergence(self):
+        # gPos (a double) differs from the first poll only by its two words' order: data, not a divergence
+        self.traces("1 2:1\n", "1 2:2\n")
+
+        def swapped(session, polls, profile):
+            mine, theirs = bytearray(26), bytearray(26)
+            mine[18:26] = bytes.fromhex("0000000041f00000")
+            theirs[18:26] = bytes.fromhex("41f0000000000000")
+            return {p: (bytes(mine), bytes(theirs)) for p in polls}
+
+        with mock.patch.object(sd, "_dump_pass", side_effect=swapped):
+            summary = sd.finish(self.session, None, "movie-a", {})
+        self.assertEqual((summary["divergent"], summary["findings"]), (0, 0))
+        report = json.loads((self.run / sd.DIFF).read_text())
+        camera = report["regions"]["CAMERA"]
+        self.assertEqual((camera["status"], camera["byte_order_symbols"], camera["polls_differing"]), ("same", 1, 0))
+        self.assertEqual(report["byte_order_symbols"], {"CAMERA": ["gPos"]})
+        self.assertEqual(self.findings(), [])
+
+    def test_a_byte_order_symbol_does_not_hide_a_real_static_difference(self):
+        # gFlag (a word) really differs and gPos only in word order: the region's first difference is gFlag
+        self.traces("1 1:1 2:1\n", "1 1:2 2:2\n")
+
+        def both(session, polls, profile):
+            mine, theirs = bytearray(26), bytearray(26)
+            theirs[14:18] = (4).to_bytes(4, "big")
+            mine[18:26] = bytes.fromhex("0000000041f00000")
+            theirs[18:26] = bytes.fromhex("41f0000000000000")
+            return {p: (bytes(mine), bytes(theirs)) for p in polls}
+
+        with mock.patch.object(sd, "_dump_pass", side_effect=both):
+            sd.finish(self.session, None, "movie-a", {})
+        report = json.loads((self.run / sd.DIFF).read_text())
+        self.assertEqual(report["byte_order_symbols"], {"CAMERA": ["gPos"]})
+        self.assertEqual(report["regions"]["CAMERA"]["status"], "same")
+        actors = report["regions"]["ACTORS"]
+        self.assertEqual((actors["status"], actors["first"]["symbol"]), ("diverges", "gFlag"))
+
+    def test_byte_order_only_names_the_units_it_swaps(self):
+        syms = sd.symbol_table(TABLE)
+        gpos = syms[2]
+        word_swapped = bytes.fromhex("0000000041f00000")
+        self.assertTrue(sd.byte_order_only(gpos, word_swapped, bytes.fromhex("41f0000000000000")))
+        self.assertFalse(sd.byte_order_only(gpos, word_swapped, word_swapped))
+        self.assertFalse(sd.byte_order_only(gpos, word_swapped, bytes.fromhex("41f0000000000001")))
+        four = sd.Sym(0, "gBytes", "R", BASE + 0x2000, 0, 4, [["b", 4]], ["a", 4, ["k", "b"]])
+        self.assertTrue(sd.byte_order_only(four, bytes([104, 86, 13, 128]), bytes([128, 13, 86, 104])))
+        self.assertFalse(sd.byte_order_only(four, bytes([104, 86, 13, 128]), bytes([128, 13, 86, 105])))
+        halves = sd.Sym(0, "gHalves", "R", BASE + 0x2000, 0, 4, [["h", 2]], ["a", 2, ["k", "h"]])
+        self.assertTrue(sd.byte_order_only(halves, bytes([0, 1, 0, 2]), bytes([0, 2, 0, 1])))
+        straddle = sd.Sym(0, "gOne", "R", BASE + 0x2001, 0, 2, [["b", 2]], ["a", 2, ["k", "b"]])
+        self.assertFalse(sd.byte_order_only(straddle, bytes([1, 2]), bytes([2, 1])))  # the word is not held whole
+        word = sd.Sym(0, "gW", "R", BASE + 0x2000, 0, 4, [["w", 1]], ["k", "w"])
+        self.assertFalse(sd.byte_order_only(word, bytes([1, 2, 3, 4]), bytes([4, 3, 2, 1])))
+
     def test_a_static_difference_and_a_later_one_are_two_findings(self):
         # gFlag differs from the first poll; gItems only from poll 3
         self.traces("1 0:1 1:2 2:3\n3 0:5\n", "1 0:1 1:8 2:3\n3\n")

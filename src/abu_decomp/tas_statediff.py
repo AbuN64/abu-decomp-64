@@ -470,6 +470,36 @@ def compare_symbol(sym: Sym, a: bytes, b: bytes, limit: int = FIELDS_SHOWN) -> d
     return {"differing": differing, "fields": fields}
 
 
+def byte_order_only(sym: Sym, a: bytes, b: bytes) -> bool:
+    """True when `a` and `b` differ only by the order of the bytes inside the unit the two ABIs lay out differently:
+    a double's two words, the halves of an aligned word of u16s, the four bytes of an aligned word of u8s. Such a
+    symbol holds the same data in the other word order (the declared type disagrees with how the data was loaded);
+    it is not a state that the run drove apart. Units the symbol does not hold whole stay as they are."""
+    if a == b:
+        return False
+    fixed = bytearray(a)
+    elements: list[tuple[str, int]] = []
+    at = 0
+    for kind, count in sym.kinds:
+        for _ in range(count):
+            elements.append((kind, at))
+            at += KIND_BYTES[kind]
+    groups: dict[int, list[tuple[str, int]]] = {}
+    for kind, at in elements:
+        if kind == "d":
+            fixed[at : at + 4], fixed[at + 4 : at + 8] = a[at + 4 : at + 8], a[at : at + 4]
+        elif kind in "bh":
+            groups.setdefault((sym.address + at) // 4, []).append((kind, at))
+    for group in groups.values():
+        kinds = {kind for kind, _ in group}
+        width = KIND_BYTES[group[0][0]]
+        if len(kinds) != 1 or len(group) * width != 4:
+            continue
+        for (_, to), (_, source) in zip(group, reversed(group), strict=True):
+            fixed[to : to + width] = a[source : source + width]
+    return bytes(fixed) == b
+
+
 def tuple_shape(value: Any) -> statetypes.Shape:
     """A shape read back from JSON (lists) as the tuples statetypes uses."""
     if isinstance(value, list):
@@ -729,10 +759,15 @@ def _rows(syms: list[Sym], found: dict[str, Any]) -> dict[str, dict[str, Any]]:
         else:
             r["later"].setdefault(poll, []).append(sym.index)
     for r in out.values():
-        later = sorted(r["later"].items())
-        r["first"] = (base, r["static"], True) if r["static"] else (later[0][0], later[0][1], False)
-        r["runtime"] = (later[0][0], later[0][1]) if r["static"] and later else None
+        pick_rows(r, base)
     return out
+
+
+def pick_rows(r: dict[str, Any], base: int) -> None:
+    """Set a region's `first` and `runtime` rows from its static and later symbols."""
+    later = sorted(r["later"].items())
+    r["first"] = (base, r["static"], True) if r["static"] else (later[0][0], later[0][1], False)
+    r["runtime"] = (later[0][0], later[0][1]) if r["static"] and later else None
 
 
 def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any]) -> dict[str, Any]:
@@ -777,6 +812,25 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
             dumps = _dump_pass(session, wanted, profile)
         except (OSError, DecompError) as error:
             session.notes.append(f"dump pass failed: {error}")
+    # a static symbol that differs only in the order of its bytes is data loaded in the other word order, not a
+    # divergence of the run: it is listed apart and no longer stands as the region's first difference
+    byte_order: dict[str, list[str]] = {}
+    if found["compared"] and found["first_compared"] in dumps:
+        mine, theirs = dumps[found["first_compared"]]
+        for region, r in list(per_region.items()):
+            kept = []
+            for i in r["static"]:
+                s = syms[i]
+                if byte_order_only(s, mine[s.offset : s.offset + s.size], theirs[s.offset : s.offset + s.size]):
+                    byte_order.setdefault(region, []).append(s.name)
+                else:
+                    kept.append(i)
+            r["static"] = kept
+            if kept or r["later"]:
+                pick_rows(r, found["first_compared"])
+            else:
+                del per_region[region]
+    result["byte_order_symbols"] = byte_order
 
     def row(region: str, poll: int, members: list[int], phase: str, static: bool) -> dict[str, Any]:
         info: dict[str, Any] = {
@@ -816,8 +870,11 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
             "polls_differing": found["polls_differing"][number[name]] if found["compared"] else 0,
             "first": None,
             "runtime": None,
+            "byte_order_symbols": len(byte_order.get(name, ())),
         }
         r = per_region.get(name)
+        if name in byte_order and not r:
+            entry["polls_differing"] = 0  # the hashes differed only by byte order
         if r:
             entry["status"] = "diverges"
             entry["static_symbols"] = len(r["static"])
