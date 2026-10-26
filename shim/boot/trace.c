@@ -413,6 +413,16 @@ static long reach_poll;
 /* Census-only: while the reach stream is live and nothing reads the logical call stacks (no run-on diagnostics, no
  * last-store watch), the entry hook only counts: it skips the frame record push_frame and the exit hook keep per call. */
 static int census_only;
+/* The entry hook's one table, keyed by function address: the three per-function facts (the shim bind still to announce,
+ * the reach row, the census entry) behind a single probe. Built once, after the three source tables are complete. */
+typedef struct {
+    void *fn;
+    Slot *census;       /* the census entry of this function, NULL when it has none */
+    unsigned row;       /* reach row + 1, 0 for none */
+    unsigned shim_left; /* shim binds of this function not yet announced; 0 skips the shim probe */
+} HookSlot;
+static HookSlot *hooks;
+static unsigned hook_mask;
 static unsigned row_hash(const char *name)
 {
     unsigned h = 2166136261u;
@@ -568,6 +578,35 @@ NOINST static void reach_final(void)
     const size_t size = n64c_reach_full(&reach, (uint32_t)reach_poll, record);
     sendto(reach_fd, record, size, MSG_DONTWAIT | MSG_NOSIGNAL, (const struct sockaddr *)&reach_addr, reach_addr_len);
 }
+NOINST static HookSlot *hook_slot(void *fn)
+{
+    unsigned s = slot_of(fn) & hook_mask;
+    while (hooks[s].fn && hooks[s].fn != fn)
+        s = (s + 1) & hook_mask;
+    hooks[s].fn = fn;
+    return &hooks[s];
+}
+/* False when the table cannot be allocated: the trace then stays unarmed. */
+NOINST static int hooks_build(void)
+{
+    unsigned count = n64c_shim_count + n64c_trace_count + (row_slots ? row_mask + 1 : 0), size = 1024;
+    while (size < count * 2)
+        size <<= 1;
+    if (!(hooks = calloc(size, sizeof *hooks)))
+        return 0;
+    hook_mask = size - 1;
+    for (unsigned s = 0; s <= shim_mask; s++)
+        if (shim_slots[s].index)
+            hook_slot(shim_slots[s].fn)->shim_left++;
+    for (unsigned s = 0; s <= slot_mask; s++)
+        if (slots[s].index)
+            hook_slot(slots[s].fn)->census = &slots[s];
+    if (row_slots)
+        for (unsigned s = 0; s <= row_mask; s++)
+            if (row_slots[s].fn)
+                hook_slot(row_slots[s].fn)->row = row_slots[s].row + 1;
+    return 1;
+}
 NOINST void n64c_trace_init(void)
 {
     const unsigned total = n64c_trace_count;
@@ -634,6 +673,8 @@ NOINST void n64c_trace_init(void)
     reach_init();
     const char *run_on = getenv("N64C_RUN_ON");
     census_only = row_slots && !ls_on && !ls_watch && !(run_on && !strcmp(run_on, "1"));
+    if (!hooks_build())
+        return;
     __atomic_store_n(&armed, 1, __ATOMIC_RELEASE);
 }
 NOINST static void first_hit(unsigned i)
@@ -687,37 +728,40 @@ NOINST RAWSTACK static void trace_enter(void *fn, void *call_site, const unsigne
 {
     if (!__atomic_load_n(&armed, __ATOMIC_ACQUIRE))
         return;
-    for (unsigned s = slot_of(fn) & shim_mask; shim_slots[s].index; s = (s + 1) & shim_mask) {
-        if (shim_slots[s].fn != fn || __atomic_load_n(&shim_slots[s].entered, __ATOMIC_RELAXED))
-            continue;
-        pthread_mutex_lock(&lock);
-        if (!shim_slots[s].entered) {
-            __atomic_store_n(&shim_slots[s].entered, 1, __ATOMIC_RELAXED);
-            const N64cShimEntry *e = &n64c_shim_entries[shim_slots[s].index - 1];
-            fprintf(stderr, "boot-shim: %s %s\n", e->native, e->bound);
-            fflush(stderr);
-        }
-        pthread_mutex_unlock(&lock);
-    }
-    if (row_slots)
-        for (unsigned s = slot_of(fn) & row_mask; row_slots[s].fn; s = (s + 1) & row_mask)
-            if (row_slots[s].fn == fn) {
-                __atomic_fetch_add(&row_entered[row_slots[s].row], 1, __ATOMIC_RELAXED);
-                break;
+    HookSlot *h = &hooks[slot_of(fn) & hook_mask];
+    while (h->fn && h->fn != fn)
+        h = &hooks[(unsigned)(h + 1 - hooks) & hook_mask];
+    if (!h->fn)
+        h = NULL; /* none of the three tables knows this function */
+    if (h && h->shim_left) {
+        for (unsigned s = slot_of(fn) & shim_mask; shim_slots[s].index; s = (s + 1) & shim_mask) {
+            if (shim_slots[s].fn != fn || __atomic_load_n(&shim_slots[s].entered, __ATOMIC_RELAXED))
+                continue;
+            pthread_mutex_lock(&lock);
+            if (!shim_slots[s].entered) {
+                __atomic_store_n(&shim_slots[s].entered, 1, __ATOMIC_RELAXED);
+                h->shim_left--;
+                const N64cShimEntry *e = &n64c_shim_entries[shim_slots[s].index - 1];
+                fprintf(stderr, "boot-shim: %s %s\n", e->native, e->bound);
+                fflush(stderr);
             }
+            pthread_mutex_unlock(&lock);
+        }
+    }
+    if (h && h->row) /* a plain load and store: a count lost to a race still reads as entered */
+        __atomic_store_n(&row_entered[h->row - 1], __atomic_load_n(&row_entered[h->row - 1], __ATOMIC_RELAXED) + 1,
+                         __ATOMIC_RELAXED);
     if (!census_only)
         push_frame(fn, call_site, regs);
     if (ls_watch)
         ls_watch_check(fn, "enter");
-    for (unsigned s = slot_of(fn) & slot_mask; slots[s].index; s = (s + 1) & slot_mask)
-        if (slots[s].fn == fn) {
-            const unsigned i = slots[s].index - 1;
-            if (!__atomic_load_n(&hit[i], __ATOMIC_RELAXED))
-                first_hit(i);
-            if (ls_on)
-                ls_call(&slots[s], call_site, regs);
-            break;
-        }
+    if (h && h->census) {
+        const unsigned i = h->census->index - 1;
+        if (!__atomic_load_n(&hit[i], __ATOMIC_RELAXED))
+            first_hit(i);
+        if (ls_on)
+            ls_call(h->census, call_site, regs);
+    }
 }
 #if defined(__i386__)
 /* The entry hook keeps the callee-saved registers as the instrumented function's caller left them: ebx, esi and
