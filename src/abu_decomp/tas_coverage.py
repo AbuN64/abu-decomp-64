@@ -715,9 +715,19 @@ def baseline(cfg: dict[str, Any]) -> Path:
     return path
 
 
+def published(cfg: dict[str, Any], port: Any) -> bool:
+    """True when PORT (a run's recorded executable) is a page-port build: it sits in the same publication folder as
+    the configured port's build (live/port -> live/snaps/port-<pin>-<time>/ragewars). A lane's private build, run
+    with `--port`, is built elsewhere from a tree nobody pinned, so its counts belong to no main pin."""
+    if not port or not cfg.get("port"):
+        return False
+    return Path(os.path.realpath(port)).parent.parent == Path(os.path.realpath(cfg["port"])).parent.parent
+
+
 def latest_runs(cfg: dict[str, Any], since: float = 0) -> dict[str, Path]:
-    """movie name -> its newest movie-driven finished run folder that left a coverage report or counters and started
-    at or after SINCE (a run with no start time never counts once SINCE is set)."""
+    """movie name -> its newest movie-driven finished run folder that left a coverage report or counters, started
+    at or after SINCE (a run with no start time never counts once SINCE is set) and played a page-port build: a
+    binary published beside the configured one (see `published`)."""
     from abu_decomp import tas
 
     newest: dict[str, Path] = {}
@@ -727,6 +737,8 @@ def latest_runs(cfg: dict[str, Any], since: float = 0) -> dict[str, Path]:
         if not ((run / COVERAGE).is_file() or (run / GCOV).is_dir()):
             continue
         if since and float(row.get("started") or 0) < since:
+            continue
+        if not published(cfg, row.get("port")):
             continue
         name = str(row.get("movie") or "")
         if name and (name not in newest or run.name > newest[name].name):

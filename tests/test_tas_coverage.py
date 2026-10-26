@@ -68,7 +68,6 @@ class ReadTests(unittest.TestCase):
         )
         self.assertEqual(cov.read_gcovr(self.root / "c.json"), {"inl": 2, "own": 5, "bare": 0})
 
-
     def test_a_port_one_snapshot_interval_behind_the_oracle_still_behaves(self):
         golden = self.root / cov.ORACLE_DIR
         golden.mkdir()
@@ -78,7 +77,6 @@ class ReadTests(unittest.TestCase):
         bracket = cov.oracle_bracket(self.root, 55)
         self.assertEqual(cov.behaviour({"f": 10}, bracket), {"f": "behaves"})  # 25 behind the 35 at poll 50
         self.assertEqual(cov.behaviour({"f": 9}, bracket), {"f": "differs"})  # more than one interval behind
-
 
     def test_oracle_trace_maps_vi_to_the_poll_count(self):
         golden = self.root / cov.ORACLE_DIR
@@ -657,20 +655,40 @@ class RunReportTests(unittest.TestCase):
         shrunk = {"gcovr": {"function_covered": 0}, "baseline": "a", "since": 1793000000}
         self.assertIn("covers 0", cov.refusal({**empty, "gcovr": {"function_covered": 3}}, shrunk))
 
-    def test_only_runs_started_since_the_epoch_are_counted(self):
+    def test_only_runs_of_a_page_port_build_are_counted(self):
+        live = self.root / "live"
+        (live / "snaps/port-b-2").mkdir(parents=True)
+        (live / "port").symlink_to("snaps/port-b-2")
+        cfg = {"port": live / "port/ragewars"}
+        lane = self.root / "lanes/X/port-build2/ragewars"
         rows = [
-            (Path("plays/old"), {"movie": "a-bunker", "started": 100.0}),
-            (Path("plays/new"), {"movie": "a-bunker", "started": 300.0}),
-            (Path("plays/older"), {"movie": "b", "started": 200.0}),
-            (Path("plays/nostart"), {"movie": "c"}),
+            (Path("plays/page"), {"movie": "m", "port": str(live / "snaps/port-a-1/ragewars")}),
+            (Path("plays/lane"), {"movie": "lane", "port": str(lane)}),
+            (Path("plays/bare"), {"movie": "bare"}),
         ]
         with (
             mock.patch("abu_decomp.tas.run_rows", return_value=rows),
             mock.patch.object(Path, "is_file", return_value=True),
         ):
-            self.assertEqual(set(cov.latest_runs({}, 250)), {"a-bunker"})
-            self.assertEqual(cov.latest_runs({}, 250)["a-bunker"].name, "new")
-            self.assertEqual(set(cov.latest_runs({})), {"a-bunker", "b", "c"})
+            self.assertEqual(set(cov.latest_runs(cfg)), {"m"})
+            self.assertEqual(set(cov.latest_runs({"port": lane})), {"lane"})
+
+    def test_only_runs_started_since_the_epoch_are_counted(self):
+        port = "/live/snaps/port-a-1/ragewars"
+        rows = [
+            (Path("plays/old"), {"movie": "a-bunker", "started": 100.0, "port": port}),
+            (Path("plays/new"), {"movie": "a-bunker", "started": 300.0, "port": port}),
+            (Path("plays/older"), {"movie": "b", "started": 200.0, "port": port}),
+            (Path("plays/nostart"), {"movie": "c", "port": port}),
+        ]
+        cfg = {"port": "/live/snaps/port-b-2/ragewars"}
+        with (
+            mock.patch("abu_decomp.tas.run_rows", return_value=rows),
+            mock.patch.object(Path, "is_file", return_value=True),
+        ):
+            self.assertEqual(set(cov.latest_runs(cfg, 250)), {"a-bunker"})
+            self.assertEqual(cov.latest_runs(cfg, 250)["a-bunker"].name, "new")
+            self.assertEqual(set(cov.latest_runs(cfg)), {"a-bunker", "b", "c"})
 
     def test_the_page_lists_the_dropped_functions_by_name(self):
         dropped = [{"file": "x.c", "function": "f"}]
