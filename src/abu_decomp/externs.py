@@ -36,6 +36,11 @@ from abu_decomp.data import gate as data_gate
 HEADER_SUFFIXES = (".h", ".hpp", ".hh")
 INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.M)
 ADDRESS = re.compile(r"(?:^|_)([0-9A-Fa-f]{6,8})$")
+TYPEDEF = re.compile(r"\btypedef\b[^;{}]*?(?:\(\s*\*\s*(\w+)\s*\)[^;{}]*|\b(\w+)\s*(?:\[[^\]]*\])*\s*);|\}\s*(\w+)\s*;")
+DEFINED = re.compile(r"^\s*#\s*define\s+(\w+)", re.M)
+TAG = re.compile(r"\b(?:struct|union|enum)\s+(\w+)\s*[{;]")
+USED_TAG = re.compile(r"\b(?:struct|union|enum)\s+(\w+)")
+WORD = re.compile(r"[A-Za-z_]\w*")
 BATCH_CPU = 300.0  # estimated CPU s per batch: half of the 600 s a header-changing stamp may spend (CARD-RULES rule 3)
 UNIT_CPU = 0.25  # estimated CPU s a stamp spends per recompiled unit (calibrated by the recorded `stamp build: cpu=`)
 
@@ -58,6 +63,8 @@ class Scan:
     local_names: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # file -> names it spells itself
     includes: dict[str, list[str]] = field(default_factory=dict)  # file -> raw include targets
     texts: dict[str, str] = field(default_factory=dict)
+    types: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # type/macro name -> files declaring it
+    tags: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # struct/union/enum tag -> files
 
 
 def tracked(root: Path) -> list[str]:
@@ -87,6 +94,12 @@ def scan(root: Path, files: list[str]) -> Scan:
         found.texts[name] = raw
         text = deaddecls.strip_comments(raw)
         found.includes[name] = INCLUDE.findall(text)
+        for m in TYPEDEF.finditer(text):
+            found.types[m.group(1) or m.group(2) or m.group(3)].add(name)
+        for m in DEFINED.finditer(text):
+            found.types[m.group(1)].add(name)
+        for m in TAG.finditer(text):
+            found.tags[m.group(1)].add(name)
         for c in deaddecls.split(text):
             deaddecls.analyse(c)
             body = c.text.strip()
@@ -112,6 +125,16 @@ def scan(root: Path, files: list[str]) -> Scan:
             else:
                 found.local_names[name] |= c.defs
     return found
+
+
+def unseen_types(found: Scan, ident: str, proto: str, visible: set[str]) -> list[str]:
+    """The types and macros a prototype spells that the tree declares but the destination header cannot see: a
+    declaration hoisted there would not parse in the units that include it (the unit it came from saw them)."""
+    tagged = set(USED_TAG.findall(proto))
+    missing = [t for t in tagged if found.tags.get(t) and not found.tags[t] & visible]
+    bare = set(WORD.findall(USED_TAG.sub("", proto))) - {ident}
+    missing += [t for t in bare if found.types.get(t) and not found.types[t] & visible]
+    return sorted(missing)
 
 
 def resolve(index: dict[str, list[str]], including: str, target: str) -> str | None:
@@ -235,6 +258,11 @@ def plan(
         if held and dest not in held:
             dest = sorted(held)[0]  # already declared once in a header: that one stays the owner
             reason += ", declared in header"
+        absent = unseen_types(found, ident, protos[0], sees.get(dest, set()) | {dest})
+        if absent:
+            why = "type not visible from " + dest + ": " + ", ".join(absent[:4])
+            refused.append({"id": ident, "reason": why, "protos": protos})
+            continue
         seeing = includers[dest] | set(users)
         clash = sorted(n for n in spelled.get(ident, ()) if n in seeing and n not in {u for u, _ in defined})
         clash += sorted(
