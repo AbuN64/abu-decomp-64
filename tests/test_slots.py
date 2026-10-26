@@ -1,6 +1,7 @@
 """The host slot pool (module slots): capacity bound, queueing, owner reserve, crash release, re-entrancy."""
 
 import os
+import select
 import tempfile
 import threading
 import time
@@ -8,6 +9,10 @@ import unittest
 from unittest import mock
 
 from abu_decomp import slots
+
+
+def select_ready(fd: int) -> bool:
+    return bool(select.select([fd], [], [], 0)[0])
 
 
 class SlotsTest(unittest.TestCase):
@@ -40,6 +45,21 @@ class SlotsTest(unittest.TestCase):
         b.release()
         got[0].release()
         self.assertEqual(slots.status()["used"], 0)
+
+    def test_probing_a_slot_raises_no_event_for_the_waiters(self) -> None:
+        """A probe closing a writable descriptor raised IN_CLOSE_WRITE and woke every waiter to probe again."""
+        root, tickets = slots._paths()
+        held = slots.acquire("batch", 1, "holder")
+        self.addCleanup(held.release)
+        for path in slots._slot_files(root):
+            slots._held(path)  # creates the slot files: a first probe's IN_CREATE is not what this test is about
+        waiter = slots._Wait(root, tickets)
+        self.addCleanup(waiter.close)
+        for path in slots._slot_files(root):
+            slots._held(path)
+        slots.free_count()
+        slots._live_tickets(tickets)
+        self.assertFalse(select_ready(waiter.fd), "a lock probe woke the waiters")
 
     def test_owner_uses_the_reserve_beyond_capacity(self) -> None:
         a = slots.acquire("batch", 2, "fill")

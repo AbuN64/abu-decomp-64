@@ -70,10 +70,13 @@ def _paths() -> tuple[Path, Path]:
     return root, tickets
 
 
-def _try_lock(path: Path, create: bool = True):
-    """An open fd holding the lock on `path`, or None when somebody else holds it (or it is gone and not `create`)."""
+def _try_lock(path: Path, create: bool = True, write: bool = False):
+    """An open fd holding the lock on `path`, or None when somebody else holds it (or it is gone and not `create`).
+    A probe opens read-only: closing a writable descriptor raises IN_CLOSE_WRITE in the pool folder, which woke every
+    waiter (the prober's own among them) to probe again, so a queue of waiters spun on each other's probes. WRITE is for
+    the holder, who stamps its info into the file."""
     try:
-        fd = os.open(path, os.O_RDWR | (os.O_CREAT if create else 0) | os.O_CLOEXEC, 0o644)
+        fd = os.open(path, (os.O_RDWR if write else os.O_RDONLY) | (os.O_CREAT if create else 0) | os.O_CLOEXEC, 0o644)
     except FileNotFoundError:
         return None
     try:
@@ -172,7 +175,7 @@ class Grant:
 def _take(root: Path, weight: int, limit: int) -> list[tuple[int, Path]] | None:
     got: list[tuple[int, Path]] = []
     for path in _slot_files(root)[:limit]:
-        fd = _try_lock(path)
+        fd = _try_lock(path, write=True)
         if fd is not None:
             got.append((fd, path))
             if len(got) == weight:
