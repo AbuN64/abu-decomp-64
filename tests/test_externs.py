@@ -153,3 +153,28 @@ def test_a_prototype_spelling_a_type_the_destination_cannot_see_is_refused(tmp_p
     refusal = next(r for r in found["refused"] if r["id"] == "gPos")
     assert refusal["reason"].startswith("type not visible from include/A/A.H")
     assert "gPos" not in table(tmp_path / "out")
+
+
+def test_a_unit_redeclaring_a_name_its_header_declares_is_cleaned_whatever_its_text(tmp_path: Path) -> None:
+    extra = {
+        "include/C/C.H": GUARD.format("C_H").replace("#endif", "extern s32 gMajor;\n#endif"),
+        "src/c/c.c": FILES["src/c/c.c"].replace("extern int gMajor;", "extern signed int gMajor;"),
+        "src/b/b.c": FILES["src/b/b.c"].replace('#include "B/B.H"', '#include "B/B.H"\n#include "C/C.H"')
+        + "extern int gMajor;\n",
+    }
+    _, found = moved(tmp_path, extra)
+    row = table(tmp_path / "out")["gMajor"]
+    assert row[2] == "include/C/C.H" and "declared in header" in row[3]
+    diff = (tmp_path / "out" / found["batches"][0]["batch"]).read_text()
+    assert "-extern signed int gMajor;" in diff and "-extern int gMajor;" in diff
+    assert "+extern s32 gMajor;" not in diff
+
+
+def test_a_blind_unit_whose_text_differs_from_the_header_declaration_is_refused(tmp_path: Path) -> None:
+    extra = {
+        "include/C/C.H": GUARD.format("C_H").replace("#endif", "extern s32 gMajor;\n#endif"),
+        "src/b/b.c": FILES["src/b/b.c"] + "extern int gMajor;\n",
+    }
+    _, found = moved(tmp_path, extra)
+    refusal = next(r for r in found["refused"] if r["id"] == "gMajor")
+    assert refusal["reason"] == "declarations conflict" and refusal["protos"] == ["int gMajor", "s32 gMajor"]

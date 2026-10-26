@@ -245,8 +245,12 @@ def plan(
             reason = "address range"
             if not owner:
                 owner, reason = majority([d.unit for d in decls], unit_module), "majority user"
-            headed = {p for ps in found.in_headers.get(ident, {}).values() for p in ps}
-            protos = sorted({d.proto for d in decls} | headed)
+            held = found.in_headers.get(ident, {})
+            headed = {p for ps in held.values() for p in ps}
+            # a unit that already sees a header declaring the name compiles with both, so its text is no evidence
+            blind = [d for d in decls if not held.keys() & sees.get(d.unit, set())]
+            evidence = {d.proto for d in (blind if headed else decls)}
+            protos = sorted(evidence | headed)
             if len(protos) > 1:
                 refused.append({"id": ident, "reason": "declarations conflict", "protos": protos})
                 continue
