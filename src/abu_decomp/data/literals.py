@@ -43,6 +43,48 @@ def literal_for(info: dict | None) -> str | None:
     return float_literal(bytes.fromhex(info["init"]), acc[0].split(":", 1)[-1])
 
 
+_HEX8 = re.compile(r"[0-9A-Fa-f]{8}")
+
+
+def _word_name(sym: str, off: int) -> str:
+    """The symbol name of the word OFF bytes into SYM's record: its address digits advanced, the rest of the name kept."""
+    m = _HEX8.search(sym)
+    if not m:
+        return f"{sym}+0x{off:X}"
+    digits = m.group(0)
+    return (
+        sym[: m.start()] + format(int(digits, 16) + off, "08X" if digits == digits.upper() else "08x") + sym[m.end() :]
+    )
+
+
+def interior_words(info: dict, listed: set[int]) -> list[str]:
+    """The names of the 4-byte words inside a literal record that its own reads leave out and no census record lists: the
+    record holds more initializer than its accesses cover, so replacing it by literals leaves those words unplaced."""
+    widths = [int(k.split(":")[0]) for k in info.get("access", {}) if k.split(":")[0].isdigit()]
+    if not info.get("literal") or not widths or not info.get("addr"):
+        return []
+    init = len(info.get("init") or "") // 2
+    end = (
+        max(init, info.get("size") or 0) if init >= 16 else init
+    )  # init is cut at 16 bytes; below that it is the record
+    base = int(info["addr"], 16)
+    return [_word_name(info["sym"], off) for off in range(-(-max(widths) // 4) * 4, end, 4) if base + off not in listed]
+
+
+def unlisted_interior(census: dict) -> dict[str, list[str]]:
+    """literal record sym -> its interior words no census record lists (only the records that have some)."""
+    members = [m for c in census["clusters"] for m in c["members"]] + census["lones"]
+    listed = {int(m["addr"], 16) for m in members if m.get("addr")}
+    return {m["sym"]: w for m in members if (w := interior_words(m, listed))}
+
+
+def interior_refusal(sym: str, words: list[str]) -> str:
+    return (
+        f"{sym}: its record holds {', '.join(words)}, which no census record lists and its reads do not cover, so the pool "
+        f"and its readers are unproved; list the word in the census before replacing {sym} by a literal"
+    )
+
+
 def apply(body: str, lits: dict[str, str], raw: re.Pattern[str]) -> str:
     return raw.sub(lambda m: lits.get(m.group(1), m.group(0)), body)
 

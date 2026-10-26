@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from abu_decomp.data import cdecl
+from abu_decomp.data.config import DataConfig
 
 NM_WRAP = r"#ifdef NON_MATCHING\n((?:(?!#ifdef NON_MATCHING)[\s\S])*?)#else\nINCLUDE_ASM\(\"[^\"]+\", %s\);\n#endif\n"
 SPANS = re.compile(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"', re.S)
@@ -22,6 +24,16 @@ def body_span(src: str, fn: str) -> tuple[int, int] | None:
         return None
     end = src.find("\n}\n", m.end())
     return (m.end(), end + 2) if end > 0 else None
+
+
+def unit_of(tree: Path, cfg: DataConfig, fn: str) -> str | None:
+    """The source file that defines FN, found in the text: a function the version map does not list (a version-guarded draft
+    named by its version) still has one unit."""
+    for f in cdecl.source_files(tree, cfg):
+        text = f.read_text(errors="replace")
+        if fn in text and body_span(text, fn):
+            return str(f.relative_to(tree))
+    return None
 
 
 def spans(text: str) -> list[tuple[int, int]]:

@@ -319,7 +319,7 @@ def _place(args: argparse.Namespace) -> Result:
     called = tools.invoke(
         "unbake",
         cli._profile(args.profile),
-        ["sync", "--place", *args.function, *(["--check"] if args.check else [])],
+        ["sync", *(a for fn in args.function for a in ("--place", fn)), *(["--check"] if args.check else [])],
         project=args.tree,
     )
     document = called.document or {}
@@ -330,6 +330,7 @@ def _place(args: argparse.Namespace) -> Result:
         + (f"; removed junk rows {', '.join(p['removed'])}" if p.get("removed") else "")
         for p in placed
     ]
+    lines += [f"{fn}: no row to place" for fn in args.function if not any(p["function"] == fn for p in placed)]
     findings = [
         {"key": f.get("key", "data.place"), "blocking": True, "message": f.get("message") or f.get("reason") or ""}
         for f in document.get("findings") or []
@@ -434,6 +435,9 @@ def _apply_literals(cfg, tree: Path, census: dict, fn: str, unit: str) -> str:
     body = src[sp[0] : sp[1]]
     lits = {s: literals.literal_for(info.get(s)) for s in set(m.group(1) for m in use.finditer(body))}
     lits = {k: v for k, v in lits.items() if v}
+    unproved = {s: w for s, w in literals.unlisted_interior(census).items() if s in lits}
+    if unproved:
+        return f"{fn} REFUSED " + "; ".join(literals.interior_refusal(s, w) for s, w in sorted(unproved.items()))
     new = src[: sp[0]] + literals.apply(body, lits, use) + src[sp[1] :]
     path.write_text(literals.drop_dead_externs(new, sorted(lits)))
     return f"{fn} literals {len(lits)} {sorted(lits.items())[:3]}"
@@ -443,6 +447,8 @@ def _rewrite(args: argparse.Namespace, cfg) -> Result:
     expr, header, member = rewrite_mod.resolve(args.census, args.symbol, args.expr, args.header)
     if member is None and args.census:
         member = rewrite_mod.member_info(json.loads(args.census.read_text()), args.symbol)
+    if args.census:
+        rewrite_mod.refuse_interior(json.loads(args.census.read_text()), args.symbol)
     skipped: dict[str, str] = {}
     files = rewrite_mod.run(cfg, args.tree, args.symbol, expr, header, args.only, args.dry, member, skipped)
     result: dict[str, Any] = {"symbol": args.symbol, "expr": expr, "header": header, "files": files, "skipped": skipped}

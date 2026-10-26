@@ -389,10 +389,11 @@ def test_data_place_runs_unbake_sync_place_and_lists_rows_and_removed_junk(tmp_p
     monkeypatch.setattr(cli, "_profile", lambda p: "profile")
     args = argparse.Namespace(tree=tmp_path, check=True, function=["F", "G"], profile=None)
     result, code, findings = command._place(args)
-    assert seen == [("unbake", ["sync", "--place", "F", "G", "--check"], tmp_path)]
+    assert seen == [("unbake", ["sync", "--place", "F", "--place", "G", "--check"], tmp_path)]
     assert code == 0 and findings == []
     assert result["lines"] == [
-        "F us: literals_F = 0x800E1520; (versions/us/aliases.txt); removed junk rows D_800E1530 (rom 0x2030)"
+        "F us: literals_F = 0x800E1520; (versions/us/aliases.txt); removed junk rows D_800E1530 (rom 0x2030)",
+        "G: no row to place",
     ]
 
 

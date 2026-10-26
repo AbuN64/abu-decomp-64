@@ -368,4 +368,4 @@ def fn_unit(cfg: DataConfig, tree: Path, version: str, fn: str) -> str | None:
     for r in json.loads(f.read_text())["fns"]:
         if r[c["name"]] == fn:
             return r[c["unit"]]
-    return None
+    return source.unit_of(tree, cfg, fn)

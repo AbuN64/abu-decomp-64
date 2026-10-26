@@ -20,7 +20,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from abu_decomp.data import cdecl
+from abu_decomp.data import cdecl, literals
 from abu_decomp.data.config import DataConfig
 
 
@@ -153,6 +153,7 @@ def check_diff(cfg: DataConfig, census: Path, diff_text: str) -> list[str]:
     token = re.compile(r"\b" + cfg.symbol_token)
     exact = "-#ifdef NON_MATCHING" in diff_text
     removed: dict[str, set] = {}
+    dropped: set[str] = set()
     cur = None
     bad = []
     for line in diff_text.splitlines():
@@ -160,6 +161,8 @@ def check_diff(cfg: DataConfig, census: Path, diff_text: str) -> list[str]:
             cur = line[6:] if line.startswith("+++ b/") else line[4:]
         elif line.startswith("-") and not line.startswith("---") and cur:
             removed.setdefault(cur, set()).update(s for s, _ in _decls(line[1:], token))
+            if cur.lower().endswith((".c", ".cpp", ".h")):
+                dropped.update(m.group(0) for m in token.finditer(line[1:]))
     cur = None
     for line in diff_text.splitlines():
         if line.startswith("+++ "):
@@ -177,7 +180,8 @@ def check_diff(cfg: DataConfig, census: Path, diff_text: str) -> list[str]:
                 " MIXED" if sym in removed.get(cur, ()) else ""
             )  # a retyped existing decl: only KIND/LITERAL apply
             bad += [f"{cur}: {v}" for v in violations(sym, typ, member, acc, lit, text, exact, evidence.separate)]
-    return bad
+    unproved = literals.unlisted_interior(json.loads(census.read_text()))
+    return bad + [f"INTERIOR {literals.interior_refusal(s, unproved[s])}" for s in sorted(dropped & unproved.keys())]
 
 
 def _decls(line: str, token: re.Pattern[str]):

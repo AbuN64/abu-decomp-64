@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from abu_decomp import DecompError
-from abu_decomp.data import cdecl, source
+from abu_decomp.data import cdecl, literals, source
 from abu_decomp.data.config import DataConfig
 
 
@@ -24,6 +24,12 @@ def owner_header(census: dict, owner: str) -> str:
     m = member_info(census, owner)
     files = [f for f in (m or {}).get("decl_files", []) if f.startswith("include/")]
     return files[0][len("include/") :] if files else ""
+
+
+def refuse_interior(census: dict, sym: str) -> None:
+    """A literal record whose interior word the census does not list is refused by name, before any placement is offered."""
+    if words := literals.unlisted_interior(census).get(sym):
+        raise DecompError("data.rewrite", literals.interior_refusal(sym, words))
 
 
 def resolve(census_path: Path | None, sym: str, expr: str | None, header: str | None) -> tuple[str, str, dict | None]:
