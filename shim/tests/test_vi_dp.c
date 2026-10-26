@@ -105,7 +105,7 @@ static void callback_fpu_isolation(void)
 int main(void)
 {
     n64c_init(NULL);
-    CHECK(n64c_vi_mode() == NULL && n64c_vi_control() == 0);
+    CHECK(n64c_vi_mode() == NULL && n64c_vi_control() == 0 && n64c_vi_rows() == 0);
     OSViMode mode;
     memset(&mode, 0, sizeof mode);
     mode.type = 2;
@@ -126,6 +126,20 @@ int main(void)
     osViSetSpecialFeatures(OS_VI_GAMMA_ON | OS_VI_GAMMA_OFF | OS_VI_DIVOT_ON);
     CHECK(n64c_vi_control() == 0x3116u); /* OFF wins over ON in one call */
     CHECK(n64c_vi_mode()->comRegs.ctrl == 0x311Eu);
+    /* Rows shown: half-lines 57..498 at scale 1.0 are 220.5 lines (221 rows); the hi-res field at scale 0x68B shows
+     * 218.5 lines x 1.636 (358 rows); osViSetYScale multiplies. */
+    CHECK(n64c_vi_rows() == 0);
+    mode.fldRegs[0].vStart = 57u << 16 | 498u;
+    mode.fldRegs[0].yScale = 0x400u;
+    osViSetMode(&mode);
+    CHECK(n64c_vi_rows() == 221);
+    mode.fldRegs[0].vStart = 58u << 16 | 495u;
+    mode.fldRegs[0].yScale = 0x0200068Bu;
+    osViSetMode(&mode);
+    CHECK(n64c_vi_rows() == 358);
+    osViSetYScale(0.5f);
+    CHECK(n64c_vi_rows() == 179);
+    osViSetYScale(1.0f);
     CHECK(child_status(bad_features) == 78);
     CHECK(child_status(null_mode) == 78);
 

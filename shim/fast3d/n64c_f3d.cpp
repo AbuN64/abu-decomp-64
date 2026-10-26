@@ -379,7 +379,7 @@ extern "C" int n64c_f3d_interp_draw(N64cF3d* f3d, float alpha)
 }
 extern "C" uint32_t n64c_f3d_surface(const N64cF3d* f3d) { return f3d->surface; }
 static int read_surface(N64cF3d* f3d, const std::map<uint32_t, int>& surfaces, uint32_t phys, uint32_t* rgba,
-                        uint32_t w, uint32_t h)
+                        uint32_t w, uint32_t h, uint32_t rows)
 {
     auto context = f3d->window->UseContext();
     const auto it = surfaces.find(phys);
@@ -388,9 +388,13 @@ static int read_surface(N64cF3d* f3d, const std::map<uint32_t, int>& surfaces, u
     const auto info = f3d->interpreter->mFrameBuffers.find(it->second);
     if (info == f3d->interpreter->mFrameBuffers.end())
         return 0;
-    const uint32_t sw = info->second.applied_width, sh = info->second.applied_height;
-    std::vector<uint16_t> src((size_t)sw * sh);
-    f3d->renderer->ReadFramebufferToCPU(it->second, sw, sh, src.data()); // RGBA 5551, top row first
+    const uint32_t sw = info->second.applied_width, full = info->second.applied_height;
+    std::vector<uint16_t> src((size_t)sw * full);
+    f3d->renderer->ReadFramebufferToCPU(it->second, sw, full, src.data()); // RGBA 5551, top row first
+    // The rows the VI shows, counted in the render target's rows (it may be drawn at a scaled size).
+    const uint32_t orig = info->second.orig_height;
+    const uint32_t sh =
+        rows && orig > rows ? std::max<uint32_t>(1, (uint32_t)std::lround((double)full * rows / orig)) : full;
     auto channel = [&](uint32_t x, uint32_t y, int c) {
         const uint16_t p = src[(size_t)y * sw + x];
         const uint32_t v = c == 3 ? (p & 1) * 255u : (p >> (11 - 5 * c) & 31);
@@ -415,10 +419,10 @@ static int read_surface(N64cF3d* f3d, const std::map<uint32_t, int>& surfaces, u
     }
     return 1;
 }
-extern "C" int n64c_f3d_read(N64cF3d* f3d, uint32_t phys, uint32_t* rgba, uint32_t w, uint32_t h)
+extern "C" int n64c_f3d_read(N64cF3d* f3d, uint32_t phys, uint32_t* rgba, uint32_t w, uint32_t h, uint32_t rows)
 {
     FpMasked fp_masked;
-    return read_surface(f3d, f3d->surfaces, phys, rgba, w, h);
+    return read_surface(f3d, f3d->surfaces, phys, rgba, w, h, rows);
 }
 // Debug check: the interpolated draw at alpha 1 must be the game's own picture of the same frame.
 extern "C" int n64c_f3d_interp_check(N64cF3d* f3d, uint32_t w, uint32_t h, uint32_t* drawn_out, uint32_t* game_out)
@@ -427,8 +431,8 @@ extern "C" int n64c_f3d_interp_check(N64cF3d* f3d, uint32_t w, uint32_t h, uint3
     if (!f3d->sub_surface || !f3d->cur.surface || !w || !h)
         return -1;
     std::vector<uint32_t> drawn((size_t)w * h), game((size_t)w * h);
-    if (!read_surface(f3d, f3d->sub_surfaces, f3d->sub_surface, drawn.data(), w, h) ||
-        !read_surface(f3d, f3d->surfaces, f3d->cur.surface, game.data(), w, h))
+    if (!read_surface(f3d, f3d->sub_surfaces, f3d->sub_surface, drawn.data(), w, h, 0) ||
+        !read_surface(f3d, f3d->surfaces, f3d->cur.surface, game.data(), w, h, 0))
         return -1;
     if (drawn_out && game_out) {
         std::copy(drawn.begin(), drawn.end(), drawn_out);
@@ -456,7 +460,7 @@ extern "C" uint32_t n64c_f3d_refresh_hz(N64cF3d* f3d)
 extern "C" int n64c_f3d_interp_read(N64cF3d* f3d, uint32_t* rgba, uint32_t w, uint32_t h)
 {
     FpMasked fp_masked;
-    return f3d->sub_surface && read_surface(f3d, f3d->sub_surfaces, f3d->sub_surface, rgba, w, h);
+    return f3d->sub_surface && read_surface(f3d, f3d->sub_surfaces, f3d->sub_surface, rgba, w, h, 0);
 }
 // The port's own 5x7 status font: printable ASCII 0x20-0x5f, one byte per row, bit 4 the leftmost
 // column. Lower case is drawn upper case. Hand-drawn for this file.

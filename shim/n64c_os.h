@@ -170,6 +170,9 @@ void osViSetSpecialFeatures(u32 func);
 /* Native extensions for presentation: the mode last set (NULL before any) and the VI control word. */
 const OSViMode *n64c_vi_mode(void);
 u32 n64c_vi_control(void);
+/* Rows of the colour image the VI shows: field 0's line window (vStart: first and last half-line) times its y
+ * scale (2.10, times osViSetYScale), rounded up; 0 before any mode. */
+u32 n64c_vi_rows(void);
 /* AI: word-swapped stereo S16 buffer copied synchronously to the host sink.
  * Rates are host sample rates (no AI divider quantization); AI event follows the copy. */
 s32 osAiSetFrequency(u32 frequency);

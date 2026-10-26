@@ -49,7 +49,7 @@ int main(int argc, char** argv)
                  stats.lists, stats.commands, stats.ucode_loads, stats.bad, stats.lines, stats.lines_dropped,
                  stats.unknown, surface);
     std::vector<uint32_t> rgba((size_t)ow * oh);
-    if (!n64c_f3d_read(f3d, surface, rgba.data(), ow, oh))
+    if (!n64c_f3d_read(f3d, surface, rgba.data(), ow, oh, 0))
         return 1;
     std::FILE* o = std::fopen(argv[3], "wb");
     if (!o) {

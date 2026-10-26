@@ -47,8 +47,9 @@ int n64c_f3d_run(N64cF3d *f,const N64cGfxMem *m,uint32_t address,N64cDlStats *st
     if (scenario==6) { st->unknown=1;st->unknown_op=0x42; }
     return scenario==5 ? -1 : 4;
 }
-int n64c_f3d_read(N64cF3d *f,uint32_t phys,uint32_t *out,uint32_t w,uint32_t h)
+int n64c_f3d_read(N64cF3d *f,uint32_t phys,uint32_t *out,uint32_t w,uint32_t h,uint32_t rows)
 {
+    CHECK(rows==221);
     CHECK(f==(N64cF3d *)&renderer && phys==0x300);
     if (scenario==4) return 0;
     for (uint32_t i=0;i<w*h;i++) out[i]=0xff0000ff;
@@ -96,6 +97,7 @@ int n64c_sched_halted(void) { return halted; }
 int n64c_sched_on_guest(void) { return 0; }
 void n64c_sched_halt(void) { abort(); }
 u32 osViGetRetraceCount(void) { return retraces; }
+u32 n64c_vi_rows(void) { return 221; } /* the VI window the pictures are cut to */
 int n64c_frame(void)
 {
     retraces++;

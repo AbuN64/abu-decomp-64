@@ -3,6 +3,7 @@
  * osViSwapBuffer takes effect at the next retrace, like the hardware latching the origin register. */
 #include "n64c_internal.h"
 #include "n64c_diag.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -73,6 +74,14 @@ void osViSetSpecialFeatures(u32 func)
 }
 const OSViMode *n64c_vi_mode(void) { return vi.mode_set ? &vi.mode : NULL; }
 u32 n64c_vi_control(void) { return vi.control; }
+u32 n64c_vi_rows(void)
+{
+    if (!vi.mode_set) return 0;
+    const u32 v = vi.mode.fldRegs[0].vStart, first = v >> 16 & 0x3FFu, last = v & 0x3FFu;
+    if (last <= first) return 0;
+    const double rows = (last - first) / 2.0 * (vi.mode.fldRegs[0].yScale & 0xFFFu) / 1024.0 * vi.yscale;
+    return rows > 0.0 ? (u32)ceil(rows) : 0;
+}
 /* The native host driver already owns VI and timer servicing from n64c_init.
  * It runs between guest dispatches, so there is no manager guest thread to
  * assign a priority to. Creation is idempotent and must not reset live VI state. */

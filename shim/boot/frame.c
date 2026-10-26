@@ -256,7 +256,7 @@ static uint32_t *read_presented(u32 width,u32 height,int quiet,int shown)
     if (!pixels) return NULL;
     /* shown: the window's picture (the live viewer); otherwise the VI's, which a movie's shots compare */
     if (shown && unlock.live && unlock.drawn && n64c_f3d_interp_read(frame.f3d,pixels,width,height)) return pixels;
-    if (!n64c_f3d_read(frame.f3d,physical,pixels,width,height)) {
+    if (!n64c_f3d_read(frame.f3d,physical,pixels,width,height,n64c_vi_rows())) {
         if (!quiet) fprintf(stderr,"boot-frame: presented surface 0x%08x was never rendered\n",physical);
         free(pixels);
         return NULL;

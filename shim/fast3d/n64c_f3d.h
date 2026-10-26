@@ -26,9 +26,9 @@ N64cF3d *n64c_f3d_open(const N64cF3dConfig *config);
 int n64c_f3d_run(N64cF3d *f3d, const N64cGfxMem *mem, uint32_t dl, N64cDlStats *stats);
 /* Physical address of the colour image the latest run drew to last, 0 when it bound none. */
 uint32_t n64c_f3d_surface(const N64cF3d *f3d);
-/* The colour image at physical address phys as RGBA8 (red in the low byte, top row first), resampled
- * bilinearly to w x h (the VI's scaling). 0 when no run has drawn to that address. */
-int n64c_f3d_read(N64cF3d *f3d, uint32_t phys, uint32_t *rgba, uint32_t w, uint32_t h);
+/* The colour image at physical address phys as RGBA8 (red in the low byte, top row first): its top `rows` rows (the
+ * ones the VI shows; 0: all) resampled bilinearly to w x h (the VI's scaling). 0 when no run has drawn to it. */
+int n64c_f3d_read(N64cF3d *f3d, uint32_t phys, uint32_t *rgba, uint32_t w, uint32_t h, uint32_t rows);
 /* Show the colour image at physical address phys on the window, scaled to fill it (the VI's output), and
  * flip. phys 0, or an address no run has drawn, shows black. Returns 0 once the window has been closed. */
 int n64c_f3d_present(N64cF3d *f3d, uint32_t phys);
