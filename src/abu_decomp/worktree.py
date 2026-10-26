@@ -244,7 +244,12 @@ def prune(
         if why := _referenced(shared, path):
             kept.append({"worktree": str(path), "why": why})
             continue
-        _git(shared, "worktree", "remove", "--force", str(path))
+        try:
+            _git(shared, "worktree", "remove", "--force", str(path))
+        except (
+            WorktreeError
+        ):  # a half-removed tree (git forgot it, its files stay) would refuse every later prune: delete it
+            shutil.rmtree(path, ignore_errors=True)
         removed.append(str(path))
     _git(shared, "worktree", "prune")
     freed = (shutil.disk_usage(folder).free - before) // 2**20 if folder.is_dir() else 0

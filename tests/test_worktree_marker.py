@@ -42,3 +42,19 @@ def test_a_seed_from_other_content_gets_a_marker_no_unit_counts_as_untouched_und
     assert not (target / "build/.pool-built-at").exists()
     assert (target / "build/.pool-extracted-at").read_text().strip() == rev
     assert (target / "build/.pool-extracted-at").stat().st_mtime == 0
+
+
+def test_prune_deletes_a_tree_git_forgot_but_whose_files_stay(tmp_path):
+    shared, _target, _rev = _repo(tmp_path)
+    wt = shared.parent / "wt"
+    wt.mkdir()
+    lane = wt / "lane"
+    _git(shared, "worktree", "add", "--detach", "-q", str(lane), "HEAD")
+    (
+        lane / ".git"
+    ).unlink()  # git no longer finds the tree: remove --force refuses it (10-26 STAMP-S0, Directory not empty)
+    (lane / "left").mkdir()
+    result, code, _findings = worktree.prune(shared, ["lane"])
+    assert code == 0
+    assert not lane.exists()
+    assert result["removed"] == [str(lane)]
