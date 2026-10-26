@@ -4,7 +4,8 @@
 
 enum { TILES = 8, SOURCES = 16, MAX_VIEW = 6 };
 enum {
-    OP_TRI1 = 0x05, OP_TRI2 = 0x06, OP_QUAD = 0x07, OP_TEXTURE = 0xD7, OP_TEXRECT = 0xE4, OP_TEXRECTFLIP = 0xE5,
+    OP_TRI1 = 0x05, OP_TRI2 = 0x06, OP_QUAD = 0x07, OP_TEXTURE = 0xD7, OP_SETOTHERMODE_L = 0xE2,
+    OP_SETOTHERMODE_H = 0xE3, OP_TEXRECT = 0xE4, OP_TEXRECTFLIP = 0xE5,
     OP_RDPSETOTHERMODE = 0xEF, OP_LOADTLUT = 0xF0, OP_SETTILESIZE = 0xF2, OP_LOADBLOCK = 0xF3, OP_LOADTILE = 0xF4,
     OP_SETTILE = 0xF5, OP_SETFILLCOLOR = 0xF7, OP_SETFOGCOLOR = 0xF8, OP_SETBLENDCOLOR = 0xF9,
     OP_SETPRIMCOLOR = 0xFA, OP_SETENVCOLOR = 0xFB, OP_SETCOMBINE = 0xFC, OP_SETTIMG = 0xFD
@@ -177,6 +178,16 @@ void n64c_dltrace_cmd(uint32_t w0, uint32_t w1, uint32_t timg_phys, uint32_t hal
     case OP_SETFOGCOLOR: fog = w1; have_fog = 1; break;
     case OP_SETCOMBINE: comb0 = w0 & 0xFFFFFF; comb1 = w1; have_comb = 1; break;
     case OP_RDPSETOTHERMODE: other_h = w0 & 0xFFFFFF; other_l = w1; have_other = 1; break;
+    case OP_SETOTHERMODE_L:
+    case OP_SETOTHERMODE_H: { /* F3DEX2: len - 1 in the low byte, 32 - shift - len above it */
+        const uint32_t len = (w0 & 0xFF) + 1, shift = 32 - (w0 >> 8 & 0xFF) - len;
+        const uint32_t mask = (uint32_t)(((uint64_t)1 << len) - 1) << shift;
+        uint32_t *word = op == OP_SETOTHERMODE_L ? &other_l : &other_h;
+        *word = (*word & ~mask) | (w1 & mask);
+        other_h &= 0xFFFFFF;
+        have_other = 1;
+        break;
+    }
     case OP_TEXRECT:
     case OP_TEXRECTFLIP: {
         const int t = (int)(w1 >> 24 & 7);
