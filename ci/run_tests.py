@@ -2,10 +2,13 @@
 blocking the whole suite. The limit is ABU_TEST_TIMEOUT seconds (default 90); the SIGALRM handler raises inside the
 hung test, and faulthandler kills the run at 1.5x the limit if the handler cannot get in (a stuck C call)."""
 
+import atexit
 import faulthandler
 import os
+import shutil
 import signal
 import sys
+import tempfile
 import unittest
 
 LIMIT = float(os.environ.get("ABU_TEST_TIMEOUT", "90"))
@@ -41,9 +44,18 @@ def hermetic_git():
     os.environ["GIT_CONFIG_COUNT"] = str(count + 1)
 
 
+def hermetic_slots():
+    """The seats slot pool is the live rigs: a test that takes a slot waited behind real work and hit the timeout, so
+    every test run gets its own empty pool."""
+    pool = tempfile.mkdtemp(prefix="abu-slots-")
+    atexit.register(shutil.rmtree, pool, ignore_errors=True)
+    os.environ["ABU_SLOTS_DIR"] = pool
+
+
 def main(start="tests", *names):
     """Every test under `start`, or only the named test modules (`test_tas_coverage`) when given."""
     hermetic_git()
+    hermetic_slots()
     signal.signal(signal.SIGALRM, expired)
     if names:
         sys.path.insert(0, start)

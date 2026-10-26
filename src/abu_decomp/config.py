@@ -19,7 +19,6 @@ SECTIONS = frozenset(
     {
         "tools",
         "events",
-        "lanes",
         "supervisor",
         "build",
         "cycle",
