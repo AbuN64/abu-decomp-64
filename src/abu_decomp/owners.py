@@ -15,6 +15,7 @@ declaration splitter, so it is conservative: a chunk it does not understand is n
 from __future__ import annotations
 
 import csv
+import difflib
 import json
 import re
 import subprocess
@@ -81,9 +82,19 @@ def declarations(root: Path, folder: str) -> list[dict[str, object]]:
             if c.opaque:
                 m = DEFINE.match(c.text.strip())
                 if m and m.group(1) != guard:
-                    rows.append({"header": name, "line": c.first + 1, "kind": "macro", "names": {m.group(1)}})
+                    rows.append(
+                        {
+                            "header": name,
+                            "line": c.first + 1,
+                            "last": c.last + 1,
+                            "kind": "macro",
+                            "names": {m.group(1)},
+                        }
+                    )
                 continue
-            rows.append({"header": name, "line": c.first + 1, "kind": kind_of(c), "names": set(c.defs)})
+            rows.append(
+                {"header": name, "line": c.first + 1, "last": c.last + 1, "kind": kind_of(c), "names": set(c.defs)}
+            )
     return rows
 
 
@@ -128,6 +139,7 @@ def run(
             {
                 "header": r["header"],
                 "line": r["line"],
+                "last": r["last"],
                 "kind": r["kind"],
                 "names": names[:6],
                 "owner": owner,
@@ -169,4 +181,68 @@ def run(
                     ]
                 )  # type: ignore[arg-type]
         (packs / "owners.json").write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
+        result["move_packs"] = move_packs(root, moves, packs)
     return result
+
+
+def include_path(header: str) -> str:
+    """The `#include` spelling of a header path of the tree (the include/ folder is the search root)."""
+    return header.removeprefix("include/")
+
+
+def move_packs(root: Path, moves: list[dict[str, object]], packs: Path) -> list[dict[str, object]]:
+    """One diff per owning module (`moves-NN-<module>.diff`, biggest first), each over the tree the earlier ones leave
+    (apply them in order): the owned declarations leave their COMMON header, a `#include` of the module header takes the
+    place of the first one removed from that header (an includer sees the same names in the same order), and the
+    declarations are appended to the module header before its closing `#endif`. A module whose header the tree does
+    not have yet is skipped (`recipe structure --map` writes the module headers first). The packs only move text; the
+    train's check and the five-ROM proof decide whether the new header order still compiles."""
+    texts: dict[str, list[str]] = {}
+
+    def lines(path: str) -> list[str]:
+        if path not in texts:
+            texts[path] = (root / path).read_text(encoding="latin-1").splitlines(keepends=True)
+        return texts[path]
+
+    by_owner: dict[str, list[dict[str, object]]] = {}
+    for m in moves:
+        if (root / str(m["to"])).is_file() and m["header"] != m["to"]:
+            by_owner.setdefault(str(m["owner"]), []).append(m)
+    written: list[dict[str, object]] = []
+    for number, (owner, mine) in enumerate(sorted(by_owner.items(), key=lambda kv: (-len(kv[1]), kv[0])), 1):
+        before = {path: list(text) for path, text in texts.items()}
+        touched: set[str] = set()
+        dest = str(mine[0]["to"])
+        moved: list[str] = []
+        by_header: dict[str, list[dict[str, object]]] = {}
+        for m in mine:
+            by_header.setdefault(str(m["header"]), []).append(m)
+        for header, parts in sorted(by_header.items()):
+            text = lines(header)
+            before.setdefault(header, list(text))
+            spans = sorted((int(m["line"]) - 1, int(m["last"])) for m in parts)
+            moved += ["".join(text[a:b]) for a, b in spans]
+            keep: list[str] = []
+            at = 0
+            for a, b in spans:
+                keep += text[at:a]
+                if at == 0 or not any(f'#include "{include_path(dest)}"' in line for line in keep):
+                    keep.append(f'#include "{include_path(dest)}"\n')
+                at = b
+            keep += text[at:]
+            texts[header] = keep
+            touched.add(header)
+        target = lines(dest)
+        before.setdefault(dest, list(target))
+        end = max((i for i, line in enumerate(target) if line.lstrip().startswith("#endif")), default=len(target))
+        texts[dest] = [*target[:end], "\n", *("".join(moved).splitlines(keepends=True)), *target[end:]]
+        touched.add(dest)
+        diff = []
+        for path in sorted(touched):
+            diff += difflib.unified_diff(before[path], texts[path], f"a/{path}", f"b/{path}")
+        name = f"moves-{number:02d}-{re.sub(r'[^A-Za-z0-9_.-]', '_', owner)}.diff"
+        (packs / name).write_text("".join(diff), encoding="latin-1")
+        written.append(
+            {"pack": name, "owner": owner, "to": dest, "declarations": len(mine), "headers": len(touched) - 1}
+        )
+    return written

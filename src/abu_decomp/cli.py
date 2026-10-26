@@ -133,6 +133,9 @@ def _port_arguments(parser: argparse.ArgumentParser) -> None:
     )
     carry.add_argument("--to", help="the source commit or ref the renames run to (default: the pin config's ref)")
     carry.add_argument("--check", action="store_true", help="report what would change and write nothing")
+    carry.add_argument(
+        "--like", type=Path, help="read the pin config from this registered port tree (--tree is a clone of it)"
+    )
 
 
 def _run_port(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -141,9 +144,10 @@ def _run_port(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 
         profile = _profile(args.profile)
         tree = args.tree.expanduser().resolve()
-        pin = land.settings(profile, tree)["pin"]
+        registered = args.like.expanduser().resolve() if args.like else tree
+        pin = land.settings(profile, registered)["pin"]
         if pin is None:
-            raise remap.RemapError("remap.config", f"land.trees has no pin for {tree}")
+            raise remap.RemapError("remap.config", f"land.trees has no pin for {registered}")
         if args.renames:
             result = remap.from_map(tree, pin, [m.expanduser() for m in args.renames], write=not args.check)
             return result, 0, []

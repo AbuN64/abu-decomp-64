@@ -81,3 +81,23 @@ def test_the_packs_hold_the_move_list(tmp_path: Path) -> None:
     lines = (out / "owners.tsv").read_text().splitlines()
     assert lines[0].startswith("header\tline\tkind") and len(lines) == found["declarations"] + 1
     assert found["owned"] >= 4 and found["by_owner"]["src/game/MENU/A.CPP"] >= 3
+
+
+def test_move_packs_move_the_owned_declarations_and_keep_the_include_order(tmp_path: Path) -> None:
+    root = project(tmp_path)
+    (root / "include/MENU").mkdir(parents=True)
+    (root / "include/MENU/A.H").write_text("#ifndef MENU_A_H\n#define MENU_A_H\n#endif\n")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    found = owners.run(root, "include/COMMON", packs=tmp_path / "out")
+    packs = found["move_packs"]
+    assert packs and packs[0]["owner"] == "src/game/MENU/A.CPP" and packs[0]["to"] == "include/MENU/A.H"
+    diff = tmp_path / "out" / packs[0]["pack"]
+    subprocess.run(["git", "-C", str(root), "apply", "--check", str(diff)], check=True)
+    subprocess.run(["git", "-C", str(root), "apply", str(diff)], check=True)
+    common = (root / "include/COMMON/common.h").read_text()
+    menu = (root / "include/MENU/A.H").read_text()
+    assert common.count('#include "MENU/A.H"') == 1 and "extern int gScore;" not in common
+    assert "extern int gScore;" in menu and menu.rstrip().endswith("#endif")
+    assert common.index('#include "MENU/A.H"') < common.index(
+        "extern int gNobody;"
+    )  # the include stands where the first moved one was

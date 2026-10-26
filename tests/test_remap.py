@@ -178,6 +178,26 @@ class RemapTests(unittest.TestCase):
         self.assertEqual((code, [f["key"] for f in findings]), (1, ["remap.stale"]))
         self.assertEqual(self.manifest.read_text(), before)
 
+    def test_like_carries_the_renames_into_a_clone_with_the_registered_trees_pin(self) -> None:
+        import shutil
+
+        clone = self.root / "clone"
+        shutil.copytree(self.tree, clone)
+        argv = [
+            "--profile",
+            str(self.root / "seat.json"),
+            "port",
+            "remap",
+            "--tree",
+            str(clone),
+            "--like",
+            str(self.tree),
+        ]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main([*argv, "--since", self.old]), 0)
+        self.assertIn("Math_Sqrtf", (clone / self.manifest.relative_to(self.tree)).read_text())
+        self.assertIn("func_80001000_de", self.manifest.read_text())  # the registered tree is untouched
+
     def test_the_port_remap_verb_runs_since_a_commit_and_check_is_read_only(self) -> None:
         argv = [
             "--profile",
