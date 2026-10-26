@@ -418,6 +418,9 @@ def check(b: Builder, version: str, units: list[str] | None = None, baseline: di
     mark = (time.monotonic(), meter.cpu())
     rc, log = b.objects(version, units, keep_going=True)
     made = (time.monotonic() - mark[0], meter.cpu() - mark[1])
+    for line in log.splitlines():
+        if "make.front:" in line:  # how many compiles the cache answered: the make is most of the check's CPU
+            print(f"check {version}: " + line[line.index("make.front:") :], flush=True)
     failed = failures(b, version, units, log)
     old = {u: why for u, why in failed.items() if baseline and baseline.get(u) == why}
     failed = {u: why for u, why in failed.items() if u not in old}

@@ -391,3 +391,19 @@ def test_a_marked_tree_is_not_refused(tmp_path):
     (tmp_path / "build/.pool-extracted-at").unlink()
     (tmp_path / "build/.pool-built-at").write_text("abc\n")
     assert check.marker_refusal(tmp_path) is None
+
+
+def test_check_prints_how_many_compiles_the_cache_answered(monkeypatch, tmp_path, capsys):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/map-a.json").write_text(json.dumps({"fns": []}))
+    builder = SimpleNamespace(
+        cfg=CFG,
+        tree=tmp_path,
+        run=lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        objects=lambda version, units, keep_going=False: (
+            0,
+            "x\nmake.front: 3 of 5 compiles from the cache, 2 compile\n",
+        ),
+    )
+    check.check(builder, "a", ["src/data.c"])
+    assert "check a: make.front: 3 of 5 compiles from the cache, 2 compile" in capsys.readouterr().out
