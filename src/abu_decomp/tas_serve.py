@@ -41,6 +41,7 @@ import time
 import urllib.parse
 import zlib
 from collections import OrderedDict, deque
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -103,6 +104,7 @@ WALL_KEEPALIVE_SECONDS = 10.0
 LIVE_SECONDS = 0.5  # while a run goes, live.json is refreshed at least this often (poll ticks)
 LIVE_GAP_SECONDS = 0.2  # live.json is rewritten at most this often: a change shows well inside 0.5 s
 LIVE_IDLE_SECONDS = 60.0  # with nothing running, live.json is refreshed this often (its clock, an abandoned run)
+REACH_READ_TIMEOUT = 1.0  # how long the reader waits for a datagram before it asks whether the run is still alive
 REACH_FILE = "reach.bin"  # RUN/reach.bin: the run's final reach bitset over fns.json rows
 REACH_MAX_RECORD = 65536
 REACH_MAX_ROW = 1 << 17
@@ -572,6 +574,7 @@ class Server:
         row.update(pak=pak or "on", oracle=None, fps_unlock=fps_unlock, shown=None, **{"from": None, "at": None})
         with self.lock:
             self.queued[run_id] = row
+        self.reach.expect(self.cfg["runs"] / "plays" / run_id, lambda: run_id in self.queued)
         self.live.touch()
 
     def _forget(self, run_id: str) -> None:
@@ -979,8 +982,9 @@ def reach_full(poll: int, bits: bytes) -> bytes:
 class RunReach:
     """One run's reach stream: the cumulative bitset, the poll of the last record and the records not yet forgotten."""
 
-    def __init__(self, run: Path) -> None:
+    def __init__(self, run: Path, pending: Callable[[], bool] = lambda: False) -> None:
         self.run = run
+        self.pending = pending  # true while the run is queued: its folder and port are not there yet, so keep listening
         self.lock = threading.Lock()
         self.bits = bytearray()
         self.poll = 0
@@ -990,6 +994,7 @@ class RunReach:
         self.records: deque[tuple[int, bytes]] = deque()
         self.size = 0
         self.done = False
+        self.idle = 0  # reads that timed out with nothing to receive
         self.listening = threading.Event()  # set once the socket is bound: the port's datagrams are no longer dropped
 
     def feed(self, data: bytes) -> bool:
@@ -1060,14 +1065,15 @@ class RunReach:
                 print(f"tas page: no reach stream for {self.run.name}: {error}", flush=True)
                 self.done = True
                 return
-            sock.settimeout(1.0)
+            sock.settimeout(REACH_READ_TIMEOUT)
             self.listening.set()
             while True:
                 try:
                     self.feed(sock.recv(REACH_MAX_RECORD + 1))
                     continue
                 except TimeoutError:
-                    if tas.running(self.run):
+                    self.idle += 1
+                    if tas.running(self.run) or self.pending():
                         continue
                 except OSError:
                     pass
@@ -1120,6 +1126,14 @@ class Reach:
                 if not self.runs[oldest].done:
                     break
                 del self.runs[oldest]
+
+    def expect(self, run: Path, pending: Callable[[], bool]) -> None:
+        """Listen for a run that has not started: the port's first full record is dropped when nobody listens yet, so
+        the socket is bound when the run is queued, and stays bound while `pending` says the run is still queued."""
+        with self.lock:
+            if run.name not in self.runs:
+                relay = self.runs[run.name] = RunReach(run, pending)
+                threading.Thread(target=relay.serve, daemon=True, name=f"reach-{run.name}").start()
 
     def feed_for(self, run: Path) -> ReachFeed | None:
         """The records of `run` for one viewer: its live relay, else the final set a finished run left in reach.bin

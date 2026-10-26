@@ -867,6 +867,24 @@ class ReachTests(Base):
         self.assertEqual((run / "reach.bin").read_bytes(), final)
         self.assertTrue(relay.done)
 
+    def test_a_queued_run_is_listened_for_before_its_port_starts_and_until_it_leaves_the_queue(self):
+        run = self.server.cfg["runs"] / "plays" / "q1"
+        patch = mock.patch.object(tas_serve, "REACH_READ_TIMEOUT", 0.01)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.server._placeholder("q1", "boot-idle", 0, self.server.cfg["port"], None)
+        relay = self.server.reach.runs["q1"]
+        self.assertTrue(relay.listening.wait(5))
+        self.assertFalse(run.exists())
+        self.sender(run)(reach_record(1, 5, bitset([2], 8)))  # the port's first record, before the run folder exists
+        self.until(lambda: relay.count == 1)
+        self.assertEqual(relay.snapshot()[0], reach_record(1, 5, bitset([2], 8)))
+        self.until(lambda: relay.idle >= 3)  # it asked whether the run is alive, and a queued run keeps its socket
+        self.assertFalse(relay.done)
+        self.server._forget("q1")
+        self.until(lambda: relay.done)
+        self.assertFalse((run / "reach.bin").exists())  # no folder was made for it
+
     def test_the_wall_carries_each_running_runs_reach_records_under_its_index_full_first(self):
         runs = [
             self.make_run(n, movie="boot-idle", status="running", speed=0, started=float(i), pid=os.getpid())
