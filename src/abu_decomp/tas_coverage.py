@@ -295,24 +295,25 @@ def _entry_counts(path: Path) -> dict[str, int]:
 
 
 def oracle_bracket(run: Path, poll: int) -> tuple[dict[str, int], dict[str, int] | None] | None:
-    """The oracle's cumulative entry counts at the snapshots around `poll` (RUN/oracle-golden/trace-poll-N.tsv, one
-    every shot_every polls): (counts at the last snapshot <= poll, counts at the first snapshot >= poll, None when the
-    oracle ended before `poll`). None when the run holds no snapshots."""
+    """The oracle's cumulative entry counts around `poll` (RUN/oracle-golden/trace-poll-N.tsv, one every shot_every
+    polls): (counts one snapshot before the last snapshot <= poll, counts at the first snapshot >= poll, None when the
+    oracle ended before `poll`). The port's last poll and the oracle's snapshots are not in phase (the port lags the
+    oracle by up to one snapshot interval), so the lower bound reaches one interval back. None when the run holds no
+    snapshots."""
     folder = run / ORACLE_DIR
     polls = sorted(int(m[1]) for p in folder.glob("trace-poll-*.tsv") if (m := _SNAPSHOT.fullmatch(p.name)))
     if not polls:
         return None
     below = [p for p in polls if p <= poll]
     above = [p for p in polls if p >= poll]
-    low = _entry_counts(folder / f"trace-poll-{below[-1]}.tsv") if below else {}
+    low = _entry_counts(folder / f"trace-poll-{below[-2]}.tsv") if len(below) > 1 else {}
     high = _entry_counts(folder / f"trace-poll-{above[0]}.tsv") if above else None
     return low, high
 
 
 def behaviour(port: dict[str, int], bracket: tuple[dict[str, int], dict[str, int] | None]) -> dict[str, str]:
     """Per function the port's build defines and either side entered: `behaves` when the port's entry count at its last
-    poll lies between the oracle's counts at the snapshots around that poll (at least the lower one when the oracle
-    ended earlier), `missing` when the port never entered what the original had by then, `port-only` when the
+    poll lies inside the oracle_bracket (at least the lower bound when the oracle ended earlier), `missing` when the port never entered what the original had by then, `port-only` when the
     original never entered it by the next snapshot, else `differs`. Count granularity: lanes/TAS-CORPUS-OPUS-1."""
     low, high = bracket
     out: dict[str, str] = {}

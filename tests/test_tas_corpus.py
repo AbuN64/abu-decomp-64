@@ -264,10 +264,12 @@ class BehaviourTests(unittest.TestCase):
             head = "order\tsymbol\tfirst_vi\tfirst_thread\tcount\n"
             for poll, count in ((25, 1), (50, 2), (75, 3)):
                 (golden / f"trace-poll-{poll}.tsv").write_text(head + f"1\tf\t0\t1\t{count}\n")
-            self.assertEqual(tas_coverage.oracle_bracket(run, 60), ({"f": 2}, {"f": 3}))
-            self.assertEqual(tas_coverage.oracle_bracket(run, 50), ({"f": 2}, {"f": 2}))
-            self.assertEqual(tas_coverage.oracle_bracket(run, 90), ({"f": 3}, None))
+            # the lower bound reaches one snapshot interval back: the port lags the oracle by up to one
+            self.assertEqual(tas_coverage.oracle_bracket(run, 60), ({"f": 1}, {"f": 3}))
+            self.assertEqual(tas_coverage.oracle_bracket(run, 50), ({"f": 1}, {"f": 2}))
+            self.assertEqual(tas_coverage.oracle_bracket(run, 90), ({"f": 2}, None))
             self.assertEqual(tas_coverage.oracle_bracket(run, 10), ({}, {"f": 1}))
+            self.assertEqual(tas_coverage.oracle_bracket(run, 30), ({}, {"f": 2}))
             self.assertIsNone(tas_coverage.oracle_bracket(run / "none", 10))
 
 
