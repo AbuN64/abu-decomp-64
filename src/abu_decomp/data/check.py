@@ -178,7 +178,9 @@ def referencing_units(cfg: DataConfig, tree: Path, symbols: list[str], run=subpr
 def in_version(cfg: DataConfig, tree: Path, version: str, units: list[str]) -> list[str]:
     """Exclude function units known to belong only to another version. A function map is not a source inventory:
     data-only units have no row in any version and must still build. Unknown units stay in the check, so a missing
-    build rule fails visibly instead of silently dropping the changed source from the stamp.
+    build rule fails visibly instead of silently dropping the changed source from the stamp. A unit the version's own
+    build already made (its object or dependency file is in the tree) stays whatever the maps say: a function ported
+    into a unit that only the other versions' maps list (10-25 Libc_SignedDivide, US) is judged where it now lives.
     """
 
     def mapped(v: str) -> set[str]:
@@ -194,7 +196,13 @@ def in_version(cfg: DataConfig, tree: Path, version: str, units: list[str]) -> l
         if other != version:
             with contextlib.suppress(OSError, ValueError, KeyError):
                 known.update(mapped(other))
-    return [u for u in units if u in held or u not in known]
+    obj = cfg.object
+
+    def built(u: str) -> bool:
+        path = tree / obj.format(v=version, unit=u)
+        return path.exists() or path.with_suffix(".d").exists()
+
+    return [u for u in units if u in held or u not in known or built(u)]
 
 
 def changed_units(

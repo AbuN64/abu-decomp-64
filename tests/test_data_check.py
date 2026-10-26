@@ -354,3 +354,15 @@ def test_prepare_signs_every_versions_narrowed_includers_before_any_build(monkey
     monkeypatch.setattr(check, "in_version", lambda cfg, tree, v, units: units)
     got = check.check(b, "a")
     assert built == [("a", ["src/x.c"])] and got["narrowed"]["signed"] == 2
+
+
+def test_a_unit_the_version_already_built_stays_though_only_other_maps_list_it(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/map-b.json").write_text(json.dumps({"fns": [["f", 0, 0, 100, "src/a/u1.CPP"]]}))
+    (tmp_path / "docs/map-a.json").write_text(json.dumps({"fns": [["g", 0, 0, 100, "src/a/shared.CPP"]]}))
+    units = ["src/a/u1.CPP", "src/a/shared.CPP"]
+    assert check.in_version(CFG, tmp_path, "b", units) == ["src/a/u1.CPP"]
+    obj = tmp_path / CFG.object.format(v="b", unit="src/a/shared.CPP")
+    obj.parent.mkdir(parents=True)
+    obj.write_bytes(b"")
+    assert check.in_version(CFG, tmp_path, "b", units) == units
