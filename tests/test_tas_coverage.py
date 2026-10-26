@@ -73,10 +73,11 @@ class ReadTests(unittest.TestCase):
             return process
 
         with mock.patch.object(cov.tas_oracle, "start", side_effect=leave_trace) as start:
-            self.assertTrue(cov.run_oracle(profile, {"exit_after": 7}, self.root, {"pak": "off"}))
+            self.assertTrue(cov.run_oracle(profile, {"exit_after": 7}, self.root, {"pak": "off", "pads": 2}))
         args, kwargs = start.call_args
         self.assertEqual((args[1], args[2], args[3]), (self.root, 7, "off"))
         self.assertEqual(kwargs["extra"], {"N64R_GOLDEN_DIR": str(self.root / cov.ORACLE_DIR)})
+        self.assertEqual(kwargs["pads"], 2)
         profile.section.return_value = {}
         self.assertFalse(cov.run_oracle(profile, {"exit_after": 7}, self.root, {}))
 
@@ -181,6 +182,36 @@ class RunReportTests(unittest.TestCase):
         folder.mkdir(parents=True)
         (folder / "A.CPP.gcda").write_text("counts")
         return folder
+
+    def test_empty_upper_snapshot_is_zero_not_an_unbounded_horizon(self):
+        (self.run / "coverage.json").write_text(
+            json.dumps(
+                {
+                    "files": [
+                        {
+                            "functions": [{"name": "f", "execution_count": 3}],
+                        }
+                    ]
+                }
+            )
+        )
+        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None}
+        with (
+            mock.patch.object(cov, "settings", return_value=cov_cfg),
+            mock.patch.object(cov, "latest_runs", return_value={"m": self.run}),
+            mock.patch.object(cov, "universe", return_value=([], {})),
+            mock.patch.object(cov, "resolver", return_value=lambda name: name),
+            mock.patch.object(cov, "union", side_effect=lambda *a, **k: {"covered": [[]], "summary": {}}) as union,
+            mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
+            mock.patch.object(cov, "oracle_bracket") as bracket,
+            mock.patch.object(cov, "read_oracle", return_value=None),
+            mock.patch("abu_decomp.tas.read_record", return_value={}),
+        ):
+            for upper, expected in (({}, "port-only"), (None, "behaves")):
+                with self.subTest(upper=upper):
+                    bracket.return_value = ({}, upper)
+                    cov.build(self.profile, self.cfg, oracle=False, jobs=1, table_only=True)
+                    self.assertEqual(union.call_args.args[3][0]["behaviour"], {"f": expected})
 
     def test_a_run_without_counters_has_no_report(self):
         with mock.patch.object(cov, "gcovr") as gcovr:

@@ -336,6 +336,7 @@ def run_oracle(profile: Profile, cfg: dict[str, Any], run: Path, record: dict[st
         str(record.get("pak") or "on"),
         extra={"N64R_GOLDEN_DIR": str(run / ORACLE_DIR)},
         card=card,
+        pads=int(record.get("pads", 1)),
     )
     try:
         process.wait(oracle["timeout_seconds"])
@@ -748,7 +749,10 @@ def build(
         port = fold(read_gcovr(run / COVERAGE) or {}, resolve, _add)
         bracket = oracle_bracket(run, int(record.get("polls_reached") or 0))
         if bracket:
-            bracket = (fold(bracket[0], resolve, _add), fold(bracket[1], resolve, _add) if bracket[1] else None)
+            bracket = (
+                fold(bracket[0], resolve, _add),
+                fold(bracket[1], resolve, _add) if bracket[1] is not None else None,
+            )
         return {
             "movie": name,
             "run": run.name,
