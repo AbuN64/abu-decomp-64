@@ -410,6 +410,9 @@ static socklen_t reach_addr_len;
 static struct sockaddr_un reach_addr;
 static unsigned long long reach_last_ms;
 static long reach_poll;
+/* Census-only: while the reach stream is live and nothing reads the logical call stacks (no run-on diagnostics, no
+ * last-store watch), the entry hook only counts: it skips the frame record push_frame and the exit hook keep per call. */
+static int census_only;
 static unsigned row_hash(const char *name)
 {
     unsigned h = 2166136261u;
@@ -629,6 +632,8 @@ NOINST void n64c_trace_init(void)
     fflush(stderr);
     ls_init();
     reach_init();
+    const char *run_on = getenv("N64C_RUN_ON");
+    census_only = row_slots && !ls_on && !ls_watch && !(run_on && !strcmp(run_on, "1"));
     __atomic_store_n(&armed, 1, __ATOMIC_RELEASE);
 }
 NOINST static void first_hit(unsigned i)
@@ -700,7 +705,8 @@ NOINST RAWSTACK static void trace_enter(void *fn, void *call_site, const unsigne
                 __atomic_fetch_add(&row_entered[row_slots[s].row], 1, __ATOMIC_RELAXED);
                 break;
             }
-    push_frame(fn, call_site, regs);
+    if (!census_only)
+        push_frame(fn, call_site, regs);
     if (ls_watch)
         ls_watch_check(fn, "enter");
     for (unsigned s = slot_of(fn) & slot_mask; slots[s].index; s = (s + 1) & slot_mask)
@@ -750,6 +756,8 @@ NOINST void __cyg_profile_func_exit(void *fn, void *call_site)
     (void)call_site;
     if (ls_watch)
         ls_watch_check(fn, "exit");
+    if (census_only)
+        return;
     N64cTraceStack *mine = own;
     if (!mine || !mine->depth)
         return;
