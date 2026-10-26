@@ -14,7 +14,8 @@ module that owns it. The plan is computed, never claimed:
 The moves are emitted as batches (`externs-batch-NN.diff`, each over the tree the earlier ones leave) that the train
 applies like any tool batch: no file cap, one stamp per batch. A batch's stamp rebuilds every unit that sees a header it
 changes, so a batch is filled until its estimated cost (recompiled units x `unit_cpu`) reaches `batch_cpu`, which
-`externs.json` records per batch beside the refusals and the unit-extern counts before and after."""
+`externs.json` records per batch beside the refusals and the unit-extern counts before and after. When the project's
+data config names a census, a batch is also run through the stamp gate and every id it refuses is refused here."""
 
 from __future__ import annotations
 
@@ -24,10 +25,13 @@ import json
 import re
 import subprocess
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from abu_decomp import deaddecls, owners
+from abu_decomp import DecompError, deaddecls, owners
+from abu_decomp.data import config as data_config
+from abu_decomp.data import gate as data_gate
 
 HEADER_SUFFIXES = (".h", ".hpp", ".hh")
 INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.M)
@@ -179,6 +183,7 @@ def plan(
     packs: Path | None = None,
     batch_cpu: float = BATCH_CPU,
     unit_cpu: float = UNIT_CPU,
+    gate: Callable[[str], list[str]] | None = None,
 ) -> dict[str, object]:
     map_path = map_path or root / "docs" / "MODULES.tsv"
     unit_module, module_header = owners.read_map(map_path)
@@ -255,8 +260,17 @@ def plan(
                 "units": users,
             }
         )
-    sees_dest = {m["to"]: includers[str(m["to"])] for m in moves}
-    batches = fill(moves, sees_dest, batch_cpu, unit_cpu)
+    unattributed: list[str] = []
+    while True:
+        sees_dest = {m["to"]: includers[str(m["to"])] for m in moves}
+        batches = fill(moves, sees_dest, batch_cpu, unit_cpu)
+        refusing = refused_by_gate(found, batches, sees, unit_cpu, gate, unattributed) if gate else {}
+        if not refusing:
+            break
+        for m in moves:
+            if m["id"] in refusing:
+                refused.append({"id": m["id"], "reason": "gate: " + refusing[str(m["id"])], "protos": [m["proto"]]})
+        moves = [m for m in moves if m["id"] not in refusing]
     lines_before = sum(len(v) for v in found.externs.values())
     result: dict[str, object] = {
         "unit_extern_lines_before": lines_before,
@@ -267,10 +281,11 @@ def plan(
         "refused_ids": len(refused),
         "batches": [],
         "refused": refused,
+        "gate_unattributed": unattributed,
     }
     if packs is not None:
         packs.mkdir(parents=True, exist_ok=True)
-        result["batches"] = write_batches(found, batches, packs, sees, unit_cpu)
+        result["batches"] = write_batches(found, batches, packs, sees, unit_cpu)[0]
         (packs / "externs.json").write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
         with open(packs / "externs.tsv", "w", encoding="utf-8", newline="") as handle:
             w = csv.writer(handle, delimiter="\t", lineterminator="\n")
@@ -278,6 +293,41 @@ def plan(
             for m in moves:
                 w.writerow([m["id"], m["owner"], m["to"], m["reason"], m["proto"], len(m["units"])])  # type: ignore[arg-type]
     return result
+
+
+def stamp_gate(root: Path) -> Callable[[str], list[str]] | None:
+    """The project's stamp gate as a diff checker, when its data config names a census: a batch the gate would refuse at
+    stamp time is refused at plan time, id by id."""
+    try:
+        cfg = data_config.load(None, root)
+    except DecompError:
+        return None
+    census = Path(cfg.census).expanduser() if cfg.census else None
+    if census is None or not census.is_file():
+        return None
+    return lambda text: data_gate.check_diff(cfg, census, text)
+
+
+def refused_by_gate(
+    found: Scan,
+    batches: list[list[dict[str, object]]],
+    sees: dict[str, set[str]],
+    unit_cpu: float,
+    gate: Callable[[str], list[str]],
+    unattributed: list[str],
+) -> dict[str, str]:
+    """The ids whose batch the project's stamp gate would refuse, each with the violation that names it; a violation that
+    names none of its batch's ids is kept in `unattributed` (the plan cannot drop it)."""
+    refusing: dict[str, str] = {}
+    diffs = write_batches(found, batches, None, sees, unit_cpu)[1]
+    for batch, text in zip(batches, diffs):
+        for violation in gate(text):
+            named = [str(m["id"]) for m in batch if re.search(r"\b" + re.escape(str(m["id"])) + r"\b", violation)]
+            for ident in named:
+                refusing.setdefault(ident, violation[:240])
+            if not named and violation not in unattributed:
+                unattributed.append(violation)
+    return refusing
 
 
 def fill(
@@ -323,13 +373,15 @@ def locate(current: list[str], wanted: list[str], hint: int) -> int:
 
 
 def write_batches(
-    found: Scan, batches: list[list[dict[str, object]]], packs: Path, sees: dict[str, set[str]], unit_cpu: float
-) -> list[dict[str, object]]:
+    found: Scan, batches: list[list[dict[str, object]]], packs: Path | None, sees: dict[str, set[str]], unit_cpu: float
+) -> tuple[list[dict[str, object]], list[str]]:
     """One diff per batch over the tree the earlier ones leave: declarations leave their units, one extern per id joins
-    the destination header before its closing `#endif`, a unit that no longer sees the destination includes it."""
+    the destination header before its closing `#endif`, a unit that no longer sees the destination includes it. Returns the
+    batch records and the diff texts; the files are written only when `packs` is given."""
     texts = {n: rows(t) for n, t in found.texts.items()}
     seen = {n: set(h) for n, h in sees.items()}
     written: list[dict[str, object]] = []
+    diffs: list[str] = []
     for number, batch in enumerate(batches, 1):
         before: dict[str, list[str]] = {}
         removals: dict[str, list[tuple[int, int]]] = defaultdict(list)
@@ -375,7 +427,9 @@ def write_batches(
         for n in sorted(edited):
             diff += [f"diff --git a/{n} b/{n}\n", *difflib.unified_diff(before[n], texts[n], f"a/{n}", f"b/{n}")]
         name = f"externs-batch-{number:02d}.diff"
-        (packs / name).write_text("".join(diff), encoding="latin-1")
+        diffs.append("".join(diff))
+        if packs is not None:
+            (packs / name).write_text(diffs[-1], encoding="latin-1")
         units = batch[0].get("batch_units", 0)
         written.append(
             {
@@ -388,4 +442,4 @@ def write_batches(
                 "estimated_cpu": round(float(units) * unit_cpu, 1) if isinstance(units, int) else 0.0,
             }
         )
-    return written
+    return written, diffs
