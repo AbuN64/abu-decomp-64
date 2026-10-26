@@ -1233,7 +1233,9 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
             from abu_decomp import externs
 
             gate = externs.stamp_gate(root)
-            hoist = externs.plan(root, Path(args.map) if args.map else None, args.packs, args.batch_cpu, args.unit_cpu, gate)
+            hoist = externs.plan(
+                root, Path(args.map) if args.map else None, args.packs, args.batch_cpu, args.unit_cpu, gate
+            )
             print(
                 f"owners (unit externs) {hoist['unit_extern_lines_before']} lines / {hoist['unit_extern_ids_before']}"
                 f" ids -> {hoist['unit_extern_lines_after']} lines / {hoist['unit_extern_ids_after']} ids:"
