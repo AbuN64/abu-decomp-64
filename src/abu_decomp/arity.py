@@ -8,6 +8,11 @@ and stack words read before they are written, along every path). Per symbol it s
 or `asm` (the sites agree but the assembly reads more arguments than the definition has), and the gate refuses a
 change that adds a disagreement or touches a disagreeing function without reducing it.
 
+The same census reads each definition's and prototype's return type and whether a call consumes its result. A void
+definition behind a non-void prototype, a prototype of another ABI class (scalar or pointer, floating point,
+aggregate, void) than the definition, or a call that uses the result of a void function (`x = f()`, `return f()`, a
+test, an argument, an operand) is a disagreement like a wrong argument count, and the gate refuses it the same way.
+
 Limits, stated so a verdict is read for what it is: the asm count is a lower bound (a function may ignore an argument,
 a tail call passes registers on, a jump table ends a path); call sites are counted textually, so a macro that expands
 to several arguments is one; functions already matched have no assembly file, so they carry no asm count.
@@ -33,12 +38,20 @@ DEFAULTS: dict[str, Any] = {
     "symbols": r"func_[0-9A-Fa-f]{8}\w*",
     "asm": "asm/us-rev1/nonmatchings",
 }
-VERSION = 3
+VERSION = 4
 KEYWORDS = frozenset(
     {"return", "else", "do", "goto", "case", "sizeof", "if", "while", "for", "switch", "typedef", "define"}
 )
 _LEX = re.compile(r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.S)
 _PRE_TYPE = re.compile(r"^[\w\s\*]+$")
+_QUALIFIERS = frozenset(
+    {"static", "extern", "inline", "INLINE", "__inline", "__inline__", "const", "volatile", "register", "NORETURN"}
+)
+_FLOATS = frozenset({"float", "double", "f32", "f64"})
+_INTS = frozenset(
+    {"char", "short", "int", "long", "signed", "unsigned", "bool", "s8", "s16", "s32", "s64", "u8", "u16", "u32", "u64"}
+    | {"size_t", "ptrdiff_t", "intptr_t", "uintptr_t"}
+)
 
 
 class ArityError(DecompError):
@@ -73,8 +86,71 @@ def _args(inner: str) -> list[str]:
     return [] if len(rows) == 1 and rows[0] in ("", "void") else rows
 
 
+def return_type(pre: str) -> str:
+    """The return type written before a function name: qualifiers dropped, spacing normalised."""
+    words = [w for w in pre.replace("*", " * ").split() if w not in _QUALIFIERS]
+    return " ".join(words)
+
+
+def type_class(text: str) -> str:
+    """The ABI class of a written return type: void, int (scalar or pointer), float, agg:<tag> or named:<typedef>."""
+    words = text.split()
+    if words == ["?"]:
+        return "unknown"
+    if "*" in words:
+        return "int"
+    if "void" in words:
+        return "void"
+    if _FLOATS & set(words):
+        return "float"
+    if {"struct", "union"} & set(words):
+        return "agg:" + words[-1]
+    if _INTS & set(words):
+        return "int"
+    return "named:" + (words[-1] if words else "")
+
+
+def class_conflict(a: str, b: str) -> bool:
+    """Two return classes that cannot be the same ABI: a void against anything, or two known classes that differ. An
+    unresolved typedef (named:) conflicts only with void: it may be a scalar, a float or an aggregate."""
+    if a == b or "unknown" in (a, b):
+        return False
+    if "void" in (a, b):
+        return True
+    return not (a.startswith("named:") or b.startswith("named:"))
+
+
+def _consumed(statement: str, after: str) -> bool:
+    """Whether a call uses its result: `statement` is the text before the call back to the last ; { or }, `after` the
+    text following the call."""
+    if re.match(r"\s*return\b", statement):
+        return True
+    if after and after[0] not in ";),}:":
+        return True
+    text = statement.rstrip()
+    if not text or re.search(r"\b(else|do)$", text):
+        return False
+    last = text[-1]
+    if last == ")":
+        depth = 0
+        for index in range(len(text) - 1, -1, -1):
+            depth += {")": 1, "(": -1}.get(text[index], 0)
+            if depth == 0:
+                break
+        head, inner = text[:index].rstrip(), text[index + 1 : -1].strip()
+        if re.search(r"\b(if|while|for|switch)$", head) or inner == "void":
+            return False
+        return _PRE_TYPE.match(inner) is not None and any(re.match(r"[A-Za-z_]", w) for w in inner.split())
+    if last == ":":
+        return "?" in text
+    if last == ",":
+        return not after.startswith(";")
+    return last in "=(+-*/%<>!~&|^?["
+
+
 def rows_of(text: str, symbols: re.Pattern[str]) -> list[list[Any]]:
-    """[symbol, 'd'|'p'|'c', line, argument count, parameter texts, body digest] for each use of a matching name."""
+    """[symbol, 'd'|'p'|'c', line, argument count, parameter texts, body digest, info] for each use of a matching name;
+    info is the return type of a definition or prototype, and for a call 'v' when it uses the result, 'x' when not."""
     flat = clean(text)
     rows: list[list[Any]] = []
     pattern = re.compile(rf"(?<![\w.>$])({symbols.pattern})\s*\(")
@@ -96,6 +172,8 @@ def rows_of(text: str, symbols: re.Pattern[str]) -> list[list[Any]]:
             flat.rfind(";", 0, match.start()), flat.rfind("{", 0, match.start()), flat.rfind("}", 0, match.start())
         )
         pre = flat[start + 1 : match.start()].strip()
+        pre_call = flat[start + 1 : match.start()]
+        split = "#" in text[start + 1 : match.start()]  # a preprocessor line inside the prefix: the type is not written
         after = flat[end:].lstrip()
         typed = (
             bool(pre)
@@ -106,13 +184,12 @@ def rows_of(text: str, symbols: re.Pattern[str]) -> list[list[Any]]:
         name = match.group(1)
         if typed and after.startswith("{"):
             body = _body(flat, end + (len(flat[end:]) - len(after)))
-            rows.append(
-                [name, "d", line, len(args), args, hashlib.sha1(re.sub(r"\s+", " ", body).encode()).hexdigest()[:12]]
-            )
+            digest = hashlib.sha1(re.sub(r"\s+", " ", body).encode()).hexdigest()[:12]
+            rows.append([name, "d", line, len(args), args, digest, "?" if split else return_type(pre)])
         elif typed and (after[:1] in (";", ",") or after.startswith("__attribute__")):
-            rows.append([name, "p", line, len(args), args, ""])
+            rows.append([name, "p", line, len(args), args, "", "?" if split else return_type(pre)])
         else:
-            rows.append([name, "c", line, len(args), [], ""])
+            rows.append([name, "c", line, len(args), [], "", "v" if _consumed(pre_call, after) else "x"])
     return rows
 
 
@@ -428,17 +505,19 @@ def build(rows: dict[str, list[list[Any]]], asm: dict[str, dict[str, Any]], alia
     """The per-symbol verdicts from per-file rows."""
     table: dict[str, dict[str, Any]] = {}
     for file in sorted(rows):
-        for name, kind, line, count, params, digest in rows[file]:
+        for name, kind, line, count, params, digest, info in rows[file]:
             entry = table.setdefault(name, {"defs": [], "protos": [], "calls": []})
             site = {"file": file, "line": line, "n": count}
             if kind == "d":
                 kinds = [prototype._param(p, i, aliases).kind for i, p in enumerate(params)]
                 words = argument_words(kinds)
-                entry["defs"].append({**site, "words": words, "blind": "struct" in kinds, "digest": digest})
+                entry["defs"].append(
+                    {**site, "words": words, "blind": "struct" in kinds, "digest": digest, "ret": info}
+                )
             elif kind == "p":
-                entry["protos"].append(site)
+                entry["protos"].append({**site, "ret": info})
             else:
-                entry["calls"].append(site)
+                entry["calls"].append({**site, "used": info == "v"})
     for name, entry in table.items():
         entry["asm"] = asm.get(name)
         definition = entry["defs"][0] if entry["defs"] else None
@@ -454,6 +533,7 @@ def build(rows: dict[str, list[list[Any]]], asm: dict[str, dict[str, Any]], alia
                         mismatches.append(
                             {**site, "kind": kind, "direction": "fewer" if site["n"] < definition["n"] else "more"}
                         )
+        mismatches.extend(return_mismatches(entry))
         entry["mismatches"] = mismatches
         short = bool(
             definition and entry["asm"] and not definition["blind"] and entry["asm"]["words"] > definition["words"]
@@ -462,6 +542,34 @@ def build(rows: dict[str, list[list[Any]]], asm: dict[str, dict[str, Any]], alia
         entry["score"] = len(mismatches) + (1 if short else 0)
         entry["verdict"] = "nodef" if not definition else "disagree" if mismatches else "asm" if short else "agreed"
     return table
+
+
+def return_mismatches(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """The sites whose return contract differs from the effective one (the definition's, else the first prototype's)."""
+    first = entry["defs"][0] if entry["defs"] else entry["protos"][0] if entry["protos"] else None
+    if first is None:
+        return []
+    owner = type_class(first["ret"])
+    shown = first["ret"] or "int"
+    found: list[dict[str, Any]] = []
+    for kind, key in (("definition", "defs"), ("prototype", "protos")):
+        for site in entry[key]:
+            if site is first:
+                continue
+            if class_conflict(owner, type_class(site["ret"])):
+                why = f"returns {site['ret'] or 'int'}, {shown} at {first['file']}:{first['line']}"
+                found.append({**site, "kind": f"{kind}-return", "why": why})
+    if owner == "void":
+        for site in entry["calls"]:
+            if site["used"]:
+                found.append(
+                    {
+                        **site,
+                        "kind": "call-return",
+                        "why": f"uses the result of a void function ({first['file']}:{first['line']})",
+                    }
+                )
+    return found
 
 
 def totals(table: dict[str, Any]) -> dict[str, int]:
@@ -492,6 +600,8 @@ class Census:
 
 def describe_site(site: dict[str, Any]) -> str:
     kind = site.get("kind", "definition")
+    if "why" in site:
+        return f"{site['file']}:{site['line']} {kind}: {site['why']}"
     return f"{site['file']}:{site['line']} {kind} with {site['n']}"
 
 
@@ -580,14 +690,15 @@ def touched_symbols(
                 continue
             entry = new_table.get(name)
             definition = entry and entry["def"]
-            if definition is None or row[2] != definition["n"]:
+            returns = entry and any(m["kind"].endswith("-return") for m in entry["mismatches"])
+            if definition is None or row[2] != definition["n"] or returns:
                 touched.add(name)
     return touched
 
 
 def _identity(row: list[Any]) -> tuple[Any, ...]:
     """A row without its line number and parameter text: moving a use is not changing it."""
-    return (row[0], row[1], row[3], row[5])
+    return (row[0], row[1], row[3], row[5], row[6])
 
 
 def check_change(
