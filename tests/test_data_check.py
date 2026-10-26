@@ -39,8 +39,32 @@ def test_every_unit_naming_a_symbol_is_found_not_only_the_changed_ones(tmp_path)
 def test_units_a_version_does_not_build_are_left_out(tmp_path):
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs/map-b.json").write_text(json.dumps({"fns": [["f", 0, 0, 100, "src/a/u1.CPP"]]}))
+    (tmp_path / "docs/map-a.json").write_text(json.dumps({"fns": [["g", 0, 0, 100, "src/a/de_only.CPP"]]}))
     assert check.in_version(CFG, tmp_path, "b", ["src/a/u1.CPP", "src/a/de_only.CPP"]) == ["src/a/u1.CPP"]
     assert check.in_version(CFG, tmp_path, "zz", ["src/a/u1.CPP"]) == ["src/a/u1.CPP"]  # no map: nothing to judge by
+
+
+def test_data_only_units_build_in_every_version_and_build_errors_block(tmp_path):
+    (tmp_path / "docs").mkdir()
+    for version in CFG.versions:
+        (tmp_path / f"docs/map-{version}.json").write_text(json.dumps({"fns": []}))
+    seen = []
+    failed = False
+
+    def objects(version, units, keep_going=False):
+        seen.append((version, units))
+        if failed:
+            return 2, f"make: *** No rule to make target 'build/{version}/src/data.c.o'.  Stop."
+        return 0, ""
+
+    builder = SimpleNamespace(cfg=CFG, tree=tmp_path, run=lambda *a, **k: done(), objects=objects)
+    for version in CFG.versions:
+        result = check.check(builder, version, ["src/data.c"])
+        assert result["units"] == 1 and result["built"] and result["broken"] == []
+    assert seen == [(v, ["src/data.c"]) for v in CFG.versions]
+    failed = True
+    result = check.check(builder, "a", ["src/data.c"])
+    assert result["units"] == 1 and not result["built"]
 
 
 def test_a_failing_unit_is_named_with_its_error_and_the_rest_still_scored(tmp_path):

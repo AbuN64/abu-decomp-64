@@ -173,15 +173,25 @@ def referencing_units(cfg: DataConfig, tree: Path, symbols: list[str], run=subpr
 
 
 def in_version(cfg: DataConfig, tree: Path, version: str, units: list[str]) -> list[str]:
-    """UNITS the version builds (rows of its map): a unit only another version holds has no rule here."""
-    try:
-        import json
+    """Exclude function units known to belong only to another version. A function map is not a source inventory:
+    data-only units have no row in any version and must still build. Unknown units stay in the check, so a missing
+    build rule fails visibly instead of silently dropping the changed source from the stamp.
+    """
 
-        rows = json.loads((tree / cfg.path(cfg.map_file, version)).read_text())["fns"]
+    def mapped(v: str) -> set[str]:
+        rows = json.loads((tree / cfg.path(cfg.map_file, v)).read_text())["fns"]
+        return {r[cfg.map_columns["unit"]] for r in rows}
+
+    try:
+        held = mapped(version)
     except (OSError, ValueError, KeyError):
         return units
-    held = {r[cfg.map_columns["unit"]] for r in rows}
-    return [u for u in units if u in held]
+    known = set(held)
+    for other in cfg.versions:
+        if other != version:
+            with contextlib.suppress(OSError, ValueError, KeyError):
+                known.update(mapped(other))
+    return [u for u in units if u in held or u not in known]
 
 
 def changed_units(
