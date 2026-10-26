@@ -63,10 +63,46 @@ static int native_protection(int protection)
 {
     return protection==N64C_PROT_RW ? PROT_READ|PROT_WRITE : protection==N64C_PROT_READ ? PROT_READ : PROT_NONE;
 }
+/* The guest windows sit at fixed addresses the host allocator knows nothing about: the Android emulator's goldfish address
+ * space (or any library loaded later) can be placed on one, and n64c_memory_open then refuses on its first launch. A load-time
+ * constructor therefore holds every window the open maps as PROT_NONE anonymous memory; n64c_host_map takes a window over
+ * from its hold, n64c_host_unmap gives it back. A window already taken stays unheld and the open refuses as before. The cart
+ * windows are held at the open's own ROM limit (n64c_memory_open refuses more than 0x0FC00000). */
+enum { HOLD_COUNT=2*(2+4) };
+static struct { uintptr_t base;size_t bytes; } hold[HOLD_COUNT];
+static int held(uintptr_t address,size_t bytes)
+{
+    for (unsigned i=0;i<HOLD_COUNT;i++)
+        if (hold[i].bytes && address>=hold[i].base && bytes<=hold[i].bytes-(address-hold[i].base)) return 1;
+    return 0;
+}
+static void hold_window(uintptr_t base,size_t bytes)
+{
+    for (unsigned i=0;i<HOLD_COUNT;i++) {
+        if (hold[i].bytes) continue;
+        void *got=mmap((void *)base,bytes,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE|MAP_FIXED_NOREPLACE,-1,0);
+        if (got==MAP_FAILED) return;
+        if (got!=(void *)base) { munmap(got,bytes);return; }
+        hold[i].base=base;
+        hold[i].bytes=bytes;
+        return;
+    }
+}
+__attribute__((constructor)) static void hold_windows(void)
+{
+    static const uintptr_t devices[]={0x04400000,0x04500000,0x04600000,0x04800000};
+    for (unsigned k=0;k<2;k++) {
+        uintptr_t segment=k ? 0xA0000000u : 0x80000000u;
+        hold_window(segment,0x800000u);                  /* RDRAM: 8 MiB with the expansion pak */
+        hold_window(segment+0x10000000u,0x0FC00000u);    /* cart */
+        for (unsigned i=0;i<4;i++) hold_window(segment+devices[i],4096);
+    }
+}
 void *n64c_host_map(uintptr_t address,size_t bytes,size_t offset,int protection)
 {
     void *target=(void *)address;
-    void *result=mmap(target,bytes,native_protection(protection),MAP_SHARED|MAP_FIXED_NOREPLACE,window_fd,(off_t)offset);
+    int take=held(address,bytes);
+    void *result=mmap(target,bytes,native_protection(protection),MAP_SHARED|(take ? MAP_FIXED : MAP_FIXED_NOREPLACE),window_fd,(off_t)offset);
     if (result==MAP_FAILED) return NULL;
     if (result!=target) { munmap(result,bytes);return NULL; }
     return result;
@@ -75,7 +111,12 @@ int n64c_host_protect(void *base,size_t bytes,int protection)
 {
     return mprotect(base,bytes,native_protection(protection));
 }
-int n64c_host_unmap(void *base,size_t bytes) { return munmap(base,bytes); }
+int n64c_host_unmap(void *base,size_t bytes)
+{
+    if (held((uintptr_t)base,bytes))
+        return mmap(base,bytes,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE|MAP_FIXED,-1,0)==MAP_FAILED ? -1 : 0;
+    return munmap(base,bytes);
+}
 int n64c_host_tlb_map(void *vaddr,size_t bytes,uint32_t physical)
 {
     return n64c_host_map((uintptr_t)vaddr,bytes,physical,N64C_PROT_RW)==vaddr ? 0 : -1;

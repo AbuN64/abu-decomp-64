@@ -142,12 +142,10 @@ int main(void)
     CHECK(signal(SIGUSR2,SIG_IGN)!=SIG_ERR);
     CHECK(!n64c_memory_open(&config));
     CHECK(signal(SIGUSR2,SIG_DFL)!=SIG_ERR);
+    /* the windows are held from load time: no foreign mapping can land on one before the open */
     void *blocker=mmap((void *)(uintptr_t)0xA0000000u,4096,PROT_READ|PROT_WRITE,
         MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
-    CHECK(blocker==(void *)(uintptr_t)0xA0000000u);
-    *(u32 *)blocker=0x11223344;
-    CHECK(!n64c_memory_open(&config) && *(u32 *)blocker==0x11223344);
-    CHECK(munmap(blocker,4096)==0);
+    CHECK(blocker==MAP_FAILED && errno==EEXIST);
     CHECK(n64c_memory_open(&config));
     CHECK(!n64c_memory_open(&config)); /* no replacement of live state */
     u32 *ram=n64c_memory_ram(0x100,32);
