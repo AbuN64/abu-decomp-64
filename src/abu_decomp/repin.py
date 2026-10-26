@@ -61,6 +61,8 @@ def refresh(run: Run, repo: Path) -> None:
     code, out, err = run(["git", "-C", str(repo), "fetch", "-q", "--no-tags", out.split()[0]], repo, None, 600)
     if code:
         raise RepinError("repin.fetch", f"{repo} did not fetch its remote: {(err or out).strip()[-200:]}")
+
+
 def forward(run: Run, repo: Path, old: str, new: str) -> None:
     """RepinError unless `new` contains `old`: a pin moves along the source's history, and the renames between two
     commits of different lines are not the renames the tree's files need."""
@@ -71,6 +73,8 @@ def forward(run: Run, repo: Path, old: str, new: str) -> None:
             f"{new[:12]} does not contain the pinned {old[:12]} in {repo}: a repin moves forward only "
             "(name a descendant with --to, or fix the pin's ref)",
         )
+
+
 def check(pin: dict[str, Any], tree: Path, run: Run, profile_file: Path | None = None) -> dict[str, Any]:
     """{"pin": the tree's pin or None, "findings": [...]}: the pin gate's reading of the tree as it is."""
     findings: list[dict[str, Any]] = []

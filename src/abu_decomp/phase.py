@@ -124,9 +124,7 @@ def foundation_rows(tsv: str) -> list[tuple[str, int]]:
     """The catalog selects immutable ROM offsets; names, sizes and scores come from the current map."""
     lines = [line for line in tsv.splitlines() if line.strip() and not line.startswith("#")]
     if not lines or lines[0] != "category\trom":
-        raise DecompError(
-            "phase.foundations", "expected category/rom catalog"
-        )
+        raise DecompError("phase.foundations", "expected category/rom catalog")
     rows, seen = [], set()
     for line in lines[1:]:
         try:
