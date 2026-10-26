@@ -93,6 +93,15 @@ class ReadTests(unittest.TestCase):
         found = cov.source_files(self.root, {"func_1_de", "func_2_de", "other"})
         self.assertEqual(found, {"func_1_de": "src/game/A.CPP", "func_2_de": "src/game/A.CPP"})
 
+    def test_settings_carry_the_epoch(self):
+        profile = mock.Mock()
+        profile.source_file = "p.json"
+        profile.section.return_value = {"coverage": {"elf": "e", "since": 1793000000}}
+        profile.path.return_value = None
+        self.assertEqual(cov.settings(profile, {})["since"], 1793000000.0)
+        profile.section.return_value = {"coverage": {"elf": "e"}}
+        self.assertEqual(cov.settings(profile, {})["since"], 0.0)
+
     def test_settings_absent_without_the_section(self):
         profile = mock.Mock()
         profile.section.return_value = {}
@@ -195,7 +204,7 @@ class RunReportTests(unittest.TestCase):
                 }
             )
         )
-        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None}
+        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None, "since": 0.0}
         with (
             mock.patch.object(cov, "settings", return_value=cov_cfg),
             mock.patch.object(cov, "latest_runs", return_value={"m": self.run}),
@@ -302,7 +311,7 @@ class RunReportTests(unittest.TestCase):
                 Path(args[args.index("--json-summary") + 1]).write_text(json.dumps({"function_covered": 3}))
                 Path(args[args.index("--json") + 1]).write_text("{}")
 
-        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None}
+        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None, "since": 0.0}
         with (
             mock.patch.object(cov, "settings", return_value=cov_cfg),
             mock.patch.object(cov, "latest_runs", return_value={"m": run}),
@@ -326,7 +335,7 @@ class RunReportTests(unittest.TestCase):
     def _build(self, run, gcovr, **kwargs):
         """cov.build over one run with every collaborator mocked but `gcovr` and the oracle replay."""
         runs = self.cfg["runs"]
-        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None}
+        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None, "since": 0.0}
         replay = kwargs.pop("replay", mock.Mock(return_value=False))
         with (
             mock.patch.object(cov, "settings", return_value=cov_cfg),
@@ -459,7 +468,7 @@ class RunReportTests(unittest.TestCase):
             Path(args[args.index("--html-details") + 1]).write_text("new")
             Path(args[args.index("--json-summary") + 1]).write_text(json.dumps({"function_covered": 3}))
 
-        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None}
+        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None, "since": 0.0}
         with (
             mock.patch.object(cov, "settings", return_value=cov_cfg),
             mock.patch.object(cov, "latest_runs", return_value={"m": run}),
@@ -484,7 +493,7 @@ class RunReportTests(unittest.TestCase):
         self.assertTrue((runs / "coverage-table.refused.json").is_file())
         self.assertFalse((runs / "coverage.new").exists())
         # --rebaseline (TAS-COVER-3: the join key changed on purpose): the smaller union replaces it, the old stays
-        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None}
+        cov_cfg = {"elf": "e", "version": "v", "versions": ["v"], "source": None, "since": 0.0}
         with (
             mock.patch.object(cov, "settings", return_value=cov_cfg),
             mock.patch.object(cov, "latest_runs", return_value={"m": run}),
@@ -559,7 +568,7 @@ class RunReportTests(unittest.TestCase):
         cfg = {"runs": runs, "port": self.build}
         fresh = {"functions": [{"name": "f"}], "covered": []}
         with (
-            mock.patch.object(cov, "settings", return_value={"version": "v"}),
+            mock.patch.object(cov, "settings", return_value={"version": "v", "since": 0.0}),
             mock.patch.object(cov, "latest_runs", return_value={}),
             mock.patch.object(cov, "drop_orphan_notes"),
             mock.patch.object(cov, "symbol_tables", return_value=({}, {})),
@@ -583,6 +592,28 @@ class RunReportTests(unittest.TestCase):
         lost = {"gcovr": {"function_covered": 94}, "baseline": "b", "changed_functions": 5}
         self.assertIn("another port build", cov.refusal(old, lost))
         self.assertIsNone(cov.refusal(None, lost))
+
+    def test_a_new_epoch_restarts_the_union_and_is_never_refused(self):
+        old = {"gcovr": {"function_covered": 2231}, "baseline": "a", "since": 0}
+        empty = {"gcovr": {"function_covered": 0}, "baseline": "a", "since": 1793000000}
+        self.assertIsNone(cov.refusal(old, empty))
+        shrunk = {"gcovr": {"function_covered": 0}, "baseline": "a", "since": 1793000000}
+        self.assertIn("covers 0", cov.refusal({**empty, "gcovr": {"function_covered": 3}}, shrunk))
+
+    def test_only_runs_started_since_the_epoch_are_counted(self):
+        rows = [
+            (Path("plays/old"), {"movie": "a-bunker", "started": 100.0}),
+            (Path("plays/new"), {"movie": "a-bunker", "started": 300.0}),
+            (Path("plays/older"), {"movie": "b", "started": 200.0}),
+            (Path("plays/nostart"), {"movie": "c"}),
+        ]
+        with (
+            mock.patch("abu_decomp.tas.run_rows", return_value=rows),
+            mock.patch.object(Path, "is_file", return_value=True),
+        ):
+            self.assertEqual(set(cov.latest_runs({}, 250)), {"a-bunker"})
+            self.assertEqual(cov.latest_runs({}, 250)["a-bunker"].name, "new")
+            self.assertEqual(set(cov.latest_runs({})), {"a-bunker", "b", "c"})
 
     def test_the_page_lists_the_dropped_functions_by_name(self):
         dropped = [{"file": "x.c", "function": "f"}]

@@ -632,6 +632,8 @@ def summary_of(inputs: Inputs) -> dict[str, Any]:
     return {
         "version": s.get("version"),
         "generated": table.get("generated"),
+        "since": table.get("since"),
+        "runs": len(table.get("runs") or []),
         "game": s.get("game"),
         "sdk": s.get("sdk"),
         "behaviour": s.get("behaviour"),

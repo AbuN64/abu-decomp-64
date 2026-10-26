@@ -988,6 +988,7 @@ function renderMap() {
   $("mapp").innerHTML = `<div class="card">
     <div class="stats"><div class="stat"><b>${g.line_percent ?? "–"}%</b><span>lines</span></div><div class="stat"><b>${g.branch_percent ?? "–"}%</b><span>branches</span></div>
       <div class="stat"><b>${s.game?.either?.functions_pct ?? "–"}%</b><span>fns reached</span></div><div class="stat"><b>${s.behaviour?.behaves ?? "–"}</b><span>behave</span></div></div>
+    <div class="dim" id="covSince" style="font-size:12px;padding:2px 0">${s.since ? (s.runs ? `${s.runs} run${s.runs === 1 ? "" : "s"} counted since ${new Date(s.since * 1000).toISOString().slice(0, 16).replace("T", " ")}Z` : `no run counted yet: coverage restarted ${new Date(s.since * 1000).toISOString().slice(0, 16).replace("T", " ")}Z and fills as new runs finish`) : ""}</div>
     <div class="ladder"><span class="chip">${esc(s.stage || "R0")}${icon("chevron-right")}${esc(ns.stage || "")}</span>
       ${(ns.failing || []).map(f => `<span class="chip">${esc(f.key)} <b class="gap">${f.value}</b>/${f.threshold}</span>`).join("")}</div>
     <div class="mzbar">

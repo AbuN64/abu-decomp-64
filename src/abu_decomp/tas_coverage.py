@@ -22,8 +22,9 @@ name with the versions that define it. A row is scope `sdk` when its file is und
 those with its shim), other when no source defines it (compiler runtime, asm-only), else game.
 Section `tas.coverage`: {"elf": ".../build/{version}/RageWars.elf", "version":
 "us-rev1", "versions": [...], "source": folder with src/ (default: tas.serve.pin), "symbols": [address tables in
-source, first file names win; e.g. "versions/us-rev1/symbol_addrs.txt", ".../aliases.txt"], "oracle": {"argv": [...],
-"env": {...}} with {movie}, {dir}, {trace} in values}.
+source, first file names win; e.g. "versions/us-rev1/symbol_addrs.txt", ".../aliases.txt"], "since": epoch seconds
+(default 0): the union counts only runs that started at or after it, so a new epoch restarts coverage from nothing,
+"oracle": {"argv": [...], "env": {...}} with {movie}, {dir}, {trace} in values}.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ from abu_decomp import DecompError, remap, slots, tas_oracle, tas_symbolize
 from abu_decomp.config import Profile, check_keys
 
 COVERAGE, GCOV, ORACLE_DIR, TABLE, HTML = "coverage.json", "gcov", "oracle-golden", "coverage-table.json", "coverage"
-_KEYS = frozenset({"elf", "version", "versions", "source", "symbols"})
+_KEYS = frozenset({"elf", "version", "versions", "source", "symbols", "since"})
 _SYMBOL = re.compile(r"^\s*\d+:\s+([0-9a-fA-F]+)\s+(\d+)\s+FUNC\s+\w+\s+\w+\s+\S+\s+(\S+)$")
 _DEFINITION = re.compile(r"^(?:[A-Za-z_][\w]*[\s\*]+)+\**([A-Za-z_]\w*)\s*\([^;]*$")
 _INCLUDE_ASM = re.compile(r"INCLUDE_ASM\s*\([^,]*,\s*([A-Za-z_]\w*)")
@@ -68,6 +69,7 @@ def settings(profile: Profile, cfg: dict[str, Any]) -> dict[str, Any] | None:
         "elf": str(table["elf"]),
         "version": version,
         "versions": [str(v) for v in table.get("versions", [version])],
+        "since": float(table.get("since", 0)),
         "source": profile.path("tas.coverage.source", pin) if pin else None,
         "symbols": [str(f) for f in table.get("symbols", [])],
     }
@@ -586,6 +588,7 @@ def lists(report: dict[str, Any], limit: int = LISTED) -> dict[str, Any]:
 
     return {
         "generated": report.get("generated"),
+        "since": report.get("since"),
         "summary": report.get("summary"),
         "gcovr": report.get("gcovr"),
         "builds": report.get("builds"),
@@ -684,8 +687,9 @@ def baseline(cfg: dict[str, Any]) -> Path:
     return path
 
 
-def latest_runs(cfg: dict[str, Any]) -> dict[str, Path]:
-    """movie name -> its newest movie-driven finished run folder that left a coverage report or counters."""
+def latest_runs(cfg: dict[str, Any], since: float = 0) -> dict[str, Path]:
+    """movie name -> its newest movie-driven finished run folder that left a coverage report or counters and started
+    at or after SINCE (a run with no start time never counts once SINCE is set)."""
     from abu_decomp import tas
 
     newest: dict[str, Path] = {}
@@ -693,6 +697,8 @@ def latest_runs(cfg: dict[str, Any]) -> dict[str, Path]:
         if row.get("status") == "running" or row.get("input") == "human" or (run / tas.TAKEN).exists():
             continue
         if not ((run / COVERAGE).is_file() or (run / GCOV).is_dir()):
+            continue
+        if since and float(row.get("started") or 0) < since:
             continue
         name = str(row.get("movie") or "")
         if name and (name not in newest or run.name > newest[name].name):
@@ -725,7 +731,7 @@ def build(
     cov = settings(profile, cfg)
     if cov is None:
         return None
-    runs = latest_runs(cfg)
+    runs = latest_runs(cfg, cov["since"])
     drop_orphan_notes(build_dir(cfg))
     symbols = symbol_tables(cov)
     rows, totals = universe(cov, symbols)
@@ -826,6 +832,7 @@ def build(
     for r in collected:
         builds[r["build"]] = builds.get(r["build"], 0) + 1
     report["builds"] = dict(sorted(builds.items(), key=lambda kv: -kv[1]))
+    report["since"] = cov["since"]
     report["oracle_pending"] = sum(1 for r in collected if r["oracle"] is None) if oracle else 0
     old = read_table(cfg) or {}
     if table_only or base is None:
@@ -968,7 +975,10 @@ def covered_functions(report: dict[str, Any] | None) -> int:
 def refusal(old: dict[str, Any] | None, new: dict[str, Any]) -> str | None:
     """Why `new` must not replace `old`: it covers fewer functions. On the same baseline (port build) any loss is lost
     counters. Drawn on another build, the union drops the source files that changed since the older runs, so it may
-    lose at most the functions those files define (`changed_functions`); a bigger loss is still refused."""
+    lose at most the functions those files define (`changed_functions`); a bigger loss is still refused. A report
+    of another epoch (`since`) is a deliberate restart: nothing of the old one is kept, so nothing is refused."""
+    if float((old or {}).get("since") or 0) != float(new.get("since") or 0):
+        return None
     before, after = covered_functions(old), covered_functions(new)
     same = (old or {}).get("baseline") == new.get("baseline")
     allowed = 0 if same else int(new.get("changed_functions") or 0)
