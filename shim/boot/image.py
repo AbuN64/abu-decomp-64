@@ -146,6 +146,13 @@ def select(source, exclude, version=None, data_only=False):
     keys = {}
     for unit, key, _, _ in placements(source):
         keys.setdefault(unit, set()).add(key)
+    if version:  # a unit this version places is shared-address only by its initialised sections: code in an overlay is not
+        held = {}
+        for unit, key, _, spec in placements(source, version):
+            held.setdefault(unit, set())
+            if INITIALISED.search(spec) and not re.search(r"bss|COMMON", spec):
+                held[unit].add(key)
+        keys.update(held)
     overlay = overlay_keys(source)
     holding = set(resident_units(source, version)) | set(overlay_units(source, version)) if version else set()
     def takes(unit):

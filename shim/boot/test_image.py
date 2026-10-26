@@ -239,6 +239,14 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(report["code_units"], [str(unit)])
         self.assertEqual(report["extents"], 1)
         self.assertNotIn("D_folded", report["refused"])
+    def test_resident_data_of_a_unit_with_bss_in_an_overlay_is_imaged(self):
+        # a unit whose code and zero-initialised sections sit in a shared-address overlay still has its resident data
+        layout = LAYOUT.replace("src/B.CPP.o(.data);", "src/B.CPP.o(.data);\n        src/M.CPP.o(.data);")
+        layout = layout.replace("src/O1.CPP.o(.data);", "src/O1.CPP.o(.data);\n        src/M.CPP.o(.text);\n        src/M.CPP.o(.bss);")
+        (self.source / "RageWars.ld").write_text(layout)
+        (self.source / "src" / "M.CPP").write_text("int fold(void) { return 1; }\nunsigned int D_folded[1] = {0x3F800000};\n")
+        self.assertIn("src/M.CPP", image.select(self.source, {"src/CODE.CPP", "src/M.CPP"}, "test"))
+
     def test_select_keeps_resident_function_free_units(self):
         self.assertEqual(image.select(self.source, {"src/CODE.CPP"}), ["src/A.CPP", "src/B.CPP"])
 
