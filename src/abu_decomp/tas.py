@@ -1375,7 +1375,7 @@ def play(
         if state_diff and not sanitize and not human and not retry:
             try:
                 with _starting_play_process():
-                    state = tas_statediff.begin(profile, cfg, run, pak, card, polls)
+                    state = tas_statediff.begin(profile, cfg, run, pak, card, polls, pads)
                     if state:
                         children.append(state.process)
                         if state._waiter:

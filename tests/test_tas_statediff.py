@@ -411,6 +411,32 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class DumpPassPadsTests(unittest.TestCase):
+    """_dump_pass(): a movie of more than one pad replays with that many controllers on both sides."""
+
+    def test_both_sides_see_the_movie_pad_count(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        run, cache = tmp / "run", tmp / "oracle-state" / "k"
+        run.mkdir()
+        cache.mkdir(parents=True)
+        (run / "movie.raw").write_text("0000 0 0 0000 0 0\n" * 5)
+        cfg = {"env": {}, "timeout_seconds": 1}
+        session = sd.Session(tmp, run, cfg, "k", TABLE, cache, True, oracle_cfg={"timeout_seconds": 1}, pads=2)
+        from abu_decomp import tas
+
+        with (
+            mock.patch.object(tas, "_argv", return_value=["port"]),
+            mock.patch.object(tas, "_wait", return_value=(0, 0.0)),
+            mock.patch.object(sd.tas_oracle, "start") as oracle,
+            mock.patch.object(sd.subprocess, "Popen") as port,
+        ):
+            sd._dump_pass(session, [3], None)
+        self.assertEqual(port.call_args.kwargs["env"]["N64C_PADS"], "2")
+        self.assertEqual(oracle.call_args.kwargs["pads"], 2)
+        self.assertEqual(len((run / sd.DUMPS / "movie.raw").read_text().splitlines()), 3)
+
+
 class HostTraceTests(unittest.TestCase):
     """TAS-COVER-3: an original host that never reads N64R_TAS_STATE replayed every movie for nothing."""
 

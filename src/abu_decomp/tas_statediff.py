@@ -497,6 +497,7 @@ class Session:
     oracle_cfg: dict[str, Any] = field(default_factory=dict)
     pak: str = "on"
     card: Path | None = None
+    pads: int = 1  # controllers both sides see; every movie line holds that many pads
     began: float = field(default_factory=time.monotonic)
     notes: list[str] = field(default_factory=list)
     _end: dict[str, Any] = field(default_factory=dict)
@@ -521,7 +522,7 @@ def _oracle_extra(spec: Path, out: Path, extra: dict[str, str]) -> dict[str, str
 
 
 def begin(
-    profile: Profile, cfg: dict[str, Any], run: Path, pak: str, card: Path | None, polls: list[Any]
+    profile: Profile, cfg: dict[str, Any], run: Path, pak: str, card: Path | None, polls: list[Any], pads: int = 1
 ) -> Session | None:
     """Start a run's state diff: the spec for the port in use, and the original's trace of this movie (started now,
     beside the port, unless one is cached). None when this seat cannot (no original or no units)."""
@@ -544,12 +545,23 @@ def begin(
         f"{host.st_size}:{host.st_mtime_ns}".encode(),
         (folder / "oracle.spec").read_bytes(),
         str(cfg["exit_after"]).encode(),
+        str(pads).encode(),
     ):
         digest.update(hashlib.sha1(part).digest())
     key = digest.hexdigest()[:20]
     cache = cfg["runs"] / ORACLES / key
     session = Session(
-        folder, run, cfg, key, table, cache, (cache / ORACLE_HASHES).is_file(), oracle_cfg=oracle, pak=pak, card=card
+        folder,
+        run,
+        cfg,
+        key,
+        table,
+        cache,
+        (cache / ORACLE_HASHES).is_file(),
+        oracle_cfg=oracle,
+        pak=pak,
+        card=card,
+        pads=pads,
     )
     if session.cached:
         return session
@@ -568,6 +580,7 @@ def begin(
         pak,
         extra=_oracle_extra(folder / "oracle.spec", work, {"N64R_TAS_TRACE": str(work / tas_oracle.ORACLE_TRACE)}),
         card=own,
+        pads=pads,
     )
     session.oracle_dir = work
 
@@ -637,6 +650,8 @@ def _dump_pass(session: Session, polls: list[int], profile: Profile) -> dict[int
         "N64C_TAS_STATE_AT": want,
         "N64C_TAS_STATE_DIR": str(port_dir),
     }
+    if session.pads > 1:
+        env["N64C_PADS"] = str(session.pads)
     argv = tas._argv(cfg, user, session.pak, card)
     # the original: only the polls its cache lacks
     cache = session.oracle_dir
@@ -666,6 +681,7 @@ def _dump_pass(session: Session, polls: list[int], profile: Profile) -> dict[int
                 },
             ),
             card=own,
+            pads=session.pads,
         )
     with (port_dir / "output.txt").open("w") as output:
         process = subprocess.Popen(
