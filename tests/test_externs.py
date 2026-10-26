@@ -130,3 +130,12 @@ def test_the_header_folder_mode_ignores_unit_externs(tmp_path: Path) -> None:
     subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
     found = owners.run(root, "include/COMMON")
     assert found["declarations"] == 1 and next(r for r in found["rows"])["owner"] == "mod/A"
+
+
+def test_a_crlf_tree_keeps_its_line_endings_and_the_diff_names_each_file(tmp_path: Path) -> None:
+    extra = {n: t.replace("\n", "\r\n") for n, t in FILES.items() if n != "docs/MODULES.tsv"}
+    root, found = moved(tmp_path, extra)
+    diff = (tmp_path / "out" / found["batches"][0]["batch"]).read_bytes()
+    assert b"diff --git a/include/A/A.H b/include/A/A.H\n" in diff
+    subprocess.run(["git", "-C", str(root), "apply", "--check", str(tmp_path / "out" / found["batches"][0]["batch"])], check=True)
+    assert b"\n+extern int gScore;\r\n" in diff and b'+#include "A/A.H"\r\n' in diff

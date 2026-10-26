@@ -307,6 +307,15 @@ def fill(
     return batches
 
 
+def rows(text: str) -> list[str]:
+    """The lines of a file, split on newlines only (the splitter the declaration scan numbers lines by)."""
+    return re.findall(r"[^\n]*\n|[^\n]+", text)
+
+
+def eol(lines: list[str]) -> str:
+    return "\r\n" if sum(ln.endswith("\r\n") for ln in lines) * 2 > len(lines) else "\n"
+
+
 def locate(current: list[str], wanted: list[str], hint: int) -> int:
     n = len(wanted)
     spots = [i for i in range(len(current) - n + 1) if current[i : i + n] == wanted]
@@ -318,7 +327,7 @@ def write_batches(
 ) -> list[dict[str, object]]:
     """One diff per batch over the tree the earlier ones leave: declarations leave their units, one extern per id joins
     the destination header before its closing `#endif`, a unit that no longer sees the destination includes it."""
-    texts = {n: t.splitlines(keepends=True) for n, t in found.texts.items()}
+    texts = {n: rows(t) for n, t in found.texts.items()}
     seen = {n: set(h) for n, h in sees.items()}
     written: list[dict[str, object]] = []
     for number, batch in enumerate(batches, 1):
@@ -330,14 +339,14 @@ def write_batches(
             dest = str(m["to"])
             for d in m["decls"]:  # type: ignore[attr-defined]
                 cur = texts[d.unit]
-                spot = locate(cur, found.texts[d.unit].splitlines(keepends=True)[d.first : d.last + 1], d.first)
+                spot = locate(cur, rows(found.texts[d.unit])[d.first : d.last + 1], d.first)
                 if spot < 0:
                     continue
                 removals[d.unit].append((spot, spot + d.last - d.first + 1))
                 if dest not in seen[d.unit]:
                     wants[d.unit].add(dest)
             if not m["has_decl"]:
-                adds[dest].append(f"extern {m['proto']};\n")
+                adds[dest].append(f"extern {m['proto']};" + eol(texts[dest]))
         edited = set(removals) | set(adds)
         for n in edited:
             before[n] = list(texts[n])
@@ -350,19 +359,21 @@ def write_batches(
                 if i not in drop:
                     out.append(ln)
                 if i == last_inc:
-                    out += [f'#include "{owners.include_path(h)}"\n' for h in sorted(wants[n])]
+                    out += [f'#include "{owners.include_path(h)}"' + eol(cur) for h in sorted(wants[n])]
             if last_inc < 0:
-                out = [f'#include "{owners.include_path(h)}"\n' for h in sorted(wants[n])] + out
+                out = [f'#include "{owners.include_path(h)}"' + eol(cur) for h in sorted(wants[n])] + out
             texts[n] = out
             for h in wants[n]:
                 seen[n] |= {h, *seen.get(h, ())}
         for dest, new in adds.items():
             cur = texts[dest]
             end = max((i for i, ln in enumerate(cur) if ln.lstrip().startswith("#endif")), default=len(cur))
+            if end == len(cur) and cur and not cur[-1].endswith("\n"):
+                cur[-1] += eol(cur)
             texts[dest] = [*cur[:end], *new, *cur[end:]]
         diff: list[str] = []
         for n in sorted(edited):
-            diff += difflib.unified_diff(before[n], texts[n], f"a/{n}", f"b/{n}")
+            diff += [f"diff --git a/{n} b/{n}\n", *difflib.unified_diff(before[n], texts[n], f"a/{n}", f"b/{n}")]
         name = f"externs-batch-{number:02d}.diff"
         (packs / name).write_text("".join(diff), encoding="latin-1")
         units = batch[0].get("batch_units", 0)
