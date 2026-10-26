@@ -5,8 +5,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from abu_decomp import cli, nextcmd, phase
+from abu_decomp import DecompError, cli, nextcmd, phase
 from abu_decomp.config import load_profile
 
 FIXTURE = Path(__file__).parent / "fixtures" / "phase"
@@ -20,7 +21,7 @@ def git(tree: Path, *args: str) -> None:
 
 class Fixture(unittest.TestCase):
     def setUp(self):
-        directory = tempfile.TemporaryDirectory()
+        directory = tempfile.TemporaryDirectory(dir=Path.cwd())
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.dir = self.root / "tests" / "fixtures" / "phase"
@@ -61,12 +62,132 @@ class PhaseTests(Fixture):
     def test_exact_is_the_map_score_alone(self):
         # unbake scores a FAKEMATCH build below 100 in the map: phase reads that score, no comment check of its own
         tree = self.root / "tests/fixtures/phase/src/a.c"
-        rows = "rng\tPak_Save\t16\t100.0\t1\ttests/fixtures/phase/src/a.c\n"
+        rows = "category\trom\nrng\t0x10\n"
         path = str(tree.relative_to(self.root))
-        cats = phase.foundations(self.root, "HEAD", rows, {"Pak_Save": (99.0, path)}, "NOPE")
+        cats = phase.foundations(self.root, "HEAD", rows, {"fns": [["Pak_Save", 16, 16, 99.0, path]]}, "NOPE")
         self.assertEqual((cats["rng"]["exact_bytes"], cats["rng"]["named_bytes"]), (0, 16))
-        cats = phase.foundations(self.root, "HEAD", rows, {"Pak_Save": (100.0, path)}, "NOPE")
+        cats = phase.foundations(self.root, "HEAD", rows, {"fns": [["Pak_Save", 16, 16, 100.0, path]]}, "NOPE")
         self.assertEqual(cats["rng"]["exact_bytes"], 16)
+
+    def test_body_ignores_prototype_and_other_functions(self):
+        source = "int Next(int);\nint Other(void) { return D_00000020; }\nint Next(int seed) { return seed; }"
+        self.assertEqual(phase.body(source, "Next"), "int Next(int seed) { return seed; }")
+        self.assertIsNone(phase.body("int Next(int);\nint Other(void) { return 0; }", "Next"))
+
+    def test_body_excludes_comment_and_string_placeholders(self):
+        source = 'int Next(void) { /* D_00000020 */ emit("func_00000020"); return 0; }'
+        self.assertNotIn("D_00000020", phase.body(source, "Next"))
+        self.assertNotIn("func_00000020", phase.body(source, "Next"))
+
+    def test_body_includes_all_conditional_definitions(self):
+        source = "#if A\nint Next(void) { return 0; }\n#else\nint Next(void) { return D_00000020; }\n#endif"
+        self.assertIn("D_00000020", phase.body(source, "Next"))
+
+    def test_p1_pins_map_and_bodies_to_same_revision(self):
+        with patch.object(phase, "_show", wraps=phase._show) as show:
+            phase.p1(self.profile(), phase.settings(self.profile()), "Alpha", "v1")
+        refs = {call.args[1] for call in show.call_args_list}
+        self.assertEqual(len(refs), 1)
+        self.assertRegex(refs.pop(), r"^[0-9a-f]{40}$")
+
+    def test_foundations_follow_rom_identity_after_name_and_path_changes(self):
+        catalog = "category\trom\nrng\t0x20\n"
+        data = {"fns": [["Random_Next", 32, 48, 100.0, "moved/random.c"]]}
+        with patch.object(phase, "_show", return_value="int Random_Next(int seed) {\n return seed + 1;\n}") as show:
+            got = phase.foundations(self.root, "revision", catalog, data, r"func_|D_")["rng"]
+        self.assertEqual((got["fns"], got["bytes"], got["exact_bytes"], got["named_bytes"]), (1, 48, 48, 48))
+        show.assert_called_once_with(self.root, "revision", "moved/random.c")
+
+    def test_foundations_placeholder_name_is_not_clean(self):
+        data = {"fns": [["func_00000020", 32, 16, 100.0, "a.c"]]}
+        with patch.object(phase, "_show", return_value="int func_00000020(void) {\n return 0;\n}"):
+            got = phase.foundations(self.root, "HEAD", "category\trom\nrng\t32\n", data, "func_")["rng"]
+        self.assertEqual((got["exact_bytes"], got["named_bytes"]), (16, 0))
+        self.assertEqual(got["failing"][0]["rom"], 32)
+
+    def test_foundations_refuse_unresolved_and_ambiguous_offsets(self):
+        fn = ["Next", 32, 16, 100.0, None]
+        for data in ({"fns": []}, {"fns": [fn, fn]}):
+            with self.subTest(data=data), self.assertRaises(DecompError):
+                phase.foundations(self.root, "HEAD", "category\trom\nrng\t32\n", data, "func_")
+
+    def test_foundation_catalog_refuses_legacy_empty_malformed_and_duplicates(self):
+        for text in (
+            "rng\tOld\t16",
+            "category\trom\n",
+            "category\trom\nrng\t-1\n",
+            "category\trom\nrng\tno\n",
+            "category\trom\nrng\t0\ngfx\t0\n",
+        ):
+            with self.subTest(text=text), self.assertRaises(DecompError):
+                phase.foundation_rows(text)
+
+    def test_foundations_do_not_hide_unreadable_source(self):
+        with (
+            patch.object(phase, "_show", side_effect=DecompError("phase.git", "missing file")),
+            self.assertRaises(DecompError),
+        ):
+            phase.foundations(
+                self.root, "HEAD", "category\trom\nrng\t0\n", {"fns": [["Next", 0, 16, 100.0, "missing.c"]]}, "func_"
+            )
+
+    def legacy_catalog(self):
+        path = self.dir / "foundations-v1.tsv"
+        text = (
+            "category\tfunction\tbytes\tscore\tnamed\tfile\n"
+            "rng\tRng_Next\t16\t100.0\t1\ttests/fixtures/phase/src/a.c\n"
+            "input\tPak_Save\t16\t50.0\t1\ttests/fixtures/phase/src/a.c\n"
+        )
+        path.write_text(text)
+        return path, text
+
+    def test_catalog_migration_preserves_original_and_readback(self):
+        path, original = self.legacy_catalog()
+        self.profile()
+        self.assertEqual(
+            cli.main(["--profile", str(self.profile_file), "phase", "foundations", "--catalog-ref", "HEAD"]), 0
+        )
+        self.assertEqual(path.read_text(), "category\trom\nrng\t0x0\ninput\t0x10\n")
+        self.assertEqual(path.with_suffix(".tsv.names").read_text(), original)
+        self.assertEqual(cli.main(["--profile", str(self.profile_file), "phase"]), 0)
+        with self.assertRaises(DecompError):
+            phase.migrate_foundations(self.profile(), None, None, "HEAD")
+        self.assertEqual(path.with_suffix(".tsv.names").read_text(), original)
+
+    def test_catalog_migration_preflights_every_row_before_writing(self):
+        path, original = self.legacy_catalog()
+        for invalid in (
+            original.replace("Pak_Save", "Gone"),
+            original.replace("Pak_Save\t16", "Pak_Save\t20"),
+            original.replace("src/a.c", "src/old.c"),
+        ):
+            path.write_text(invalid)
+            with self.assertRaises(DecompError):
+                phase.migrate_foundations(self.profile(), None, None, "HEAD")
+            self.assertEqual(path.read_text(), invalid)
+            self.assertFalse(path.with_suffix(".tsv.names").exists())
+
+    def test_catalog_migration_refuses_changed_current_extent(self):
+        path, original = self.legacy_catalog()
+        data = json.loads((self.dir / "map-v1.json").read_text())
+        changed = json.loads(json.dumps(data))
+        changed["fns"][0][2] += 4
+        with (
+            patch.object(phase, "_show", side_effect=[json.dumps(data), json.dumps(changed)]),
+            self.assertRaises(DecompError),
+        ):
+            phase.migrate_foundations(self.profile(), None, None, "HEAD")
+        self.assertEqual(path.read_text(), original)
+        self.assertFalse(path.with_suffix(".tsv.names").exists())
+
+    def test_catalog_migration_does_not_overwrite_backup(self):
+        path, original = self.legacy_catalog()
+        backup = path.with_suffix(".tsv.names")
+        backup.write_text("preserved")
+        with self.assertRaises(DecompError):
+            phase.migrate_foundations(self.profile(), None, None, "HEAD")
+        self.assertEqual(path.read_text(), original)
+        self.assertEqual(backup.read_text(), "preserved")
 
     def test_p2_absent_port_is_not_met(self):
         def edit(cfg):

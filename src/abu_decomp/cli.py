@@ -1345,7 +1345,15 @@ def _run_claims(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dic
 
 
 def _phase_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("action", nargs="?", choices=["timelapse"], help="timelapse: make the version mp4")
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=["timelapse", "foundations"],
+        help="timelapse: make the version mp4; foundations: migrate the name catalog to ROM offsets",
+    )
+    parser.add_argument(
+        "--catalog-ref", help="foundations: original catalog map revision; backs up and migrates the catalog"
+    )
     parser.add_argument("--fps", type=int, default=12, help="timelapse frame rate (default 12)")
     parser.add_argument("--game", help="only this game of phase.games")
     parser.add_argument("--version", help="only this version (default: the focus version, else the game's first)")
@@ -1355,6 +1363,10 @@ def _phase_arguments(parser: argparse.ArgumentParser) -> None:
 def _run_phase(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import phase
 
+    if args.action == "foundations":
+        return phase.migrate_foundations(_profile(args.profile), args.game, args.version, args.catalog_ref), 0, []
+    if args.catalog_ref:
+        raise DecompError("phase.foundations", "--catalog-ref requires phase foundations")
     if args.action == "timelapse":
         from abu_decomp import tas, tas_phasemap, tas_timelapse
 

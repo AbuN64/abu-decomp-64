@@ -8,12 +8,16 @@ second entry of `phase.games`, not new code. Read-only except `--refresh`, which
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from recipemaker import access, cparse
 
 from abu_decomp import DecompError, nextcmd, tas, tas_coverage
 from abu_decomp.config import Profile, load_profile
@@ -97,60 +101,156 @@ def mapped_bytes(data: dict[str, Any]) -> tuple[int, int, int]:
 
 
 def body(source: str, name: str) -> str | None:
-    """The text of `name`'s definition after its own name, up to the closing brace at column 0."""
-    lines = source.splitlines()
-    head = re.compile(rf"^[^\s#/][^;]*\b{re.escape(name)}\s*\(")
-    for i, text in enumerate(lines):
-        match = head.match(text)
-        if not match:
-            continue
-        out = [text[match.end() :]]
-        for later in lines[i + 1 :]:
-            out.append(later)
-            if later.startswith("}"):
-                break
-        return "\n".join(out)
-    return None
+    """Definition identifiers, excluding prototypes, comments and literals; include conditional definitions."""
+    masked = access.mask(source)
+    head = re.compile(rf"^[\w\s*]+\b{re.escape(name)}\s*\(")
+    definitions = [
+        masked[a:b]
+        for a, b, directive in cparse.spans(masked)
+        if not directive and masked[a:b].rstrip().endswith("}") and head.match(masked[a:b])
+    ]
+    return "\n".join(definitions) if definitions else None
 
 
-def foundations(
-    tree: Path, ref: str, tsv: str, scores: dict[str, tuple[float, str | None]], rule: str
-) -> dict[str, Any]:
-    """Per category: bytes, exact % B (map score 100: unbake scores a FAKEMATCH build below it), named % B (rule finds
-    nothing in the body)."""
+def revision(tree: Path, ref: str) -> str:
+    """Pin the map and every source read to one commit even while the train advances the configured ref."""
+    done = subprocess.run(
+        ["git", "-C", str(tree), "rev-parse", "--verify", f"{ref}^{{commit}}"], capture_output=True, text=True
+    )
+    if done.returncode:
+        raise DecompError("phase.git", f"cannot resolve revision {ref}: {done.stderr.strip()[-200:]}")
+    return done.stdout.strip()
+
+
+def foundation_rows(tsv: str) -> list[tuple[str, int]]:
+    """The catalog selects immutable ROM offsets; names, sizes and scores come from the current map."""
+    lines = [line for line in tsv.splitlines() if line.strip() and not line.startswith("#")]
+    if not lines or lines[0] != "category\trom":
+        raise DecompError(
+            "phase.foundations", "expected category/rom catalog; migrate with phase foundations --catalog-ref REF"
+        )
+    rows, seen = [], set()
+    for line in lines[1:]:
+        try:
+            category, raw = line.split("\t")
+            rom = int(raw, 0)
+            if not category or rom < 0 or rom in seen:
+                raise ValueError("empty category, negative offset or duplicate offset")
+        except ValueError as exc:
+            raise DecompError("phase.foundations", f"invalid catalog row {line!r}: {exc}") from exc
+        rows.append((category, rom))
+        seen.add(rom)
+    if not rows:
+        raise DecompError("phase.foundations", "empty foundation catalog")
+    return rows
+
+
+def foundation_map(data: dict[str, Any]) -> dict[int, list[Any]]:
+    rows = {}
+    for fn in data["fns"]:
+        if fn[1] in rows:
+            raise DecompError("phase.foundations", f"ambiguous map ROM offset {fn[1]:#x}")
+        rows[fn[1]] = fn
+    return rows
+
+
+def foundations(tree: Path, ref: str, tsv: str, data: dict[str, Any], rule: str) -> dict[str, Any]:
+    """Measure selected ROM functions using only this revision's names, byte sizes, scores and bodies."""
     named, cache = re.compile(rule), {}
+    mapped = foundation_map(data)
     cats: dict[str, dict[str, Any]] = {}
-    for text in tsv.splitlines():
-        if not text.strip() or text.startswith("#") or text.startswith("category\t"):
-            continue
-        cat, name, size, *_ = text.split("\t")
-        score, file = scores.get(name, (0.0, None))
+    for cat, rom in foundation_rows(tsv):
+        if rom not in mapped:
+            raise DecompError("phase.foundations", f"catalog ROM offset {rom:#x} absent from current map")
+        name, _, size, score, file, *_ = mapped[rom]
         src = None
         if file:
             if file not in cache:
-                try:
-                    cache[file] = _show(tree, ref, file)
-                except DecompError:
-                    cache[file] = ""
+                cache[file] = _show(tree, ref, file)
             src = body(cache[file], name)
         exact = score == 100.0
-        clean = src is not None and not named.search(src)
+        clean = src is not None and not named.search(name + " " + src)
         entry = cats.setdefault(
             cat, {"fns": 0, "bytes": 0, "exact_bytes": 0, "named_bytes": 0, "clean_bytes": 0, "failing": []}
         )
         entry["fns"] += 1
-        entry["bytes"] += int(size)
-        entry["exact_bytes"] += int(size) * exact
-        entry["named_bytes"] += int(size) * clean
-        entry["clean_bytes"] += int(size) * (exact and clean)
+        entry["bytes"] += size
+        entry["exact_bytes"] += size * exact
+        entry["named_bytes"] += size * clean
+        entry["clean_bytes"] += size * (exact and clean)
         if not (exact and clean):
-            entry["failing"].append({"function": name, "bytes": int(size), "exact": exact, "named": clean})
+            entry["failing"].append({"function": name, "rom": rom, "bytes": size, "exact": exact, "named": clean})
     return cats
+
+
+def migrate_foundations(
+    profile: Profile, game: str | None, version: str | None, catalog_ref: str | None
+) -> dict[str, Any]:
+    """One-time, preflighted name-catalog migration. Keep the original and verify the installed readback."""
+    cfg = settings(profile)
+    game = game or cfg["focus"]["game"]
+    if game not in cfg["games"] or not catalog_ref:
+        raise DecompError(
+            "phase.foundations", "pass a configured --game and --catalog-ref identifying the original map"
+        )
+    spec = cfg["games"][game]
+    version = version or cfg["focus"].get("version")
+    if version not in spec["versions"] or not spec.get("foundations"):
+        raise DecompError("phase.foundations", "pass a configured --version with a foundation catalog")
+    tree = profile.path("phase.tree", spec["tree"])
+    ref = revision(tree, spec["ref"])
+    mp = spec["map"].format(version=version)
+    catalog_ref = revision(tree, catalog_ref)
+    before = foundation_map(json.loads(_show(tree, catalog_ref, mp)))
+    after = foundation_map(json.loads(_show(tree, ref, mp)))
+    names: dict[str, list[list[Any]]] = {}
+    for fn in before.values():
+        names.setdefault(fn[0], []).append(fn)
+    path = profile.resolve_path(spec["foundations"].format(version=version))
+    try:
+        original = path.read_text()
+        lines = [line for line in original.splitlines() if line.strip() and not line.startswith("#")]
+        if not lines or lines[0] != "category\tfunction\tbytes\tscore\tnamed\tfile":
+            raise DecompError("phase.foundations", "migration requires the original six-column name catalog")
+        output = ["category\trom"]
+        total = 0
+        for line in lines[1:]:
+            category, name, size, _score, _named, file = line.split("\t")
+            candidates = names.get(name, [])
+            if len(candidates) != 1 or candidates[0][2] != int(size) or candidates[0][4] != file:
+                raise DecompError("phase.foundations", f"catalog/map identity mismatch: {name}")
+            fn = candidates[0]
+            if fn[1] not in after or after[fn[1]][2] != fn[2]:
+                raise DecompError("phase.foundations", f"current map changed ROM extent: {name}")
+            output.append(f"{category}\t{fn[1]:#x}")
+            total += fn[2]
+        converted = "\n".join(output) + "\n"
+        rows = foundation_rows(converted)
+        backup = path.with_suffix(path.suffix + ".names")
+        with backup.open("x") as saved:
+            saved.write(original)
+        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=path.name + ".", delete=False) as staged:
+            staged.write(converted)
+            staged.flush()
+            os.fsync(staged.fileno())
+        os.replace(staged.name, path)
+        if path.read_text() != converted or backup.read_text() != original:
+            raise DecompError("phase.foundations", "catalog migration readback mismatch")
+    except (OSError, ValueError) as exc:
+        raise DecompError("phase.foundations", f"catalog migration refused: {exc}") from exc
+    return {
+        "catalog": str(path),
+        "backup": str(backup),
+        "catalog_ref": catalog_ref,
+        "functions": len(rows),
+        "bytes": total,
+    }
 
 
 def p1(profile: Profile, cfg: dict[str, Any], game: str, version: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     spec = cfg["games"][game]
-    tree, ref = profile.path("phase.tree", spec["tree"]), spec["ref"]
+    tree = profile.path("phase.tree", spec["tree"])
+    ref = revision(tree, spec["ref"])
     mp = spec["map"].format(version=version)
     data = json.loads(_show(tree, ref, mp))
     age = _age(tree, ref)
@@ -164,9 +264,8 @@ def p1(profile: Profile, cfg: dict[str, Any], game: str, version: str) -> tuple[
     detail: dict[str, Any] = {}
     if spec.get("foundations"):
         tsv_path = profile.resolve_path(spec["foundations"].format(version=version))
-        scores = {f[0]: (f[3], f[4]) for f in data["fns"]}
         try:
-            cats = foundations(tree, ref, tsv_path.read_text(), scores, cfg["named_rule"])
+            cats = foundations(tree, ref, tsv_path.read_text(), data, cfg["named_rule"])
         except OSError as exc:
             raise DecompError("phase.foundations", f"{tsv_path}: {exc}") from exc
         detail = cats
