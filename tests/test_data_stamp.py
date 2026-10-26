@@ -53,10 +53,10 @@ class StampTests(unittest.TestCase):
         self.assertFalse(stamp.touches_data(self.cfg, MAKEFILE))
         self.assertEqual(stamp.missing(self.cfg, self.dir, PLAIN, Path("x.diff")), [])
 
-    def test_stamp_is_for_that_exact_diff(self):
+    def test_stamp_is_for_that_change(self):
         stamp.write(self.dir, USE)
         self.assertEqual(stamp.missing(self.cfg, self.dir, USE, Path("x.diff")), [])
-        self.assertTrue(stamp.missing(self.cfg, self.dir, USE + " ", Path("x.diff")))
+        self.assertTrue(stamp.missing(self.cfg, self.dir, USE.replace("ready", "done"), Path("x.diff")))
 
     def test_files_of(self):
         self.assertEqual(stamp.files_of(TYPE + USE), ["include/COMMON/UNUSED.H", "src/a.CPP"])
@@ -114,7 +114,22 @@ def test_a_msg_line_added_after_the_check_keeps_the_stamp(tmp_path):
     assert stamp.stamped(tmp_path, "# MSG: Exact Foo\n" + diff)
     assert stamp.stamped(tmp_path, "# MSG: Exact Foo, other words\n# note\n" + diff)
     assert not stamp.stamped(tmp_path, "# MSG: Exact Foo\n" + diff.replace("+y", "+z"))
-    (tmp_path / f"{stamp.digest('# MSG: old\n' + diff)}.ok").write_text(
-        "a.c\n"
-    )  # a stamp keyed by the whole text before
-    assert stamp.stamped(tmp_path, "# MSG: old\n" + diff)
+
+
+def test_a_clean_rebase_keeps_the_stamp_and_an_edited_line_does_not(tmp_path):
+    from abu_decomp.data import stamp
+
+    before = (
+        "diff --git a/a.c b/a.c\nindex 1111111..2222222 100644\n--- a/a.c\n+++ b/a.c\n"
+        "@@ -10,4 +10,4 @@ int f(void)\n ctx\n-x\n+y\n tail\n"
+    )
+    after = (
+        "diff --git a/a.c b/a.c\nindex 3333333..4444444 100644\n--- a/a.c\n+++ b/a.c\n"
+        "@@ -42,5 +42,5 @@ int g(void)\n moved\n other\n-x\n+y\n tail\n"
+    )
+    stamp.write(tmp_path, before)
+    assert stamp.stamped(tmp_path, after)
+    assert not stamp.stamped(tmp_path, after.replace("-x", "-w"))
+    assert not stamp.stamped(tmp_path, after.replace("a/a.c b/a.c", "a/b.c b/b.c"))
+    two_hunks = after + "@@ -90,2 +90,2 @@\n-x\n+y\n"
+    assert not stamp.stamped(tmp_path, two_hunks)  # a second hunk is a second change

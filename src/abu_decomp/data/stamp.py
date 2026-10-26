@@ -1,6 +1,6 @@
 """Check stamps: a diff that touches declarations or data is queued only after `decomp data check` passed on it.
 
-`data check --diff D` writes STAMPS/<sha256 of D>.ok when every version of the config built and no exact function
+`data check --diff D` writes STAMPS/<sha256 of D's change>.ok (its files and added and removed lines: see `change`) when every version of the config built and no exact function
 stopped matching; `data stamp --diff D` (the queue's append) and `data gate --stamps` (the train) refuse a touching diff
 without one. A diff that touches no declaration and names no data symbol needs none."""
 
@@ -127,22 +127,38 @@ def stamp_dir(given: Path | None, config: Path | None) -> Path:
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "decomp-data" / "stamps"
 
 
-def body(text: str) -> str:
-    """TEXT without its leading comment lines (the train's `# MSG:` subject, lane notes): adding or editing the subject after
-    the check keeps the stamp (HONEST-O1 ran the data check twice after claim.sh asked for the MSG line)."""
+def change(text: str) -> str:
+    """The content of the change TEXT makes, without what a rebase or a subject rewrites: the leading comment lines
+    (the train's `# MSG:` subject, lane notes), each `index` line, each hunk header's line numbers and the context
+    lines. Moving the diff onto a newer main keeps its files, renames and added and removed lines, so it keeps the
+    stamp (PORT-NEAR-4 rebuilt a 23 minute stamp after a clean rebase)."""
     lines = text.splitlines(keepends=True)
     while lines and lines[0].startswith("#"):
         lines.pop(0)
-    return "".join(lines)
+    kept: list[str] = []
+    in_hunk = False
+    for line in lines:
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif in_hunk:
+            if not line.startswith(("+", "-", "\\")):
+                continue  # context
+        elif line.startswith("@@"):
+            in_hunk = True
+            line = "@@\n"
+        elif line.startswith("index "):
+            continue
+        kept.append(line)
+    return "".join(kept)
 
 
 def stamped(directory: Path, text: str) -> bool:
-    return any((directory / f"{digest(t)}.ok").is_file() for t in (body(text), text))
+    return (directory / f"{digest(change(text))}.ok").is_file()
 
 
 def write(directory: Path, text: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{digest(body(text))}.ok"
+    path = directory / f"{digest(change(text))}.ok"
     path.write_text("\n".join(files_of(text)) + "\n")
     return path
 
@@ -153,7 +169,7 @@ def missing(cfg: DataConfig, directory: Path, text: str, diff: Path) -> list[str
         return []
     return [
         f"{diff.name} touches declarations or data and has no passing all-version `decomp data check` stamp "
-        f"(sha256 {digest(body(text))[:12]}): run `decomp data check --tree TREE --diff {diff}` on the tree it came from"
+        f"(sha256 {digest(change(text))[:12]}): run `decomp data check --tree TREE --diff {diff}` on the tree it came from"
     ]
 
 
