@@ -223,6 +223,7 @@ class PlayTests(unittest.TestCase):
         port_env = seen["port"]
         self.assertEqual(port_env["N64C_TAS_SHOT_EVERY"], "25")
         self.assertEqual(port_env["N64C_TAS_SHOT_DIR"], str(run / "shots" / "port"))
+        self.assertEqual(port_env["GCOV_PREFIX"], str(run / "gcov"))  # counters stay in the run, not the build tree
         self.assertEqual(port_env["N64C_TAS_TRACE"], str(run / "port-trace.txt"))
         oracle = result["oracle"]
         self.assertEqual((oracle["outcome"], oracle["polls_reached"], oracle["status"]), ("ok", 57, "done"))
@@ -261,6 +262,40 @@ class PlayTests(unittest.TestCase):
         self.assertEqual(seen["port"]["N64C_TAS_TRACE"], str(run / "port-trace.txt"))
         self.assertFalse((run / "shots").exists())
         self.assertIsNone(result["oracle"]["max_diff"])
+
+
+class PortEnvTests(unittest.TestCase):
+    def test_every_port_process_counts_into_its_own_folder_whatever_the_profile_says(self):
+        cfg = {"env": {"GCOV_PREFIX": "/build", "N64C_X": "1"}}
+        with mock.patch.dict(os.environ, {"GCOV_PREFIX": "/elsewhere"}):
+            env = tas.port_env(cfg, Path("/runs/r1/dumps"))
+        self.assertEqual((env["GCOV_PREFIX"], env["N64C_X"]), ("/runs/r1/dumps/gcov", "1"))
+
+    def test_the_state_dump_replay_spawns_the_port_with_that_environment(self):
+        from types import SimpleNamespace
+
+        from abu_decomp import tas_statediff
+
+        with tempfile.TemporaryDirectory() as name:
+            run = Path(name) / "run"
+            cache = Path(name) / "cache"
+            run.mkdir()
+            cache.mkdir()
+            (run / "movie.raw").write_text("1\n2\n")
+            (cache / "dump-2.bin").write_bytes(b"x")  # nothing missing: only the port is spawned
+            cfg = {"port": "port", "args": [], "env": {"GCOV_PREFIX": "/build"}, "timeout_seconds": 1}
+            session = SimpleNamespace(
+                cfg=cfg, run=run, pads=1, pak="on", oracle_dir=cache, folder=Path(name), oracle_cfg={}
+            )
+            seen = []
+            popen = lambda argv, env, **_: seen.append(env)  # noqa: E731
+            with (
+                mock.patch.object(tas_statediff.subprocess, "Popen", popen),
+                mock.patch.object(tas, "_wait"),
+                mock.patch.dict(os.environ, {"GCOV_PREFIX": "/elsewhere"}),
+            ):
+                tas_statediff._dump_pass(session, [2], mock.Mock())
+        self.assertEqual([env["GCOV_PREFIX"] for env in seen], [str(run / tas_statediff.DUMPS / "gcov")])
 
 
 class ServeTests(unittest.TestCase):

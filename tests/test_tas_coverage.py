@@ -284,6 +284,29 @@ class RunReportTests(unittest.TestCase):
         with self.assertRaises(cov.DecompError):
             cov.run_report(self.profile, self.cfg, self.run)
 
+    def test_a_stray_count_in_the_build_tree_never_enters_the_zero_baseline(self):
+        stray = self.build / "decomp" / "src" / "A.CPP.gcda"
+        stray.write_text("counts")
+        seen = {}
+
+        def fake(args, cwd, **_):
+            roots = [Path(a) for a in args[args.index("--json") + 2 :]]
+            seen["roots"] = roots
+            seen["notes"] = sorted(p.name for r in roots for p in r.rglob("*") if p.is_file() or p.is_symlink())
+            seen["resolved"] = [p.resolve() for r in roots for p in r.rglob("*.gcno")]
+
+        with (
+            mock.patch.object(cov, "gcovr", side_effect=fake),
+            mock.patch("abu_decomp.tas.build_id", return_value="abc"),
+        ):
+            path = cov.baseline(self.cfg)
+        self.assertEqual(path, self.root / "runs" / "coverage-baseline-abc.json")
+        self.assertEqual(seen["notes"], ["A.CPP.gcno"])
+        self.assertEqual(seen["resolved"], [self.build / "decomp" / "src" / "A.CPP.gcno"])
+        self.assertTrue(all(self.build not in r.parents or r.parent.name.startswith(".notes-") for r in seen["roots"]))
+        self.assertEqual(list(self.build.glob(".notes-*")), [])  # the mirror does not outlive the call
+        self.assertTrue(stray.is_file())  # the tree itself is left alone
+
     def test_orphan_notes_of_vanished_units_are_dropped_with_their_counters(self):
         (self.build / "ragewars-decomp" / "src").mkdir()
         (self.build / "ragewars-decomp" / "src" / "A.CPP").write_text("code")

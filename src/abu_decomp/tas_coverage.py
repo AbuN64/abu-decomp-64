@@ -672,6 +672,17 @@ def drop_orphan_notes(build: Path) -> int:
     return dropped
 
 
+def _mirror_notes(tree: Path, into: Path) -> Path:
+    """INTO: symlinks to every .gcno under TREE, same relative paths and nothing else, so gcov finds no .gcda beside a
+    note and a count stray in the build tree can never enter a zero baseline."""
+    into.mkdir(parents=True, exist_ok=True)
+    for note in tree.rglob("*.gcno"):
+        link = into / note.relative_to(tree)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(note)
+    return into
+
+
 def baseline(cfg: dict[str, Any]) -> Path:
     """runs/coverage-baseline-<build>.json: the build's every unit with zero counts (gcovr reads the .gcno notes
     alone), so files no movie loads still show in the union. One per port build, made once."""
@@ -683,7 +694,9 @@ def baseline(cfg: dict[str, Any]) -> Path:
         for old in cfg["runs"].glob("coverage-baseline-*.json"):
             old.unlink()
         cfg["runs"].mkdir(parents=True, exist_ok=True)
-        gcovr([*_gcovr_base(build), "--json", str(path), str(build / "decomp"), str(build / "decomp-image")], build)
+        with tempfile.TemporaryDirectory(prefix=".notes-", dir=build) as mirror:
+            roots = [_mirror_notes(build / name, Path(mirror) / name) for name in ("decomp", "decomp-image")]
+            gcovr([*_gcovr_base(build), "--json", str(path), *map(str, roots)], build)
     return path
 
 

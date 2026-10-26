@@ -679,8 +679,7 @@ def _dump_pass(session: Session, polls: list[int], profile: Profile) -> dict[int
         card = port_dir / "cpak.mpk"
         card.write_bytes((run / "cpak-start.mpk").read_bytes())
     env = {
-        **os.environ,
-        **cfg["env"],
+        **tas.port_env(cfg, port_dir),  # counters stay in the dump folder: run_report reads only RUN/gcov
         "N64C_SPEED": "0",
         "N64C_TAS_PLAY": str(port_dir / "movie.raw"),
         "N64C_TAS_EXIT_AFTER": "0",

@@ -459,6 +459,12 @@ def _argv(
     return [*argv, "--fps-unlock"] if fps_unlock else argv
 
 
+def port_env(cfg: dict[str, Any], folder: Path) -> dict[str, str]:
+    """The environment of every port process: the host's plus the profile's, and `GCOV_PREFIX=<folder>/gcov` last so a
+    coverage build leaves its run counters in the folder it ran for, never beside the notes in the build tree."""
+    return {**os.environ, **cfg["env"], "GCOV_PREFIX": str(folder / "gcov")}
+
+
 _FPS_LINE = re.compile(
     r"boot-fps: \w+ unlock=(\d) speed=(\d+) retrace=(\d+) wall=([\d.]+) presented=(\d+) \(([\d.]+)/s\) "
     r"game=(\d+) \(([\d.]+)/s\) interpolated=(\d+)"
@@ -1329,8 +1335,7 @@ def play(
             (run / CARD_START).write_bytes(start)
             oracle_card.write_bytes(start)
     env = {
-        **os.environ,
-        **cfg["env"],
+        **port_env(cfg, run),
         "N64C_TAS_RECORD": str(run / "polls.raw"),
         "N64C_TAS_HASH": str(run / HASH),
         "N64C_VIEW": str(run / VIEW),
@@ -1340,7 +1345,6 @@ def play(
         "N64C_SPEED": str(speed),
         "N64C_INPUT": input_address(run),
         "N64C_AUDIO_OUT": str(run / AUDIO),
-        "GCOV_PREFIX": str(run / "gcov"),  # a coverage build leaves its counters here (tas_coverage)
     }
     rows = reach_rows(cfg)
     if rows and rows.is_file():
