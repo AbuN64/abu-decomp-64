@@ -131,64 +131,6 @@ class PhaseTests(Fixture):
                 self.root, "HEAD", "category\trom\nrng\t0\n", {"fns": [["Next", 0, 16, 100.0, "missing.c"]]}, "func_"
             )
 
-    def legacy_catalog(self):
-        path = self.dir / "foundations-v1.tsv"
-        text = (
-            "category\tfunction\tbytes\tscore\tnamed\tfile\n"
-            "rng\tRng_Next\t16\t100.0\t1\ttests/fixtures/phase/src/a.c\n"
-            "input\tPak_Save\t16\t50.0\t1\ttests/fixtures/phase/src/a.c\n"
-        )
-        path.write_text(text)
-        return path, text
-
-    def test_catalog_migration_preserves_original_and_readback(self):
-        path, original = self.legacy_catalog()
-        self.profile()
-        self.assertEqual(
-            cli.main(["--profile", str(self.profile_file), "phase", "foundations", "--catalog-ref", "HEAD"]), 0
-        )
-        self.assertEqual(path.read_text(), "category\trom\nrng\t0x0\ninput\t0x10\n")
-        self.assertEqual(path.with_suffix(".tsv.names").read_text(), original)
-        self.assertEqual(cli.main(["--profile", str(self.profile_file), "phase"]), 0)
-        with self.assertRaises(DecompError):
-            phase.migrate_foundations(self.profile(), None, None, "HEAD")
-        self.assertEqual(path.with_suffix(".tsv.names").read_text(), original)
-
-    def test_catalog_migration_preflights_every_row_before_writing(self):
-        path, original = self.legacy_catalog()
-        for invalid in (
-            original.replace("Pak_Save", "Gone"),
-            original.replace("Pak_Save\t16", "Pak_Save\t20"),
-            original.replace("src/a.c", "src/old.c"),
-        ):
-            path.write_text(invalid)
-            with self.assertRaises(DecompError):
-                phase.migrate_foundations(self.profile(), None, None, "HEAD")
-            self.assertEqual(path.read_text(), invalid)
-            self.assertFalse(path.with_suffix(".tsv.names").exists())
-
-    def test_catalog_migration_refuses_changed_current_extent(self):
-        path, original = self.legacy_catalog()
-        data = json.loads((self.dir / "map-v1.json").read_text())
-        changed = json.loads(json.dumps(data))
-        changed["fns"][0][2] += 4
-        with (
-            patch.object(phase, "_show", side_effect=[json.dumps(data), json.dumps(changed)]),
-            self.assertRaises(DecompError),
-        ):
-            phase.migrate_foundations(self.profile(), None, None, "HEAD")
-        self.assertEqual(path.read_text(), original)
-        self.assertFalse(path.with_suffix(".tsv.names").exists())
-
-    def test_catalog_migration_does_not_overwrite_backup(self):
-        path, original = self.legacy_catalog()
-        backup = path.with_suffix(".tsv.names")
-        backup.write_text("preserved")
-        with self.assertRaises(DecompError):
-            phase.migrate_foundations(self.profile(), None, None, "HEAD")
-        self.assertEqual(path.read_text(), original)
-        self.assertEqual(backup.read_text(), "preserved")
-
     def test_p2_absent_port_is_not_met(self):
         def edit(cfg):
             cfg["games"]["Alpha"]["port"] = None

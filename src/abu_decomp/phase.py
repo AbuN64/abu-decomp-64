@@ -8,10 +8,8 @@ second entry of `phase.games`, not new code. Read-only except `--refresh`, which
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -127,7 +125,7 @@ def foundation_rows(tsv: str) -> list[tuple[str, int]]:
     lines = [line for line in tsv.splitlines() if line.strip() and not line.startswith("#")]
     if not lines or lines[0] != "category\trom":
         raise DecompError(
-            "phase.foundations", "expected category/rom catalog; migrate with phase foundations --catalog-ref REF"
+            "phase.foundations", "expected category/rom catalog"
         )
     rows, seen = [], set()
     for line in lines[1:]:
@@ -181,70 +179,6 @@ def foundations(tree: Path, ref: str, tsv: str, data: dict[str, Any], rule: str)
         if not (exact and clean):
             entry["failing"].append({"function": name, "rom": rom, "bytes": size, "exact": exact, "named": clean})
     return cats
-
-
-def migrate_foundations(
-    profile: Profile, game: str | None, version: str | None, catalog_ref: str | None
-) -> dict[str, Any]:
-    """One-time, preflighted name-catalog migration. Keep the original and verify the installed readback."""
-    cfg = settings(profile)
-    game = game or cfg["focus"]["game"]
-    if game not in cfg["games"] or not catalog_ref:
-        raise DecompError(
-            "phase.foundations", "pass a configured --game and --catalog-ref identifying the original map"
-        )
-    spec = cfg["games"][game]
-    version = version or cfg["focus"].get("version")
-    if version not in spec["versions"] or not spec.get("foundations"):
-        raise DecompError("phase.foundations", "pass a configured --version with a foundation catalog")
-    tree = profile.path("phase.tree", spec["tree"])
-    ref = revision(tree, spec["ref"])
-    mp = spec["map"].format(version=version)
-    catalog_ref = revision(tree, catalog_ref)
-    before = foundation_map(json.loads(_show(tree, catalog_ref, mp)))
-    after = foundation_map(json.loads(_show(tree, ref, mp)))
-    names: dict[str, list[list[Any]]] = {}
-    for fn in before.values():
-        names.setdefault(fn[0], []).append(fn)
-    path = profile.resolve_path(spec["foundations"].format(version=version))
-    try:
-        original = path.read_text()
-        lines = [line for line in original.splitlines() if line.strip() and not line.startswith("#")]
-        if not lines or lines[0] != "category\tfunction\tbytes\tscore\tnamed\tfile":
-            raise DecompError("phase.foundations", "migration requires the original six-column name catalog")
-        output = ["category\trom"]
-        total = 0
-        for line in lines[1:]:
-            category, name, size, _score, _named, file = line.split("\t")
-            candidates = names.get(name, [])
-            if len(candidates) != 1 or candidates[0][2] != int(size) or candidates[0][4] != file:
-                raise DecompError("phase.foundations", f"catalog/map identity mismatch: {name}")
-            fn = candidates[0]
-            if fn[1] not in after or after[fn[1]][2] != fn[2]:
-                raise DecompError("phase.foundations", f"current map changed ROM extent: {name}")
-            output.append(f"{category}\t{fn[1]:#x}")
-            total += fn[2]
-        converted = "\n".join(output) + "\n"
-        rows = foundation_rows(converted)
-        backup = path.with_suffix(path.suffix + ".names")
-        with backup.open("x") as saved:
-            saved.write(original)
-        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=path.name + ".", delete=False) as staged:
-            staged.write(converted)
-            staged.flush()
-            os.fsync(staged.fileno())
-        os.replace(staged.name, path)
-        if path.read_text() != converted or backup.read_text() != original:
-            raise DecompError("phase.foundations", "catalog migration readback mismatch")
-    except (OSError, ValueError) as exc:
-        raise DecompError("phase.foundations", f"catalog migration refused: {exc}") from exc
-    return {
-        "catalog": str(path),
-        "backup": str(backup),
-        "catalog_ref": catalog_ref,
-        "functions": len(rows),
-        "bytes": total,
-    }
 
 
 def p1(profile: Profile, cfg: dict[str, Any], game: str, version: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
