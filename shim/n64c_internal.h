@@ -10,7 +10,8 @@ int n64c_sched_alive(void);
 uint32_t n64c_sched_waiting(void);
 void n64c_event_post(u32 event);              /* non-blocking send to the queue set by osSetEventMesg */
 void n64c_clock_advance_to(OSTime t);         /* fire timers due up to t, stepping threads after each */
-OSTime n64c_clock_now(void);
+OSTime n64c_clock_now(void);                /* the virtual Count, including the guest work done so far */
+void n64c_clock_work(void);                 /* one function entry of the original code ran (boot/trace.c's entry hook) */
 void n64c_clock_arm_ai(OSTime t, void (*due)(void)); /* call due once the clock reaches t (one slot: the audio FIFO) */
 void n64c_sched_trace(void (*sink)(const char *line, void *user), void *user);
 /* n64c_vi.c */

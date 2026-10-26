@@ -312,7 +312,7 @@ def settle(cfg: DataConfig, tree: Path) -> str | None:
     None. The first make of a slot pays for more than the diff: stamps and objects the last diff's revert left stale, the
     dependency caches of a fresh or reset tree, a cold file cache. That debt ran inside rom_check and made equivalent
     declaration-only packs cost 24 s on one slot and 688 s on another (10-26), so the 300 s cap decided by cache luck.
-    Paid here, outside the cap's meter, rom_check is the link of what the diff changed, the same cold or warm."""
+    Paid here, outside the cap's meter (as is the seeding of a fresh tree), rom_check is the link of what the diff changed, the same cold or warm."""
     if not cfg.rom_check:
         return None
     rc, report = trial.Builder(cfg, tree).rom_check()
@@ -325,11 +325,11 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
     free = [0.0]  # CPU seconds `settle` used: shown on its own line, not charged to the diff
 
     def settled(tree: Path) -> list[dict[str, Any]]:
-        _phase("tree", mark)
         before = mark[1]
+        _phase("tree (not charged)", mark, cap=False)  # seeding a fresh tree is the slot's cost, not the diff's
         why = settle(cfg, tree)
-        free[0] += meter.cpu() - before
         _phase("settle (not charged)", mark, cap=False)
+        free[0] += mark[1] - before
         return [{"key": "data.stamp", "blocking": True, "message": why}] if why else []
 
     # The tree is at SHARED's own commit: any other base differs in symbol facts and splits the ROM again for every

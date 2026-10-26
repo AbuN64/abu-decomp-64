@@ -72,8 +72,32 @@ static int compare_armed;
  * Count, about a microsecond at 46.875 MHz) and timers that come due fire as they would on the console. */
 enum { SPIN_POLLS = 1024, SPIN_TICKS = 48 };
 static unsigned clock_polls;       /* clock reads by the baton holder since the baton last moved */
+/* Guest work takes time. The recompiled original charges a fixed time per function entry (the oracle host's
+ * N64R_CLOCK=entries); the port charges the same way: the entry hook of the instrumented original units
+ * (boot/trace.c) counts entries, and the clock takes them in whenever anything reads or sets it. Without this a frame
+ * of game code would cost no virtual time, every frame would fit in one retrace, and the port would run its per-frame
+ * code at a rate the game's own frame timing (osGetTime deltas) never sees on the console.
+ * ENTRY_MILLITICKS: Count ticks per entry times 1000. The oracle's calibration (busiest VI window, 4702.01 ns per
+ * entry at 46.875 MHz) is 220.407 ticks; the port counts the entries of its own units, so see CALIBRATION in
+ * lanes/PJI-PACING-NOTES.md for the value measured against the oracle. */
+enum { ENTRY_MILLITICKS = 220407 };
+static unsigned long long work_entries;  /* entries run since the clock last took them in (the baton holder adds) */
+static unsigned work_milli;              /* thousandths of a tick left over from the last fold */
 static void (*trace_sink)(const char *, void *);
 static void *trace_user;
+
+/* Take the entries run so far into the clock. Lock held. */
+static void work_fold(void)
+{
+    unsigned long long n = __atomic_exchange_n(&work_entries, 0, __ATOMIC_RELAXED);
+    if (!n) return;
+    static unsigned long long mt; if (!mt) { const char *e = getenv("PJI_MT"); mt = e ? strtoull(e, 0, 10) : ENTRY_MILLITICKS; } /* PJI-TEMP */
+    n = n * mt + work_milli;
+    work_milli = (unsigned)(n % 1000);
+    clock_now += n / 1000;
+}
+/* One function entry of the original code ran. */
+void n64c_clock_work(void) { __atomic_store_n(&work_entries, __atomic_load_n(&work_entries, __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED); }
 
 static void key_init(void) { pthread_key_create(&self_key, NULL); }
 static HostThread *self(void) { pthread_once(&key_once, key_init); return pthread_getspecific(self_key); }
@@ -497,6 +521,7 @@ void osYieldThread(void)
 void osSetTimer(OSTimer *t, OSTime countdown, OSTime interval, OSMesgQueue *mq, OSMesg msg)
 {
     pthread_mutex_lock(&big);
+    work_fold();
     t->interval = interval;
     t->value = clock_now + countdown;
     t->mq = mq;
@@ -526,6 +551,7 @@ static OSTime clock_read(void)
     HostThread *h = self();
     if (h) {
         pthread_mutex_lock(&big);
+        work_fold();
         int spinning = baton == h && ++clock_polls > SPIN_POLLS;
         OSTime t = clock_now + SPIN_TICKS;
         pthread_mutex_unlock(&big);
@@ -533,19 +559,28 @@ static OSTime clock_read(void)
             n64c_clock_advance_to(t);
     }
     pthread_mutex_lock(&big);
+    work_fold();
     OSTime now = clock_now;
     pthread_mutex_unlock(&big);
     return now;
 }
 OSTime osGetTime(void) { return clock_read(); }
 u32 osGetCount(void) { return (u32)clock_read(); }
-OSTime n64c_clock_now(void) { return clock_now; }
+OSTime n64c_clock_now(void)
+{
+    pthread_mutex_lock(&big);
+    work_fold();
+    OSTime now = clock_now;
+    pthread_mutex_unlock(&big);
+    return now;
+}
 /* R4000 User's Manual, Compare register(11): Count equality raises IP7;
  * writing Compare clears that interrupt. Use the existing virtual Count and
  * interrupt delivery; no wall clock or original timer-manager code. */
 void __osSetCompare(u32 value)
 {
     pthread_mutex_lock(&big);
+    work_fold();
     compare_deadline = clock_now + (u32)(value - (u32)clock_now);
     compare_armed = 1;
     pending_events &= ~(1u << OS_EVENT_COUNTER);
@@ -565,6 +600,7 @@ void n64c_clock_advance_to(OSTime t)
 {
     for (;;) {
         pthread_mutex_lock(&big);
+        work_fold();
         OSTimer *due = timers && timers->value <= t ? timers : NULL;
         /* The audio FIFO's oldest buffer finished: the AI interrupt that tells the game to refill it. */
         if (ai_armed && ai_deadline <= t && (!due || ai_deadline <= due->value) &&
@@ -695,6 +731,8 @@ void n64c_sched_reset(void)
     baton = NULL;
     timers = NULL;
     clock_now = 0;
+    work_entries = 0;
+    work_milli = 0;
     compare_deadline = 0;
     compare_armed = 0;
     ai_armed = 0;

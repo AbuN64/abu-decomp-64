@@ -107,10 +107,14 @@ int n64c_frame(void)
     N64C_ZONE(zr1,"game-run");
     n64c_sched_run_idle();
     N64C_ZONE_END(zr1);
-    n64c_clock_advance_to(n64c_vi_next_retrace_time());
-    N64C_ZONE(zvi,"vi-retrace");
-    n64c_vi_retrace();
-    N64C_ZONE_END(zvi);
+    /* The game's work took virtual time (n64c_clock_work): every retrace that fell due while it ran has happened,
+     * one after the other, before the game sees any of them. */
+    do {
+        n64c_clock_advance_to(n64c_vi_next_retrace_time());
+        N64C_ZONE(zvi,"vi-retrace");
+        n64c_vi_retrace();
+        N64C_ZONE_END(zvi);
+    } while (n64c_vi_next_retrace_time() <= n64c_clock_now());
     N64C_ZONE(zr2,"game-run");
     n64c_sched_run_idle();
     N64C_ZONE_END(zr2);

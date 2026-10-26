@@ -629,6 +629,7 @@ def test_the_clean_trees_link_is_paid_before_the_diff_and_not_charged_to_it(tmp_
     _r, code, _f = stampbuild.build(cfg, None, tmp_path, diff, tmp_path / "stamps")
     out = capsys.readouterr().out
     assert code == 0 and order.index("link") < order.index("apply") and order.count("link") == 2
+    assert "stamp phase tree (not charged): wall=0s cpu=0s\n" in out
     assert "stamp phase settle (not charged): wall=0s cpu=688s\n" in out and "stamp phase rom_check: wall=0s cpu=24s\n" in out
     assert "stamp build: wall=0s cpu=24s" in out and "CPU-OVER" not in out
 
