@@ -61,3 +61,18 @@ def test_verbose_puts_v_before_the_positionals(tmp_path):
 
     fntry.try_fn(Builder(CFG, t, run), "f", ["a"], None, verbose=True)
     assert seen[-1][:4] == ["cmp.py", "--aligned", "-v", "a"]
+
+
+def test_a_function_that_matches_but_breaks_an_exact_neighbour_refuses(tmp_path):
+    """PORT-BIG-2: INCLUDE_ASM -> C matched Pak_HandleMenuAction and shifted the text order under its neighbour."""
+    t = tree(tmp_path)
+    for v in "ab":
+        rows = [["f", 0, 0, 100, "src/u.c"], ["g", 4, 0, 100, "src/u.c"], ["h", 8, 0, 50, "src/u.c"]]
+        (t / f"docs/map-{v}.json").write_text(json.dumps({"fns": rows}))
+
+    def run(cmd, **kw):
+        edit = 7 if "g" in cmd else 0
+        return subprocess.CompletedProcess(cmd, 0, f"edit={edit}\n" if "cmp.py" in cmd[0] else "", "")
+
+    rows = fntry.try_fn(Builder(CFG, t, run), "f", ["a"], None)
+    assert rows[0]["edit"] == 0 and rows[0]["broken"] == [("g", "edit=7")]

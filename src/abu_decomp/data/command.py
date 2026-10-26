@@ -298,6 +298,11 @@ def _try(args: argparse.Namespace, cfg) -> Result:
     bad = [
         {"key": "data.try", "blocking": True, "message": ln + (" " + r["log"][-400:] if r["edit"] is None else "")}
         for ln, r in zip(lines, rows, strict=True) if r["edit"] != 0
+    ] + [
+        {"key": "data.try.broken", "blocking": True,
+         "message": f"{r['version']} {r['unit']}: {len(r['broken'])} other exact function(s) no longer match "
+         f"(first {r['broken'][0][0]} {r['broken'][0][1]}): the edit moved or changed the unit's code"}
+        for r in rows if r["broken"]
     ]  # fmt: skip
     return {"lines": lines, "rows": rows}, 1 if bad else 0, bad
 

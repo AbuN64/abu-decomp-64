@@ -1,11 +1,14 @@
 """`decomp data try`: the fast single-function loop. Put a candidate file (or the unit as it stands) in place of the function's unit,
-build only that object, compare only that function, put the unit back: seconds, no round, no stamp, nothing left behind.
+build only that object, compare that function and every other function of the unit the version's map holds exact (an
+edit that moves the text order breaks the neighbours, not the function under try), put the unit back: seconds, no
+round, no stamp, nothing left behind.
 Lanes kept re-writing this as private scripts (t2.sh, fast.sh) that vanished with their lane dirs."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from abu_decomp.data.check import broken
 from abu_decomp.data.trial import Builder, fn_unit, restored
 
 
@@ -29,12 +32,21 @@ def try_fn(
     unit: str | None = None,
     verbose: bool = False,
 ) -> list[dict]:
-    """One row per version: {version, unit, edit (None: did not build or no count), log (build tail on failure, hunks if verbose)}."""
+    """One row per version: {version, unit, edit (None: did not build or no count), broken [(fn, why)] (the unit's other exact
+    functions this object no longer matches), log (build tail on failure, hunks if verbose)}."""
     rows = []
     for v in versions:
         u = unit or fn_unit(b.cfg, b.tree, v, fn)
         if not u:
-            rows.append({"version": v, "unit": None, "edit": None, "log": "function is in no unit of this version"})
+            rows.append(
+                {
+                    "version": v,
+                    "unit": None,
+                    "edit": None,
+                    "broken": [],
+                    "log": "function is in no unit of this version",
+                }
+            )
             continue
         path = b.tree / u
         with restored(path):
@@ -42,6 +54,7 @@ def try_fn(
                 path.write_text(candidate.read_text())
             rc, log = b.build(v, u)
             edit = None if rc else b.score(v, fn, u)
+            neighbours = [] if rc else [(f, why) for _, f, why in broken(b, v, [u]) if f != fn]
             text = log if rc else (fncmp_verbose(b, v, fn, u) if verbose else "")
-        rows.append({"version": v, "unit": u, "edit": edit, "log": text})
+        rows.append({"version": v, "unit": u, "edit": edit, "broken": neighbours, "log": text})
     return rows
