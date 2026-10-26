@@ -1,5 +1,7 @@
 import subprocess
 
+import pytest
+
 from abu_decomp import cleanup
 
 
@@ -105,6 +107,24 @@ def test_slices_argv_hands_the_lane_count_map_and_assignments_to_the_recipe_slic
     ]
     doc = {"summary": ["98 slices"], "path": "/n/slices.json", "lane_files": ["/n/slices/a.json"]}
     assert cleanup.slices_lines(doc) == ["98 slices", "slices /n/slices.json", "/n/slices/a.json"]
+
+
+def test_slices_show_lists_what_a_lane_owns_and_names_the_lanes_that_have_a_file(tmp_path):
+    import json
+
+    from abu_decomp import DecompError
+
+    (tmp_path / "slices").mkdir()
+    (tmp_path / "slices" / "L1.json").write_text(json.dumps({"slice": "S001", "fns": ["fn:de:80000000"], "data": []}))
+    assert cleanup.show_slice(tmp_path, "L1") == {
+        "lane": "L1",
+        "slice": "S001",
+        "fns": ["fn:de:80000000"],
+        "data": [],
+        "records": [],
+    }
+    with pytest.raises(DecompError, match=r"lanes with one: \['L1'\]"):
+        cleanup.show_slice(tmp_path, "L2")
 
 
 def test_cleanup_slices_runs_recipe_in_the_project_and_refuses_when_recipe_does(monkeypatch, capsys, tmp_path):

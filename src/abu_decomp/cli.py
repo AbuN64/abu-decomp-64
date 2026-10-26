@@ -1160,6 +1160,7 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--assign", action="append", default=[], metavar="LANE=ID[,ID]", help="slices: LANE owns these")
     parser.add_argument("--names", help="slices: the names directory (default: the name book's store)")
+    parser.add_argument("--show", metavar="LANE", help="slices: list what this lane owns (its ownership file)")
     parser.add_argument(
         "--evidence",
         action="store_true",
@@ -1191,6 +1192,16 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
                 f"  slice {got['slice']} ({lane}): {got['named_fns']}/{got['owned_fns']} fns have a row",
                 file=sys.stderr,
             )
+        return found, 0, []
+    if args.verb == "slices" and getattr(args, "show", None):
+        found = cleanup.show_slice(Path(args.names or args.book or "~/rig-state/names").expanduser(), args.show)
+        print(
+            f"{found['lane']} owns slices {found['slice']}: {len(found['fns'])} functions, {len(found['data'])} data,"
+            f" {len(found['records'])} records",
+            file=sys.stderr,
+        )
+        for key in (*found["fns"], *found["data"], *found["records"]):
+            print(f"  {key}", file=sys.stderr)
         return found, 0, []
     root = tools.project_dir(_profile(args.profile), _own_tree(args, "cleanup"))
     if args.verb == "slices":

@@ -208,6 +208,25 @@ def _lines(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def show_slice(names: Path, lane: str) -> dict[str, Any]:
+    """The ownership file of one lane (`<names>/slices/<lane>.json`): its slice ids and the function, datum and record
+    keys it owns. A DecompError naming the lanes that have a file when `lane` has none."""
+    import json
+
+    from abu_decomp import DecompError
+
+    path = names / "slices" / f"{lane}.json"
+    if not path.is_file():
+        have = sorted(p.stem for p in (names / "slices").glob("*.json")) if (names / "slices").is_dir() else []
+        raise DecompError("cleanup.show", f"no slice for lane {lane} in {names / 'slices'}; lanes with one: {have}")
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        "lane": lane,
+        "slice": doc.get("slice", ""),
+        **{k: list(doc.get(k, ())) for k in ("fns", "data", "records")},
+    }
+
+
 def ledger(names: Path, hours: float = 1.0, now: float | None = None) -> dict[str, Any]:
     """WATCH's view of the name ledger (`names` = ~/rig-state/names): queue and batch counts, per lane the rows
     submitted, accepted and refused in the last `hours` (with the refusing rules), rows accepted per hour, and per slice
