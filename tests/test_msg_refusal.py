@@ -1,4 +1,4 @@
-"""`data stamp` and `data check` refuse a missing or over-72-char `# MSG:` subject through claim-preflight.sh before any build."""
+"""`data stamp` and `data check` refuse a missing or over-72-char `# MSG:` subject through claim-preflight.sh."""
 
 import argparse
 import shutil
@@ -45,7 +45,7 @@ def args(verb, d, tmp_path):
 @pytest.mark.parametrize("verb", ["stamp", "check"])
 def test_over_long_subject_is_refused_naming_its_length(rig, verb):
     tmp_path, built = rig
-    result, code, findings = command.run(args(verb, diff(tmp_path, "# MSG: " + "x" * 73), tmp_path))
+    _result, code, findings = command.run(args(verb, diff(tmp_path, "# MSG: " + "x" * 73), tmp_path))
     assert code == 1 and not built
     assert "73 chars" in findings[0]["message"] and findings[0]["key"] == "data.msg"
 
@@ -53,7 +53,7 @@ def test_over_long_subject_is_refused_naming_its_length(rig, verb):
 @pytest.mark.parametrize("verb", ["stamp", "check"])
 def test_missing_subject_is_refused(rig, verb):
     tmp_path, built = rig
-    result, code, findings = command.run(args(verb, diff(tmp_path, ""), tmp_path))
+    _result, code, findings = command.run(args(verb, diff(tmp_path, ""), tmp_path))
     assert code == 1 and not built and "# MSG:" in findings[0]["message"]
 
 
