@@ -1012,12 +1012,14 @@ def input_address(run: Path) -> str:
 
 
 def reach_address(run: Path) -> str:
-    """The run's reach stream, the datagram socket the port sends its reach records on: the input socket's name + `.reach`."""
+    """The run's reach stream, the datagram socket the port sends its reach records on: the input socket's name +
+    `.reach`."""
     return input_address(run) + ".reach"
 
 
 def reach_rows(cfg: dict[str, Any]) -> Path | None:
-    """The baked fnrows file (one function name per fns.json row) the port maps its entered functions to, or None before the first bake."""
+    """The baked fnrows file (one function name per fns.json row) the port maps its entered functions to, or None
+    before the first bake."""
     site = cfg["runs"] / "site"
     try:
         return site / json.loads((site / "manifest.json").read_text())["fnrows"]
