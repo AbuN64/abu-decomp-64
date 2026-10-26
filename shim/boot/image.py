@@ -138,16 +138,23 @@ def resident_units(source, version):
     return units
 
 
-def select(source, exclude, version=None):
+def select(source, exclude, version=None, data_only=False):
+    """Units whose initialised data the image takes: every function-free resident unit, and with a VERSION the
+    units holding initialised data in that version's layout even when they also hold functions (the decomp folds
+    data units into code modules; their data still sits at its pinned address and is read through aliases).
+    DATA_ONLY keeps just the function-free ones: the units the link-all archive leaves out, mixed units stay code."""
     keys = {}
     for unit, key, _, _ in placements(source):
         keys.setdefault(unit, set()).add(key)
     overlay = overlay_keys(source)
-    units = [unit for unit, unit_keys in sorted(keys.items())
-             if unit not in exclude and not unit_keys & overlay and function_free(source / unit)]
+    holding = set(resident_units(source, version)) | set(overlay_units(source, version)) if version else set()
+    def takes(unit):
+        if function_free(source / unit):
+            return unit not in exclude
+        return unit in holding and not data_only  # a linked code unit's data still sits at its pinned address
+    units = [unit for unit, unit_keys in sorted(keys.items()) if not unit_keys & overlay and takes(unit)]
     if version:
-        units += [unit for unit in sorted(overlay_units(source, version))
-                  if unit not in exclude and function_free(source / unit)]
+        units += [unit for unit in sorted(overlay_units(source, version)) if takes(unit)]
     return units
 
 
@@ -357,9 +364,9 @@ def build(manifest, source, objects, linked, output, rom=None):
         section_of = next((overlays[unit] for unit in overlays if path.as_posix().endswith("/" + unit + ".o")), None)
         resident_of = next((residents[unit] for unit in residents if path.as_posix().endswith("/" + unit + ".o")), None)
         elf = load_object(path)
-        if any(s["type"] == STT_FUNC and s["shndx"] for s in elf.symbols):
-            code_units.append(str(path))  # functions arrive by include; not a data unit
-            continue
+        mixed = any(s["type"] == STT_FUNC and s["shndx"] for s in elf.symbols)
+        if mixed:
+            code_units.append(str(path))  # its functions arrive by include; only its initialised data is imaged
         for symbol in elf.symbols:
             if symbol["type"] != STT_OBJECT or not elf.data_section(symbol["shndx"]) or not symbol["size"]:
                 continue
@@ -604,6 +611,7 @@ if __name__ == "__main__":
     pick = sub.add_parser("select")
     pick.add_argument("--source", type=pathlib.Path, required=True)
     pick.add_argument("--manifest", type=pathlib.Path, required=True)
+    pick.add_argument("--data-only", action="store_true", help="only the function-free units")
     unit = sub.add_parser("compile")
     unit.add_argument("--prepare", type=pathlib.Path, required=True)
     unit.add_argument("--compiler", required=True)
@@ -621,7 +629,7 @@ if __name__ == "__main__":
     try:
         if args.command == "select":
             project = policy.load_project(args.manifest, args.source)
-            print(";".join(select(args.source, set(project["sources"]), project["version"])))
+            print(";".join(select(args.source, set(project["sources"]), project["version"], args.data_only)))
         elif args.command == "compile":
             flags = args.flags[1:] if args.flags[:1] == ["--"] else args.flags
             compile_unit(args.prepare, args.compiler, args.source, args.output, flags)

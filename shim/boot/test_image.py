@@ -223,6 +223,22 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(report["function_stops"], ["func_80239FCC_de"])
         self.assertIn(".long func_80239FCC_de", (self.path / "alias" / "image.c").read_text())
 
+    def test_data_of_a_unit_that_also_holds_functions_is_imaged(self):
+        # the decomp folds data units into code modules: such a unit's initialised data is imaged at its pinned
+        # address even when the unit is linked as code, its functions are not
+        (self.source / "RageWars.ld").write_text(LAYOUT.replace("src/B.CPP.o(.data);", "src/B.CPP.o(.data);\n        src/M.CPP.o(.data);"))
+        (self.source / "src" / "M.CPP").write_text("int fold(void) { return 1; }\nunsigned int D_folded[1] = {0x3F800000};\n")
+        (self.source / "versions/test/symbol_addrs.txt").write_text(FACTS + "D_folded = 0x80001030; // rom:0x1030\n")
+        linked_code = {"src/CODE.CPP", "src/M.CPP"}
+        self.assertIn("src/M.CPP", image.select(self.source, linked_code, "test"))
+        self.assertNotIn("src/M.CPP", image.select(self.source, linked_code))
+        self.assertNotIn("src/M.CPP", image.select(self.source, linked_code, "test", data_only=True))
+        unit = self.compile(self.source / "src" / "M.CPP", self.path / "M.CPP.o", "-x", "c")
+        image.build(self.manifest, self.source, [unit], [], self.path / "mixed")
+        report = json.loads((self.path / "mixed" / "image.json").read_text())
+        self.assertEqual(report["code_units"], [str(unit)])
+        self.assertEqual(report["extents"], 1)
+        self.assertNotIn("D_folded", report["refused"])
     def test_select_keeps_resident_function_free_units(self):
         self.assertEqual(image.select(self.source, {"src/CODE.CPP"}), ["src/A.CPP", "src/B.CPP"])
 
