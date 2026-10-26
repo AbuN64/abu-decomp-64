@@ -38,7 +38,7 @@ CONTRACT = {
     "/video/",
     "/frame/",
     "/audio/",
-    "/oracle/",
+    "/diff/",
     "/shot/",
     "/api/play",
     "/api/take",
@@ -91,13 +91,12 @@ RUN_DONE = dict(
     polls=300,
     outcome="crash",
     ended=NOW - 5,
-    oracle=None,
+    oracle={"status": "done"},
 )
 LIVE = {
     "now": NOW,
     "build": {"port": "/p", "pin": "0123456789abcdef", "built": NOW - 90, "format": 1},
-    "runs": [RUN_LIVE],
-    "recent": [RUN_DONE],
+    "runs": [RUN_LIVE, RUN_DONE],  # serve class Live: running, queued and newest finished runs in one list
 }
 MOVIES = {
     "cols": ["name", "polls", "outcome", "fn", "last_run", "kind", "run"],
@@ -169,7 +168,7 @@ class Stub:
     def __init__(self, release=True, input_human=False):
         self.posts, self.gets, self.release = [], [], release
         stub = self
-        live = dict(LIVE, runs=[dict(RUN_LIVE, input="human" if input_human else "movie")])
+        live = dict(LIVE, runs=[dict(RUN_LIVE, input="human" if input_human else "movie"), RUN_DONE])
 
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -215,8 +214,14 @@ class Stub:
                     body = frame(JPEG, 1) + frame(reach_full(10, [0, 1, 2]), 1, True) + frame(JPEG, 2)
                     body += frame(reach_delta(15, [5], [1, 5]), 2, True)
                     self.reply(body, "application/x-tas-frames")
-                elif path == "/wall":
-                    self.reply(frame(JPEG, 0), "application/x-tas-frames")
+                elif path == "/wall":  # index 7 named by its table, then the running run's thumb and reach record
+                    table = json.dumps({"id": "r-live"}).encode()
+                    body = frame(table, 7, True) + frame(JPEG, 7) + frame(reach_full(10, [0, 3]), 7, True)
+                    self.reply(body, "application/x-tas-frames")
+                elif path == "/diff/r-done":
+                    self.js({"every": 100, "rows": [{"poll": 100, "diff": 0.0}, {"poll": 200, "diff": 0.25}]})
+                elif path == "/shot/r-done":
+                    self.reply(JPEG, "image/jpeg")
                 else:
                     self.js({"error": "not found"}, 404)
 
@@ -280,7 +285,7 @@ class PageFileTests(unittest.TestCase):
     def test_page_calls_only_contract_paths(self):
         used = set(
             re.findall(
-                r'["`](/(?:static|data|api|wall|video|frame|audio|oracle|shot)[A-Za-z0-9_.\-/]*)',
+                r'["`](/(?:static|data|api|wall|video|frame|audio|diff|shot)[A-Za-z0-9_.\-/]*)',
                 script() + PAGE.read_text(),
             )
         )
@@ -352,6 +357,13 @@ assert.deepEqual([...F.hot.keys()].sort((a, b) => a - b), [1, 5, 9]);  // a fres
 assert.equal(F.recs, 2);
 const G = {{ bits: null, n: 0, hot: new Map(), fresh: new Map(), bytes: 0, recs: 0, maxRec: 0 }};
 assert.equal(applyReach(G, new Uint8Array(Buffer.from("{d64}", "base64")), 1), false);  // a delta before any full record is ignored
+""")
+
+    def test_diff_pixels_marks_only_pixels_past_the_threshold(self):
+        self.run_node("""
+const d = new Uint8ClampedArray([10, 10, 10, 255, 200, 0, 0, 255]), o = new Uint8ClampedArray([12, 10, 10, 255, 0, 0, 0, 255]);
+assert.equal(diffPixels(d, o, 48), 0.5);
+assert.deepEqual([...d], [2, 2, 2, 255, 255, 0, 200, 255]);  // same pixel dims, differing pixel turns magenta
 """)
 
     def test_data_path_reads_the_manifest(self):
@@ -590,9 +602,80 @@ class RenderedPageTests(unittest.TestCase):
         self.assertEqual(path, "/api/play")
         self.assertEqual((body["movie"], body["speed"]), ("menu-crash", 0))
 
+    def test_side_grid_is_on_every_route(self):
+        s = self.stub()
+        for size in ((1440, 900), (390, 844)):
+            for h in ("", "#/w/r-live", "#/f/Menu_Draw", "#/film"):
+                d = self.drive(
+                    s,
+                    h,
+                    [
+                        {"wait": 1500},
+                        {
+                            "eval": "(() => { const m = document.getElementById('map'), b = m && m.getBoundingClientRect(); return !!b && b.width > 0 && b.height > 0 && b.top < innerHeight && document.querySelectorAll('#side').length === 1; })()"
+                        },
+                    ],
+                    size=size,
+                )
+                self.assertTrue(d["results"][0], (h, size))
+
+    def test_home_grid_lights_the_union_of_live_runs_from_the_wall(self):
+        s = self.stub()
+        d = self.drive(
+            s,
+            "",
+            [
+                {"wait": 2000},
+                {"eval": "document.getElementById('feedtxt').textContent"},
+                {"eval": "[reachers(0), reachers(1), document.querySelector('[data-lit]').textContent]"},
+                {
+                    "eval": "(() => { UN.tile = 'r-live'; drawMaze(); feedText(); return document.getElementById('feedtxt').textContent; })()"
+                },
+                {
+                    "eval": "fnCard(3).includes('no live run') ? 'none' : fnCard(3).includes('rdot') ? 'named' : 'missing'"
+                },
+            ],
+        )
+        self.assertEqual(d["results"][0], "2 functions lit by 1 live runs")
+        self.assertEqual(d["results"][1], [["r-live"], [], "2"])
+        self.assertTrue(d["results"][2].startswith("2 functions lit by "), d["results"][2])
+        self.assertEqual(d["results"][3], "named")
+
+    def test_lockstep_shows_both_sides_on_one_poll_with_one_scrubber_and_diff(self):
+        s = self.stub()
+        d = self.drive(
+            s,
+            "#/w/r-done",
+            [
+                {"wait": 1200},
+                {"eval": "action('split', watchedRun()), 1"},
+                {"wait": 800},
+                {
+                    "eval": "[LS.rows.length, LS.i, document.getElementById('lsp').textContent, document.getElementById('lso').textContent, document.getElementById('lsd').textContent]"
+                },
+                {"eval": "lockstepStep(-1), 1"},
+                {"wait": 400},
+                {
+                    "eval": "[LS.i, document.getElementById('lsp').textContent, document.getElementById('lso').textContent]"
+                },
+                {"eval": "lockstepPick(190), 1"},
+                {"wait": 400},
+                {"eval": "action('diff', watchedRun()), 1"},
+                {"wait": 800},
+                {
+                    "eval": "[LS.i, LS.diff, LS.share, document.querySelector('[data-act=diff]').classList.contains('on')]"
+                },
+            ],
+        )
+        self.assertEqual(d["results"][1], [2, 1, "port · poll 200", "original · poll 200", "2/2 · diff 25.0%"])
+        self.assertEqual(d["results"][3], [0, "port · poll 100", "original · poll 100"])
+        self.assertEqual(d["results"][6], [1, True, 0, True])  # the same picture on both sides differs nowhere
+        self.assertIn("/diff/r-done", s.gets)
+        self.assertNotIn("/oracle/r-done", s.gets)
+
     def test_phone_layout_has_no_horizontal_scroll(self):
         s = self.stub()
-        for h in ("", "#/w/r-live", "#/f/Menu_Draw"):
+        for h in ("", "#/w/r-live", "#/f/Menu_Draw", "#/w/r-done"):
             d = self.drive(
                 s, h, [{"wait": 1800}, {"eval": "[document.documentElement.scrollWidth, innerWidth]"}], size=(390, 844)
             )

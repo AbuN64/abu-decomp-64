@@ -794,6 +794,7 @@ class WallTests(Base):
         while len(shown) < 12:
             flagged, (_length, _stamp, index), body = wall.record()
             if flagged:
+                self.assertTrue(body.startswith(b"{"))  # no run has reach records here: every flagged one is the table
                 names[index] = json.loads(body)["id"]
             else:
                 with Image.open(io.BytesIO(body)) as image:
@@ -865,6 +866,36 @@ class ReachTests(Base):
         self.until(lambda: (run / "reach.bin").is_file())
         self.assertEqual((run / "reach.bin").read_bytes(), final)
         self.assertTrue(relay.done)
+
+    def test_the_wall_carries_each_running_runs_reach_records_under_its_index_full_first(self):
+        runs = [
+            self.make_run(n, movie="boot-idle", status="running", speed=0, started=float(i), pid=os.getpid())
+            for i, n in enumerate(("a", "b"))
+        ]
+        bmp, _ = capture_bmp(320, 240)
+        for run in runs:
+            (run / "view.bmp").write_bytes(bmp)
+        self.server.reach.sync(runs)
+        relay = self.server.reach.runs["a"]
+        send = self.sender(runs[0])
+        self.assertTrue(relay.listening.wait(5))
+        send(reach_record(1, 10, bitset([0, 3])))
+        self.until(lambda: relay.count == 1)
+        wall = Stream(self.base, "/wall", tas_serve.VIDEO_HEADER)
+        self.addCleanup(wall.close)
+        names, reach = {}, []
+        while len(reach) < 2:
+            flagged, (_length, _stamp, index), body = wall.record()
+            if index == tas_serve.WALL_KEEPALIVE_INDEX:
+                continue
+            if flagged and body.startswith(b"{"):
+                names[index] = json.loads(body)["id"]
+            elif flagged:
+                self.assertIn(index, names)  # named before its first record
+                reach.append((names[index], body))
+                if len(reach) == 1:
+                    send(reach_record(2, 11, [5], [3]))
+        self.assertEqual(reach, [("a", reach_record(1, 10, bitset([0, 3]))), ("a", reach_record(2, 11, [5], [3]))])
 
     def test_a_malformed_datagram_is_dropped_and_a_laggard_is_resynced_with_a_full_record(self):
         run = self.make_run("y", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid())

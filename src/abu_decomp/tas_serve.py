@@ -1332,8 +1332,9 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             """One multiplexed stream of WALL_WIDTH px JPEG thumbs of every running run, WALL_FPS a second. A frame is
             VIDEO_HEADER (length, stamp, run index in the place of the input sequence) + JPEG. The first time a run
             shows, a record with WALL_TABLE set in its length (body: JSON {"id": run id}) names its index; indices are
-            per connection and never reused. Browsers allow six connections per host, so twelve per-tile streams
-            would stall."""
+            per connection and never reused. Each run's reach records (section 10a) ride flagged under its index too, a
+            full one first: the body of a flagged record is the table when it starts with "{", else a reach record.
+            Browsers allow six connections per host, so twelve per-tile streams would stall."""
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/x-tas-wall")
             self.send_header("Cache-Control", "no-store")
@@ -1346,6 +1347,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             self.connection.settimeout(5)
             index: dict[str, int] = {}
             stamps: dict[str, int] = {}
+            feeds: dict[str, ReachFeed | None] = {}
             quiet = due = time.monotonic()
             while True:
                 out = b""
@@ -1358,6 +1360,13 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                         index[run.name] = len(index)
                         name = json.dumps({"id": run.name}).encode()
                         out += VIDEO_HEADER.pack(len(name) | WALL_TABLE, 0, index[run.name]) + name
+                        feeds[run.name] = feed = server.reach.feed_for(run)
+                        first = feed.first() if feed else None
+                        if first and any(first[5:]):  # a run that lit nothing yet costs the wall no record
+                            out += VIDEO_HEADER.pack(len(first) | REACH_FLAG, stamp, index[run.name]) + first
+                    feed = feeds.get(run.name)
+                    for record in feed.pending() if feed else []:
+                        out += VIDEO_HEADER.pack(len(record) | REACH_FLAG, stamp, index[run.name]) + record
                     if run.name in index and stamps.get(run.name) != stamp:
                         stamps[run.name] = stamp
                         out += VIDEO_HEADER.pack(len(body), stamp, index[run.name]) + body
