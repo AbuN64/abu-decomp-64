@@ -443,6 +443,12 @@ class MovieTests(unittest.TestCase):
         self.assertIsNone(tas.fps_shown("no such line\n"))
         self.assertNotIn("fps_unlock", tas.decode((self.root / "movies" / f"{human['saved']}.tas").read_text())[0])
 
+    def test_a_profile_cpak_argument_never_replaces_the_runs_card(self):
+        cfg = {**tas.settings(self.profile), "args": ["--cpak", "off", "--user-dir", "{user_dir}", "--cpak", "x"]}
+        card = Path("/runs/r/card.mpk")
+        self.assertEqual(tas._argv(cfg, Path("/u"), card=card)[1:], ["--cpak", str(card), "--user-dir", "/u"])
+        self.assertEqual(tas._argv(cfg, Path("/u"))[1:], ["--cpak", "off", "--user-dir", "/u"])
+
     def test_the_controller_pak_is_a_header_a_card_copy_and_a_record(self):
         self.movie()  # a movie from before the card: no cpak line, so its slot was empty
         runs, ends = [], []

@@ -448,13 +448,27 @@ def delete(profile: Profile, name: str) -> dict[str, Any]:
     return {"deleted": str(path)}
 
 
+def _slot_free(args: list[str]) -> list[str]:
+    """The profile's port arguments without any `--cpak X`: the Controller Pak slot is the run's to name, and the port
+    keeps the last `--cpak` it reads, so a profile's own would replace the card the run was given."""
+    kept, skip = [], False
+    for arg in args:
+        if skip:
+            skip = False
+        elif arg == "--cpak":
+            skip = True
+        else:
+            kept.append(arg)
+    return kept
+
+
 def _argv(
     cfg: dict[str, Any], user_dir: Path, pak: str = "on", card: Path | None = None, fps_unlock: bool = False
 ) -> list[str]:
     """The port's command line. The Controller Pak is always named: `--cpak off` for an empty slot (the port's own
     default is a card), else the card file the run owns. `--fps-unlock` is the framerate unlock (presentation only)."""
     argv = [str(cfg["port"]), "--cpak", str(card) if card else "off"]
-    argv += [arg.replace("{user_dir}", str(user_dir)) for arg in cfg["args"]]
+    argv += [arg.replace("{user_dir}", str(user_dir)) for arg in _slot_free(cfg["args"])]
     argv = [*argv, "--pak", "off"] if pak == "off" else argv
     return [*argv, "--fps-unlock"] if fps_unlock else argv
 
