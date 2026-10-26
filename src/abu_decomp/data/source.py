@@ -60,6 +60,9 @@ def drop_externs(text: str, sym: str) -> str:
             out.append("\x00DEL\x00")
             continue
         keep = [(s_, e_) for s_, e_ in parts if not tok.search(masked[s_:e_])]
+        if not keep:  # SYM is every declarator (`extern u8 *D[], *D[];`): the whole statement goes
+            out.append("\x00DEL\x00")
+            continue
         pieces = [text[s_:e_] for s_, e_ in keep]
         if tok.search(masked[parts[0][0] : parts[0][1]]):  # SYM was the first declarator: the next one takes the type
             first = masked[parts[0][0] : parts[0][1]]

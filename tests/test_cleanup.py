@@ -55,6 +55,9 @@ def test_count_groups_by_folder_and_filters_by_dir_or_leaf(tmp_path):
     assert got["total"] == 6 and got["folders"]["game/A"]["count"] == 3 and got["folders"]["include/COMMON"]["sp"] == 1
     assert list(cleanup.count(tmp_path, "src/game/A")["folders"]) == ["game/A"]
     assert list(cleanup.count(tmp_path, "B")["folders"]) == ["game/B"]
+    assert sorted(cleanup.count(tmp_path, "src")["folders"]) == ["game/A", "game/B"]  # a whole root
+    assert list(cleanup.count(tmp_path, "include")["folders"]) == ["include/COMMON"]
+    assert list(cleanup.count(tmp_path, "include/COMMON")["folders"]) == ["include/COMMON"]
 
 
 def test_count_rev_reads_a_commit_without_a_checkout(tmp_path):

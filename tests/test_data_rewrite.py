@@ -88,6 +88,8 @@ def test_extern_word_inside_a_comment_never_starts_a_deletion():
     assert "extern s32 D_1" not in new
     two = "extern s32 D_1, D_9; // extern D_1 is the old name\nint f(void) { return D_1; }\n"
     assert source.drop_externs(two, "D_1").startswith("extern s32 D_9;")
+    twice = "extern u8 *D_800E25C4[], *D_800E25C4[];\nint x;\n"  # MENU/PAK/80403BCC_6: every declarator is SYM
+    assert source.drop_externs(twice, "D_800E25C4") == "int x;\n"
 
 
 def test_a_define_alias_or_conditional_of_the_symbol_is_refused_not_rewritten():

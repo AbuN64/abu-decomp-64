@@ -116,11 +116,18 @@ def count(root: Path, only: str | None = None, rev: str | None = None, distinct:
     files: Counter[str] = Counter()
     names: dict[str, dict[str, set[Any]]] = {}  # folder -> class -> distinct names (only with `distinct`)
     want = (only or "").strip("/").removeprefix("src/")
-    paths = [
-        p
-        for p in tracked(root, rev)
-        if not want or (f := folder_of(p)) == want or f.startswith(want + "/") or PurePosixPath(f).name == want
-    ]
+    if want in ("src", "include"):  # a whole root: every folder of it (`--dir src` matched no folder and counted 0)
+        paths = [p for p in tracked(root, rev) if p.startswith(want + "/")]
+    elif want.startswith("include/"):
+        paths = [
+            p for p in tracked(root, rev) if p.startswith(want + "/") or PurePosixPath(p).parent.as_posix() == want
+        ]
+    else:
+        paths = [
+            p
+            for p in tracked(root, rev)
+            if not want or (f := folder_of(p)) == want or f.startswith(want + "/") or PurePosixPath(f).name == want
+        ]
     held = _texts(root, rev, paths) if rev else {}
     for path in paths:
         folder = folder_of(path)
