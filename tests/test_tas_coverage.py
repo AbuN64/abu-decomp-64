@@ -46,6 +46,29 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(cov.read_gcovr(self.root / "c.json"), {"f": 5, "g": 0})
         self.assertIsNone(cov.read_gcovr(self.root / "missing.json"))
 
+    def test_executions_inlined_into_callers_count_through_the_body_lines(self):
+        (self.root / "c.json").write_text(
+            json.dumps(
+                {
+                    "files": [
+                        {
+                            "file": "a.c",
+                            "functions": [
+                                {"name": "inl", "execution_count": 0, "pos": ["57:6", "61:1"]},
+                                {"name": "own", "execution_count": 5, "pos": ["10:6", "14:1"]},
+                                {"name": "bare", "execution_count": 0},
+                            ],
+                            "lines": [
+                                {"line_number": n, "count": c} for n, c in ((57, 0), (58, 2), (60, 2), (10, 5), (11, 4))
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
+        self.assertEqual(cov.read_gcovr(self.root / "c.json"), {"inl": 2, "own": 5, "bare": 0})
+
+
     def test_oracle_trace_maps_vi_to_the_poll_count(self):
         golden = self.root / cov.ORACLE_DIR
         golden.mkdir()
@@ -647,7 +670,7 @@ class RunReportTests(unittest.TestCase):
         path = self.run / "coverage.json"
         path.write_text(json.dumps({"files": [{"file": "x.c", "functions": [{"name": "f", "execution_count": 2}]}]}))
         self.assertEqual(cov.read_gcovr(path), {"f": 2})
-        self.assertEqual(json.loads((self.run / "coverage-fns.json").read_text()), {"f": 2})
+        self.assertEqual(json.loads((self.run / "coverage-entries.json").read_text()), {"f": 2})
         path.write_text("not json")
         os.utime(path, (1, 1))
         self.assertEqual(cov.read_gcovr(path), {"f": 2})

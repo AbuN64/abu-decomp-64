@@ -80,9 +80,11 @@ def settings(profile: Profile, cfg: dict[str, Any]) -> dict[str, Any] | None:
 
 def read_gcovr(path: Path) -> dict[str, int] | None:
     """name -> execution count of every function in a gcovr JSON report (same-named statics add up); None when
-    the file is missing or unreadable. The counts are kept beside it (`<report>-fns.json`, ~100 KB against the
-    report's ~13 MB) while newer than it: a union over every movie otherwise parses gigabytes each time."""
-    cache = path.with_name(path.stem + "-fns.json")
+    the file is missing or unreadable. A function's count is the larger of gcovr's entry count and the count of its
+    first body line: executions inlined into callers never pass its entry, but they run its body lines. The counts
+    are kept beside it (`<report>-entries.json`, ~100 KB against the report's ~13 MB) while newer than it: a union
+    over every movie otherwise parses gigabytes each time."""
+    cache = path.with_name(path.stem + "-entries.json")
     try:
         if cache.stat().st_mtime >= path.stat().st_mtime:
             return json.loads(cache.read_text())
@@ -94,10 +96,13 @@ def read_gcovr(path: Path) -> dict[str, int] | None:
         return None
     counts: dict[str, int] = {}
     for entry in data.get("files", []):
+        lines = {
+            int(ln["line_number"]): int(ln.get("count", 0)) for ln in entry.get("lines", []) if "line_number" in ln
+        }
         for fn in entry.get("functions", []):
             name = str(fn.get("name", ""))
             if name:
-                counts[name] = counts.get(name, 0) + int(fn.get("execution_count", 0))
+                counts[name] = counts.get(name, 0) + max(int(fn.get("execution_count", 0)), _first_body_line(fn, lines))
     try:
         tmp = cache.with_suffix(".tmp")
         tmp.write_text(json.dumps(counts))
@@ -105,6 +110,15 @@ def read_gcovr(path: Path) -> dict[str, int] | None:
     except OSError:
         pass
     return counts
+
+
+def _first_body_line(fn: dict[str, Any], lines: dict[int, int]) -> int:
+    """The count of the first line after a function's signature line (0 when gcovr gave no span or the body has none)."""
+    try:
+        first, last = (int(p.split(":")[0]) for p in fn["pos"])
+    except (KeyError, ValueError, TypeError):
+        return 0
+    return next((lines[n] for n in sorted(lines) if first < n <= last), 0)
 
 
 def spans(path: Path) -> dict[str, str]:
