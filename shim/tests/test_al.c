@@ -159,7 +159,8 @@ static void test_sound_player_raw(void)
     ALWaveTable w;
     make_raw(&w, 0x1000, 4096, 8000);
     ALEnvelope env = {.attackTime = 0, .decayTime = 0, .releaseTime = 20000, .attackVolume = 127, .decayVolume = 127};
-    ALSound snd = {.envelope = &env, .wavetable = &w, .samplePan = 64, .sampleVolume = 127};
+    /* the sound player ignores the sample volume (libultra sndplayer): half of it leaves the level unchanged */
+    ALSound snd = {.envelope = &env, .wavetable = &w, .samplePan = 64, .sampleVolume = 64};
     s16 id = alSndpAllocate(&sp, &snd);
     CHECK(id == 0);
     alSndpSetSound(&sp, id);
@@ -189,6 +190,14 @@ static void test_sound_player_raw(void)
     run_frame(abi, 256);
     run_frame(abi, 256);
     CHECK(stereo_peak(256, 1) > 7500 && stereo_peak(256, 0) < 100);
+    /* half volume is a quarter of the loudness: libaudio squares it (vol * vol >> 15) */
+    alSndpSetPan(&sp, 64);
+    alSndpSetVol(&sp, 0x4000);
+    run_frame(abi, 256);
+    run_frame(abi, 256);
+    l = get16(OUT_OFF + 4u * 200u), r = get16(OUT_OFF + 4u * 200u + 2u);
+    CHECK(l > 1300 && l < 1500);
+    CHECK(r > 1300 && r < 1500);
 
     alSndpStop(&sp);
     CHECK(alSndpGetState(&sp) == AL_STOPPING);
@@ -442,7 +451,7 @@ static void test_csp(u32 bank_rate)
     put_seq(SEQ_OFF + 0x44, trk, sizeof trk);
     ALWaveTable w;
     make_raw(&w, 0x1000, 8000, 6000);
-    ALEnvelope env = {.releaseTime = 10000};
+    ALEnvelope env = {.releaseTime = 10000, .attackVolume = 127, .decayVolume = 127};
     ALKeyMap km = {.velocityMax = 127, .keyMax = 127, .keyBase = 60};
     ALSound snd = {.envelope = &env, .keyMap = &km, .wavetable = &w, .samplePan = 64, .sampleVolume = 127};
     ALInstrument *inst = (ALInstrument *)(ram + BANK_OFF);
@@ -476,6 +485,7 @@ static void test_csp(u32 bank_rate)
         if (at > 14000 && at < 20000 && p > peak_second) peak_second = p;
     }
     CHECK(peak_first > 1000);                  /* first note sounding */
+    CHECK(peak_first > 3700 && peak_first < 4100); /* __vsVol at full levels (31503), squared, centre pan */
     CHECK(peak_late > 1000);                   /* the 8000-sample wave still sounding at 0.25 s: unity pitch */
     CHECK(peak_second > 1000);                 /* second note one beat later */
     CHECK(alCSPGetState(&csp) == AL_STOPPED);  /* track ended, notes released */

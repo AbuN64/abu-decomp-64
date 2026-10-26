@@ -39,8 +39,9 @@ typedef struct CspNote {
     N64cVoice *voice;
     u32 offTick;
     s32 releaseLeft;   /* micros of release remaining, 0: not releasing */
+    s32 attackLeft;    /* micros of attack remaining before the decay segment, 0: decaying */
     ALSound *snd;
-    u8 active, chan;
+    u8 active, chan, vel, envGain;
 } CspNote;
 
 typedef struct N64cCsp {
@@ -71,6 +72,24 @@ static u32 rd_varlen(const u8 *d, u32 *pos)
         if (!(c & 0x80)) break;
     }
     return v;
+}
+
+/* libultra __vsVol: full tremolo (127) x velocity x envelope gain, times sample x player x channel volume. */
+static s16 note_vol(const N64cCsp *cp, const CspNote *n)
+{
+    u32 t1 = (127u * n->vel * n->envGain) >> 6;
+    u32 t2 = ((u32)n->snd->sampleVolume * (u32)cp->vol * cp->chanVol[n->chan]) >> 14;
+    return (s16)((t1 * t2) >> 15);
+}
+
+/* libultra re-sets every held note's volume when the player or channel volume changes. */
+static void update_vols(N64cCsp *cp, int chan)
+{
+    for (s32 i = 0; i < cp->maxVoices; i++) {
+        CspNote *n = &cp->notes[i];
+        if (n->active && n->releaseLeft == 0 && (chan < 0 || n->chan == chan))
+            n64c_voice_set_vol(n->voice, note_vol(cp, n), n64c_syn_chunk_micros(cp->player.synth));
+    }
 }
 
 static void release_note(N64cCsp *cp, CspNote *n, ALSound *snd)
@@ -121,19 +140,20 @@ static void note_on(N64cCsp *cp, int chan, int key, int vel, u32 durTicks)
     f32 semis = (f32)(key - (k ? k->keyBase : 60)) + (k ? (f32)k->detune / 100.0f : 0.0f);
     n64c_voice_start(v, snd->wavetable);
     n64c_voice_set_pitch(v, powf(2.0f, semis / 12.0f));
-    f32 g = (f32)vel / 127.0f * (f32)cp->chanVol[chan] / 127.0f * (f32)snd->sampleVolume / 127.0f *
-            (f32)in->volume / 127.0f * (f32)cp->vol / 32767.0f;
-    s32 tgt = (s32)(32767.0f * g);
+    slot->snd = (ALSound *)snd;
+    slot->chan = (u8)chan;
+    slot->vel = (u8)vel;
+    slot->envGain = snd->envelope ? snd->envelope->attackVolume : 127;
+    slot->attackLeft = snd->envelope ? snd->envelope->attackTime : 0;
+    s16 tgt = note_vol(cp, slot);
     s32 pan = (s32)cp->chanPan[chan] + (s32)snd->samplePan - 64;
     n64c_voice_set_pan(v, (u8)(pan < 0 ? 0 : pan > 127 ? 127 : pan));
     n64c_voice_set_fxmix(v, cp->chanFx[chan]);
     s32 atk = snd->envelope ? snd->envelope->attackTime : 0;
-    if (atk > 0) { n64c_voice_set_vol(v, 0, 0); n64c_voice_set_vol(v, (s16)tgt, atk); }
-    else n64c_voice_set_vol(v, (s16)tgt, 0);
+    if (atk > 0) { n64c_voice_set_vol(v, 0, 0); n64c_voice_set_vol(v, tgt, atk); }
+    else n64c_voice_set_vol(v, tgt, 0);
     slot->voice = v;
-    slot->snd = (ALSound *)snd;
     slot->active = 1;
-    slot->chan = (u8)chan;
     slot->releaseLeft = 0;
     slot->offTick = cp->tick + durTicks;
 }
@@ -184,7 +204,7 @@ static void run_event(N64cCsp *cp, CspTrack *t)
     case 0xb0: {
         u8 c = rd8(d, t->pos), v = rd8(d, t->pos + 1);
         t->pos += 2;
-        if (c == 7) cp->chanVol[ch] = v;
+        if (c == 7) { cp->chanVol[ch] = v; update_vols(cp, ch); }
         else if (c == 10) cp->chanPan[ch] = v;
         else if (c == 91) cp->chanFx[ch] = v;
         break;
@@ -264,6 +284,11 @@ static s32 csp_handler(N64cPlayer *self, s32 elapsedMicros)
             if (n->releaseLeft <= 0) { n64c_voice_free(n->voice); n->active = 0; continue; }
         } else if (cp->tick >= n->offTick) {
             release_note(cp, n, n->snd);
+        } else if (n->attackLeft > 0 && (n->attackLeft -= elapsedMicros) <= 0) {
+            /* attack done: ramp to the envelope's decay volume over its decay time */
+            n->attackLeft = 0;
+            n->envGain = n->snd->envelope ? n->snd->envelope->decayVolume : n->envGain;
+            n64c_voice_set_vol(n->voice, note_vol(cp, n), n->snd->envelope ? n->snd->envelope->decayTime : 0);
         }
         sounding++;
     }
@@ -317,7 +342,9 @@ void alCSPSetChlProgram(ALCSPlayer *csp, u8 chan, u8 program)
 
 void alCSPSetVol(ALCSPlayer *csp, s16 vol)
 {
-    if (csp->st) csp->st->vol = vol < 0 ? 0 : vol;
+    if (!csp->st) return;
+    csp->st->vol = vol < 0 ? 0 : vol;
+    update_vols(csp->st, -1);
 }
 
 void alCSPPlay(ALCSPlayer *csp)

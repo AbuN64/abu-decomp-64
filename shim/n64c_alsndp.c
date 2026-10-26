@@ -51,8 +51,7 @@ static s32 env_level(const SndSlot *s)
 static s16 level_volume(const SndSlot *s, s32 level)
 {
     s32 v = (s32)(s->vol < 0 ? 0 : s->vol);
-    v = v * level / 127;
-    v = v * (s32)s->sound->sampleVolume / 127;
+    v = v * level / 127;   /* libultra sndplayer: envelope level x player volume; the sample volume is not applied */
     return (s16)(v > 0x7fff ? 0x7fff : v);
 }
 

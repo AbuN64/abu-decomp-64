@@ -360,6 +360,8 @@ void n64c_voice_set_vol(N64cVoice *v, s16 vol, s32 rampMicros)
 {
     if (!v) return;
     if (vol < 0) vol = 0;
+    /* libaudio's envelope mixer maps the volume to loudness non-linearly: (vol * vol) >> 15. */
+    vol = (s16)(((s32)vol * (s32)vol) >> 15);
     v->volTgt = vol;
     v->rampLeft = micros_to_samples(v->syn, rampMicros);
     if (v->rampLeft <= 0) { v->vol = vol; v->rampLeft = 0; }
