@@ -216,11 +216,21 @@ endif()
 
 # Replay: a captured display list through the port's DL boundary into Fast3D, gated by the same
 # SSIM check as the hand-written renderer (tests/replay_ssim.py).
+# The OpenGL ES vertex stage scales z with a compound assignment to a swizzle of gl_Position (gl_Position.z *= 0.3f); the
+# Android emulator's GLES translator drops every triangle that shader draws, so the frame stays black. The same scale
+# written as a plain assignment draws.
+file(READ "${lus_src}/fast/shaders/opengl/default.shader.glsl" fast3d_shader)
+string(REPLACE "gl_Position.z *= 0.3f;" "gl_Position.z = aVtxPos.z * 0.3;" fast3d_shader_fixed "${fast3d_shader}")
+if(fast3d_shader_fixed STREQUAL fast3d_shader)
+    message(FATAL_ERROR "Fast3D vertex shader contract changed; review the pinned source")
+endif()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fast3d-generated/shaders/opengl/default.shader.glsl" "${fast3d_shader_fixed}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${lus_src}/fast/shaders/opengl/default.shader.glsl")
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/fast3d-shaders.o2r"
     COMMAND ${CMAKE_COMMAND} -E tar cf "${CMAKE_CURRENT_BINARY_DIR}/fast3d-shaders.o2r" --format=zip
         shaders/opengl/default.shader.glsl
-    WORKING_DIRECTORY "${lus_src}/fast"
-    DEPENDS "${lus_src}/fast/shaders/opengl/default.shader.glsl"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fast3d-generated"
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/fast3d-generated/shaders/opengl/default.shader.glsl"
     VERBATIM)
 add_library(n64c_fast3d STATIC "${fast3d_dir}/f3d_window.cpp" "${fast3d_dir}/n64c_f3d.cpp")
 target_include_directories(n64c_fast3d PUBLIC "${fast3d_dir}")
