@@ -436,6 +436,10 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         help="replace the report in place even when the new union covers fewer functions (the join key or the port "
         "build changed on purpose); the old one is kept as coverage-table.prev.json",
     )
+    bake = actions.add_parser("bake", help="write the static site data the Runner page reads, into <tas.runs>/site/")
+    bake.add_argument("--what", default="", help="what to read again: source,xref,coverage,movie (default: all)")
+    bake.add_argument("--movie", help="with --what movie: bake only this movie")
+    bake.add_argument("--union", type=Path, help="the gcovr union JSON (default: <tas.runs>/coverage/union.json)")
     actions.add_parser("serve", help="serve the TAS page: every replay's picture, sound, log and the cycle state")
     triage = actions.add_parser(
         "triage", help="the findings of batch runs, sweeps and checks grouped by root cause, strongest bucket first"
@@ -649,6 +653,11 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         from abu_decomp import tas_serve
 
         return tas_serve.serve(profile), 0, []
+    if args.action == "bake":
+        from abu_decomp import tas_bake
+
+        what = {w for w in args.what.split(",") if w}
+        return tas_bake.bake(profile, what or None, args.movie, args.union), 0, []
     if args.action == "coverage":
         from abu_decomp import tas_coverage
 

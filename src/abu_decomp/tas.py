@@ -1142,7 +1142,12 @@ def _admitted(fn):
         weight = 2 if kwargs.get("oracle") else 1
         what = name or kwargs.get("start") or "human"
         with slots.hold(klass or "interactive", weight, f"play {what}"):
-            return fn(profile, name, *args, **kwargs)
+            result = fn(profile, name, *args, **kwargs)
+        if name is not None:  # outside the hold: the bake takes its own batch slot
+            from abu_decomp import tas_bake
+
+            tas_bake.movie_hook(profile, name)
+        return result
 
     return inner
 

@@ -1,0 +1,283 @@
+{
+ "generated": 1792975873.2007658,
+ "summary": {
+  "behaviour": {
+   "behaves": 108,
+   "differs": 1572,
+   "missing": 304,
+   "port-only": 3
+  },
+  "game": {
+   "bytes": 1010860,
+   "either": {
+    "bytes": 672164,
+    "bytes_pct": 66.49,
+    "functions": 2007,
+    "functions_pct": 51.44
+   },
+   "functions": 3902,
+   "oracle": {
+    "bytes": 665028,
+    "bytes_pct": 65.79,
+    "functions": 1979,
+    "functions_pct": 50.72
+   },
+   "port": {
+    "bytes": 621556,
+    "bytes_pct": 61.49,
+    "functions": 1857,
+    "functions_pct": 47.59
+   }
+  },
+  "movies": 731,
+  "oracle_movies": 203,
+  "other": {
+   "bytes": 11076,
+   "either": {
+    "bytes": 1660,
+    "bytes_pct": 14.99,
+    "functions": 14,
+    "functions_pct": 29.17
+   },
+   "functions": 48,
+   "oracle": {
+    "bytes": 1604,
+    "bytes_pct": 14.48,
+    "functions": 12,
+    "functions_pct": 25.0
+   },
+   "port": {
+    "bytes": 1328,
+    "bytes_pct": 11.99,
+    "functions": 9,
+    "functions_pct": 18.75
+   }
+  },
+  "sdk": {
+   "bytes": 98392,
+   "either": {
+    "bytes": 44524,
+    "bytes_pct": 45.25,
+    "functions": 163,
+    "functions_pct": 45.15
+   },
+   "functions": 361,
+   "oracle": {
+    "bytes": 44524,
+    "bytes_pct": 45.25,
+    "functions": 163,
+    "functions_pct": 45.15
+   },
+   "port": {
+    "bytes": 0,
+    "bytes_pct": 0.0,
+    "functions": 0,
+    "functions_pct": 0.0
+   }
+  },
+  "states": {
+   "both": 1829,
+   "neither": 1895,
+   "oracle-only": 150,
+   "port-only": 28
+  },
+  "version": "us-rev1",
+  "versions": {
+   "de": {
+    "functions": 0,
+    "reached_by_name": 0
+   },
+   "eu": {
+    "functions": 4219,
+    "reached_by_name": 2130
+   },
+   "eu-x": {
+    "functions": 4213,
+    "reached_by_name": 2146
+   },
+   "us": {
+    "functions": 4168,
+    "reached_by_name": 2148
+   },
+   "us-rev1": {
+    "functions": 4311,
+    "reached_by_name": 2184
+   }
+  }
+ },
+ "functions": [
+  {
+   "address": 2149582184,
+   "behaviour": null,
+   "elf_name": "func_80200568_de",
+   "file": "src/sdk/libsn/80200568.CPP",
+   "in_version": true,
+   "mixed_build": false,
+   "name": "Libsn_WritePortWord",
+   "oracle": {
+    "count": 0,
+    "hit": false,
+    "movie": null,
+    "poll": null
+   },
+   "port": {
+    "count": 0,
+    "hit": false,
+    "movie": null,
+    "poll": null
+   },
+   "port_linked": false,
+   "scope": "sdk",
+   "size": 56,
+   "state": "neither",
+   "versions": [
+    "us-rev1",
+    "us",
+    "eu",
+    "eu-x"
+   ]
+  },
+  {
+   "address": 2149597960,
+   "behaviour": "differs",
+   "elf_name": "func_80204308_de",
+   "file": "src/game/LEVEL/8020402C.CPP",
+   "in_version": true,
+   "mixed_build": false,
+   "name": "Level_ShowTriggerMessage",
+   "oracle": {
+    "count": 130,
+    "hit": true,
+    "movie": "monkey-wl1-start-character-select-1-7-2400",
+    "poll": 5864
+   },
+   "port": {
+    "count": 836,
+    "hit": true,
+    "movie": "a-boxed-set",
+    "poll": null
+   },
+   "port_linked": true,
+   "scope": "game",
+   "size": 216,
+   "state": "both",
+   "versions": [
+    "us-rev1",
+    "us",
+    "eu",
+    "eu-x"
+   ]
+  },
+  {
+   "address": 2149603104,
+   "behaviour": "differs",
+   "file": "src/game/WEAPONS/80204E78_6.CPP",
+   "in_version": true,
+   "mixed_build": false,
+   "name": "func_80205720_de",
+   "oracle": {
+    "count": 5255,
+    "hit": true,
+    "movie": "a-bomb-shelter",
+    "poll": 228
+   },
+   "port": {
+    "count": 22507,
+    "hit": true,
+    "movie": "a-bomb-shelter",
+    "poll": null
+   },
+   "port_linked": true,
+   "scope": "game",
+   "size": 1956,
+   "state": "both",
+   "versions": [
+    "us-rev1",
+    "us",
+    "eu",
+    "eu-x"
+   ]
+  },
+  {
+   "address": 2149605936,
+   "behaviour": "missing",
+   "file": "src/game/WEAPONS/80204E78_7.CPP",
+   "in_version": true,
+   "mixed_build": false,
+   "name": "func_80206230_de",
+   "oracle": {
+    "count": 2,
+    "hit": true,
+    "movie": "a-stronghold",
+    "poll": 9048
+   },
+   "port": {
+    "count": 0,
+    "hit": false,
+    "movie": null,
+    "poll": null
+   },
+   "port_linked": true,
+   "scope": "game",
+   "size": 40,
+   "state": "oracle-only",
+   "versions": [
+    "us-rev1",
+    "us",
+    "eu",
+    "eu-x"
+   ]
+  },
+  {
+   "address": 2149623728,
+   "behaviour": "behaves",
+   "file": "src/game/AI/NAV/80208000_5.CPP",
+   "in_version": true,
+   "mixed_build": false,
+   "name": "func_8020A7B0_de",
+   "oracle": {
+    "count": 0,
+    "hit": false,
+    "movie": null,
+    "poll": null
+   },
+   "port": {
+    "count": 978,
+    "hit": true,
+    "movie": "boot-missing",
+    "poll": null
+   },
+   "port_linked": true,
+   "scope": "game",
+   "size": 212,
+   "state": "port-only",
+   "versions": [
+    "us-rev1",
+    "us",
+    "eu",
+    "eu-x"
+   ]
+  }
+ ],
+ "runs": [
+  {
+   "movie": "a-bomb-shelter",
+   "covered": [
+    2
+   ]
+  },
+  {
+   "movie": "a-bottleneck",
+   "covered": [
+    2
+   ]
+  },
+  {
+   "movie": "a-boxed-set",
+   "covered": [
+    1,
+    2
+   ]
+  }
+ ]
+}
