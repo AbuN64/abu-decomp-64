@@ -624,6 +624,15 @@ class HttpTests(Base):
         self.assertEqual([r["name"] for r in view["oracle_only"]], ["a"])
         self.assertEqual([r["name"] for r in view["neither"]], ["b"])  # sdk rows are not the owner's to record
         self.assertEqual(view["gcovr"], {"line_percent": 1.5})
+        self.assertEqual(json.loads(self.get("/api/coverage/behaviour")[2]), {"behaves": [], "differs": [], "missing": []})
+        table["functions"] += [
+            {"name": "z", "in_version": True, "scope": "game", "state": "both", "size": 1, "behaviour": "behaves"},
+            {"name": "y", "in_version": True, "scope": "game", "state": "both", "size": 1, "behaviour": "differs"},
+            {"name": "x", "in_version": False, "scope": "game", "state": "both", "size": 1, "behaviour": "missing"},
+            {"name": "w", "in_version": True, "scope": "game", "state": "port-only", "size": 1, "behaviour": "port-only"},
+        ]
+        (runs / "coverage-table.json").write_text(json.dumps(table))
+        self.assertEqual(json.loads(self.get("/api/coverage/behaviour")[2]), {"behaves": ["z"], "differs": ["y"], "missing": []})
         with urllib.request.urlopen(self.base + "/coverage/", timeout=10) as reply:
             self.assertEqual(
                 (reply.headers["Content-Type"], reply.read()), ("text/html; charset=utf-8", b"<html>report</html>")

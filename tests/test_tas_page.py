@@ -40,6 +40,7 @@ CONTRACT = {
     "/audio/",
     "/diff/",
     "/shot/",
+    "/api/coverage/behaviour",
     "/api/play",
     "/api/take",
     "/api/stop",
@@ -200,6 +201,8 @@ class Stub:
                     self.js({"fns": "fns.abc123def.json", "fnrows": "fnrows.abc123def.txt"})
                 elif path == "/data/fns.abc123def.json":
                     self.js(FNS)
+                elif path == "/api/coverage/behaviour":
+                    self.js({"behaves": ["Menu_Draw"], "differs": ["Engine_Tick"], "missing": []})
                 elif path == "/data/movies.json":
                     self.js(MOVIES)
                 elif path == "/data/summary.json":

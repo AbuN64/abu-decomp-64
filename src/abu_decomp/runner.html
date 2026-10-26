@@ -13,6 +13,7 @@
   --hot: #ffe27a;
   --hit: rgba(63, 195, 90, .16); --miss: rgba(255, 92, 92, .13); --part: rgba(217, 164, 0, .16);
   --s-unassigned: #222222; --s-data: #6b7280; --s-unmapped: #555555; --s-fuzzy: #d9a400; --s-exact: #3b7ddd; --s-named: #1aa7a1; --s-covered: #3fc35a;
+  --src0: #3a4052; --src1: #5b86d6; --src2: #a9c8ff; --rt0: #3a4052; --rt1: #2f9e4f; --rt2: #86f0a3;
   --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --radius: 10px; --gutter: 16px;
@@ -20,9 +21,9 @@
 }
 @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
   --bg: #f7f7fa; --surface: #ffffff; --raised: #eef0f4; --line: #dde0e7; --text: #13151b; --dim: #5b6070; --faint: #a3a8b5;
-  --accent: #5b43d6; --accent-ink: #ffffff; --s-unassigned: #e8e8e8; --hot: #ff8a00; color-scheme: light; } }
+  --accent: #5b43d6; --accent-ink: #ffffff; --s-unassigned: #e8e8e8; --src0: #cdd2dd; --src1: #7ea2e6; --src2: #1f4fb8; --rt0: #cdd2dd; --rt1: #5fbf7c; --rt2: #12793a; --hot: #ff8a00; color-scheme: light; } }
 :root[data-theme="light"] { --bg: #f7f7fa; --surface: #ffffff; --raised: #eef0f4; --line: #dde0e7; --text: #13151b; --dim: #5b6070;
-  --faint: #a3a8b5; --accent: #5b43d6; --accent-ink: #ffffff; --s-unassigned: #e8e8e8; --hot: #ff8a00; color-scheme: light; }
+  --faint: #a3a8b5; --accent: #5b43d6; --accent-ink: #ffffff; --s-unassigned: #e8e8e8; --src0: #cdd2dd; --src1: #7ea2e6; --src2: #1f4fb8; --rt0: #cdd2dd; --rt1: #5fbf7c; --rt2: #12793a; --hot: #ff8a00; color-scheme: light; }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 var(--sans); }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
@@ -133,13 +134,12 @@ main { padding: 0 var(--gutter) 40px; min-width: 0; }
 .ladder { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; margin-top: 8px; }
 .ladder .chip { height: 24px; padding: 0 8px; font: 12px var(--mono); } .ladder .chip svg { width: 13px; height: 13px; }
 .ladder .gap { color: var(--bad); }
-.mzbar { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.mzbar { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .mzbar .mzt { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; }
 .mzbar .mzt svg { width: 16px; height: 16px; color: var(--accent); }
 .mzbar .mzs { font-size: 12px; } .mzbar .chip { height: 26px; font-size: 12px; } .mzbar .chip svg { width: 14px; height: 14px; }
-.mzbar .toggle { margin-left: auto; }
 .mzlive { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.mapwrap { position: relative; margin-top: 10px; }
+.mapwrap { position: relative; margin-top: 8px; }
 canvas#map { display: block; touch-action: manipulation; }
 .hc { position: absolute; z-index: 5; pointer-events: none; width: 250px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
   padding: 9px 11px; box-shadow: 0 10px 28px rgba(0,0,0,.45); font-size: 12px; }
@@ -156,8 +156,16 @@ canvas#map { display: block; touch-action: manipulation; }
 .sq.hollow { box-shadow: inset 0 0 0 1.5px var(--faint); }
 .peek { display: flex; gap: 10px; align-items: flex-end; margin-top: 10px; padding: 10px; border: 1px solid var(--accent); border-radius: 8px; font-size: 12px; }
 .peek .pk { flex: 1; min-width: 0; }
-.legend { display: flex; gap: 2px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--dim); margin-top: 8px; }
-.legend .hint { margin-left: auto; color: var(--faint); font-size: 11px; }
+.legend { display: flex; gap: 2px 12px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--dim); }
+.legend .scale { display: flex; gap: 2px; }
+.legend .end { margin-left: auto; display: flex; gap: 4px; align-items: center; }
+.sw { display: inline-flex; flex-direction: column; gap: 1px; width: 12px; height: 12px; flex: none; }
+.sw u { flex: 1; border-radius: 1px; } .sw u.off { box-shadow: inset 0 0 0 1px var(--line); }
+.tip { position: fixed; z-index: 60; pointer-events: none; max-width: 240px; padding: 4px 8px; border-radius: 6px; background: var(--raised); color: var(--text);
+  border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0,0,0,.4); font: 12px/1.35 system-ui, sans-serif; }
+.tip[hidden] { display: none; }
+.foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--dim); }
+.foot b { font: 700 13px var(--mono); color: var(--text); font-variant-numeric: tabular-nums; } .foot .chip { height: 24px; padding: 0 8px; font: 12px var(--mono); }
 .lg { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 7px; border-radius: 6px; border: 1px solid transparent; color: var(--dim); }
 .lg b { font: 600 11px var(--mono); color: var(--faint); } .lg:hover { background: var(--raised); color: var(--text); }
 .lg.on { border-color: var(--accent); color: var(--text); }
@@ -290,7 +298,7 @@ const icon = (n, cls = "i") => `<svg class="${cls}"><use href="#i-${n}"/></svg>`
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const STATE_VAR = { asm: "--s-unmapped", unmapped: "--s-unmapped", fuzzy: "--s-fuzzy", exact: "--s-exact", named: "--s-named", covered: "--s-covered" };
 const D = { skew: 0, live: { now: 0, runs: [], build: {} }, fns: null, movies: { rows: [] }, summary: null, man: {}, fnCache: new Map(), reach: new Map(), fnIndex: new Map(), pending: new Map() };
-const UI = { watching: null, fn: null, back: [], fwd: [], filter: "all", shown: 48, control: false, controlRun: null, sound: false, split: false, thisRun: false, zmod: null, mfilter: null, pick: null };
+const UI = { watching: null, fn: null, back: [], fwd: [], filter: "all", shown: 48, control: false, controlRun: null, sound: false, split: false, thisRun: false, zmod: null, mf: [new Set(), new Set()], pick: null };
 const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })
   .then(r => r.json()).catch(() => ({ error: "server unreachable" }));
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } },
@@ -416,9 +424,10 @@ async function boot() {
 }
 async function loadBaked() {
   try {
-    const [fns, movies, summary] = await Promise.all([getJson(dataPath(D.man, "fns", "fns.json")), getJson("/data/movies.json"), getJson("/data/summary.json")]);
+    const [fns, movies, summary, beh] = await Promise.all([getJson(dataPath(D.man, "fns", "fns.json")), getJson("/data/movies.json"), getJson("/data/summary.json"), getJson("/api/coverage/behaviour")]);
     Object.assign(D, { fns, movies, summary });
     D.fnIndex = new Map(fns.rows.map((r, i) => [r[0], i]));
+    gridLevels(beh);
     initSearch();
     dataReady();
   } catch (e) { toast("circle-alert", "baked data unavailable: " + e.message); }
@@ -943,10 +952,28 @@ function renderSide() {
 const short = n => n.length > 22 ? n.slice(0, 21) + "…" : n;
 
 // ---------- coverage map: one square per function, grouped in module blocks (the old maze, from baked fns.json) ----------
-// The map needs no bytes of its own: every square is a fns.json row. Hue = decomp state, solid = reached, faint = not reached.
-const CLS = { asm: "asm", unmapped: "asm", fuzzy: "fuzzy", exact: "exact", named: "named", covered: "exact" };  // the sample's "covered" folds to exact; the real bake ships state and reach as separate columns
-const CLS_VAR = { asm: "--s-unmapped", fuzzy: "--s-fuzzy", exact: "--s-exact", named: "--s-named" };
+// The map needs no bytes of its own beyond the behave verdicts: every square is a fns.json row. Two independent scales, three steps
+// each, one visual system: a square's top bars are its SOURCE step (unmatched, decompiled, exact), its bottom bars its RUNTIME step
+// (unexercised, exercised, behaves like the original). The legend and the filter chips use the same swatches.
+const SRC_LV = { asm: 0, unmapped: 0, fuzzy: 1, exact: 2, named: 2, covered: 2 };  // fns.json decomp state -> source step (named = exact C with a clean name)
+const SCALES = [
+  { ax: "src", steps: ["unmatched", "decompiled", "exact"] },
+  { ax: "rt", steps: ["unexercised", "exercised", "behaves"] },
+];
 const REACH_TXT = { both: "port + original", port: "port only", oracle: "original only", none: "not reached" };
+const swatch = (a, k) => `<i class="sw">${[0, 1].map(i => i === a ? `<u style="background:var(--${SCALES[a].ax}${k})"></u>` : `<u class="off"></u>`).join("")}</i>`;
+function gridLevels(beh) {  // per row: D.src, D.rt (0..2); D.verdict: name -> behaves | differs | missing (the union's behave runs)
+  const verdict = new Map();
+  for (const v of ["behaves", "differs", "missing"]) for (const n of beh[v] || []) verdict.set(n, v);
+  const rows = D.fns.rows, src = new Uint8Array(rows.length), rt = new Uint8Array(rows.length);
+  const cnt = [[0, 0, 0], [0, 0, 0]];
+  rows.forEach((r, i) => {
+    src[i] = SRC_LV[r[3]] ?? 0;
+    rt[i] = verdict.get(r[0]) === "behaves" ? 2 : r[5] !== "none" || verdict.has(r[0]) ? 1 : 0;
+    cnt[0][src[i]]++; cnt[1][rt[i]]++;
+  });
+  Object.assign(D, { src, rt, verdict, lvCount: cnt });
+}
 const MZ = { hover: -1, peek: -1, layout: null, touch: false, lastE: null };
 function modOf(file) { const p = file.split("/"); return (p[1] === "game" ? p.slice(1, 3).join("/") : p[1]).replace(/_\d+$/, ""); }  // RENDER_2..4 fold into RENDER
 function mazeBlocks() {
@@ -967,7 +994,7 @@ function mzLayout(width) {  // masonry: K columns, each module block spans a col
     zoom.fns.forEach((fi, k) => pos.set(fi, [(k % cols) * cs, Math.floor(k / cols) * cs]));
     return { cs, lh: 0, items, pos, width, height: items[0].h + 2, zoom };
   }
-  const K = width >= 400 ? 4 : 3, cs = width >= 400 ? 6 : 5, lh = 14, gx = 10, gy = 9;
+  const K = width >= 400 ? 4 : 3, cs = width >= 400 ? 7 : 6, lh = 13, gx = 10, gy = 9;
   const cw = Math.floor((width - gx * (K - 1)) / K), cols = Math.floor(cw / cs), H = new Array(K).fill(0);
   for (const b of [...all].sort((x, y) => y.fns.length - x.fns.length || (x.name < y.name ? -1 : 1))) {
     const k = H.indexOf(Math.min(...H)), x = k * (cw + gx), y = H[k], h = lh + Math.ceil(b.fns.length / cols) * cs;
@@ -981,31 +1008,28 @@ function renderMap() {
   if (!D.fns || !D.summary) { $("mapp").innerHTML = `<div class="card"><div class="empty">${icon("grid-3x3")}loading coverage…</div></div>`; return; }
   const s = D.summary, g = s.gcovr || {}, ns = s.next_stage || { failing: [] }, r = runById(UI.watching);
   const all = mazeBlocks(), z = UI.zmod ? all.find(b => b.name === UI.zmod) : null, live = r ? r.status === "running" : D.live.runs.some(x => x.status === "running");
-  const tot = D.fns.rows.length, rch = all.reduce((a, b) => a + b.reached, 0);
-  const counts = { unreached: tot - rch };
-  for (const row of D.fns.rows) { const c = CLS[row[3]]; counts[c] = (counts[c] || 0) + 1; }
-  const lg = (k, label) => counts[k] ? `<button class="lg ${UI.mfilter === k ? "on" : ""}" data-mf="${k}" title="Show only ${label}">${k === "unreached" ? `<i class="sq hollow"></i>` : `<i class="sq" style="background:var(${CLS_VAR[k]})"></i>`}${label}<b>${counts[k]}</b></button>` : "";
+  const tot = D.fns.rows.length, rch = all.reduce((a, b) => a + b.reached, 0), on = filterOn();
+  const lg = (a, k) => `<button class="lg ${UI.mf[a].has(k) ? "on" : ""}" data-ax="${a}" data-k="${k}" title="${SCALES[a].steps[k]} · ${D.lvCount[a][k]}">${swatch(a, k)}${SCALES[a].steps[k]}</button>`;
+  const shown = on ? D.fns.rows.reduce((n, _, i) => n + (passes(i) ? 1 : 0), 0) : tot;
   $("mapp").innerHTML = `<div class="card">
-    <div class="stats"><div class="stat"><b>${g.line_percent ?? "–"}%</b><span>lines</span></div><div class="stat"><b>${g.branch_percent ?? "–"}%</b><span>branches</span></div>
-      <div class="stat"><b>${s.game?.either?.functions_pct ?? "–"}%</b><span>fns reached</span></div><div class="stat"><b>${s.behaviour?.behaves ?? "–"}</b><span>behave</span></div></div>
-    <div class="dim" id="covSince" style="font-size:12px;padding:2px 0">${s.since ? (s.runs ? `${s.runs} run${s.runs === 1 ? "" : "s"} counted since ${new Date(s.since * 1000).toISOString().slice(0, 16).replace("T", " ")}Z` : `no run counted yet: coverage restarted ${new Date(s.since * 1000).toISOString().slice(0, 16).replace("T", " ")}Z and fills as new runs finish`) : ""}</div>
-    <div class="ladder"><span class="chip">${esc(s.stage || "R0")}${icon("chevron-right")}${esc(ns.stage || "")}</span>
-      ${(ns.failing || []).map(f => `<span class="chip">${esc(f.key)} <b class="gap">${f.value}</b>/${f.threshold}</span>`).join("")}</div>
-    <div class="mzbar">
-      ${z ? `<button class="chip" id="mzAll" title="All modules">${icon("corner-up-left")}all</button><span class="mzt mono">${esc(z.label)}</span><span class="dim mzs">${z.reached}/${z.fns.length} reached · ${(100 * z.rb / z.bytes) | 0}% of bytes</span>`
-          : `<span class="mzt">${icon("grid-3x3")}${tot} functions</span><span class="dim mzs">${rch} reached by any movie</span>`}
-      ${live ? `<button class="toggle ${FEED.on ? "on" : ""}" id="liveTg" title="${r ? "Light up what this run executes, as it plays (port reach records on the video stream)" : "Light up what every running run executes now (reach records on the wall stream); hover a tile for one run"}"><i class="pulse"></i>live</button>`
-             : `<button class="toggle ${UI.thisRun ? "on" : ""}" id="thisRun" title="Dim what this run's movie does not reach">${icon("locate-fixed")}this run</button>`}</div>
+    <div class="legend" id="legend">${SCALES.map((sc, a) => `<div class="scale">${sc.steps.map((_, k) => lg(a, k)).join("")}</div>`).join("")}
+      <div class="end">${on ? `<button class="chip" id="fclr" title="Clear filter">${icon("x")}${shown}</button>` : ""}
+      ${live ? `<button class="toggle ${FEED.on ? "on" : ""}" id="liveTg" title="${r ? "Light up what this run executes" : "Light up what every running run executes"}"><i class="pulse"></i>live</button>`
+             : `<button class="toggle ${UI.thisRun ? "on" : ""}" id="thisRun" title="Runtime of this run's movie only">${icon("locate-fixed")}</button>`}</div>
+      ${feedLive() || unionLive() ? `<span class="lg"><i class="sq" style="background:var(--hot)"></i>now</span><span class="lg"><i class="sq hollow" style="box-shadow:inset 0 0 0 1.5px var(--text)"></i>new</span>` : ""}</div>
+    ${z ? `<div class="mzbar"><button class="chip" id="mzAll" title="All modules">${icon("corner-up-left")}all</button><span class="mzt mono">${esc(z.label)}</span></div>` : ""}
     ${live && FEED.on ? `<div class="mzlive"><span class="feedtxt" id="feedtxt"></span></div>` : ""}
     <div class="mapwrap" id="mapwrap"><canvas id="map"></canvas><div class="hc" id="hc" hidden></div></div>
-    <div class="legend">${lg("named", "named")}${lg("exact", "exact")}${lg("fuzzy", "fuzzy")}${lg("asm", "asm")}${lg("unreached", "unreached")}${feedLive() || unionLive() ? `<span class="lg"><i class="sq" style="background:var(--hot)"></i>running now</span><span class="lg"><i class="sq hollow" style="box-shadow:inset 0 0 0 1.5px var(--text)"></i>first entry</span>` : ""}
-      <span class="hint">${z ? "" : "block name = zoom"}</span></div>
+    <div class="foot" title="${esc(s.since ? `counted since ${new Date(s.since * 1000).toISOString().slice(0, 16).replace("T", " ")}Z${s.runs ? `, ${s.runs} runs` : ", no run yet"}` : "")}">
+      <span><b>${g.line_percent ?? "–"}%</b> lines</span><span><b>${s.game?.either?.functions_pct ?? "–"}%</b> fns</span><span><b>${s.behaviour?.behaves ?? "–"}</b> behave</span>
+      <span class="chip" title="${esc(`stage ${s.stage || "R0"} to ${ns.stage || ""}${(ns.failing || []).map(f => `; ${f.key} ${f.value}/${f.threshold}`).join("")}`)}">${esc(s.stage || "R0")}${icon("chevron-right")}${esc(ns.stage || "")}</span></div>
     <div class="peek" id="peek" hidden></div>
     <div class="mods" id="mods"></div></div>`;
   if ($("thisRun")) $("thisRun").onclick = async () => { UI.thisRun = !UI.thisRun; if (UI.thisRun && r) await loadReach(r.movie); renderMap(); };
   if ($("liveTg")) $("liveTg").onclick = () => { FEED.on = !FEED.on; renderMap(); };
   if ($("mzAll")) $("mzAll").onclick = () => { UI.zmod = null; MZ.peek = -1; renderMap(); };
-  $("mapp").querySelector(".legend").onclick = e => { const b = e.target.closest("[data-mf]"); if (b) { UI.mfilter = UI.mfilter === b.dataset.mf ? null : b.dataset.mf; renderMap(); } };
+  if ($("fclr")) $("fclr").onclick = () => { UI.mf = [new Set(), new Set()]; renderMap(); };
+  $("legend").onclick = e => { const b = e.target.closest("[data-ax]"); if (b) { const f = UI.mf[+b.dataset.ax], k = +b.dataset.k; f.has(k) ? f.delete(k) : f.add(k); renderMap(); } };
   drawMaze(); wireMaze(); renderMods(); feedText();
   if (MZ.peek >= 0) showCard(MZ.peek, null);
 }
@@ -1016,12 +1040,12 @@ async function loadReach(movie) {
   D.reach.set(movie, bits);
   return bits;
 }
-function lit(fi, bits, lv) {  // alpha for a square: filters and "this run" dim, unreached is faint; lv = the live set
-  const row = D.fns.rows[fi], c = CLS[row[3]], reached = row[5] !== "none";
-  if (UI.mfilter && (UI.mfilter === "unreached" ? reached : UI.mfilter !== c)) return 0.07;
-  if (lv) return lv[fi >> 3] & (1 << (fi & 7)) ? 1 : 0.13;  // live: solid = this run (or any running run) entered it
-  if (bits && !(bits[fi >> 3] & (1 << (fi & 7)))) return 0.12;
-  return reached ? 1 : 0.26;
+const filterOn = () => UI.mf[0].size + UI.mf[1].size > 0;
+const passes = fi => (!UI.mf[0].size || UI.mf[0].has(D.src[fi])) && (!UI.mf[1].size || UI.mf[1].has(D.rt[fi]));  // one chip per axis picks a cell of the 3x3
+function rtOf(fi, bits, lv) {  // runtime step for a square: this run's movie or the live set cuts it back to unexercised
+  const k = D.rt[fi], on = a => a[fi >> 3] & (1 << (fi & 7));
+  if (lv) return on(lv) ? Math.max(k, 1) : 0;
+  return bits && !on(bits) ? 0 : k;
 }
 function drawMaze() {
   const cv = $("map"); if (!cv) return;
@@ -1029,21 +1053,20 @@ function drawMaze() {
   const L = MZ.layout = mzLayout(w), dpr = devicePixelRatio || 1;
   cv.style.width = w + "px"; cv.style.height = L.height + "px"; cv.width = Math.round(w * dpr); cv.height = Math.round(L.height * dpr);
   const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const col = {}; for (const k in CLS_VAR) col[k] = css(CLS_VAR[k]);
-  const r = runById(UI.watching), bits = UI.thisRun && r ? D.reach.get(r.movie) : null, lv = feedLive() ? FEED.bits : unionLive() ? unionBits() : null;
-  const s = L.cs - (L.zoom ? 2 : 1), rad = L.zoom ? 3 : 0, dim = css("--dim"), faint = css("--faint"), bg = css("--surface");
+  const col = SCALES.map(sc => [0, 1, 2].map(k => css(`--${sc.ax}${k}`)));
+  const r = runById(UI.watching), bits = UI.thisRun && r ? D.reach.get(r.movie) : null, lv = feedLive() ? FEED.bits : null;
+  const s = L.cs - (L.zoom ? 2 : 1), rad = L.zoom ? 3 : 0, hs = Math.ceil(s / 2), dim = css("--dim"), bg = css("--surface"), on = filterOn();
   g.font = "600 10px " + css("--mono"); g.textBaseline = "top";
   for (const it of L.items) {
-    if (L.lh) {
-      g.globalAlpha = 1; g.textAlign = "right"; g.fillStyle = faint; const cnt = `${it.b.reached}/${it.b.fns.length}`; g.fillText(cnt, it.x + it.w, it.y + 1);
-      const cw = g.measureText(cnt).width + 6; g.textAlign = "left"; g.save(); g.beginPath(); g.rect(it.x, it.y, it.w - cw, L.lh); g.clip();
-      g.fillStyle = dim; g.fillText(it.b.label, it.x, it.y + 1); g.restore();
-    }
+    if (L.lh) { g.globalAlpha = 1; g.textAlign = "left"; g.fillStyle = dim; g.save(); g.beginPath(); g.rect(it.x, it.y, it.w, L.lh); g.clip(); g.fillText(it.b.label, it.x, it.y + 1); g.restore(); }
     for (const fi of it.b.fns) {
-      const [x, y] = L.pos.get(fi), row = D.fns.rows[fi];
-      g.globalAlpha = lit(fi, bits, lv); g.fillStyle = col[CLS[row[3]]];
-      if (rad) { g.beginPath(); g.roundRect(x, y, s, s, rad); g.fill(); } else g.fillRect(x, y, s, s);
-      if (L.zoom && row[6]) { g.globalAlpha = 1; g.fillStyle = bg; g.beginPath(); g.arc(x + s / 2, y + s / 2, 2.2, 0, 7); g.fill(); }  // foundation fn
+      const [x, y] = L.pos.get(fi);
+      g.globalAlpha = on && !passes(fi) ? 0.07 : 1;
+      if (rad) { g.save(); g.beginPath(); g.roundRect(x, y, s, s, rad); g.clip(); }
+      g.fillStyle = col[0][D.src[fi]]; g.fillRect(x, y, s, hs);
+      g.fillStyle = col[1][rtOf(fi, bits, lv)]; g.fillRect(x, y + hs, s, s - hs);
+      if (rad) g.restore();
+      if (L.zoom && D.fns.rows[fi][6]) { g.globalAlpha = 1; g.fillStyle = bg; g.beginPath(); g.arc(x + s / 2, y + s / 2, 2.2, 0, 6.3); g.fill(); }
     }
   }
   g.globalAlpha = 1;
@@ -1105,11 +1128,11 @@ function wireMaze() {
 function modCard(m) {
   const b = mazeBlocks().find(x => x.name === m);
   return `<div class="hn">${esc(b.label)}</div><div class="hr dim">${b.fns.length} functions · ${b.bytes} B</div>
-    <div class="hbar"><i style="width:${100 * b.rb / b.bytes}%"></i></div><div class="hr">${b.reached} reached · ${(100 * b.rb / b.bytes) | 0}% of bytes</div>
+    <div class="hbar"><i style="width:${100 * b.rb / b.bytes}%"></i></div><div class="hr">${b.reached} exercised · ${(100 * b.rb / b.bytes) | 0}% of bytes</div>
     <div class="hf">${icon("zoom-in")}click to zoom</div>`;
 }
 function fnCard(fi) {
-  const row = D.fns.rows[fi], c = CLS[row[3]], f = D.fnCache.get(row[0]), file = D.fns.files[row[4]];
+  const row = D.fns.rows[fi], f = D.fnCache.get(row[0]), file = D.fns.files[row[4]];
   let more = "";
   if (f) {
     const exe = (f.lines || []).filter(Boolean), hit = exe.filter(x => x[0] > 0).length;
@@ -1118,8 +1141,8 @@ function fnCard(fi) {
       ${f.behaviour ? `<span>behave</span><b>${esc(f.behaviour)}</b>` : ""}<span>port</span><b>${f.port ? f.port.count : 0}</b></div>`;
   } else more = `<div class="hr dim">…</div>`;
   return `<div class="hn">${esc(row[0])}</div>
-    <div class="hr"><i class="sq" style="background:var(${CLS_VAR[c]})"></i>${c} · ${row[2]} B${row[6] ? ` <span class="tag">foundation</span>` : ""}</div>
-    <div class="hr">${row[5] === "none" ? `<i class="sq hollow"></i>` : icon("locate-fixed")}${REACH_TXT[row[5]]}</div>
+    <div class="hr">${swatch(0, D.src[fi])}${SCALES[0].steps[D.src[fi]]} · ${row[2]} B${row[6] ? ` <span class="tag">foundation</span>` : ""}</div>
+    <div class="hr">${swatch(1, D.rt[fi])}${SCALES[1].steps[D.rt[fi]]}${D.verdict.has(row[0]) && D.rt[fi] < 2 ? ` · ${D.verdict.get(row[0])}` : ""} · ${REACH_TXT[row[5]]}</div>
     <div class="hr dim mono" title="${esc(file)}">${esc(file.split("/").slice(-2).join("/"))} · ${row[1].toString(16).toUpperCase()}</div>${more}
     ${unionLive() ? `<div class="hr">${icon("radio")}${reachers(fi).map(id => `<span class="rn"><i class="rdot" style="background:${runHue(id)}"></i>${esc(runById(id)?.movie || id)}</span>`).join(" ") || "no live run reaches it yet"}</div>` : ""}`;
 }
@@ -1149,11 +1172,29 @@ function placeCard(e) {
 }
 function renderMods() {
   const list = mazeBlocks().filter(b => b.bytes > 4096).sort((x, y) => (y.bytes - y.rb) - (x.bytes - x.rb)).slice(0, 10);
-  $("mods").innerHTML = `<div class="sec">${icon("zoom-in")}most unreached bytes</div>` + list.map(b => `<div class="mod ${UI.zmod === b.name ? "on" : ""}" data-mod="${esc(b.name)}" title="Zoom into ${esc(b.label)}: ${b.rb}/${b.bytes} B reached">
+  $("mods").innerHTML = `<div class="sec">${icon("zoom-in")}least exercised</div>` + list.map(b => `<div class="mod ${UI.zmod === b.name ? "on" : ""}" data-mod="${esc(b.name)}" title="${esc(b.label)}: ${b.rb}/${b.bytes} B exercised">
     <span class="n">${esc(b.label)}</span><span class="b"><i style="width:${100 * b.rb / b.bytes}%"></i></span><span class="p">${(100 * b.rb / b.bytes) | 0}%</span></div>`).join("");
   $("mods").onclick = e => { const m = e.target.closest("[data-mod]"); if (!m) return; UI.zmod = UI.zmod === m.dataset.mod ? null : m.dataset.mod; MZ.peek = -1; renderMap(); $("mapwrap").scrollIntoView({ block: "nearest", behavior: "smooth" }); };
 }
 addEventListener("resize", () => { if ($("map")) drawMaze(); });
+
+// ---------- tips: one instant tooltip style for every [title] / [data-tip]; the title moves to data-tip so the browser's delayed tip stays off ----------
+const TIP = { el: null, on: null };
+function tipHide() { if (TIP.el) TIP.el.hidden = true; TIP.on = null; }
+function tipShow(t) {
+  if (t.hasAttribute("title")) { t.dataset.tip = t.getAttribute("title"); t.removeAttribute("title"); }
+  const text = t.dataset.tip; if (!text) return tipHide();
+  if (!TIP.el) { TIP.el = document.createElement("div"); TIP.el.className = "tip"; TIP.el.setAttribute("role", "tooltip"); document.body.appendChild(TIP.el); }
+  const el = TIP.el; el.textContent = text; el.hidden = false; TIP.on = t;
+  const b = t.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
+  el.style.left = Math.max(4, Math.min(innerWidth - w - 4, b.left + b.width / 2 - w / 2)) + "px";
+  el.style.top = (b.top - h - 6 >= 4 ? b.top - h - 6 : b.bottom + 6) + "px";
+}
+const tipOf = e => e.target.closest ? e.target.closest("[title],[data-tip]") : null;
+document.addEventListener("pointerover", e => { if (e.pointerType === "touch") return; const t = tipOf(e); if (t) { if (t !== TIP.on) tipShow(t); } else tipHide(); });
+document.addEventListener("focusin", e => { const t = tipOf(e); if (t && e.target.matches(":focus-visible")) tipShow(t); });
+document.addEventListener("focusout", tipHide);
+document.addEventListener("pointerdown", tipHide); document.addEventListener("keydown", tipHide); addEventListener("scroll", tipHide, true);
 
 // ---------- live lighting: reach records of the watched run (GAME-RUNNER section 10a) ----------
 // Records arrive in-band on the run's /video stream (frame-synced); applyReach (above, unit-tested) decodes them.
