@@ -127,10 +127,6 @@ main { padding: 0 var(--gutter) 40px; min-width: 0; }
 .upnext .grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px 12px; }
 
 /* map */
-.stats { display: flex; gap: 8px; flex-wrap: wrap; }
-.stat { flex: 1; min-width: 76px; border-left: 2px solid var(--accent); padding: 1px 10px; }
-.stat b { display: block; font: 700 17px var(--mono); font-variant-numeric: tabular-nums; }
-.stat span { font-size: 12px; color: var(--dim); }
 .ladder { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; margin-top: 8px; }
 .ladder .chip { height: 24px; padding: 0 8px; font: 12px var(--mono); } .ladder .chip svg { width: 13px; height: 13px; }
 .ladder .gap { color: var(--bad); }
@@ -523,7 +519,7 @@ function renderGrid() {
     <div class="row-h">${icon("clapperboard")}Movies <span class="count">${mv.length}</span>
       <div class="filters">${f("all", "layout-grid", "All")}${f("crash", "skull", "Crash")}${f("hang", "hourglass", "Hang")}${f("ok", "circle-check", "OK")}</div></div>
     <div class="grid">${mv.slice(0, UI.shown).map(movieTile).join("")}</div>
-    ${mv.length > UI.shown ? `<button class="chip more" id="more">${icon("chevron-right")}${mv.length - UI.shown}</button>` : ""}`;
+    ${mv.length > UI.shown ? `<button class="chip more" id="more" title="Show more">${icon("chevron-right")}${mv.length - UI.shown}</button>` : ""}`;
   $("view").onclick = e => {
     const t = e.target.closest("[data-run],[data-movie],[data-filter],#more");
     if (!t) return;
@@ -1218,7 +1214,8 @@ function feedLive() { return FEED.on && !!FEED.bits && FEED.run === UI.watching;
 function feedText() {
   const t = $("feedtxt"); if (!t) return;
   const un = !UI.watching && unionBits(), tr = UN.tile && runById(UN.tile);
-  t.textContent = feedLive() ? `${FEED.n} functions lit by this run` : un ? (tr ? `${UN.runs.get(UN.tile).n} functions lit by ${tr.movie}` : `${un.reduce((a, x) => { for (let v = x; v; v &= v - 1) a++; return a; }, 0)} functions lit by ${unionFeeds().length} live runs`) : "waiting for reach records";
+  const lit = x => `${x} lit`, bits = a => a.reduce((n, x) => { for (let v = x; v; v &= v - 1) n++; return n; }, 0);
+  t.textContent = feedLive() ? lit(FEED.n) : un ? (tr ? `${lit(UN.runs.get(UN.tile).n)} · ${tr.movie}` : `${lit(bits(un))} · ${unionFeeds().length} live`) : "…";
   t.title = `${FEED.recs} records, ${FEED.bytes} B so far (largest ${FEED.maxRec} B); last redraw ${FEED.drawMs.toFixed(1)} ms`;
 }
 function stopFeed() { if (FEED.timer) cancelAnimationFrame(FEED.timer); FEED.timer = 0; FEED.run = null; FEED.bits = null; FEED.n = 0; FEED.hot.clear(); FEED.fresh.clear(); FEED.bytes = FEED.recs = FEED.maxRec = 0; }

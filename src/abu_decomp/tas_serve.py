@@ -331,7 +331,8 @@ class Server:
 
     def behaviour(self) -> dict[str, list[str]]:
         """The page grid's runtime channel: the game functions by the union's behave verdict (`behaves`, `differs`,
-        `missing`), from the same table as /api/coverage, which lists only LISTED rows per bucket. All empty before a table."""
+        `missing`), from the same table as /api/coverage, which lists only LISTED rows per bucket.
+        All empty before a table."""
         path = self.cfg["runs"] / tas_coverage.TABLE
 
         def read() -> dict[str, list[str]]:

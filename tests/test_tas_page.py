@@ -442,8 +442,8 @@ class RenderedPageTests(unittest.TestCase):
         before_pictures = [
             r for r in d["requests"] if not re.match(r"(/(data/posters|wall|video|frame)|blob:)", r["url"])
         ]
-        # the page, uFuzzy, the sprite, live.json and the manifest come first; fns, movies and summary follow the first paint
-        self.assertLessEqual(len(before_pictures), 8, [r["url"] for r in before_pictures])
+        # the page, uFuzzy, the sprite, live.json and the manifest come first; fns, movies, summary and the behave verdicts follow the first paint
+        self.assertLessEqual(len(before_pictures), 9, [r["url"] for r in before_pictures])
 
     def test_watch_lights_the_grid_from_reach_records_in_the_video_stream(self):
         s = self.stub()
@@ -458,16 +458,16 @@ class RenderedPageTests(unittest.TestCase):
                     "eval": "[FEED.n, FEED.recs, document.getElementById('map').width > 0, document.querySelectorAll('.mod').length > 0]"
                 },
                 {
-                    "eval": "document.querySelectorAll('.stat b').length + ':' + document.querySelector('.stat b').textContent"
+                    "eval": "document.querySelectorAll('.foot b').length + ':' + document.querySelector('.foot b').textContent"
                 },
             ],
         )
-        self.assertEqual(d["results"][0], "4 functions lit by this run")
+        self.assertEqual(d["results"][0], "4 lit")
         self.assertTrue(d["results"][1])
         n, recs, canvas, mods = d["results"][2]
         self.assertEqual((n, canvas, mods), (4, True, True))
         self.assertGreaterEqual(recs, 2)
-        self.assertEqual(d["results"][3], "4:46.4%")
+        self.assertEqual(d["results"][3], "3:46.4%")
 
     def test_function_view_is_one_fetch_with_c_hops_and_cases(self):
         s = self.stub()
@@ -639,9 +639,9 @@ class RenderedPageTests(unittest.TestCase):
                 },
             ],
         )
-        self.assertEqual(d["results"][0], "2 functions lit by 1 live runs")
+        self.assertEqual(d["results"][0], "2 lit · 1 live")
         self.assertEqual(d["results"][1], [["r-live"], [], "2"])
-        self.assertTrue(d["results"][2].startswith("2 functions lit by "), d["results"][2])
+        self.assertTrue(d["results"][2].startswith("2 lit · "), d["results"][2])
         self.assertEqual(d["results"][3], "named")
 
     def test_lockstep_shows_both_sides_on_one_poll_with_one_scrubber_and_diff(self):
