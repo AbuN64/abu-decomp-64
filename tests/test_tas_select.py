@@ -110,11 +110,12 @@ class PlayAllFastTests(unittest.TestCase):
             "b": (Path("run-b"), {"outcome": "crash", "pins": pins}),
             "c": (Path("run-c"), {"outcome": "ok", "pins": {"rw": "a"}}),
             "d": (Path("run-d"), {"outcome": "refused", "pins": pins}),
+            "f": (Path("run-f"), {"outcome": "killed", "pins": pins}),
         }
         with mock.patch.object(tas_select, "read_pins", return_value=pins):
-            replay, skipped, why = tas_select.resume_plan({}, ["a", "b", "c", "d", "e"], prev)
-        self.assertEqual((replay, sorted(skipped)), (["c", "d", "e"], ["a", "b"]))
-        self.assertIn("2 of 5", why)
+            replay, skipped, why = tas_select.resume_plan({}, ["a", "b", "c", "d", "e", "f"], prev)
+        self.assertEqual((replay, sorted(skipped)), (["c", "d", "e", "f"], ["a", "b"]))
+        self.assertIn("2 of 6", why)
         with mock.patch.object(tas_select, "read_pins", return_value=None):
             self.assertEqual(tas_select.resume_plan({}, ["a"], prev)[0], ["a"])
 

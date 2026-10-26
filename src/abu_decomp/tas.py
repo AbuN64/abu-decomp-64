@@ -987,7 +987,12 @@ def previous_run(
             continue
         if row.get("taken"):
             continue
-        if row.get("status") == "done" and not row.get("stopped") and row.get("outcome") and (run / HASH).is_file():
+        if (
+            row.get("status") == "done"
+            and not row.get("stopped")
+            and tas_select.completed_outcome(row)
+            and (run / HASH).is_file()
+        ):
             return run
     return None
 

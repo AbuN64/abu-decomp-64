@@ -626,6 +626,21 @@ class MovieTests(unittest.TestCase):
             twice = tas.play_twice(self.profile, "m", state_diff=False)
         self.assertIs(twice["same_twice"], True)
 
+    def test_same_twice_ignores_interrupted_hashes(self):
+        self.movie()
+        with self.port("1 aa\n", []):
+            interrupted = tas.play(self.profile, "m", now=T0)
+        record = Path(interrupted["run"]) / tas.RECORD
+        row = json.loads(record.read_text())
+        row["outcome"] = "killed"
+        record.write_text(json.dumps(row))
+        with self.port("1 aa\n2 bb\n", []):
+            first_complete = tas.play(self.profile, "m", now=T0)
+            second_complete = tas.play(self.profile, "m", now=T0)
+        self.assertIsNone(first_complete["same_twice"])
+        self.assertIs(second_complete["same_twice"], True)
+        self.assertEqual(second_complete["compared_with"], Path(first_complete["run"]).name)
+
     def test_a_run_whose_process_vanished_reads_as_killed(self):
         run = self.root / "runs" / "plays" / "20261021T000000Z-m"
         run.mkdir(parents=True)
