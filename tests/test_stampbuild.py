@@ -41,7 +41,7 @@ def test_clean_pass_writes_the_stamp_and_removes_the_tree(tmp_path, monkeypatch)
     _result, code, findings = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 0 and findings == []
     assert stamp_mod.stamped(tmp_path / "stamps", DIFF) and pruned[-1][0].startswith("STAMP-")
-    assert stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")[0] == {"stamp": "present"}
+
 
 
 def test_a_broken_function_refuses_the_stamp(tmp_path, monkeypatch):
@@ -578,3 +578,67 @@ def test_release_gives_the_reverted_files_their_shared_date_and_signs_the_header
     stampbuild.release(shared, tree, {"build/a/x.i.ok": [1, "k"]})
     assert (tree / "x.h").read_text() == "b\n" and (tree / "x.h").stat().st_mtime_ns == 10**15
     assert asked == [(tree, ["x.h"], {"build/a/x.i.ok": [1, "k"]})]
+
+
+def test_a_held_stamp_is_built_and_measured_again_not_answered_present(tmp_path, monkeypatch, capsys):
+    from abu_decomp.data import check as check_mod
+
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    calls = []
+    monkeypatch.setattr(check_mod, "check", lambda b, v: calls.append(v) or {"version": v, "built": True, "broken": []})
+    stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert stamp_mod.stamped(tmp_path / "stamps", DIFF) and calls == ["a", "b"]
+    result, code, _f = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    out = capsys.readouterr().out
+    assert code == 0 and calls == ["a", "b", "a", "b"] and result["stamp"].endswith(".ok")
+    assert out.count("stamp phase check:") == 2 and out.count("stamp build:") == 2
+
+
+def clock(monkeypatch, links):
+    """meter.cpu() as a counter the fake link advances by the next of LINKS seconds; the order of link and apply."""
+    from abu_decomp import meter
+
+    now, order = [0.0], []
+    monkeypatch.setattr(meter, "cpu", lambda: now[0])
+
+    def link(self):
+        order.append("link")
+        now[0] += links.pop(0)
+        return 0, ""
+
+    monkeypatch.setattr(trial.Builder, "rom_check", link)
+    watch(monkeypatch, order)
+    return order
+
+
+def watch(monkeypatch, seen):
+    """Every `git apply` is noted in SEEN as "apply"; every subprocess succeeds."""
+
+    def run(a, *x, **k):
+        if "apply" in a:
+            seen.append("apply")
+        return subprocess.CompletedProcess(a, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+def test_the_clean_trees_link_is_paid_before_the_diff_and_not_charged_to_it(tmp_path, monkeypatch, capsys):
+    cfg = replace(CFG, rom_check=("check",))
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    order = clock(monkeypatch, [688.0, 24.0])  # the cold debt, then the diff's own link
+    _r, code, _f = stampbuild.build(cfg, None, tmp_path, diff, tmp_path / "stamps")
+    out = capsys.readouterr().out
+    assert code == 0 and order.index("link") < order.index("apply") and order.count("link") == 2
+    assert "stamp phase settle (not charged): wall=0s cpu=688s\n" in out and "stamp phase rom_check: wall=0s cpu=24s\n" in out
+    assert "stamp build: wall=0s cpu=24s" in out and "CPU-OVER" not in out
+
+
+def test_a_clean_tree_that_does_not_link_refuses_before_the_diff_is_applied(tmp_path, monkeypatch):
+    cfg = replace(CFG, rom_check=("check",))
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    monkeypatch.setattr(trial.Builder, "rom_check", lambda self: (2, "no ROM was linked"))
+    applied = []
+    watch(monkeypatch, applied)
+    _r, code, findings = stampbuild.build(cfg, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 1 and "does not link before the diff is applied" in findings[0]["message"] and not applied
+    assert not stamp_mod.stamped(tmp_path / "stamps", DIFF)

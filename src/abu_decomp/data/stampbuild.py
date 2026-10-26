@@ -230,12 +230,12 @@ def build(
     at: str | None = None,
     reextract: bool = False,
 ):
-    """(result, code, findings). The stamp is written only when every version built and no exact function broke."""
+    """(result, code, findings). The stamp is written only when every version built and no exact function broke. A diff that
+    is already stamped is built and measured again like any other: the stamp is content-keyed, so a held pack could never be
+    re-proved or re-timed through a bare "present" (a caller that only wants the presence asks `stamp_mod.stamped`)."""
     text = diff.read_text(errors="replace")
     if not stamp_mod.touches_data(cfg, text):
         return {"stamp": "not needed: the diff touches no declaration or data"}, 0, []
-    if stamp_mod.stamped(stamps, text):
-        return {"stamp": "present"}, 0, []
     if bad := gate_mod.precheck(
         cfg, text
     ):  # the gate refuses these at queue time: cheaper to say so before a 70 s build
@@ -298,18 +298,40 @@ def header_files(files: list[str]) -> list[str]:
     return sorted(f for f in files if f.startswith("include/") or f.lower().endswith(".h"))
 
 
-def _phase(name: str, since: list[float]) -> None:
+def _phase(name: str, since: list[float], cap: bool = True) -> None:
     """One line per stamp phase with its wall and CPU seconds (10-25: a stamp of 762-1434 CPU s named no phase)."""
     now = [time.monotonic(), meter.cpu()]
     used = now[1] - since[1]
-    over = f"  FLAG CPU-OVER-5min step={name}" if used > CPU_CAP else ""
+    over = f"  FLAG CPU-OVER-5min step={name}" if cap and used > CPU_CAP else ""
     print(f"stamp phase {name}: wall={now[0] - since[0]:.0f}s cpu={used:.0f}s{over}", flush=True)
     since[:] = now
+
+
+def settle(cfg: DataConfig, tree: Path) -> str | None:
+    """Link the CLEAN tree (the diff not yet applied) so make has nothing left to catch up on; the reason it cannot, else
+    None. The first make of a slot pays for more than the diff: stamps and objects the last diff's revert left stale, the
+    dependency caches of a fresh or reset tree, a cold file cache. That debt ran inside rom_check and made equivalent
+    declaration-only packs cost 24 s on one slot and 688 s on another (10-26), so the 300 s cap decided by cache luck.
+    Paid here, outside the cap's meter, rom_check is the link of what the diff changed, the same cold or warm."""
+    if not cfg.rom_check:
+        return None
+    rc, report = trial.Builder(cfg, tree).rom_check()
+    return f"the clean tree does not link before the diff is applied, so it is not the diff's fault: {report}" if rc else None
 
 
 def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
     started, cpu = time.monotonic(), meter.cpu()
     mark = [started, cpu]
+    free = [0.0]  # CPU seconds `settle` used: shown on its own line, not charged to the diff
+
+    def settled(tree: Path) -> list[dict[str, Any]]:
+        _phase("tree", mark)
+        before = mark[1]
+        why = settle(cfg, tree)
+        free[0] += meter.cpu() - before
+        _phase("settle (not charged)", mark, cap=False)
+        return [{"key": "data.stamp", "blocking": True, "message": why}] if why else []
+
     # The tree is at SHARED's own commit: any other base differs in symbol facts and splits the ROM again for every
     # version (5 cold extractions, 70 s wall, 10-24). Only a diff that does not apply there goes to the tip.
     head = _git(shared, "rev-parse", "HEAD").stdout.strip()
@@ -323,6 +345,8 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         if code:
             return {"worktree": made}, code, findings
         (tree / STATE).write_text("busy\n")
+        if found := settled(tree):
+            return {"worktree": made}, 1, found
         applied = _git(tree, "apply", str(diff.resolve()))
         if applied.returncode and not at and head:
             # A diff based on an older commit than the pool tree: merge it onto the pool tree's own commit first (the train
@@ -339,6 +363,8 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
             if code:
                 return {"worktree": made}, code, findings
             (tree / STATE).write_text("busy\n")
+            if found := settled(tree):
+                return {"worktree": made}, 1, found
             applied = _git(tree, "apply", str(diff.resolve()))
         if (
             applied.returncode
@@ -351,7 +377,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         if applied.returncode:
             msg = f"{diff.name} does not apply on {made['rev'][:9]}: {applied.stderr.strip()[:200]}"
             return {"worktree": made}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]
-        _phase("tree+apply", mark)
+        _phase("apply", mark)
         same = made["rev"] == head  # the shared tree's objects are the clean build only at its own commit
         files = stamp_mod.files_of(text)
         if stamp_mod.extraction_files(files):
@@ -434,7 +460,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
             result["stamp"] = "not stamped: the check failed"
         return result, 1 if findings else 0, findings
     finally:
-        wall, used = time.monotonic() - started, meter.cpu() - cpu
+        wall, used = time.monotonic() - started, meter.cpu() - cpu - free[0]
         if kept and (tree / ".git").exists():
             (tree / STATE).write_text("busy\n")  # not reusable; the next stamp in this slot rebuilds it
         elif extracted:

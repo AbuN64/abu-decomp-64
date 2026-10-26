@@ -380,6 +380,8 @@ def _stamp(args: argparse.Namespace, cfg) -> str:
 
         pool = worktree.base(args.tree) / "POOL-SRC"
         if pool.is_dir() and pool.resolve() != args.tree.resolve():
+            if stamp_mod.stamped(stamp_mod.stamp_dir(args.stamps, args.config), text):
+                return "present"  # the check wants a stamp, not a re-measure: `stamp --build` is the one that builds a held diff again
             result, code, found = stampbuild.build(
                 cfg,
                 cli._profile(args.profile),
