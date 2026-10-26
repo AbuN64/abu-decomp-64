@@ -247,6 +247,60 @@ class PhaseTests(Fixture):
         self.assertEqual(rows["p3", "differs_missing"]["value"], 2)
         self.assertTrue(rows["p3", "corpus_gate"]["met"])
 
+    def play(self, runs, stamp, movie, outcome):
+        run = runs / "plays" / f"{stamp}-{movie}"
+        run.mkdir(parents=True)
+        (run / "run.json").write_text(json.dumps({"movie": movie, "status": "done", "outcome": outcome}))
+
+    def crashes(self, profile, game="Alpha"):
+        cfg = phase.settings(profile)
+        rows, _ = phase.p3(profile, cfg, game, "v1")
+        return {r["key"]: r for r in rows}["crash"]
+
+    def test_p3_crash_census_is_the_saved_movies(self):
+        runs = self.dir / "runs"
+        self.play(runs, "20261023T000000Z", "pf-close-credits-h2", "crash")  # a deleted diagnostic movie
+        self.play(runs, "20261023T000001Z", "pf-close-credits-h3", "hang")
+        row = self.crashes(self.profile())
+        self.assertEqual((row["value"], row["met"]), (0, True))
+        self.play(runs, "20261025T000000Z", "boot-idle", "crash")  # a saved movie's newest run crashes
+        row = self.crashes(self.profile())
+        self.assertEqual((row["value"], row["met"]), (1, False))
+        self.play(runs, "20261026T000000Z", "boot-idle", "ok")  # and passes again: only the newest run counts
+        self.assertEqual(self.crashes(self.profile())["value"], 0)
+        self.assertTrue((runs / "plays" / "20261023T000000Z-pf-close-credits-h2" / "run.json").is_file())
+
+    def test_p3_crash_census_follows_each_games_own_profile(self):
+        beta = self.dir / "beta"
+        (beta / "movies").mkdir(parents=True)
+        (beta / "runs").mkdir()
+        (beta / "movies" / "beta-boot.tas").write_text("# beta\n")
+        self.play(beta / "runs", "20261025T000000Z", "beta-boot", "crash")
+        self.play(beta / "runs", "20261025T000001Z", "boot-idle", "crash")  # Alpha's movie name is not Beta's
+        (beta / "profile.json").write_text(
+            json.dumps({"schema_version": 1, "name": "beta", "tas": {"movies": "movies", "runs": "runs"}})
+        )
+        shutil.copy(self.dir / "runs" / "coverage-table.json", beta / "runs")
+
+        def edit(cfg):
+            cfg["games"]["Beta"] = {
+                **cfg["games"]["Alpha"],
+                "port": {"movie": "beta-boot", "profile": "beta/profile.json"},
+            }
+
+        profile = self.profile(edit)
+        self.assertEqual(self.crashes(profile, "Beta")["value"], 1)
+        self.assertEqual(self.crashes(profile, "Alpha")["value"], 0)
+
+    def test_p3_crash_census_refuses_a_seat_without_movies(self):
+        self.profile()
+        data = json.loads(self.profile_file.read_text())
+        data["tas"].pop("movies")
+        self.profile_file.write_text(json.dumps(data))
+        with self.assertRaises(DecompError) as raised:
+            self.crashes(load_profile(self.profile_file))
+        self.assertEqual(raised.exception.key, "phase.movies")
+
     def test_p4_ladder_stage_between_r1_and_r2(self):
         ladder = [
             {"stage": "R1", "byte_reach": 50, "line": 40},

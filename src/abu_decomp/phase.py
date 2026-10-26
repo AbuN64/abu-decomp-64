@@ -319,12 +319,27 @@ def lit(frame: Path) -> bool:
     return pixels.count(0) != len(pixels)
 
 
-def _runs_dir(profile: Profile, game: dict[str, Any]) -> Path | None:
+def _seat(profile: Profile, game: dict[str, Any]) -> Profile | None:
+    """The profile that owns the game's port runs and saved movies (the game port's own seat, else this one)."""
     port = game.get("port")
     if not port:
         return None
-    seat = load_profile(profile.resolve_path(port["profile"])) if port.get("profile") else profile
-    return seat.path("tas.runs", seat.section("tas")["runs"])
+    return load_profile(profile.resolve_path(port["profile"])) if port.get("profile") else profile
+
+
+def _runs_dir(profile: Profile, game: dict[str, Any]) -> Path | None:
+    seat = _seat(profile, game)
+    return seat.path("tas.runs", seat.section("tas")["runs"]) if seat else None
+
+
+def _saved_movies(seat: Profile) -> set[str]:
+    """The names of the seat's saved movies, the corpus the replay and coverage commands play (`<tas.movies>/*.tas`).
+    Run records of any other movie name are archived evidence (a deleted diagnostic), not part of the game's census."""
+    table = seat.section("tas")
+    if "movies" not in table:
+        raise DecompError("phase.movies", f"{seat.source_file}: section tas needs `movies` to census the saved movies")
+    movies = seat.path("tas.movies", table["movies"])
+    return {p.stem for p in movies.glob("*.tas")} if movies.is_dir() else set()
 
 
 def p2(profile: Profile, game: str, version: str, spec: dict[str, Any]) -> list[dict[str, Any]]:
@@ -384,7 +399,8 @@ def p3(profile: Profile, cfg: dict[str, Any], game: str, version: str) -> tuple[
     unreachable = len(cfg.get("unreachable", []))
     denominator = max(summary["game"]["functions"] - unreachable, 1)
     states, behaviour = summary.get("states", {}), summary.get("behaviour", {})
-    newest = _newest_runs(runs)
+    saved = _saved_movies(_seat(profile, spec))
+    newest = {name: found for name, found in _newest_runs(runs).items() if name in saved}
     crash = sum(1 for _, rec in newest.values() if rec.get("outcome") in ("crash", "hang"))
     gate_file = runs / "corpus-gate.json"
     try:

@@ -2,6 +2,7 @@
  "schema_version": 1,
  "name": "phase-fixture",
  "tas": {
+  "movies": "movies",
   "runs": "runs"
  },
  "phase": {
