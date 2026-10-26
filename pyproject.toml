@@ -17,8 +17,8 @@ dependencies = [
   "pycparser==3.0",
   "gcovr==8.3",
   "pillow==13.0.0",  # shared capture decoder + bounded JPEG video for the TAS viewer
-  "unbake @ git+https://github.com/AbuN64/cake-unbake-64@5fee5007ff8a0c711bb225ff2d25750739a2cf97",
-  "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@c9fdfda598dde7d090d5b57a34ef87e053d560e6",
+  "unbake @ git+https://github.com/AbuN64/cake-unbake-64@5930f80931892d9fc0eaa7159279c0bb844d7b1e",
+  "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@82b44470997ab9b570120c9f2abe6cdcfe3a9036",
   "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@1d446ba0bb915fe58d1647eec1dab5a6725c5c9a",
 ]
 
