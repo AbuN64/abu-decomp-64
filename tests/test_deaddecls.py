@@ -1,5 +1,6 @@
 """`decomp cleanup dead-decls`: the dead declarations of a folder to a fixpoint, as one batch per module folder."""
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -163,3 +164,11 @@ def test_a_size_assertion_is_a_root_with_the_types_it_measures(tmp_path: Path) -
     every = names(found)
     assert not every & {"Sized", "Sized_size_check", "Meter"}  # the assertion, its record and that record's types stay
     assert {"Table", "Dropped"} <= every  # an ordinary array typedef and an unused record are still dead
+
+
+def test_a_run_that_finds_nothing_still_writes_the_empty_summary(tmp_path: Path) -> None:
+    root = project(tmp_path)
+    deaddecls.run(root, "include/COMMON", apply=True)
+    packs = tmp_path / "again"
+    found = deaddecls.run(root, "include/COMMON", packs=packs)
+    assert found["dead"] == 0 and json.loads((packs / "dead-decls.json").read_text()) == {"batches": []}

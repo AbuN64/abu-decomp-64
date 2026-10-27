@@ -584,5 +584,6 @@ def emit_batches(
                 }
             )
     if packs is not None:
+        packs.mkdir(parents=True, exist_ok=True)
         (packs / "dead-decls.json").write_text(json.dumps({"batches": batches}, indent=1, sort_keys=True) + "\n")
     return batches
