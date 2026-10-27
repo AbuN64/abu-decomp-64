@@ -233,7 +233,9 @@ class CompareTests(Fixture):
         """Write one side's recorded calls: rows of (fn, caller, ordinal, a0, ret)."""
         out = [{"k": "meta", "first": 16}]
         for fn, caller, o, a0, ret in rows:
-            out.append({"k": "call", "fn": fn, "caller": caller, "o": o, "frame": 1, "i": o, "a": [f"{a0:08x}", "0", "0", "0"]})
+            out.append(
+                {"k": "call", "fn": fn, "caller": caller, "o": o, "frame": 1, "i": o, "a": [f"{a0:08x}", "0", "0", "0"]}
+            )
             out.append({"k": "ret", "fn": fn, "i": o, "r": [f"{ret:08x}", "0"], "f0": "0"})
         (run / name).write_text("\n".join(json.dumps(r) for r in out) + "\n")
 

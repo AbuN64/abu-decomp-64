@@ -278,9 +278,25 @@ def read_oracle(run: Path) -> tuple[dict[str, tuple[int, int]], int] | None:
     return hits, len(vis)
 
 
-HEADERS = ("include/**/*.h", "include/**/*.H", "src/**/*.c", "src/**/*.C", "src/**/*.CPP", "src/**/*.cpp")  # where the prototypes are read from: the project's functions are defined (and so declared) in its .CPP units
-PORT_CALLS, ORACLE_CALLS = "calls.jsonl", "lockstep.jsonl"  # RUN/ and RUN/oracle-golden/: one call line per recorded call
-SEVERITY = ("differs-args", "differs-result", "missing", "port-only", "behaves")  # a function's verdict: the worst run's
+HEADERS = (
+    "include/**/*.h",
+    "include/**/*.H",
+    "src/**/*.c",
+    "src/**/*.C",
+    "src/**/*.CPP",
+    "src/**/*.cpp",
+)  # where the prototypes are read from: the project's functions are defined (and so declared) in its .CPP units
+PORT_CALLS, ORACLE_CALLS = (
+    "calls.jsonl",
+    "lockstep.jsonl",
+)  # RUN/ and RUN/oracle-golden/: one call line per recorded call
+SEVERITY = (
+    "differs-args",
+    "differs-result",
+    "missing",
+    "port-only",
+    "behaves",
+)  # a function's verdict: the worst run's
 
 
 def call_behaviour(
@@ -315,7 +331,11 @@ def run_oracle(profile: Profile, cfg: dict[str, Any], run: Path, record: dict[st
         run,
         cfg["exit_after"],
         str(record.get("pak") or "on"),
-        extra={"N64R_GOLDEN_DIR": str(run / ORACLE_DIR), "N64R_LOCKSTEP_DIR": str(run / ORACLE_DIR), "N64R_LOCKSTEP_CALLS": str(tas_oracle.CALLS_FIRST)},
+        extra={
+            "N64R_GOLDEN_DIR": str(run / ORACLE_DIR),
+            "N64R_LOCKSTEP_DIR": str(run / ORACLE_DIR),
+            "N64R_LOCKSTEP_CALLS": str(tas_oracle.CALLS_FIRST),
+        },
         card=card,
         pads=int(record.get("pads", 1)),
     )
@@ -465,8 +485,10 @@ def union(
 ) -> dict[str, Any]:
     """The function table over the movies' runs. `runs` is one dict per movie: {movie, port, oracle, port_polls,
     oracle_polls, behaviour?}: port maps name -> execution count (gcovr), oracle maps name -> (first poll, count) or is
-    None when it never ran, behaviour maps name -> `call_behaviour()` verdict dict. `linked` is the set of names the port binary
-    defines (None: unknown). A function's `behaviour` over the runs: the worst run's percall verdict (SEVERITY), None when no run judged it;
+    None when it never ran, behaviour maps name -> `call_behaviour()` verdict dict. `linked` is the set of
+    names the port binary
+    defines (None: unknown). A function's `behaviour` over the runs: the worst run's percall verdict
+    (SEVERITY), None when no run judged it;
     `behaviour_detail` is that run's verdict dict (first diverging call, cause) with the calls compared over all runs.
 
     A run's two sides are compared over the polls both reached: the port stops `exit_after` polls after the movie (or
@@ -1015,7 +1037,8 @@ def line(report: dict[str, Any]) -> str:
         f"{pct('function_percent')}; port {s['game']['port']['bytes_pct']}% of game bytes; oracle-only "
         f"{states.get('oracle-only', 0)}, neither {states.get('neither', 0)}; behaves "
         f"{s.get('behaviour', {}).get('behaves', 0)}, differs "
-        f"{sum(s.get('behaviour', {}).get(v, 0) for v in ('differs-args', 'differs-result'))} (own fault {s.get('own_fault', 0)}) "
+        f"{sum(s.get('behaviour', {}).get(v, 0) for v in ('differs-args', 'differs-result'))} (own fault "
+        f"{s.get('own_fault', 0)}) "
         f"({s['movies']} movies, {s['oracle_movies']} with oracle, {report.get('oracle_pending', 0)} still to replay; "
         f"{len(report.get('builds') or {})} port builds, "
         f"{len(report.get('mixed_build') or [])} mixed-build functions); report runs/{HTML}/index.html"

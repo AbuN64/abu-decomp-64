@@ -79,7 +79,8 @@ def read_calls(path: Path, side: str, canon: Callable[[str], str] = lambda n: n)
             if "order" in row:
                 by_id[("order", row["order"], row["i"])] = call
         elif kind == "ret":
-            call = by_id.get(("fn", row["fn"], row["i"])) if "fn" in row else by_id.get(("order", row.get("order"), row["i"]))
+            key = ("fn", row["fn"], row["i"]) if "fn" in row else ("order", row.get("order"), row["i"])
+            call = by_id.get(key)
             if call is not None and call.ret is None:
                 call.ret = row
                 call.writes = row.get("w", call.writes)
@@ -213,7 +214,11 @@ def _call_row(oracle: Call, port: Call, diffs: list[dict[str, str]], what: str) 
         "ordinal": oracle.ordinal,
         "frame": {"oracle": oracle.frame, "port": port.frame},
         "diffs": diffs,
-        "oracle": {"args": [_hex(w) for w in oracle.words[:4]], "ret": oracle.ret and oracle.ret["r"], "writes": oracle.writes},
+        "oracle": {
+            "args": [_hex(w) for w in oracle.words[:4]],
+            "ret": oracle.ret and oracle.ret["r"],
+            "writes": oracle.writes,
+        },
         "port": {"args": [_hex(w) for w in port.words], "ret": port.ret and port.ret["r"], "writes": port.writes},
     }
 
@@ -251,8 +256,16 @@ def align(
         if not both:
             callers = {"oracle": sorted({k[1] for k in o_keys}), "port": sorted({k[1] for k in p_keys})}
             verdict.verdict, verdict.cause = "differs-args", "input"
-            verdict.first = {"what": "caller", "diffs": [{"field": "caller", "kind": "symbol", **{
-                "oracle": ",".join(callers["oracle"]), "port": ",".join(callers["port"])}}]}
+            verdict.first = {
+                "what": "caller",
+                "diffs": [
+                    {
+                        "field": "caller",
+                        "kind": "symbol",
+                        **{"oracle": ",".join(callers["oracle"]), "port": ",".join(callers["port"])},
+                    }
+                ],
+            }
         for key in both:
             args = diff_args(proto, oracle[key], port[key], same)
             if args:

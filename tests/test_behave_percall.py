@@ -20,15 +20,37 @@ def proto(name):
 
 
 def o_call(fn, caller, o, args, ret=None, frame=1, **extra):
-    rows = [{"k": "call", "fn": fn, "caller": caller, "o": o, "frame": frame, "i": o, "a": [f"{a:08x}" for a in args], **extra}]
+    rows = [
+        {
+            "k": "call",
+            "fn": fn,
+            "caller": caller,
+            "o": o,
+            "frame": frame,
+            "i": o,
+            "a": [f"{a:08x}" for a in args],
+            **extra,
+        }
+    ]
     if ret is not None:
         rows.append({"k": "ret", "fn": fn, "i": o, "r": [f"{ret:08x}", "00000000"], "f0": "0"})
     return rows
 
 
 def p_call(fn, caller, o, args, ret=None, frame=9, **extra):
-    rows = [{"k": "call", "order": 3, "fn": fn, "caller": caller, "o": o, "frame": frame, "i": o,
-             "a": [f"{a:08x}" for a in args] + ["0"] * (8 - len(args)), **extra}]
+    rows = [
+        {
+            "k": "call",
+            "order": 3,
+            "fn": fn,
+            "caller": caller,
+            "o": o,
+            "frame": frame,
+            "i": o,
+            "a": [f"{a:08x}" for a in args] + ["0"] * (8 - len(args)),
+            **extra,
+        }
+    ]
     if ret is not None:
         rows.append({"k": "ret", "order": 3, "i": o, "r": [f"{ret:08x}", "00000000"], "st0": None})
     return rows
@@ -85,8 +107,14 @@ def test_pointer_arguments_compare_as_null_or_not(tmp_path):
 
 
 def test_float_result_within_four_ulp_behaves(tmp_path):
-    o = o_call("scale", "main", 0, [0x3F800000], f12="3f800000") + [{"k": "ret", "fn": "scale", "i": 0, "r": ["0", "0"], "f0": "3f800000"}]
-    p = p_call("scale", "main", 0, [0x3F800000]) + [{"k": "ret", "order": 3, "i": 0, "r": ["0", "0"], "st0": "3ff0000020000000"}]
+    o = [
+        *o_call("scale", "main", 0, [0x3F800000], f12="3f800000"),
+        {"k": "ret", "fn": "scale", "i": 0, "r": ["0", "0"], "f0": "3f800000"},
+    ]
+    p = [
+        *p_call("scale", "main", 0, [0x3F800000]),
+        {"k": "ret", "order": 3, "i": 0, "r": ["0", "0"], "st0": "3ff0000020000000"},
+    ]
     assert run(tmp_path, o[:1] + o[2:], p[:1] + p[2:])["scale"].verdict == "behaves"
 
 

@@ -58,7 +58,18 @@ def fn_rows():
     for i in range(30):
         name = {0: "Menu_Draw", 1: "Engine_Tick", 2: "Gfx_Init"}.get(i, f"func_8000{i:04X}")
         reach = "both" if i < 3 else ("port" if i < 9 else "none")
-        rows.append([name, 0x1000 + i * 64, 700 + i, STATES[i % 4], i % 3, reach, i == 1, {0: "behaves", 1: "differs-args"}.get(i, "")])
+        rows.append(
+            [
+                name,
+                0x1000 + i * 64,
+                700 + i,
+                STATES[i % 4],
+                i % 3,
+                reach,
+                i == 1,
+                {0: "behaves", 1: "differs-args"}.get(i, ""),
+            ]
+        )
     return rows
 
 
@@ -126,11 +137,20 @@ FN_FILE = {
     "oracle": {"count": 3},
     "behaviour": "differs-args",
     "call": {
-        "verdict": "differs-args", "compared": 4, "cause": "input", "unmatched_oracle": 0, "unmatched_port": 0,
-        "first": {"caller": "Engine_Tick", "ordinal": 2, "what": "arguments", "frame": {"oracle": 31, "port": 33},
-                  "diffs": [{"field": "a0", "kind": "int", "oracle": "00000005", "port": "00000006"}],
-                  "oracle": {"args": ["00000005", "0", "0", "0"], "ret": ["00000000", "00000000"], "writes": None},
-                  "port": {"args": ["00000006", "0", "0", "0"], "ret": ["00000000", "00000000"], "writes": None}},
+        "verdict": "differs-args",
+        "compared": 4,
+        "cause": "input",
+        "unmatched_oracle": 0,
+        "unmatched_port": 0,
+        "first": {
+            "caller": "Engine_Tick",
+            "ordinal": 2,
+            "what": "arguments",
+            "frame": {"oracle": 31, "port": 33},
+            "diffs": [{"field": "a0", "kind": "int", "oracle": "00000005", "port": "00000006"}],
+            "oracle": {"args": ["00000005", "0", "0", "0"], "ret": ["00000000", "00000000"], "writes": None},
+            "port": {"args": ["00000006", "0", "0", "0"], "ret": ["00000000", "00000000"], "writes": None},
+        },
     },
     "claims": [],
     "behave": ["Menu_Draw(a0=1) -> v0=0"],

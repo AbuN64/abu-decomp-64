@@ -166,7 +166,8 @@ def reach_of(row: dict[str, Any] | None) -> str:
 
 def function_rows(body: dict[str, Any], table: dict[str, Any]) -> tuple[list[str], list[list[Any]]]:
     """(files, rows): [name, rom, size, decomp state, file#, reach, foundation, behaviour] in ROM order; behaviour is
-    the per-call verdict (tas_coverage.call_behaviour: behaves, differs-args, differs-result, missing, port-only; "" when
+    the per-call verdict (tas_coverage.call_behaviour: behaves, differs-args, differs-result, missing,
+    port-only; "" when
     no movie judged the function). The map's combined
     `covered` state is not used: decomp state (named/exact/fuzzy/asm) and reach are separate columns."""
     cov = {r["name"]: r for r in table.get("functions", []) if r.get("in_version")}
