@@ -140,7 +140,8 @@ def test_roms_gates_share_one_pool_tree_synced_to_the_revision(tmp_path, monkeyp
     }
     done = gates.run(root, "HEAD", section)
     assert [g["value"] for g in done["gates"]] == [1, 1, 1] and done["failed"] == 0
-    assert done["gates"][0]["detail"] == {"versions": 3, "exact": ["eu", "us"]}
+    detail = done["gates"][0]["detail"]
+    assert (detail["versions"], detail["exact"]) == (3, ["eu", "us"]) and set(detail["seconds"]) == {"tree", "link"}
     assert leased == [(pool, sha, 5.0)] and linked == [tmp_path / "STAMP-S0"]  # one lease, one link, for all three
 
 

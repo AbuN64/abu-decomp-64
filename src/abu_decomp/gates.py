@@ -53,6 +53,7 @@ class Revision:
         self._lock = threading.Lock()
         self._linked: dict[str, dict[str, Any]] | None = None
         self._linked_lock = threading.Lock()
+        self._link_seconds: dict[str, float] = {}
         self.paths = cleanup.tracked(root, rev)
         self.texts = cleanup._texts(root, rev, self.paths)
         self._tree: Path | None = None
@@ -229,9 +230,12 @@ def _link(rev: Revision, spec: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
                 subprocess.run(["git", "-C", str(pool), "fetch", "-q", str(rev.root), sha], check=True)
             config = Path(spec["config"]).expanduser() if spec.get("config") else None
             cfg = config_mod.load(config, pool)
+            began = time.monotonic()
             with stampbuild.at_rev(cfg, rev.profile, pool, sha, float(spec.get("wait", 600))) as tree:
+                leased = time.monotonic()
                 trial.Builder(cfg, tree).rom_check()  # links every version; the report below judges the ROMs themselves
                 rev._linked = shipproof.rom_report(tree)
+                rev._link_seconds = {"tree": round(leased - began, 1), "link": round(time.monotonic() - leased, 1)}
         return rev._linked
 
 
@@ -242,6 +246,7 @@ def _roms(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
     return sum(1 for r in report.values() if not r["ok"]), {
         "versions": len(report),
         "exact": sorted(v for v, r in report.items() if r["ok"]),
+        "seconds": rev._link_seconds,
     }
 
 
