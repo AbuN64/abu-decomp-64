@@ -1277,6 +1277,10 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
         return _run_preflight(args)
     root = tools.project_dir(_profile(args.profile), _own_tree(args, "cleanup"))
     if args.verb == "slices":
+        from abu_decomp import filesets
+
+        names = Path(args.names or args.book).expanduser() if args.names or args.book else filesets.store()
+        earlier = filesets.slice_lanes(names)
         argv = cleanup.slices_argv(args.lanes, args.map, args.assign, args.names)
         called = tools.invoke("recipe", _profile(args.profile), argv, project=root)
         if not called.ok:
@@ -1284,11 +1288,8 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
             raise DecompError("cleanup.slices", f"recipe name slices failed: {why}")
         for line in cleanup.slices_lines(called.document):
             print(line, file=sys.stderr)
-        from abu_decomp import filesets
-
-        names = Path(args.names or args.book).expanduser() if args.names or args.book else filesets.store()
         try:
-            sets = filesets.build(root, names, args.lanes, args.map)
+            sets = filesets.build(root, names, args.lanes, args.map, earlier)
         except ValueError as e:
             raise DecompError("cleanup.files", f"the file sets are not exclusive: {e}") from None
         written = [str(p) for p in filesets.write(names, sets)] if args.apply else []

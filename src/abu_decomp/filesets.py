@@ -168,11 +168,16 @@ def check(doc: Mapping[str, Any], sizes: Mapping[str, int]) -> list[str]:
     ]
 
 
-def lane_names(names: Path, count: int) -> list[str]:
-    """`count` lane names: the lanes the planner assigned slices to (sorted, as many as fit), then L01, L02, ... for
-    the lanes still missing. The file sets and the placeholder slices use the same names."""
-    held = sorted(p.stem for p in (names / "slices").glob("*.json")) if (names / "slices").is_dir() else []
-    out = held[:count]
+def slice_lanes(names: Path) -> list[str]:
+    """The lanes holding placeholder slices in NAMES."""
+    return sorted(p.stem for p in (names / "slices").glob("*.json")) if (names / "slices").is_dir() else []
+
+
+def lane_names(names: Path, count: int, earlier: Sequence[str] = ()) -> list[str]:
+    """`count` lane names: the lanes the planner assigned slices to, now or before the slicer ran (sorted, as many as
+    fit), then L01, L02, ... for the lanes still missing. The file sets and the placeholder slices use the same
+    names, and a slicer run that regroups the slices never drops a lane that already had a file set."""
+    out = sorted({*slice_lanes(names), *earlier})[:count]
     extra = iter(range(1, count + 1))
     while len(out) < count:
         name = f"L{next(extra):02d}"
@@ -215,10 +220,12 @@ def kept(names: Path) -> dict[str, str]:
         return {}
 
 
-def build(root: Path, names: Path, count: int | None, module_map: str | None) -> dict[str, Any]:
+def build(
+    root: Path, names: Path, count: int | None, module_map: str | None, earlier: Sequence[str] = ()
+) -> dict[str, Any]:
     """The partition of the tracked source and header files of ROOT over `count` lanes (default: the lanes holding
-    slices). The module map is MODULE_MAP read from ROOT when it names a file there; without one, every folder is a
-    module. Raises ValueError when the partition is not exclusive."""
+    slices, now or in EARLIER). The module map is MODULE_MAP read from ROOT when it names a file there; without one,
+    every folder is a module. Raises ValueError when the partition is not exclusive."""
     from abu_decomp import cleanup, owners
 
     paths = cleanup.tracked(root)
@@ -233,7 +240,7 @@ def build(root: Path, names: Path, count: int | None, module_map: str | None) ->
         texts[path] = text
     target = (root / module_map) if module_map else None
     unit_module, module_header = owners.read_map(target) if target and target.is_file() else ({}, {})
-    held = lane_names(names, count or max(1, len(list((names / "slices").glob("*.json")))))
+    held = lane_names(names, count or max(1, len({*slice_lanes(names), *earlier})), earlier)
     doc = partition(sizes, texts, unit_module, module_header, held, kept(names))
     if wrong := check(doc, sizes):
         raise ValueError("; ".join(wrong[:5]))

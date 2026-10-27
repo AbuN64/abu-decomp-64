@@ -98,3 +98,13 @@ def test_the_map_reader_and_the_partition_agree_on_module_headers(tmp_path):
     unit_module, module_header = owners.read_map(tmp_path / "m.tsv")
     doc = sets(unit_module, module_header)
     assert lane_of(doc, "src/A/a.h") == doc["modules"]["m"]
+
+
+def test_a_lane_held_before_the_slicer_ran_keeps_its_file_set(tmp_path):
+    (tmp_path / "names" / "slices").mkdir(parents=True)
+    (tmp_path / "names" / "slices" / "P3-A.json").write_text("{}")
+    assert filesets.slice_lanes(tmp_path / "names") == ["P3-A"]
+    assert filesets.lane_names(tmp_path / "names", 3, ["P3-B"]) == ["P3-A", "P3-B", "L01"]
+    git_tree(tmp_path)
+    doc = filesets.build(tmp_path, tmp_path / "names", None, "absent.tsv", ["P3-B"])
+    assert list(doc["lanes"]) == ["P3-A", "P3-B"]
