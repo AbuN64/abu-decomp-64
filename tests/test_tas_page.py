@@ -31,7 +31,6 @@ CONTRACT = {
     "/data/movies.json",
     "/data/summary.json",
     "/data/posters/",
-    "/data/reach/",
     "/data/fn/",
     "/data/",
     "/wall",
@@ -387,6 +386,48 @@ const pad = { buttons: Array.from({ length: 16 }, (_, i) => ({ pressed: i === 0 
 assert.deepEqual(padState(new Set(), none, [pad]), { buttons: 0x8000 | 0x1000, x: 80, y: 0 });
 """)
 
+    def test_three_bars_filter_ors_within_a_bar_and_ands_across(self):
+        self.run_node("""
+const row = (name, dec, reach) => [name, 0, 100, dec, 0, reach, false];
+const rows = [row("a", "asm", "none"), row("b", "fuzzy", "port"), row("c", "exact", "both"), row("d", "named", "port"), row("e", "fuzzy", "oracle"), row("f", "asm", "both")];
+const verdict = new Map([["b", "differs"], ["c", "behaves"], ["d", "differs"], ["f", "differs"]]);
+const segs = rows.map(r => rowSegs(r, verdict));
+assert.deepEqual(segs.map(s => s.join("/")), ["asm/never/pending", "fuzzy/port/differs", "exact/both/behaves", "exact/port/differs", "fuzzy/oracle/pending", "asm/both/differs"]);
+const shown = sel => rows.filter((r, i) => passesSel(sel, segs[i])).map(r => r[0]).join("");
+// the default: exercised = port + both, behaviour = differs, decomp = all
+assert.equal(shown(defaultSel()), "bdf");
+// OR within a bar: adding "behaves" to behaviour adds c
+const s1 = defaultSel(); toggleSeg(s1, "beh", "behaves");
+assert.equal(shown(s1), "bcdf");
+// AND across bars: dropping fuzzy+exact from decomp leaves only the asm function that also passes the other bars
+const s2 = defaultSel(); toggleSeg(s2, "dec", "fuzzy"); toggleSeg(s2, "dec", "exact");
+assert.equal(shown(s2), "f");
+// an empty bar shows nothing
+const s3 = defaultSel(); s3.beh.clear();
+assert.equal(shown(s3), "");
+// all on shows every function, including never-run and original-only; reset and all are detected
+assert.equal(shown(allSel()), "abcdef");
+assert.ok(sameSel(defaultSel(), defaultSel()) && !sameSel(defaultSel(), allSel()));
+// toggling a segment twice restores the selection
+const s4 = defaultSel(); toggleSeg(s4, "exe", "never"); toggleSeg(s4, "exe", "never");
+assert.ok(sameSel(s4, defaultSel()));
+""")
+
+    def test_three_bars_weight_segments_by_code_bytes(self):
+        self.run_node("""
+const rows = [["a", 0, 100, "asm", 0, "none"], ["b", 0, 300, "exact", 0, "both"], ["c", 0, 50, "fuzzy", 0, "port"]];
+const verdict = new Map([["b", "behaves"]]);
+const st = barStats(rows, verdict);
+assert.deepEqual(st.stat.dec.asm, [1, 100]);
+assert.deepEqual(st.stat.dec.exact, [1, 300]);
+assert.deepEqual(st.stat.exe.port, [1, 50]);
+assert.deepEqual(st.stat.beh.pending, [2, 150]);
+assert.deepEqual(st.total, [3, 450]);
+assert.deepEqual(st.scope, [2, 350]);  // exercised or compared code is the Behaviour base
+const big = bigNumbers(st);
+assert.ok(Math.abs(big.dec - 100 * 300 / 450) < 1e-9 && Math.abs(big.exe - 100 * 350 / 450) < 1e-9 && Math.abs(big.beh - 100 * 300 / 350) < 1e-9);
+""")
+
 
 @unittest.skipUnless(chrome() and shutil.which("node"), "needs chromium and node")
 class RenderedPageTests(unittest.TestCase):
@@ -455,10 +496,7 @@ class RenderedPageTests(unittest.TestCase):
                 {"eval": "document.getElementById('feedtxt').textContent"},
                 {"eval": "document.getElementById('scr').getContext('2d').getImageData(0, 0, 1, 1).data[3] > 0"},
                 {
-                    "eval": "[FEED.n, FEED.recs, document.getElementById('map').width > 0, document.querySelectorAll('.mod').length > 0]"
-                },
-                {
-                    "eval": "document.querySelectorAll('.foot b').length + ':' + document.querySelector('.foot b').textContent"
+                    "eval": "[FEED.n, FEED.recs, document.getElementById('map').width > 0, document.querySelectorAll('#bars .bar').length === 3]"
                 },
             ],
         )
@@ -467,7 +505,6 @@ class RenderedPageTests(unittest.TestCase):
         n, recs, canvas, mods = d["results"][2]
         self.assertEqual((n, canvas, mods), (4, True, True))
         self.assertGreaterEqual(recs, 2)
-        self.assertEqual(d["results"][3], "3:46.4%")
 
     def test_function_view_is_one_fetch_with_c_hops_and_cases(self):
         s = self.stub()
@@ -615,7 +652,7 @@ class RenderedPageTests(unittest.TestCase):
                     [
                         {"wait": 1500},
                         {
-                            "eval": "(() => { const m = document.getElementById('map'), b = m && m.getBoundingClientRect(); return !!b && b.width > 0 && b.height > 0 && b.top < innerHeight && document.querySelectorAll('#side').length === 1; })()"
+                            "eval": "(() => { const m = document.getElementById('map'), b = m && m.getBoundingClientRect(); return !!b && b.width > 0 && b.height > 0 && document.getElementById('bars').getBoundingClientRect().top < innerHeight && document.querySelectorAll('#side').length === 1; })()"
                         },
                     ],
                     size=size,
