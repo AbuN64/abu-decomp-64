@@ -20,10 +20,10 @@ data config names a census, a batch is also run through the stamp gate and every
 from __future__ import annotations
 
 import csv
-import difflib
 import json
 import re
 import subprocess
+import tempfile
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -489,6 +489,24 @@ def arity(proto: str) -> int | None:
     return 0 if parts == ["void"] else len(parts)
 
 
+def git_diff(name: str, old: list[str], new: list[str]) -> str:
+    """The section git itself would print for NAME going from OLD to NEW: the train compares each landed file's added and
+    removed line counts with the queued ones, and an alignment other than git's (difflib's) counts blank lines differently."""
+    with tempfile.TemporaryDirectory() as tmp:
+        for side, lines in (("a", old), ("b", new)):
+            target = Path(tmp, side, name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes("".join(lines).encode("latin-1"))
+        run = subprocess.run(
+            ["git", "diff", "--no-index", "--no-color", "--no-ext-diff", "--src-prefix=", "--dst-prefix=", f"a/{name}", f"b/{name}"],
+            cwd=tmp,
+            capture_output=True,
+        )
+    if run.returncode not in (0, 1):
+        raise DecompError(f"git diff of {name} failed: {run.stderr.decode(errors='replace').strip()}")
+    return re.sub(r"^index [^\n]*\n", "", run.stdout.decode("latin-1"), flags=re.M)
+
+
 def write_batches(
     found: Scan, batches: list[list[dict[str, object]]], packs: Path | None, sees: dict[str, set[str]], unit_cpu: float
 ) -> tuple[list[dict[str, object]], list[str]]:
@@ -542,7 +560,7 @@ def write_batches(
             texts[dest] = [*cur[:end], *new, *cur[end:]]
         diff = [f"# MSG: Hoist {len(batch)} unit externs into their owning headers (batch {number})\n"]
         for n in sorted(edited):
-            diff += [f"diff --git a/{n} b/{n}\n", *difflib.unified_diff(before[n], texts[n], f"a/{n}", f"b/{n}")]
+            diff.append(git_diff(n, before[n], texts[n]))
         name = f"externs-batch-{number:02d}.diff"
         diffs.append("".join(diff))
         if packs is not None:

@@ -215,3 +215,17 @@ def test_a_unit_gaining_the_destination_header_is_refused_when_it_spells_a_name_
     _, found = moved(tmp_path, extra)
     refusal = next(r for r in found["refused"] if r["id"] == "gScore")
     assert refusal["reason"].startswith("include clashes in include/A/A.H:gOther")
+
+
+def test_a_batch_section_counts_blank_lines_as_git_does(tmp_path: Path) -> None:
+    old = ["a\n", "extern int x;\n", "\n", "extern int y;\n", "\n", "b\n"]
+    new = ["a\n", "\n", "\n", "b\n"]
+    section = externs.git_diff("src/u.c", old, new)
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src/u.c").write_text("".join(old))
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    counts = subprocess.run(
+        ["git", "-C", str(repo), "apply", "--numstat", "-"], input=section.encode(), capture_output=True, check=True
+    ).stdout.decode()
+    assert counts.split() == ["0", "2", "src/u.c"]
