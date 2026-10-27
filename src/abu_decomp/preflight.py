@@ -71,6 +71,12 @@ RULES: tuple[tuple[str, str, str, str], ...] = (
         "member names a reader decides",
     ),
     (
+        "name.T",
+        r"^accesses of a field have a base of no known record type$",
+        "defect",
+        "S5.1: scoped record rename by site (0evAlAtaxw2p) types the unknown bases",
+    ),
+    (
         "data.place",
         r"^no read-only data of its own to place in any version$",
         "defect",
@@ -94,6 +100,10 @@ RULES: tuple[tuple[str, str, str, str], ...] = (
 # Refusal texts that carry a varying tail: cut to their shape so one cause is one group.
 SHAPES: tuple[tuple[str, str], ...] = (
     (r"^(type not visible from <path>).*$", r"\1"),
+    (
+        r"^\d+ of \d+ accesses of \S+ have a base of no known record type.*$",
+        "accesses of a field have a base of no known record type",
+    ),
     (r"^\S+ is already a name in the project$", "<name> is already a name in the project"),
     (
         r"^member \S+ is named in words, the catalog says \S+ there: a reader decides$",
@@ -195,6 +205,12 @@ def _step_t(doc: Mapping[str, Any]) -> tuple[dict[str, Any], list[Refusal]]:
     for reason, count in (doc.get("reasons") or {}).items():
         shown = (keys.get(reason, []) + [""] * int(count))[: int(count)]
         found += [Refusal("name.T", normal(reason), key) for key in shown]
+    # a skip the reasons table does not count (a field with accesses of no known record type) is a refusal of its own
+    found += [
+        Refusal("name.T", normal(why), f"{skip.get('tag')}.{skip.get('subject')}")
+        for skip in doc.get("skipped") or []
+        if (why := str(skip.get("why"))) not in (doc.get("reasons") or {})
+    ]
     return stats, found
 
 

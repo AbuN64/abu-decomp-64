@@ -49,15 +49,23 @@ def test_parsers_turn_documents_into_refusals() -> None:
     _, found = preflight._step_t(
         {
             "reasons": {"already the original name": 2, "Foo is already a name in the project": 1},
-            "skipped": [{"why": "Foo is already a name in the project", "tag": "T", "subject": "s"}],
+            "skipped": [
+                {"why": "Foo is already a name in the project", "tag": "T", "subject": "s"},
+                {
+                    "why": "3 of 9 accesses of flags have a base of no known record type (a/b.CPP)",
+                    "tag": "U",
+                    "subject": "f",
+                },
+            ],
         }
     )
     assert [(r.code, r.key) for r in found] == [
         ("already the original name", ""),
         ("already the original name", ""),
         ("<name> is already a name in the project", "T.s"),
+        ("accesses of a field have a base of no known record type", "U.f"),
     ]
-    assert all(preflight.classify(r.tool, r.code)[0] == "residue" for r in found)
+    assert [preflight.classify(r.tool, r.code)[0] for r in found] == ["residue"] * 3 + ["defect"]
     _, found = preflight._place(
         {"findings": [{"message": "A B has no read-only data of its own to place in any version"}], "result": {}}
     )
