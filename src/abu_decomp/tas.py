@@ -1039,10 +1039,10 @@ def reconcile_runs(cfg: dict[str, Any]) -> None:
             _write_record(run, row)
 
 
-# newest replay folders kept whatever their age (10-27: 2676 runs of ~30 MB = 77 GB in two days, none ever removed)
-KEEP_PLAYS = 200
+# newest replay folders kept whatever their age (10-27: 2676 runs of ~46 MB = 77+ GB in two days, none ever removed)
+KEEP_PLAYS = 100
 # a replay folder younger than this stays whatever the count: lanes read their own run after it ends
-KEEP_PLAY_HOURS = 6
+KEEP_PLAY_HOURS = 3
 
 
 def prune_plays(
