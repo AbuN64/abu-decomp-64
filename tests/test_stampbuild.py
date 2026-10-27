@@ -738,3 +738,13 @@ def test_a_clean_tree_that_does_not_link_refuses_before_the_diff_is_applied(tmp_
     _r, code, findings = stampbuild.build(cfg, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 1 and "does not link before the diff is applied" in findings[0]["message"] and not applied
     assert not stamp_mod.stamped(tmp_path / "stamps", DIFF)
+
+
+def test_a_build_whose_includers_were_all_proved_unreachable_by_the_narrowing_is_stamped(tmp_path, monkeypatch):
+    from abu_decomp.data import check as check_mod
+
+    diff, _ = setup(tmp_path, monkeypatch, False)
+    done = {"units": 0, "built": True, "broken": [], "narrowed": {"headers": 1, "includers": 1, "skipped": 1}}
+    monkeypatch.setattr(check_mod, "check", lambda b, v: {"version": v, **done})
+    _r, code, findings = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 0 and not findings

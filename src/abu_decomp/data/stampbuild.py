@@ -369,6 +369,11 @@ def _renamed(profile: Any, shared: Path, diff: Path) -> bool:
     return bool(called.ok)
 
 
+def skipped(r: dict) -> int:
+    """Includers the narrowing proved the edit cannot reach: a check that rebuilt none of them still proved the diff."""
+    return (r.get("narrowed") or {}).get("skipped", 0)
+
+
 def header_files(files: list[str]) -> list[str]:
     """The headers among a diff's files (what `expand_units` counts as one), for the ROM link to treat as old."""
     return sorted(f for f in files if f.startswith("include/") or f.lower().endswith(".h"))
@@ -519,7 +524,8 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
             {"key": "data.build", "blocking": True, "message": f"{r['version']}: {u} does not compile: {why}"}
             for r in results for u, why in r.get("failed", [])
         ]  # fmt: skip
-        if not findings and results and all(r.get("units", 1) == 0 for r in results):
+        # units == 0 proves nothing unless the narrowing proved the includers unreachable (skipped): a dead declaration
+        if not findings and results and all(r.get("units", 1) == 0 and not skipped(r) for r in results):
             findings = [
                 {
                     "key": "data.check",
