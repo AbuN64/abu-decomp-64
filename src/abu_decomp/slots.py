@@ -16,7 +16,8 @@ included, ticket or not) plus the request to fit the capacity, so a declared wei
 a weight-1 job that runs oracle + port + gdb uses ~2 cores and is counted as it runs, and no ticket is admitted
 beside a holder younger than SETTLE seconds, whose processes have not started showing their CPU. A holder's cost is
 what it can burn: while it holds, its thread (and so every process it spawns) is pinned to the cores of its own slots
-(slot-NN is core NN), so a weight-2 play whose two n64host processes ask for 294% each uses 2 cores, not 6.
+(slot-NN is the NNth core the process may run on), so a weight-2 play whose two n64host processes ask for 294% each
+uses 2 cores, not 6.
 """
 
 from __future__ import annotations
@@ -278,7 +279,7 @@ class Grant:
     def __init__(self, fds: list[int], files: list[Path], root: Path, waited: float, info: dict) -> None:
         self.fds, self.files, self.root, self.waited, self.info = fds, files, root, waited, info
         self.weight = len(fds)
-        self.cpus = {int(p.name.removeprefix("slot-")) for p in files}  # slot-NN is core NN
+        self.numbers = {int(p.name.removeprefix("slot-")) for p in files}
 
     def release(self) -> None:
         for fd in self.fds:
@@ -408,14 +409,19 @@ def acquire(
         _wake(root)
 
 
-def _pin(cpus: set[int]) -> set[int]:
-    """Restrict the calling thread, and every process it spawns, to CPUS; returns the set it had. Where the host has no
-    such core or refuses (no affinity support), the thread stays as it was."""
+def _cores_for(numbers: set[int], allowed: set[int]) -> set[int]:
+    """The cores of slots NUMBERS: slot NN is the NNth of the cores the process may run on (the host may leave some out,
+    e.g. a rig that keeps core 0 and 13-15 for its VMs), so holders of different slots never share a core."""
+    ordered = sorted(allowed)
+    return {ordered[n % len(ordered)] for n in numbers}
+
+
+def _pin(numbers: set[int]) -> set[int]:
+    """Restrict the calling thread, and every process it spawns, to the cores of slots NUMBERS; returns the set it had.
+    A host that refuses (no affinity support) leaves the thread as it was."""
     before = os.sched_getaffinity(0)
-    allowed = cpus & before
-    if allowed:
-        with contextlib.suppress(OSError):
-            os.sched_setaffinity(0, allowed)
+    with contextlib.suppress(OSError):
+        os.sched_setaffinity(0, _cores_for(numbers, before))
     return before
 
 
@@ -431,13 +437,14 @@ def hold(
     klass: str = "batch", weight: int = 1, label: str = "", timeout: float | None = None, mem_gib: float | None = None
 ):
     """Hold `weight` slots while the block runs, the thread and its children confined to those slots' cores.
-    Re-entrant per thread and per process tree (ABU_SLOT_HELD): a play that runs its coverage step inside the block does not queue a second time, so a full pool cannot deadlock itself."""
+    Re-entrant per thread and per process tree (ABU_SLOT_HELD): a play that runs its coverage step inside the block
+    does not queue a second time, so a full pool cannot deadlock itself."""
     if getattr(_local, "depth", 0) or os.environ.get("ABU_SLOT_HELD") or os.environ.get("ABU_SLOTS_OFF"):
         yield None
         return
     grant = acquire(klass_from_env(klass), weight, label, timeout, mem_gib)
     _local.depth = 1
-    before = _pin(grant.cpus)
+    before = _pin(grant.numbers)
     try:
         yield grant
     finally:

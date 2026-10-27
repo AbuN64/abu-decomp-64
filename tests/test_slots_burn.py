@@ -59,8 +59,8 @@ class BurnTest(unittest.TestCase):
         first = slots.acquire("batch", 2, "first")
         self.pinned.append({0})  # the first holder confined to its core: nothing else burns
         with slots.hold("batch", 2, "second"):
-            self.assertEqual(self.pinned[-1], {2, 3})
-            self.assertEqual(first.cpus, {0, 1})
+            self.assertEqual(self.pinned[-1], {2, 3})  # slot numbers; the pin maps them onto cores
+            self.assertEqual(first.numbers, {0, 1})
         first.release()
 
 
@@ -70,7 +70,7 @@ class PinTest(unittest.TestCase):
         before = os.sched_getaffinity(0)
         mine = min(before)
         try:
-            self.assertEqual(slots._pin({mine}), before)
+            self.assertEqual(slots._pin({0}), before)
             out = subprocess.run(
                 [sys.executable, "-c", "import os;print(sorted(os.sched_getaffinity(0)))"],
                 capture_output=True,
@@ -82,10 +82,11 @@ class PinTest(unittest.TestCase):
             os.sched_setaffinity(0, before)
         self.assertEqual(os.sched_getaffinity(0), before)
 
-    def test_a_core_the_host_lacks_leaves_the_thread_as_it_was(self) -> None:
-        before = os.sched_getaffinity(0)
-        slots._pin({10_000})
-        self.assertEqual(os.sched_getaffinity(0), before)
+    def test_slots_map_to_the_cores_the_process_may_use_not_to_core_numbers(self) -> None:
+        rig = set(range(1, 13))  # the rig leaves core 0 (and 13-15) to its VMs: slot-00 must not map to a missing core
+        self.assertEqual(slots._cores_for({0, 1}, rig), {1, 2})
+        self.assertEqual(slots._cores_for({10, 11}, rig), {11, 12})
+        self.assertEqual(len(slots._cores_for({0, 1, 2}, {4, 9})), 2)  # more slots than cores wraps, never fails
 
 
 if __name__ == "__main__":
