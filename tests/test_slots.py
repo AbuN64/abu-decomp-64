@@ -1,5 +1,6 @@
 """The host slot pool (module slots): capacity bound, queueing, owner reserve, crash release, re-entrancy."""
 
+import contextlib
 import os
 import select
 import tempfile
@@ -227,6 +228,33 @@ class BusyCoresTest(unittest.TestCase):
             mock.patch.object(slots, "busy_cores", return_value=3.25),
         ):
             self.assertEqual(slots.status()["busy_cores"], 3.2)
+
+
+class PlayClassTest(unittest.TestCase):
+    def klass(self, name: str | None, **kwargs) -> str:
+        from abu_decomp import tas, tas_bake
+
+        taken = []
+
+        @contextlib.contextmanager
+        def fake(klass, weight, label, **kw):
+            taken.append(klass)
+            yield None
+
+        with (
+            mock.patch.object(slots, "hold", fake),
+            mock.patch.object(tas_bake, "movie_hook"),
+            mock.patch.object(tas, "slots", slots),
+        ):
+            tas._admitted(lambda profile, name, **k: None)(None, name, **kwargs)
+        return taken[0]
+
+    def test_only_a_person_s_watched_play_is_interactive(self) -> None:
+        self.assertEqual(self.klass("movie"), "background")  # an automated turbo play of a corpus or lane batch
+        self.assertEqual(self.klass("movie", speed=0, oracle=True), "background")
+        self.assertEqual(self.klass("movie", speed=1), "interactive")  # real time: someone is watching
+        self.assertEqual(self.klass("movie", slot_class="background", speed=1), "background")  # play_all says so
+        self.assertEqual(self.klass(None), "owner")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import replace
@@ -807,11 +808,17 @@ def test_a_builder_queues_for_the_slots_once_for_all_its_makes(tmp_path, monkeyp
         b.build("a", "u")
         b.objects("b", ["v"])
         assert b.jobs() == str(width)
+        assert os.environ["UNBAKE_CORES"] == str(width)  # unbake-run beneath takes the hold's slots, queues no more
     assert held == [1] and not b.held and b.make_jobs is None  # one queue trip for two makes
+    assert "UNBAKE_CORES" not in os.environ  # handed to the makes beneath the hold, gone after it
     # another Builder of the same stamp (the settle's, the link's) queues nothing inside it
     with b.holding(), trial.Builder(CFG, tmp_path, run=run).holding():
         trial.Builder(CFG, tmp_path, run=run).run_held(["make"])
     assert held == [1, 1]  # one more trip for the whole nest
+    seen = []
+    lone = lambda cmd, **k: seen.append(k["env"]) or subprocess.CompletedProcess(cmd, 0, "", "")  # noqa: E731
+    trial.Builder(CFG, tmp_path, run=lone).run_held(["make"])
+    assert held == [1, 1, 1] and seen[0]["UNBAKE_CORES"] == "1"  # a lone make's own hold is handed to it too
 
 
 def test_the_versions_are_checked_side_by_side_at_their_share_of_the_stamps_jobs(tmp_path, monkeypatch):
@@ -889,3 +896,33 @@ def test_a_stamp_queues_for_the_slots_once_from_the_settle_to_the_link(tmp_path,
     clock(monkeypatch, [0.0, 0.0])
     _r, code, _f = stampbuild.build(cfg, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 0 and len(held) == 1  # the settle, the check and the link: one queue trip
+
+
+def test_idle_pool_trees_behind_the_shared_commit_are_rewarmed_in_the_background_class(tmp_path, monkeypatch):
+    shared = tmp_path / "wt" / "POOL-SRC"
+    for i in range(4):
+        (shared.parent / f"STAMP-S{i}" / ".git").mkdir(parents=True)
+    left = {"STAMP-S0": "old", "STAMP-S1": "head", "STAMP-S2": "old", "STAMP-S3": "old"}
+    monkeypatch.setattr(stampbuild, "_git", lambda tree, *a: subprocess.CompletedProcess(a, 0, "head\n", ""))
+    monkeypatch.setattr(stampbuild, "_left_at", lambda tree: left[tree.name])
+    monkeypatch.setattr(stampbuild, "busy_in", lambda tree: [7] if tree.name == "STAMP-S2" else [])
+    held = stampbuild.take(shared.parent / ".stamp-3.lock")  # a stamp leases S3 right now
+    warmed, classes, released = [], [], []
+
+    def rewarm(profile, shared_, tree, rev):
+        warmed.append(tree.name)
+        return {"rewarmed": True}
+
+    @contextlib.contextmanager
+    def holding(self, klass="batch"):
+        classes.append(klass)
+        yield 1
+
+    monkeypatch.setattr(stampbuild, "rewarm", rewarm)
+    monkeypatch.setattr(stampbuild, "settle", lambda cfg, tree: None)
+    monkeypatch.setattr(stampbuild, "release", lambda shared_, tree: released.append(tree.name))
+    monkeypatch.setattr(trial.Builder, "holding", holding)
+    rows = stampbuild.warm_pool(CFG, object(), shared)
+    os.close(held)
+    assert [r["tree"] for r in rows] == ["STAMP-S0"]  # S1 is at the commit, S2 has a process in it, S3 is leased
+    assert warmed == released == ["STAMP-S0"] and classes == ["background"]

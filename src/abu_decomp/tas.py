@@ -1241,8 +1241,10 @@ slots.CANCEL = lambda: _check_play_signal()
 
 def _admitted(fn):
     """Hold the host slot pool while a play runs (module slots): the owner's watched play (no movie, a retry or a
-    take) is class owner and always gets a slot, `slot_class` (play_all passes batch) or ABU_SLOT_CLASS names the
-    rest, a lane's own play is interactive; the oracle beside the port takes a second slot."""
+    take) is class owner and always gets a slot; a play a person watches (real time or k times, `speed` != 0) is
+    interactive; every other play is automated (a corpus or lane batch, a turbo replay) and takes class background;
+    `slot_class` (play_all passes background) or ABU_SLOT_CLASS overrides; the oracle beside the port takes a second
+    slot."""
 
     @functools.wraps(fn)
     def inner(profile, name, *args, **kwargs):
@@ -1251,7 +1253,8 @@ def _admitted(fn):
             klass = "owner"
         weight = 2 if kwargs.get("oracle") else 1
         what = name or kwargs.get("start") or "human"
-        with slots.hold(klass or "interactive", weight, f"play {what}"):
+        watched = bool(kwargs.get("speed", 0))
+        with slots.hold(klass or ("interactive" if watched else "background"), weight, f"play {what}"):
             result = fn(profile, name, *args, **kwargs)
         if name is not None:  # outside the hold: the bake takes its own batch slot
             from abu_decomp import tas_bake
@@ -1823,7 +1826,7 @@ def play_all(
         names_to_run = names
     jobs = jobs or all_jobs()
     _lower_priority(nice or ALL_NICE)
-    options.setdefault("slot_class", "batch")
+    options.setdefault("slot_class", "background")
     options.setdefault("batch", _stamp(now) + "-all")  # the findings of this run share one batch id
     began, cpu0 = time.monotonic(), resource.getrusage(resource.RUSAGE_CHILDREN)
 

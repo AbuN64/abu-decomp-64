@@ -109,6 +109,8 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     )
     st.add_argument("--tree", type=Path, help="--build: the shared tree the fresh tree is seeded from")
     st.add_argument("--at", help="--build: the commit the diff applies on (default: the shared tree's branch tip)")
+    wm = sub.add_parser("warm", help="bring every idle stamp pool tree to the shared tree's commit (background class)")
+    wm.add_argument("--tree", type=Path, required=True, help="the shared tree (the pool's seed)")
     pl = sub.add_parser(
         "place",
         help="place a function's literal pool in the unit that compiles it, in every version (unbake sync --place)",
@@ -174,6 +176,10 @@ def run(args: argparse.Namespace) -> Result:
     if verb == "units":
         syms = check_mod.changed_symbols(cfg, args.tree, base=args.since)
         return {"symbols": syms, "units": check_mod.referencing_units(cfg, args.tree, syms)}, 0, []
+    if verb == "warm":
+        from abu_decomp import cli
+
+        return {"warmed": stampbuild.warm_pool(cfg, cli._profile(args.profile), args.tree)}, 0, []
     if verb == "stamp" and args.build:
         from abu_decomp import cli
 

@@ -65,20 +65,27 @@ class Builder:
         return max(1, min(int(self.jobs()), slots.stamp_weight()))
 
     @contextmanager
-    def holding(self):
+    def holding(self, klass: str = "batch"):
         """The stamp's slots held for every make of the block (one queue trip, not one per make): `run_held` does not
         queue again, and each make runs at `make_jobs`. A builder that already holds slots (the caller's) queues nothing."""
         if Builder.held:
             yield int(Builder.make_jobs or 1)
             return
         want = self.width()
-        with slots.hold("batch", weight=want, label="stamp build", mem_gib=slots.STAMP_GIB or None) as grant:
+        with slots.hold(klass, weight=want, label="stamp build", mem_gib=slots.STAMP_GIB or None) as grant:
             print(f"stamp slots: held {want} after waiting {getattr(grant, 'waited', 0):.0f}s", flush=True)
-            Builder.held, Builder.make_jobs = True, str(want)
+            # the slots held here are the stamp's: every make beneath (the check's, the ROM link) takes them through the
+            # UNBAKE_CORES protocol and does not queue in unbake's pool again (S9: the link spent 580 s at ~0% CPU)
+            before = os.environ.get("UNBAKE_CORES")
+            Builder.held, Builder.make_jobs, os.environ["UNBAKE_CORES"] = True, str(want), str(want)
             try:
                 yield want
             finally:
                 Builder.held, Builder.make_jobs = False, None
+                if before is None:
+                    os.environ.pop("UNBAKE_CORES", None)
+                else:
+                    os.environ["UNBAKE_CORES"] = before
 
     def run_held(self, argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
         """The build, holding its jobs' share of the host slot pool (class batch) while it runs: builds queue behind
@@ -88,6 +95,7 @@ class Builder:
         want = self.width()
         with slots.hold("batch", weight=want, label="stamp build", mem_gib=slots.STAMP_GIB or None) as grant:
             began, used = time.monotonic(), meter.cpu()
+            kw["env"] = {**(kw.get("env") or os.environ), "UNBAKE_CORES": str(want)}  # the make takes this hold's slots
             try:
                 return self.run(argv, **kw)
             finally:

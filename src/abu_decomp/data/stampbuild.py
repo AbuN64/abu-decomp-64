@@ -281,6 +281,34 @@ def _tree(profile: Any, shared: Path, lane: str, rev: str | None):
         return worktree.new(profile, shared, lane, rev)
 
 
+def warm_pool(cfg: DataConfig, profile: Any, shared: Path) -> list[dict[str, Any]]:
+    """Every idle pool tree brought to the shared tree's commit and settled, in the background class, so the next stamp
+    finds a clean tree at its base instead of seeding one that is dozens of commits behind (10-27: 36 behind, 713 CPU s).
+    A tree a stamp leases (or any process works in) is not idle and is left alone; a tree already left at the commit, or
+    one that cannot be re-warmed by one sync, is skipped (a stamp makes it fresh as before). One row per tree touched."""
+    head = _git(shared, "rev-parse", "HEAD").stdout.strip()
+    folder, done = worktree.base(shared), []
+    for i in range(cfg.stamp_trees):
+        tree = folder / f"STAMP-S{i}"
+        if not head or not (tree / ".git").exists() or _left_at(tree) == head:
+            continue
+        fd = take(folder / f".stamp-{i}.lock")
+        if fd is None:
+            continue
+        try:
+            if busy_in(tree) or _left_at(tree) == head or not (made := rewarm(profile, shared, tree, head)):
+                continue
+            with trial.Builder(cfg, tree).holding("background"):
+                why = settle(cfg, tree)
+            if not why:
+                release(shared, tree)
+            done.append({"tree": tree.name, "rev": head, "rewarmed": made.get("rewarmed", False), "settled": not why})
+            print(f"stamp pool: warmed {tree.name} at {head[:9]}" + (f" (settle failed: {why[:120]})" if why else ""), flush=True)
+        finally:
+            os.close(fd)
+    return done
+
+
 @contextmanager
 def at_rev(cfg: DataConfig, profile: Any, shared: Path, rev: str, wait: float = 900.0) -> Iterator[Path]:
     """A pool tree at REV for a caller that builds there without a diff (`cleanup count --rev`): leased like a stamp's,

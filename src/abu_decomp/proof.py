@@ -59,6 +59,8 @@ def run(
             if grant and grant.waited > 1:
                 print(f"decomp: queued {grant.waited:.0f}s in the host pool for a stamp slot", file=sys.stderr)
             environment = dict(os.environ, UNBAKE_HOST=str(chosen.host))  # after the hold: it marks its children
+            if grant:  # the slots held here are the build's: unbake-run takes them (its UNBAKE_CORES protocol) and
+                environment["UNBAKE_CORES"] = str(grant.weight)  # queues no second time for the link (S9: 580 s at ~0%)
             with subprocess.Popen(
                 argv,
                 cwd=chosen.project,

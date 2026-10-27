@@ -1074,6 +1074,28 @@ class Ship:
         if outcome[0].get("carried"):
             with suppress(OSError, DecompError):
                 (self.spawn or self.start_regen)()
+        if self.spawn is None:
+            with suppress(OSError):
+                self.start_warm()
+    def start_warm(self) -> None:
+        """`decomp data warm` detached after main moved (one at a time): the idle stamp pool trees follow the seed's
+        commit in the background class, so a cold stamp is never dozens of commits behind. No pool seed: nothing."""
+        from abu_decomp.ship_batch import alive
+        from abu_decomp.worktree import base
+        seed = base(self.tree) / "POOL-SRC"
+        pending = self.common() / "decomp-warm.pending"
+        if not seed.is_dir():
+            return
+        with suppress(OSError, ValueError):
+            if alive(int(pending.read_text())):
+                return
+        argv = [sys.executable, "-m", "abu_decomp", "--profile", str(self.profile.source_file),
+                "data", "warm", "--tree", str(seed)]  # fmt: skip
+        with (self.common() / "decomp-warm.log").open("a") as log:
+            child = subprocess.Popen(
+                argv, cwd=self.tree, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True
+            )
+        pending.write_text(str(child.pid))
 
     def start_regen(self) -> None:
         """`decomp ship --regen` detached (one at a time): it takes a ticket like any ship and regenerates when due."""
