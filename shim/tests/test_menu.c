@@ -69,6 +69,14 @@ int main(void)
     Test_Check(pad.button == 0, "buttons do not reach the game while it is open");
     (void)sample(0, 0);
 
+    /* a finger resting on B as the chord lands (a phone's L+R) is not a press: the screen stays open */
+    tap(B);
+    Test_Check(!n64c_menu_is_open(), "B closes the screen");
+    pad = sample(L | R | B, 0);
+    Test_Check(n64c_menu_is_open(), "opening with B down beside the chord does not close it again");
+    (void)sample(0, 0);
+    Test_Check(n64c_menu_is_open(), "and it stays open when the fingers lift");
+
     /* navigation: rows are resume, window mode, resolution, unlock, controls, quit (desktop) */
     Test_Check(n64c_menu_text(text, sizeof text, &line, &scale) > 0 && line == 2, "resume is highlighted first");
     tap(DOWN);

@@ -185,6 +185,7 @@ void n64c_menu_filter(OSContPad *pad, int hotkey)
         if (menus && open_now) {
             is_open = 1;
             selected = quit_armed = repeat_count = 0;
+            held = now; /* what is down as it opens (a finger resting on B beside the L+R chord) is not a press */
         } else {
             pad->button = (u16)(raw & ~suppress);
             suppress &= raw;
