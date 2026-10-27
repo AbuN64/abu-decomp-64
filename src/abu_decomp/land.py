@@ -443,11 +443,13 @@ LAND_KEYS = frozenset(
         "evidence",
         "arity",
         "claims",
+        "slots",
+        "reap",
     }
 )
 # What the profile-wide `land` table passes on to a tree of `land.trees`; every other key is the tree's own to set.
 TREE_INHERITED = frozenset({"actor", "author", "lock_weight", "subject_limit", "timeout_seconds"})
-TREE_KEYS = (LAND_KEYS - {"claims"}) | {"mode", "steps", "pin"}
+TREE_KEYS = (LAND_KEYS - {"claims", "slots", "reap"}) | {"mode", "steps", "pin"}
 
 
 def resolve_tree(profile: Profile, tree: Path) -> Path:
