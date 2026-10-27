@@ -602,6 +602,8 @@ def begin(
         pads=pads,
     )
     if session.cached:
+        with contextlib.suppress(OSError):
+            os.utime(cache)  # a hit keeps the entry alive past tas.prune_oracle
         return session
     work = cache.with_name(cache.name + f".tmp{os.getpid()}-{run.name}")
     work.mkdir(parents=True, exist_ok=True)

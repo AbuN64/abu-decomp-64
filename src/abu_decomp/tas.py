@@ -1078,6 +1078,26 @@ def prune_plays(
     return removed
 
 
+# an oracle trace is keyed by the port build: each new build strands the last one (10-27: 1006 keys, 7.6 GB, none removed)
+KEEP_ORACLE_HOURS = 24
+
+
+def prune_oracle(cfg: dict[str, Any], hours: float = KEEP_ORACLE_HOURS, now: float | None = None) -> int:
+    """Remove the cached oracle traces (and half-built `.tmp` ones of killed plays) nobody has used for `hours`: a hit
+    refreshes the entry's time, a rebuilt port never hits the old key again. Returns the entries removed."""
+    cache = cfg["runs"] / "oracle-state"
+    if not cache.is_dir():
+        return 0
+    cutoff = (now if now is not None else time.time()) - hours * 3600
+    removed = 0
+    for entry in cache.iterdir():
+        with contextlib.suppress(OSError):
+            if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors=True)
+                removed += 1
+    return removed
+
+
 def run_rows(cfg: dict[str, Any]) -> list[tuple[Path, dict[str, Any]]]:
     """Every replay folder with its record, oldest first; abandoned plays read as killed."""
     plays = cfg["runs"] / "plays"
@@ -1366,6 +1386,7 @@ def play(
     cfg = settings(profile)
     reconcile_runs(cfg)
     prune_plays(cfg)
+    prune_oracle(cfg)
     if sanitize and port is None:
         if not cfg.get("sanitizer_port"):
             raise DecompError("tas.sanitize", "no sanitizer port: set tas.sanitizer.port in the profile or pass --port")

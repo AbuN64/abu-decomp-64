@@ -54,3 +54,16 @@ def test_stray_gcov_files_older_than_the_window_go(tmp_path):
 
 def test_no_plays_folder_is_nothing_to_do(tmp_path):
     assert tas.prune_plays({"runs": tmp_path}) == 0
+
+
+def test_oracle_traces_unused_for_a_day_go_and_a_used_one_stays(tmp_path):
+    cache = tmp_path / "oracle-state"
+    now = time.time()
+    names = {"stale": 48, "killed.tmp7-run": 30, "fresh": 1}
+    for name, age in names.items():
+        (cache / name).mkdir(parents=True)
+        (cache / name / "state-oracle.txt").write_text("x")
+        os.utime(cache / name, (now - age * 3600, now - age * 3600))
+    assert tas.prune_oracle({"runs": tmp_path}, hours=24, now=now) == 2
+    assert [p.name for p in cache.iterdir()] == ["fresh"]
+    assert tas.prune_oracle({"runs": tmp_path / "none"}) == 0
