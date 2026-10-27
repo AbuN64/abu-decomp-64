@@ -61,7 +61,11 @@ class Builder:
         return [argv[0], "-n", "10", *(["ionice", "-c3"] if shutil.which("ionice") else []), *argv[1:]]
 
     def width(self) -> int:
-        """Slots one stamp's builds hold: its jobs, at most the stamp's weight of the pool."""
+        """Cores a stamp's makes share: what the pool granted while the slots are held (the admit command is not asked
+        again: it measured the same idle cores the pool already admitted this stamp on, 10-27: 3 of 12 cores used);
+        otherwise the jobs the build asks, at most the stamp's weight."""
+        if self.held:
+            return max(1, int(self.make_jobs or 1))
         return max(1, min(int(self.jobs()), slots.stamp_weight()))
 
     @contextmanager
@@ -71,7 +75,7 @@ class Builder:
         if Builder.held:
             yield int(Builder.make_jobs or 1)
             return
-        want = self.width()
+        want = slots.stamp_weight(slots.klass_from_env(klass))  # the class decides the grant, not the idle-core probe
         with slots.hold(klass, weight=want, label="stamp build", mem_gib=slots.STAMP_GIB or None) as grant:
             print(f"stamp slots: held {want} after waiting {getattr(grant, 'waited', 0):.0f}s", flush=True)
             # the slots held here are the stamp's: every make beneath (the check's, the ROM link) takes them through the

@@ -947,3 +947,61 @@ def test_a_short_at_hash_is_resolved_to_the_full_commit_before_the_tree_is_made(
         ats.clear()
         stampbuild.build(CFG, None, tmp_path, diff, tmp_path / f"stamps-{at[:6]}-{len(at)}", at=at)
         assert ats == [full] and f"{at}^{{commit}}" in asked
+
+
+def test_a_held_stamp_runs_at_the_pools_grant_and_never_asks_the_admit_command(tmp_path, monkeypatch):
+    from abu_decomp import slots
+    from abu_decomp.data import check as check_mod
+
+    """10-27 names pass: the pool admitted a stamp on measured busy cores, then admit (idle cores again) said 3 and five
+    versions ran make -j1. Holding 10 slots: 5 versions x 2 jobs, admit not called."""
+    granted, asked, seen = [], [], []
+
+    class Hold:
+        def __init__(self, klass, weight=1, **kw):
+            granted.append((klass, weight))
+
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(slots, "hold", Hold)
+    monkeypatch.setattr(slots, "capacity", lambda: 10)
+    monkeypatch.setattr(slots, "STAMP_GIB", 0.0)
+    monkeypatch.setattr(slots, "STAMP_JOBS", 0)
+    monkeypatch.setattr(slots, "stamp_slots", lambda: 1)  # a lone batch stamp: the whole pool
+    admit = lambda cmd, **k: asked.append(cmd) or subprocess.CompletedProcess(cmd, 0, "3", "")  # noqa: E731
+    b = trial.Builder(replace(CFG, make=("make",), jobs=("admit", "1.5")), tmp_path, run=admit)
+    monkeypatch.setattr(check_mod, "check", lambda bb, v: seen.append((v, bb.jobs())) or {"version": v, "built": True})
+    with b.holding():
+        stampbuild.check_versions(b, ["a", "b", "c", "d", "e"])
+    assert granted == [("batch", 10)]
+    assert sorted(seen) == [(v, "2") for v in "abcde"]
+    assert asked == []
+
+
+def test_batch_stamps_still_share_and_an_interactive_stamp_takes_the_pool(tmp_path, monkeypatch):
+    from abu_decomp import slots
+
+    granted = []
+
+    class Hold:
+        def __init__(self, klass, weight=1, **kw):
+            granted.append((klass, weight))
+
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(slots, "hold", Hold)
+    monkeypatch.setattr(slots, "capacity", lambda: 12)
+    monkeypatch.setattr(slots, "stamp_slots", lambda: 3)  # stamp_jobs 4 on 12 cores: three batch stamps at once
+    b = trial.Builder(replace(CFG, make=("make",), jobs=()), tmp_path)
+    for klass in ("batch", "interactive"):
+        with b.holding(klass):
+            pass
+    assert granted == [("batch", 4), ("interactive", 12)]

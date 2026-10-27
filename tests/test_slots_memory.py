@@ -39,6 +39,13 @@ class StampMemoryTest(unittest.TestCase):
         with self.mem(2.0, 1.0):  # less than one stamp: still one
             self.assertEqual(slots.stamp_slots(), 1)
 
+    def test_an_interactive_stamp_takes_the_whole_capacity_and_batch_stamps_share(self) -> None:
+        with self.mem(34.0, 30.0):  # 4 stamps fit by cores: stamp_jobs 2 caps batch only
+            self.assertEqual(slots.stamp_weight("batch"), 2)
+            self.assertEqual(slots.stamp_weight("background"), 2)
+            self.assertEqual(slots.stamp_weight("interactive"), 8)
+            self.assertEqual(slots.stamp_weight("owner"), 8)
+
     def test_a_stamp_waits_for_floor_plus_its_need_then_runs(self) -> None:
         with self.mem(34.0, 8.0), self.assertRaises(TimeoutError):  # 8 < 4 + 5 + nothing promised? 8 < 9
             slots.acquire("batch", 2, "stamp", timeout=0.2, mem_gib=5.0)

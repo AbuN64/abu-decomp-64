@@ -123,8 +123,12 @@ def stamp_slots() -> int:
     return max(1, min(by_cpu, by_mem))
 
 
-def stamp_weight() -> int:
-    """Slots one stamp holds, so exactly `stamp_slots()` stamps fit the pool at once and the next ones queue."""
+def stamp_weight(klass: str = "batch") -> int:
+    """Slots one stamp of KLASS holds: an owner or interactive stamp is waited on, so it takes the whole soft capacity;
+    batch and background stamps share, so exactly `stamp_slots()` of them fit the pool at once and the next ones queue
+    (`stamp_jobs` caps only these)."""
+    if klass in ("owner", "interactive"):
+        return capacity()
     return max(1, capacity() // stamp_slots())
 
 
