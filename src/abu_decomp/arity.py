@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -801,7 +802,24 @@ def gate_worktree(census: Census, base: str) -> dict[str, Any]:
             ["git", "-c", "core.quotepath=off", *args], cwd=census.project, capture_output=True, text=True, check=False
         )
 
-    listing = git("diff", base, "--name-status", "-M")
+    # a scratch index of the working tree pairs a deleted old path with its new path staged or not
+    # (`git apply` without --index leaves a moved file as a deletion plus an untracked file)
+    with tempfile.TemporaryDirectory() as scratch:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
+
+        def git_scratch(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", "-c", "core.quotepath=off", *args],
+                cwd=census.project,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+
+        git_scratch("read-tree", base)
+        git_scratch("add", "-A")
+        listing = git_scratch("diff", "--cached", "--name-status", "-M", base)
     moved: dict[str, str] = {}
     changed_set: set[str] = set()
     for line in listing.stdout.split("\n"):
@@ -811,8 +829,7 @@ def gate_worktree(census: Census, base: str) -> dict[str, Any]:
             changed_set.add(parts[2])
         elif len(parts) >= 2 and parts[0]:
             changed_set.update(parts[1:])
-    others = git("ls-files", "--others", "--exclude-standard")
-    changed = sorted(changed_set | set(others.stdout.split("\n")) - {""})
+    changed = sorted(changed_set)
     changed = [f for f in changed if f and f.lower().endswith(census.cfg["suffixes"])]
     census.close()
     # a moved file is judged against its text at the old path, so its sites keep their meaning under the new path

@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from abu_decomp import arity
 
 SYM = re.compile(r"func_[0-9A-Fa-f]{8}\w*")
@@ -357,7 +359,8 @@ def test_a_type_split_by_a_preprocessor_line_is_unknown_not_a_return_type():
     assert not arity.class_conflict(arity.type_class("?"), "void")
 
 
-def test_gate_leaves_a_moved_file_with_an_existing_disagreement_alone(tmp_path):
+@pytest.mark.parametrize("staged", [True, False])
+def test_gate_leaves_a_moved_file_with_an_existing_disagreement_alone(tmp_path, staged):
     import subprocess
 
     def git(*args: str) -> str:
@@ -379,7 +382,10 @@ def test_gate_leaves_a_moved_file_with_an_existing_disagreement_alone(tmp_path):
     git("commit", "-q", "-m", "base")
     base = git("rev-parse", "HEAD")
     (tmp_path / "src" / "new").mkdir()
-    git("mv", "src/old/b.c", "src/new/b.c")
+    if staged:
+        git("mv", "src/old/b.c", "src/new/b.c")
+    else:
+        (tmp_path / "src" / "old" / "b.c").rename(tmp_path / "src" / "new" / "b.c")
     census = arity.Census(tmp_path, None, tmp_path / "state")
     report = arity.gate_worktree(census, base)
     assert report["pass"] is True and report["refused"] == [] and report["changed"] == 1
