@@ -2,6 +2,7 @@
 #ifndef N64C_BOOT_FRAME_H
 #define N64C_BOOT_FRAME_H
 #include "n64c_os.h"
+#include "n64c_menu.h"
 #include <stdint.h>
 /* audio_abi: N64aFlavour of the game's audio microcode, or -1 to refuse audio tasks. */
 /* window_width/height 0: offscreen software rendering (capture); otherwise a visible window of that size. */
@@ -18,6 +19,9 @@ void n64c_boot_frame_unlock(int on);
  * or 120, whichever is more (a window on a faster screen gets its rate; an offscreen run, which has no display, 120).
  * n64c_unlock_rate returns 0 for text that is none of these. */
 int n64c_unlock_rate(const char *text,u32 refresh_hz,u32 *hz);
+/* The options screen's starting state (n64c_menu.h) after n64c_boot_frame_start of a live run: applies the saved window mode
+ * and render scale, learns the display's sizes and configures the screen to save to save_path (NULL or "": nowhere). */
+void n64c_boot_frame_options(const N64cOptions *now,const char *save_path);
 int n64c_boot_frame_start(u32 width,u32 height,u32 ram_bytes,int audio_abi,u32 window_width,u32 window_height);
 /* Run the original threads at the VI rate, showing every presentation, until the window closes (1) or
  * no original thread is left (0). Original stops exit the process. */

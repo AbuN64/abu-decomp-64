@@ -6,6 +6,7 @@
  * game binds (G_SETCIMG, by physical address, other than its depth image) is its own Fast3D
  * framebuffer that keeps its pixels from one task to the next, so a double-buffered game draws into
  * one while the VI shows the other, and the surface it presents can be read back. */
+#include <stddef.h>
 #include <stdint.h>
 #include "n64c_dl.h"
 #ifdef __cplusplus
@@ -51,6 +52,16 @@ int n64c_f3d_interp_draw(N64cF3d *f3d, float alpha);
 int n64c_f3d_interp_present(N64cF3d *f3d);
 int n64c_f3d_interp_read(N64cF3d *f3d, uint32_t *rgba, uint32_t w, uint32_t h);
 int n64c_f3d_events(N64cF3d *f3d);
+/* The options screen (n64c_menu.h): its text, drawn over every picture presented until replaced ("" or NULL: none), with
+ * the highlighted line (-1 none) and the largest letter scale; the window mode (N64C_WIN_*) and size; the render scale in
+ * percent; the display's sizes, largest first; a request to end the run as if the window were closed. */
+void n64c_f3d_overlay(N64cF3d *f3d, const char *text, int selected_line, int max_scale);
+void n64c_f3d_window_mode(N64cF3d *f3d, int mode, uint32_t width, uint32_t height);
+/* Writes the next presented window picture, overlay included, to path as a PPM (evidence). */
+void n64c_f3d_window_shot(N64cF3d *f3d, const char *path);
+void n64c_f3d_render_scale(N64cF3d *f3d, int percent);
+size_t n64c_f3d_display_sizes(N64cF3d *f3d, uint32_t (*sizes)[2], size_t max);
+void n64c_f3d_quit(N64cF3d *f3d);
 /* Pixels (of w x h) where the interpolated draw differs from the game's own picture of the same frame: meaningful at
  * alpha 1 only; -1 when either picture is missing. The refresh rate of the display the window is on (60 when unknown). */
 int n64c_f3d_interp_check(N64cF3d *f3d, uint32_t w, uint32_t h, uint32_t *drawn, uint32_t *game);

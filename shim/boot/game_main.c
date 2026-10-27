@@ -10,6 +10,7 @@
 #include "install/inst_ui.h"
 #include "n64c_input.h"
 #include "n64c_internal.h"
+#include "n64c_menu.h"
 #include "n64c_memory.h"
 #include "os/n64c_host.h"
 #include "sched_glue.h"
@@ -38,7 +39,7 @@ int n64c_replay_run(const char *plan) __attribute__((weak));
 
 typedef struct {
     const char *rom, *user_dir, *capture, *pak, *cpak;
-    int fps_unlock;
+    int fps_unlock, window_set;
     int no_dialog, verify_assets, extract_only, offscreen, version, help;
     u32 retrace, fb_w, fb_h, out_w, out_h;
 } Options;
@@ -57,6 +58,8 @@ static void usage(FILE *out, const char *name)
             "  --fb WxH          the game's framebuffer size (default 284x222)\n"
             "  --capture F --retrace N   run offscreen to retrace N and write the presented frame to F\n"
             "  --offscreen       run without a visible window\n"
+            "  (the options screen, opened with L+R or F1 in the game's main and pause menus, keeps window mode, size, frame-rate unlock and\n"
+            "   render scale in config/options.cfg of the user folder; the flags above override it for the run)\n"
             "  --fps-unlock      draw extra pictures between game frames (matrices interpolated) and present as fast as the host\n"
             "                    allows; the game's timing, audio and input are unchanged (also N64C_FPS_UNLOCK=1)\n"
             "  --cpak off|PATH   Controller Pak card file (32 KiB .mpk, made formatted when missing); default is controller-pak.mpk in the user folder (no Pak in a --capture run), off is no Pak\n"
@@ -125,6 +128,7 @@ static int parse(int argc,char **argv,Options *o)
                 fprintf(stderr,"%s: %s takes WIDTHxHEIGHT (1..4096)\n",argv[0],arg);
                 return 0;
             }
+            if (!fb) o->window_set=1;
             i++;
         } else if (arg[0]!='-') {
             fprintf(stderr,"%s: the ROM is now passed with --rom PATH (see --help)\n",argv[0]);
@@ -294,16 +298,27 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
     const int live=!o->capture;
     n64c_input_set_config_path(controls); /* the Controls page keeps its binds here; the window loads them */
     n64c_boot_frame_host(shaders,settings,o->offscreen);
+    /* The options screen's file in the user folder gives the starting window and frame rate; a flag (or the
+     * environment) given on the command line wins for this run. */
+    char options_path[INST_PATH];
+    N64cOptions options;
+    n64c_options_default(&options);
+    options.width=o->out_w;options.height=o->out_h;
+    if (snprintf(options_path,sizeof options_path,"%s/config/options.cfg",user)>=(int)sizeof options_path) options_path[0]=0;
+    (void)n64c_options_load(options_path,&options);
+    if (o->window_set) { options.width=o->out_w;options.height=o->out_h;options.window_mode=N64C_WIN_WINDOWED; }
     {
         const char *env=getenv("N64C_FPS_UNLOCK");
-        n64c_boot_frame_unlock(o->fps_unlock || (env && *env && strcmp(env,"0")));
+        if (o->fps_unlock || (env && *env && strcmp(env,"0"))) options.fps_unlock=1;
+        n64c_boot_frame_unlock(options.fps_unlock);
     }
     if (!n64c_boot_frame_start(o->fb_w,o->fb_h,ram_bytes,n64c_boot_audio_abi,
-                               live ? o->out_w : 0,live ? o->out_h : 0)) {
+                               live ? options.width : 0,live ? options.height : 0)) {
         fprintf(stderr,"boot-input: cannot configure native frame capture\n");
         n64c_shutdown();
         return EXIT_RUNTIME;
     }
+    if (live && !o->offscreen) n64c_boot_frame_options(&options,options_path);
     n64c_game_scheduler_attach();
     if (n64c_trace_init) n64c_trace_init();
     if (n64c_runon_init) n64c_runon_init();

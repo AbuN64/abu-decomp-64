@@ -75,6 +75,13 @@ int n64c_f3d_interp_read(N64cF3d *f,uint32_t *out,uint32_t w,uint32_t h)
 int n64c_f3d_interp_check(N64cF3d *f,uint32_t w,uint32_t h,uint32_t *d,uint32_t *g) { (void)d;(void)g; CHECK(f==(N64cF3d *)&renderer && w && h);return 0; }
 uint32_t n64c_f3d_refresh_hz(N64cF3d *f) { CHECK(f==(N64cF3d *)&renderer);return 144; }
 int n64c_f3d_events(N64cF3d *f) { CHECK(f==(N64cF3d *)&renderer);return ++polls<2; }
+/* The options screen's window side: the frame loop only forwards what the screen asks for. */
+void n64c_f3d_overlay(N64cF3d *f,const char *text,int selected_line,int max_scale) { (void)f;(void)text;(void)selected_line;(void)max_scale; }
+void n64c_f3d_window_mode(N64cF3d *f,int mode,uint32_t width,uint32_t height) { (void)f;(void)mode;(void)width;(void)height; }
+void n64c_f3d_window_shot(N64cF3d *f,const char *path) { (void)f;(void)path; }
+void n64c_f3d_render_scale(N64cF3d *f,int percent) { (void)f;(void)percent; }
+size_t n64c_f3d_display_sizes(N64cF3d *f,uint32_t (*sizes)[2],size_t max) { (void)f;(void)sizes;(void)max;return 0; }
+void n64c_f3d_quit(N64cF3d *f) { (void)f; }
 /* Window stand-in: records what the VI showed; a live window is closed by its third presentation. */
 int n64c_f3d_present(N64cF3d *f,uint32_t phys)
 {

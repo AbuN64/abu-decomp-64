@@ -80,6 +80,9 @@ struct N64cF3d {
     N64cDlArena sub_arena = {};                 // the interpolated draws translate with their own arena and
     std::map<uint32_t, int> sub_surfaces;       // their own framebuffers: the game's colour images stay exactly as it drew them
     uint32_t sub_surface = 0;
+    std::string overlay;                        // the options screen's text, drawn over every presented picture
+    int overlay_selected = -1, overlay_scale = 3;
+    std::string window_shot;                    // a file the next presented window picture (overlay included) is written to
     // The game memory each texture cache entry was decoded from, as it was then (see check_textures).
     std::unordered_map<Fast::TextureCacheKey, std::vector<uint8_t>, Fast::TextureCacheKey::Hasher> decoded;
 };
@@ -557,7 +560,7 @@ static void status_fill(uint32_t wh, int x, int y, int w, int h, float r, float 
     glClear(GL_COLOR_BUFFER_BIT);
 }
 // text (lines split by newlines) on a dark panel at the top left, scaled to fit the window.
-static void status_text(uint32_t ww, uint32_t wh, const char* text)
+static void status_text(uint32_t ww, uint32_t wh, const char* text, int selected = -1, int max_scale = 4, bool center = false)
 {
     int lines = 1, cols = 0, col = 0;
     for (const char* c = text; *c; c++) {
@@ -571,19 +574,24 @@ static void status_text(uint32_t ww, uint32_t wh, const char* text)
     if (!cols)
         return;
     // A cell is 6x9 font pixels (glyph plus spacing); the panel has one cell of margin all round.
-    const int scale = std::max(1, std::min({ 4, (int)ww / ((cols + 2) * 6), (int)wh / ((lines + 2) * 9) }));
+    const int scale = std::max(1, std::min({ max_scale, (int)ww / ((cols + 2) * 6), (int)wh / ((lines + 2) * 9) }));
     const int cw = 6 * scale, ch = 9 * scale;
     const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
     GLint box[4];
     glGetIntegerv(GL_SCISSOR_BOX, box);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glEnable(GL_SCISSOR_TEST);
-    status_fill(wh, 0, 0, (cols + 2) * cw, (lines + 2) * ch, 0.08f, 0.08f, 0.12f);
-    int x = cw, y = ch;
+    const int ox = center ? std::max(0, ((int)ww - (cols + 2) * cw) / 2) : 0;
+    const int oy = center ? std::max(0, ((int)wh - (lines + 2) * ch) / 2) : 0;
+    status_fill(wh, ox, oy, (cols + 2) * cw, (lines + 2) * ch, 0.08f, 0.08f, 0.12f);
+    if (selected >= 0)
+        status_fill(wh, ox, oy + (1 + selected) * ch, (cols + 2) * cw, ch, 0.22f, 0.22f, 0.42f);
+    int x = ox + cw, y = oy + ch, line = 0;
     for (const char* c = text; *c; c++) {
         if (*c == '\n') {
-            x = cw;
+            x = ox + cw;
             y += ch;
+            line++;
             continue;
         }
         unsigned code = (unsigned char)*c;
@@ -594,12 +602,29 @@ static void status_text(uint32_t ww, uint32_t wh, const char* text)
         for (int row = 0; row < 7; row++)
             for (int bit = 0; bit < 5; bit++)
                 if (status_font[code - 0x20][row] & (0x10 >> bit))
-                    status_fill(wh, x + bit * scale, y + row * scale, scale, scale, 1.0f, 0.75f, 0.2f);
+                    status_fill(wh, x + bit * scale, y + row * scale, scale, scale, line == selected ? 1.0f : 1.0f,
+                                line == selected ? 1.0f : 0.75f, line == selected ? 1.0f : 0.2f);
         x += cw;
     }
     glScissor(box[0], box[1], box[2], box[3]);
     if (!scissor)
         glDisable(GL_SCISSOR_TEST);
+}
+// The window's picture as a binary PPM (rows top to bottom), for the options screen's evidence.
+static void write_window_shot(const char* path, uint32_t w, uint32_t h)
+{
+    std::vector<uint8_t> rgba((size_t)w * h * 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    FILE* f = fopen(path, "wb");
+    if (!f)
+        return;
+    fprintf(f, "P6\n%u %u\n255\n", w, h);
+    for (uint32_t y = h; y-- > 0;)
+        for (uint32_t x = 0; x < w; x++)
+            fwrite(&rgba[((size_t)y * w + x) * 4], 1, 3, f);
+    fclose(f);
 }
 static int present(N64cF3d* f3d, const std::map<uint32_t, int>& surfaces, uint32_t phys, const char* text, bool events)
 {
@@ -607,8 +632,7 @@ static int present(N64cF3d* f3d, const std::map<uint32_t, int>& surfaces, uint32
     if (events)
         f3d->window->HandleEvents();
     uint32_t ww = 0, wh = 0;
-    int32_t x = 0, y = 0;
-    f3d->window->GetDimensions(&ww, &wh, &x, &y);
+    f3d->window->GetOutputDimensions(&ww, &wh);
     f3d->renderer->UpdateFramebufferParameters(0, ww, wh, 1, false, true, true, true);
     f3d->renderer->StartDrawToFramebuffer(0, 1);
     f3d->renderer->ClearFramebuffer(true, true);
@@ -635,8 +659,13 @@ static int present(N64cF3d* f3d, const std::map<uint32_t, int>& surfaces, uint32
     if (text) {
         f3d->renderer->StartDrawToFramebuffer(0, 1); // CopyFramebuffer may leave its source bound
         status_text(ww, wh, text);
+    } else if (!f3d->overlay.empty()) {
+        f3d->renderer->StartDrawToFramebuffer(0, 1);
+        status_text(ww, wh, f3d->overlay.c_str(), f3d->overlay_selected, f3d->overlay_scale, f3d->overlay_selected >= 0);
     }
     f3d->renderer->EndFrame();
+    if (!f3d->window_shot.empty())
+        write_window_shot(f3d->window_shot.c_str(), ww, wh), f3d->window_shot.clear();
     f3d->window->SwapBuffersBegin();
     return f3d->window->IsRunning() ? 1 : 0;
 }
@@ -663,6 +692,25 @@ extern "C" int n64c_f3d_present_text(N64cF3d* f3d, uint32_t phys, const char* te
     FpMasked fp_masked;
     return present(f3d, f3d->surfaces, phys, text ? text : "", true);
 }
+extern "C" void n64c_f3d_overlay(N64cF3d* f3d, const char* text, int selected_line, int max_scale)
+{
+    f3d->overlay = text ? text : "";
+    f3d->overlay_selected = selected_line;
+    f3d->overlay_scale = max_scale < 1 ? 1 : max_scale > 4 ? 4 : max_scale;
+}
+extern "C" void n64c_f3d_window_shot(N64cF3d* f3d, const char* path) { f3d->window_shot = path ? path : ""; }
+extern "C" void n64c_f3d_window_mode(N64cF3d* f3d, int mode, uint32_t width, uint32_t height)
+{
+    FpMasked fp_masked;
+    auto context = f3d->window->UseContext();
+    f3d->window->SetMode(mode, width, height);
+}
+extern "C" void n64c_f3d_render_scale(N64cF3d* f3d, int percent) { f3d->window->SetRenderScale(percent); }
+extern "C" size_t n64c_f3d_display_sizes(N64cF3d* f3d, uint32_t (*sizes)[2], size_t max)
+{
+    return f3d->window->DisplaySizes(sizes, max);
+}
+extern "C" void n64c_f3d_quit(N64cF3d* f3d) { f3d->window->Close(); }
 extern "C" const char* n64c_f3d_renderer(const N64cF3d* f3d) { return f3d->gl_renderer.c_str(); }
 
 extern "C" void n64c_f3d_close(N64cF3d* f3d)

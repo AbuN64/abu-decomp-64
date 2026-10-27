@@ -3,6 +3,7 @@
 #ifdef N64C_INPUT_SDL3
 #include "n64c_input.h"
 #include "n64c_controls.h"
+#include "n64c_menu.h"
 #include "n64c_touch.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -450,6 +451,8 @@ void n64c_input_update(void)
             if (!pad.stick_x) pad.stick_x = (s8)tx;
             if (!pad.stick_y) pad.stick_y = (s8)ty;
         }
+        if (p == 0) n64c_menu_filter(&pad, !page && keys && key_count > SDL_SCANCODE_F1 && keys[SDL_SCANCODE_F1]);
+        else if (n64c_menu_is_open()) pad = (OSContPad){0}; /* the options screen holds every pad while it is open */
         publish(p, pad, -1);
     }
     refresh_presence();

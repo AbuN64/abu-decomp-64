@@ -6,6 +6,7 @@
 #include "stop.h"
 #include "trace.h"
 #include "n64c_f3d.h"
+#include "n64c_menu.h"
 #include "n64c_memory.h"
 #include "n64c_diag.h"
 #include "n64c_tas.h"
@@ -171,6 +172,50 @@ void n64c_boot_frame_unlock(int on)
 {
     unlock.on=on!=0;
 }
+static int unlock_request=-1; /* the options screen's choice, applied between two game frames (n64c_boot_frame_live) */
+/* The options screen (n64c_menu.h): applies what it changed since the last retrace and hands the renderer its text. */
+/* Evidence without a keyboard: N64C_OPTIONS_SHOT=PREFIX writes PREFIX-closed.ppm when a game menu comes up, then opens the screen
+ * as the hotkey would, steps to the frame-rate row, switches it on and writes PREFIX-open.ppm. */
+static void menu_script(unsigned context)
+{
+    static const char *prefix;
+    static int step=-1,wait;
+    static const unsigned keys[]={0,0,0,0x0400,0,0x0400,0,0x0400,0,0x8000,0}; /* steps 0..10: idle, open, ..., 3x down, A */
+    if (step<0) { prefix=getenv("N64C_OPTIONS_SHOT");step=prefix && *prefix ? 0 : 99; }
+    const char *want=getenv("N64C_OPTIONS_SHOT_MENU"); /* "pause" or "main": wait for that game menu (default: any) */
+    if (step>=99 || !context || (want && *want && strcmp(want,context==N64C_MENU_PAUSE ? "pause" : "main"))) return;
+    if (++wait<5) return; /* a few pictures for the menu to settle */
+    wait=0;
+    char path[1024];
+    if (step==0 || step==11) {
+        snprintf(path,sizeof path,"%s-%s.ppm",prefix,step ? "open" : "closed");
+        n64c_f3d_window_shot(frame.f3d,path);
+    } else {
+        OSContPad pad={.button=(u16)keys[step]};
+        n64c_menu_filter(&pad,step==1);
+    }
+    step=step<11 ? step+1 : 99;
+}
+static void menu_update(void)
+{
+    N64cOptions now;
+    const unsigned what=n64c_menu_take(&now);
+    if (what&N64C_DO_WINDOW) n64c_f3d_window_mode(frame.f3d,now.window_mode,now.width,now.height);
+    if (what&N64C_DO_SCALE) n64c_f3d_render_scale(frame.f3d,now.render_scale);
+    if (what&N64C_DO_UNLOCK) unlock_request=now.fps_unlock;
+    if (what&N64C_DO_QUIT) { fprintf(stderr,"boot-frame: quit from the options screen\n");n64c_f3d_quit(frame.f3d); }
+    char text[512];
+    int selected,scale;
+    const size_t n=n64c_menu_text(text,sizeof text,&selected,&scale);
+    n64c_f3d_overlay(frame.f3d,n ? text : NULL,selected,scale);
+    static unsigned shown;
+    const unsigned context=n64c_menu_current();
+    if (context!=shown) {
+        fprintf(stderr,"boot-options: game menu %s\n",context==N64C_MENU_PAUSE ? "pause" : context==N64C_MENU_MAIN ? "main" : "none");
+        shown=context;
+    }
+    menu_script(context);
+}
 /* Every retrace the window shows what the VI shows: the colour image it was last given (black while
  * it is blanked or that image was never drawn). */
 static void present(void *fb,void *user)
@@ -179,6 +224,7 @@ static void present(void *fb,void *user)
     frame.presented=fb;
     u32 physical=fb ? n64c_memory_physical(fb) : 0;
     N64C_ZONE(zp,"present");
+    menu_update();
     if (unlock.live) { if (!n64c_f3d_events(frame.f3d)) frame.closed=1; }
     else if (!n64c_f3d_present(frame.f3d,physical)) frame.closed=1;
     else unlock.flips++;
@@ -246,6 +292,20 @@ int n64c_boot_frame_start(u32 width,u32 height,u32 ram_bytes,int audio_abi,u32 w
     unlock.live=0;
     if (live) n64c_boot_stop_hook=live_stop;
     return 1;
+}
+void n64c_boot_frame_options(const N64cOptions *now,const char *save_path)
+{
+    u32 sizes[64][2];
+#ifdef __ANDROID__
+    const int mobile=1;
+    const size_t count=0;
+#else
+    const int mobile=0;
+    const size_t count=n64c_f3d_display_sizes(frame.f3d,sizes,64);
+#endif
+    n64c_menu_configure(now,save_path,(const u32 (*)[2])sizes,count,mobile);
+    if (now->render_scale!=100) n64c_f3d_render_scale(frame.f3d,now->render_scale);
+    if (!mobile && now->window_mode!=N64C_WIN_WINDOWED) n64c_f3d_window_mode(frame.f3d,now->window_mode,now->width,now->height);
 }
 /* The VI shows whichever color image it was given; double buffering presents an earlier rendered surface,
  * never the last one by assumption. Reads it back scaled to width x height (caller frees), NULL when never rendered. */
@@ -519,6 +579,16 @@ void n64c_boot_run_ended(void)
 {
     fps_report("ended",live_speed);
 }
+static void unlock_rate_setup(void)
+{
+    if (!unlock.on) return;
+    const char *text=getenv("N64C_FPS_UNLOCK");
+    if (!n64c_unlock_rate(text,n64c_f3d_refresh_hz(frame.f3d),&unlock.hz)) {
+        fprintf(stderr,"boot-frame: N64C_FPS_UNLOCK must be a rate, max or 1, got %s; using the default\n",text);
+        (void)n64c_unlock_rate(NULL,n64c_f3d_refresh_hz(frame.f3d),&unlock.hz);
+    }
+    fprintf(stderr,"boot-fps: unlock on, %u pictures a second at most\n",unlock.hz);
+}
 int n64c_boot_frame_live(void)
 {
     u32 speed;
@@ -536,14 +606,7 @@ int n64c_boot_frame_live(void)
     unlock.t0=start;unlock.flips=unlock.groups=unlock.interpolated=0;unlock.last_n=0;unlock.cost_ns=0;
     unlock.checked=unlock.mismatched=0;unlock.worst=0;
     unlock.check=getenv("N64C_FPS_UNLOCK_CHECK") && *getenv("N64C_FPS_UNLOCK_CHECK") && strcmp(getenv("N64C_FPS_UNLOCK_CHECK"),"0");
-    if (unlock.on) {
-        const char *text=getenv("N64C_FPS_UNLOCK");
-        if (!n64c_unlock_rate(text,n64c_f3d_refresh_hz(frame.f3d),&unlock.hz)) {
-            fprintf(stderr,"boot-frame: N64C_FPS_UNLOCK must be a rate, max or 1, got %s; using the default\n",text);
-            (void)n64c_unlock_rate(NULL,n64c_f3d_refresh_hz(frame.f3d),&unlock.hz);
-        }
-        fprintf(stderr,"boot-fps: unlock on, %u pictures a second at most\n",unlock.hz);
-    }
+    unlock_rate_setup();
     const u32 run_speed=speed; /* the speed a release (live input handed back) returns to */
     const long long run_interval=view.interval_ns;
     u32 base=0; /* retraces before the pacing restarted (a run taken over by live input plays at 1x from there) */
@@ -558,6 +621,12 @@ int n64c_boot_frame_live(void)
             view.interval_ns=run_interval;
         }
         if (n64c_tas_live_taken() && view.path) view.interval_ns=1000000000ll/60-2000000ll;
+        if (unlock_request>=0) { /* between two frames: no picture group is open */
+            unlock.on=unlock_request!=0;unlock_request=-1;
+            n64c_f3d_unlock(frame.f3d,unlock.on);
+            unlock.live=0;unlock.last_n=n-1;
+            if (unlock.on) unlock_rate_setup(); else fprintf(stderr,"boot-fps: unlock off\n");
+        }
         if (unlock.on) n64c_f3d_group_begin(frame.f3d);
         N64C_ZONE(zf,"frame");
         const int alive=n64c_frame();

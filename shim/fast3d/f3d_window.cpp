@@ -3,7 +3,10 @@
 #include "n64c_input.h"
 #include <SDL3/SDL_opengl.h>
 #include <cstdio>
+#include <algorithm>
 #include <cstdlib>
+#include <utility>
+#include <vector>
 
 namespace N64c {
 F3dWindow::~F3dWindow() { Destroy(); }
@@ -77,14 +80,70 @@ void F3dWindow::GetMouseWheel(float* x, float* y) { *x = *y = 0; }
 bool F3dWindow::GetMouseState(uint32_t) { return false; }
 void F3dWindow::SetMouseCapture(bool) {}
 bool F3dWindow::IsMouseCaptured() { return false; }
-void F3dWindow::GetDimensions(uint32_t* width, uint32_t* height, int32_t* posX, int32_t* posY)
+void F3dWindow::GetOutputDimensions(uint32_t* width, uint32_t* height) const
 {
     int w = (int)mWidth, h = (int)mHeight;
     if (mWindow)
         SDL_GetWindowSizeInPixels(mWindow, &w, &h);
     *width = (uint32_t)w;
     *height = (uint32_t)h;
+}
+// What the game renders at: the window's pixels scaled by the render scale (the picture is then stretched to the window).
+void F3dWindow::GetDimensions(uint32_t* width, uint32_t* height, int32_t* posX, int32_t* posY)
+{
+    GetOutputDimensions(width, height);
+    *width = std::max<uint32_t>(1, *width * (uint32_t)mRenderScale / 100);
+    *height = std::max<uint32_t>(1, *height * (uint32_t)mRenderScale / 100);
     *posX = *posY = 0;
+}
+void F3dWindow::SetMode(int mode, uint32_t width, uint32_t height)
+{
+    if (!mWindow)
+        return;
+    const SDL_DisplayID display = SDL_GetDisplayForWindow(mWindow);
+    if (mode == 0) { // windowed: bordered, the chosen size
+        SDL_SetWindowFullscreen(mWindow, false);
+        SDL_SyncWindow(mWindow);
+        SDL_SetWindowBordered(mWindow, true);
+        SDL_SetWindowSize(mWindow, (int)width, (int)height);
+        SDL_SetWindowPosition(mWindow, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    } else if (mode == 1) { // borderless: the desktop's own mode, the window covers the display
+        SDL_SetWindowFullscreenMode(mWindow, nullptr);
+        SDL_SetWindowFullscreen(mWindow, true);
+    } else { // fullscreen: the display mode closest to the chosen size
+        SDL_DisplayMode closest;
+        if (SDL_GetClosestFullscreenDisplayMode(display, (int)width, (int)height, 0.0f, true, &closest))
+            SDL_SetWindowFullscreenMode(mWindow, &closest);
+        SDL_SetWindowFullscreen(mWindow, true);
+    }
+    SDL_SyncWindow(mWindow);
+    mFullScreen = mode != 0;
+}
+size_t F3dWindow::DisplaySizes(uint32_t (*sizes)[2], size_t max) const
+{
+    static const uint32_t common[][2] = { { 640, 480 }, { 800, 600 }, { 1024, 768 }, { 1280, 720 }, { 1920, 1080 } };
+    std::vector<std::pair<uint32_t, uint32_t>> found;
+    const SDL_DisplayID display = mWindow ? SDL_GetDisplayForWindow(mWindow) : SDL_GetPrimaryDisplay();
+    int count = 0;
+    SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(display, &count);
+    for (int i = 0; modes && i < count; i++)
+        found.emplace_back((uint32_t)modes[i]->w, (uint32_t)modes[i]->h);
+    SDL_free(modes);
+    SDL_Rect bounds = { 0, 0, 0, 0 };
+    SDL_GetDisplayBounds(display, &bounds);
+    for (const auto& c : common)
+        if (bounds.w <= 0 || ((int)c[0] <= bounds.w && (int)c[1] <= bounds.h))
+            found.emplace_back(c[0], c[1]);
+    std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a > b; });
+    found.erase(std::unique(found.begin(), found.end()), found.end());
+    size_t n = 0;
+    for (const auto& f : found)
+        if (n < max) {
+            sizes[n][0] = f.first;
+            sizes[n][1] = f.second;
+            n++;
+        }
+    return n;
 }
 void F3dWindow::SetDimensions(uint32_t width, uint32_t height, int32_t, int32_t)
 {

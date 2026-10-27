@@ -46,8 +46,14 @@ class F3dWindow final : public Fast::GfxWindowBackend {
     bool IsRunning() override;
     void Destroy() override;
     bool IsFullscreen() override;
+    // The options screen: N64C_WIN_* (n64c_menu.h), the display's sizes (largest first), the render scale in percent.
+    void SetMode(int mode, uint32_t width, uint32_t height);
+    size_t DisplaySizes(uint32_t (*sizes)[2], size_t max) const;
+    void SetRenderScale(int percent) { mRenderScale = percent < 25 ? 25 : percent > 100 ? 100 : percent; }
+    void GetOutputDimensions(uint32_t* width, uint32_t* height) const; // the window's own pixels, whatever the scale
 
   private:
+    int mRenderScale = 100;
     SDL_Window* mWindow = nullptr;
     SDL_GLContext mContext = nullptr;
     uint32_t mWidth = 0, mHeight = 0;
