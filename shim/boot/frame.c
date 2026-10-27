@@ -211,6 +211,10 @@ static void menu_update(void)
     int selected,scale;
     const size_t n=n64c_menu_text(text,sizeof text,&selected,&scale);
     n64c_f3d_overlay(frame.f3d,n ? text : NULL,selected,scale);
+    static int was_open;
+    if (n!=0 && !was_open) fprintf(stderr,"boot-options: options screen opened\n");
+    else if (n==0 && was_open) fprintf(stderr,"boot-options: options screen closed\n");
+    was_open=n!=0;
     static unsigned shown;
     const unsigned context=n64c_menu_current();
     if (context!=shown) {
