@@ -11,6 +11,7 @@
  * the game hands in) and is added to both main buses. The main buses are interleaved and saved. */
 #include "n64c_al.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #define CHUNK 128
@@ -78,6 +79,8 @@ struct N64cVoice {
     u8 *adpcmState;  /* 32 bytes: last decoded frame */
     u8 *resState;    /* 16 bytes: resampler history and phase */
     u8 *mixState;    /* 80 bytes: envelope mixer state */
+    u8 *book;        /* BOOK_MAX bytes: the wave's codebook, copied where the RSP can read it */
+    u8 *loopState;   /* 32 bytes: the wave's loop history, copied likewise */
 };
 
 struct N64cSynth {
@@ -95,6 +98,11 @@ struct N64cSynth {
 
 static N64cSynth *g_synth;
 
+/* Per-voice RSP state: decoder 32, resampler 16, envelope mixer 80, codebook (order 2 x 8 predictors) 256, loop 32.
+ * The RSP reads physical RAM without a TLB, so a codebook or loop record inside a TLB-mapped bank (the game builds
+ * its banks there) is copied into this block when the voice starts, as libultra copies the loop history. */
+enum { BOOK_MAX = 256, VOICE_STATE = 128 + BOOK_MAX + 32 };
+
 static u32 phys(const void *p) { return osVirtualToPhysical((void *)(uintptr_t)p); }
 
 /* ---- command emitters ---- */
@@ -104,11 +112,11 @@ static Acmd *emit(Acmd *p, u32 w0, u32 w1)
     p->w1 = w1;
     return p + 1;
 }
-static Acmd *setbuf(Acmd *p, u32 in, u32 out, u32 count)
+static Acmd *buffers(Acmd *p, u32 in, u32 out, u32 count)
 {
     return emit(p, (C_SETBUF << 24) | (in & 0xffffu), (out << 16) | (count & 0xffffu));
 }
-static Acmd *setbuf_aux(Acmd *p, u32 dryR, u32 wetL, u32 wetR)
+static Acmd *buffers_aux(Acmd *p, u32 dryR, u32 wetL, u32 wetR)
 {
     return emit(p, (C_SETBUF << 24) | (F_AUX << 16) | (dryR & 0xffffu), (wetL << 16) | (wetR & 0xffffu));
 }
@@ -171,7 +179,7 @@ static Acmd *fx_ring(Acmd *c, const N64cFx *fx, u32 idx, u32 n, u32 dmem, int sa
     const u32 first = (u32)fx->ringLen - idx < n ? (u32)fx->ringLen - idx : n;
     for (u32 part = 0, at = idx, done = 0; part < 2 && done < n; part++) {
         const u32 cnt = part == 0 ? first : n - first;
-        c = save ? setbuf(c, 0, dmem + done * 2u, cnt * 2u) : setbuf(c, dmem + done * 2u, 0, cnt * 2u);
+        c = save ? buffers(c, 0, dmem + done * 2u, cnt * 2u) : buffers(c, dmem + done * 2u, 0, cnt * 2u);
         c = emit(c, (save ? C_SAVE : C_LOAD) << 24, phys(fx->ring) + at * 2u);
         done += cnt;
         at = 0;
@@ -183,7 +191,7 @@ static Acmd *fx_apply(N64cFx *fx, Acmd *c, u32 n)
 {
     const u32 nb = n * 2u, R = (u32)fx->ringLen, h = (u32)fx->head;
     /* wet send as mono into the ring head */
-    c = setbuf(c, 0, B_AUX_L, nb);
+    c = buffers(c, 0, B_AUX_L, nb);
     c = emit_mix(c, B_AUX_L, B_AUX_L, (s16)0xda83);
     c = emit_mix(c, B_AUX_L, B_AUX_R, 0x5a82);
     c = fx_ring(c, fx, h, n, B_AUX_L, 1);
@@ -193,22 +201,22 @@ static Acmd *fx_apply(N64cFx *fx, Acmd *c, u32 n)
         const u32 inIdx = (h + R - (u32)d->in) % R, outIdx = (h + R - (u32)d->out) % R;
         c = fx_ring(c, fx, inIdx, n, B_FX_X, 0);
         c = fx_ring(c, fx, outIdx, n, B_FX_Y, 0);
-        c = setbuf(c, 0, 0, nb);
+        c = buffers(c, 0, 0, nb);
         if (d->ff) c = emit_mix(c, B_FX_Y, B_FX_X, d->ff);
         if (d->fb) c = emit_mix(c, B_FX_X, B_FX_Y, d->fb);
         c = fx_ring(c, fx, inIdx, n, B_FX_X, 1);
         if (d->filter) {
-            c = setbuf(c, B_FX_Y, B_FX_Y, nb);
+            c = buffers(c, B_FX_Y, B_FX_Y, nb);
             c = emit(c, (C_LOADADPCM << 24) | 0x20u, phys(d->table));
             c = emit(c, (C_POLEF << 24) | (u32)((0x8000 - d->filter + 1) / 2), phys(d->state));
         }
         c = fx_ring(c, fx, outIdx, n, B_FX_Y, 1);
         if (d->gain) {
-            c = setbuf(c, 0, 0, nb);
+            c = buffers(c, 0, 0, nb);
             c = emit_mix(c, B_FX_ACC, B_FX_Y, d->gain);
         }
     }
-    c = setbuf(c, 0, 0, nb);
+    c = buffers(c, 0, 0, nb);
     c = emit_mix(c, B_MAIN_L, B_FX_ACC, 0x7fff);
     c = emit_mix(c, B_MAIN_R, B_FX_ACC, 0x7fff);
     fx->head = (s32)((h + n) % R);
@@ -244,7 +252,7 @@ void alInit(ALGlobals *g, ALSynConfig *c)
     if (n <= 0) n = 1;
     if (!syn) return;
     syn->voices = alHeapDBAlloc(NULL, 0, c->heap, n, (s32)sizeof(N64cVoice));
-    u8 *states = alHeapDBAlloc(NULL, 0, c->heap, n, 128);
+    u8 *states = alHeapDBAlloc(NULL, 0, c->heap, n, VOICE_STATE);
     if (!syn->voices || !states) return;
     syn->heap = c->heap;
     syn->numVoices = n;
@@ -252,9 +260,12 @@ void alInit(ALGlobals *g, ALSynConfig *c)
     syn->fxType = c->fxType;
     for (s32 i = 0; i < n; i++) {
         syn->voices[i].syn = syn;
-        syn->voices[i].adpcmState = states + (size_t)i * 128;
-        syn->voices[i].resState = states + (size_t)i * 128 + 32;
-        syn->voices[i].mixState = states + (size_t)i * 128 + 48;
+        u8 *st = states + (size_t)i * VOICE_STATE;
+        syn->voices[i].adpcmState = st;
+        syn->voices[i].resState = st + 32;
+        syn->voices[i].mixState = st + 48;
+        syn->voices[i].book = st + 128;
+        syn->voices[i].loopState = st + 128 + BOOK_MAX;
     }
     if (c->fxType == 6 && c->params) syn->fx = fx_new(c->heap, (const s32 *)c->params);
     if (c->dmaproc) syn->dma = c->dmaproc(&syn->dmaState);
@@ -301,13 +312,14 @@ N64cVoice *n64c_voice_alloc(N64cSynth *syn, void *tag, s32 priority)
         }
         if (pick->state != V_ENDED && pick->priority > priority) return NULL;
     }
-    void *a = pick->adpcmState, *r = pick->resState, *m = pick->mixState;
-    N64cSynth *s = pick->syn;
+    N64cVoice keep = *pick;
     memset(pick, 0, sizeof *pick);
-    pick->syn = s;
-    pick->adpcmState = a;
-    pick->resState = r;
-    pick->mixState = m;
+    pick->syn = keep.syn;
+    pick->adpcmState = keep.adpcmState;
+    pick->resState = keep.resState;
+    pick->mixState = keep.mixState;
+    pick->book = keep.book;
+    pick->loopState = keep.loopState;
     pick->state = V_ALLOC;
     pick->tag = tag;
     pick->priority = priority;
@@ -318,6 +330,8 @@ N64cVoice *n64c_voice_alloc(N64cSynth *syn, void *tag, s32 priority)
     pick->adpcmFresh = 1;
     return pick;
 }
+
+static u32 book_bytes(const ALADPCMBook *book) { return (u32)(book->order * book->npredictors * 16); }
 
 int n64c_voice_valid(const N64cVoice *v, const void *tag)
 {
@@ -335,7 +349,19 @@ void n64c_voice_start(N64cVoice *v, ALWaveTable *wave)
     } else {
         v->total = ((u32)wave->len / 9) * 16;
         const ALADPCMloop *lp = wave->waveInfo.adpcm.loop;
+        const ALADPCMBook *book = wave->waveInfo.adpcm.book;
         v->loopsLeft = lp && lp->count ? lp->count : 0;
+        if (book) {
+            u32 bytes = book_bytes(book);
+            if (bytes > BOOK_MAX) {
+                fprintf(stderr, "n64c-alsyn: codebook of %u bytes exceeds %u: voice not started\n", (unsigned)bytes,
+                        (unsigned)BOOK_MAX);
+                v->state = V_ENDED;
+                return;
+            }
+            memcpy(v->book, book->book, bytes);
+        }
+        if (lp) memcpy(v->loopState, lp->state, sizeof lp->state);
     }
     v->pos = 0;
     v->nextFrame = 0;
@@ -379,7 +405,7 @@ static Acmd *dma_load(N64cVoice *v, Acmd *c, u32 romAddr, u32 bytes, u32 dmem, u
 {
     u32 pa = v->syn->dma ? (u32)v->syn->dma((s32)romAddr, (s32)bytes, v->syn->dmaState) : 0;
     *off = 0;
-    c = setbuf(c, dmem, 0, bytes);
+    c = buffers(c, dmem, 0, bytes);
     return loadraw(c, pa);
 }
 
@@ -400,15 +426,15 @@ static Acmd *piece(N64cVoice *v, Acmd *c, u32 take, u32 w)
     off = 0;
     if (frames) c = dma_load(v, c, (u32)(uintptr_t)wt->base + v->nextFrame * 9u, frames * 9u, B_DECIN, &off);
     if (book) {
-        c = emit(c, (C_LOADADPCM << 24) | (u32)(book->order * book->npredictors * 16), phys(book->book));
+        c = emit(c, (C_LOADADPCM << 24) | book_bytes(book), phys(v->book));
     }
     u32 flags = 0;
     if (v->adpcmFresh) flags |= F_INIT;
     if (v->loopJump) {
         flags |= F_LOOP;
-        c = emit(c, C_SETLOOP << 24, phys(wt->waveInfo.adpcm.loop->state));
+        c = emit(c, C_SETLOOP << 24, phys(v->loopState));
     }
-    c = setbuf(c, B_DECIN + off, B_DEC, frames * 32u);
+    c = buffers(c, B_DECIN + off, B_DEC, frames * 32u);
     c = emit(c, (C_ADPCM << 24) | (flags << 16), phys(v->adpcmState));
     v->adpcmFresh = 0;
     v->loopJump = 0;
@@ -474,7 +500,7 @@ static Acmd *render_voice(N64cVoice *v, Acmd *c, u32 n)
     }
     if (w < total) c = clearbuf(c, B_STREAM + 2u * w, ((total - w) * 2u + 15u) & ~15u);
     /* 2. resample */
-    c = setbuf(c, B_STREAM, B_RES, n * 2u);
+    c = buffers(c, B_STREAM, B_RES, n * 2u);
     c = emit(c, (C_RESAMPLE << 24) | ((v->first ? (u32)F_INIT : 0u) << 16) | v->pitchField, phys(v->resState));
     v->first = 0;
     v->accu = (v->accu + n * p) & 0xffffu;
@@ -492,8 +518,8 @@ static Acmd *render_voice(N64cVoice *v, Acmd *c, u32 n)
     const f32 eL = vol * cosf(th), eR = vol * sinf(th);
     const f32 fx = (f32)v->fxmix * (1.5707963f / 127.0f);
     const u32 groups = n / 8u;
-    c = setbuf(c, B_RES, B_MAIN_L, n * 2u);
-    c = setbuf_aux(c, B_MAIN_R, B_AUX_L, B_AUX_R);
+    c = buffers(c, B_RES, B_MAIN_L, n * 2u);
+    c = buffers_aux(c, B_MAIN_R, B_AUX_L, B_AUX_R);
     c = emit(c, (C_SETVOL << 24) | ((u32)(F_LEFT | F_VOL) << 16) | (u16)sat_q15(v->curL), 0);
     c = emit(c, (C_SETVOL << 24) | ((u32)F_LEFT << 16) | (u16)sat_q15(eL), (u32)ramp_rate(v->curL, eL, groups));
     c = emit(c, (C_SETVOL << 24) | ((u32)F_VOL << 16) | (u16)sat_q15(v->curR), 0);
@@ -544,9 +570,9 @@ Acmd *alAudioFrame(Acmd *cmdList, s32 *cmdLen, s16 *outBuf, s32 outLen)
             c = render_voice(v, c, n);
         }
         if (syn->fx) c = fx_apply(syn->fx, c, n);
-        c = setbuf(c, 0, B_INTER, n * 2u);
+        c = buffers(c, 0, B_INTER, n * 2u);
         c = emit(c, C_INTERLEAVE << 24, ((u32)B_MAIN_L << 16) | (u32)B_MAIN_R);
-        c = setbuf(c, 0, B_INTER, n * 4u);
+        c = buffers(c, 0, B_INTER, n * 4u);
         c = savebuf(c, (u32)(uintptr_t)outBuf + (u32)done * 4u);
         done += (s32)n;
     }

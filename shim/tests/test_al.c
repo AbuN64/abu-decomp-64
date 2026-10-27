@@ -309,6 +309,67 @@ static void test_adpcm_stream(void)
     alClose(&globals);
 }
 
+/* The RSP reads physical RAM: the codebook and loop history inside a (TLB-mapped) bank reach it only through the
+ * voice's own copy, taken when the voice starts. Garbage written over the bank's book afterwards must not reach
+ * the decode, and the load commands must name the copies in the synth heap. */
+static void test_adpcm_book_staged(void)
+{
+    start_synth(2);
+    ALSndPlayer sp;
+    ALSndpConfig sc = {.maxSounds = 2, .maxEvents = 8, .heap = &heap};
+    alSndpNew(&sp, &sc);
+    ALADPCMBook *book = (ALADPCMBook *)(ram + BOOK_OFF);
+    memset(ram + BOOK_OFF, 0, 256);
+    book->order = 2;
+    book->npredictors = 1;
+    ALADPCMloop *loop = (ALADPCMloop *)(ram + LOOP_OFF);
+    memset(loop, 0, sizeof *loop);
+    loop->start = 32;
+    loop->end = 96;
+    loop->count = 0xFFFFFFFFu;
+    ALWaveTable w;
+    make_adpcm(&w, book, loop, 0x8000, 40);
+    ALSound snd = {.wavetable = &w, .samplePan = 0, .sampleVolume = 127};
+    s16 id = alSndpAllocate(&sp, &snd);
+    alSndpSetSound(&sp, id);
+    alSndpPlay(&sp);
+    N64aAbi *abi = n64a_abi_create(N64A_FLAVOUR_AUDIO);
+    run_frame(abi, 128);
+    /* the voice runs: the page behind the bank now holds something else */
+    memset(book->book, 0x7f, 16);
+    memset(loop->state, 0x7f, sizeof loop->state);
+    s16 out[384];
+    int loads = 0, setloops = 0;
+    for (int f = 0; f < 3; f++) {
+        s32 n = run_frame(abi, 128);
+        const Acmd *list = (const Acmd *)(ram + LIST_OFF);
+        for (s32 i = 0; i < n; i++) {
+            u32 op = list[i].w0 >> 24, at = list[i].w1;
+            if (op != 11 && op != 15) continue;
+            CHECK(at >= HEAP_OFF && at < HEAP_OFF + HEAP_LEN);
+            static const u8 zero[32];
+            if (op == 15) { setloops++; continue; }
+            loads++;
+            CHECK((list[i].w0 & 0xffffu) == 32u && !memcmp(ram + at, zero, sizeof zero));
+        }
+        for (int i = 0; i < 128; i++) out[f * 128 + i] = get16(OUT_OFF + 4u * (u32)i);
+    }
+    CHECK(loads >= 3 && setloops >= 1);
+    /* output 128..511 trails the stream by 4 samples, all past the head [0, 96): the loop [32, 96) repeats, and
+     * inside each 8-sample plateau the output equals the zero-predictor decode of the copied book */
+    int checked = 0, good = 0;
+    for (u32 i = 0; i < 384; i++) {
+        u32 k = 128u + i - 4u;
+        if (k % 8u > 4u) continue;
+        checked++;
+        if (abs(out[i] - adpcm_expect(32u + (k - 96u) % 64u)) <= 3) good++;
+    }
+    CHECK(checked > 200 && good == checked);
+    CHECK(alSndpGetState(&sp) == AL_PLAYING);
+    n64a_abi_destroy(abi);
+    alClose(&globals);
+}
+
 static void test_voice_priority(void)
 {
     start_synth(2);
@@ -554,6 +615,7 @@ int main(void)
     test_events();
     test_sound_player_raw();
     test_adpcm_stream();
+    test_adpcm_book_staged();
     test_voice_priority();
     test_reverb();
     test_fx_config_padding();
