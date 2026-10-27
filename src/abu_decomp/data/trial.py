@@ -14,12 +14,13 @@ import re
 import shutil
 import signal
 import subprocess
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import slots
+from abu_decomp import meter, slots
 from abu_decomp.data import literals, source
 from abu_decomp.data.config import DataConfig, expand
 
@@ -27,6 +28,12 @@ Run = Callable[..., "subprocess.CompletedProcess[str]"]
 
 
 class Builder:
+    # held / make_jobs: process-wide, because every Builder of one stamp (the check's, the settle's, the link's) runs
+    # inside the slots ONE `holding` took: a second hold would queue behind the first (10-27: 73 s wait for slots the
+    # stamp itself held). make_jobs is the -j of every make while held; None: asked of the configured jobs command.
+    held: bool = False
+    make_jobs: str | None = None
+
     def __init__(self, cfg: DataConfig, tree: Path, run: Run = subprocess.run, reference: Path | None = None) -> None:
         self.cfg, self.tree, self.run, self.reference = cfg, tree, run, reference
         # skip_headers: header files the diff edited whose includers the data check already rebuilt or proved unchanged
@@ -53,14 +60,46 @@ class Builder:
         stamps at once leave the landing build its cores (10-25: load 47 on 16 cores, the train at 0.3 cores)."""
         return [argv[0], "-n", "10", *(["ionice", "-c3"] if shutil.which("ionice") else []), *argv[1:]]
 
+    def width(self) -> int:
+        """Slots one stamp's builds hold: its jobs, at most the stamp's weight of the pool."""
+        return max(1, min(int(self.jobs()), slots.stamp_weight()))
+
+    @contextmanager
+    def holding(self):
+        """The stamp's slots held for every make of the block (one queue trip, not one per make): `run_held` does not
+        queue again, and each make runs at `make_jobs`. A builder that already holds slots (the caller's) queues nothing."""
+        if Builder.held:
+            yield int(Builder.make_jobs or 1)
+            return
+        want = self.width()
+        with slots.hold("batch", weight=want, label="stamp build", mem_gib=slots.STAMP_GIB or None) as grant:
+            print(f"stamp slots: held {want} after waiting {getattr(grant, 'waited', 0):.0f}s", flush=True)
+            Builder.held, Builder.make_jobs = True, str(want)
+            try:
+                yield want
+            finally:
+                Builder.held, Builder.make_jobs = False, None
+
     def run_held(self, argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
         """The build, holding its jobs' share of the host slot pool (class batch) while it runs: builds queue behind
-        each other instead of thrashing. Re-entrant when the caller already holds slots."""
-        want = max(1, min(int(self.jobs()), slots.stamp_weight()))
-        with slots.hold("batch", weight=want, label="stamp build", mem_gib=slots.STAMP_GIB or None):
+        each other instead of thrashing. Re-entrant when the caller already holds slots (`holding`)."""
+        if self.held:
             return self.run(argv, **kw)
+        want = self.width()
+        with slots.hold("batch", weight=want, label="stamp build", mem_gib=slots.STAMP_GIB or None) as grant:
+            began, used = time.monotonic(), meter.cpu()
+            try:
+                return self.run(argv, **kw)
+            finally:
+                print(
+                    f"stamp make: slot wait={getattr(grant, 'waited', 0):.0f}s run wall={time.monotonic() - began:.0f}s "
+                    f"cpu={meter.cpu() - used:.0f}s slots={want} {' '.join(argv[-3:])[:80]}",
+                    flush=True,
+                )
 
     def jobs(self) -> str:
+        if self.make_jobs:
+            return self.make_jobs
         if not self.cfg.jobs:
             return "1"
         out = self.run([expand(self.cfg.jobs[0]), *self.cfg.jobs[1:]], capture_output=True, text=True).stdout.strip()

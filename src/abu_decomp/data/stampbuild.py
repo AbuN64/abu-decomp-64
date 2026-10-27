@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from abu_decomp.data import trial
 from abu_decomp.data.config import DataConfig
 
 CPU_CAP = 300.0
+SYNC_WORKERS = 4  # rsyncs of one re-warm side by side
 STATE = ".stamp-state"  # in the tree: the commit it was left clean at, or "busy" while a stamp build owns it
 
 
@@ -104,6 +106,17 @@ def take(path: Path) -> int | None:
     return None
 
 
+def take_shared(path: Path) -> int | None:
+    """The fd of a shared flock on PATH (any number of copiers), or None while an extraction holds it exclusively."""
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o664)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
 @contextmanager
 def lease(folder: Path, count: int, wait: float = 900.0, prefer: str | None = None) -> Iterator[str]:
     """The lane name of a pool tree nobody else holds (a flock the kernel drops with the process, a dead holder's lock
@@ -143,15 +156,18 @@ def _left_at(tree: Path) -> str:
 
 
 @contextmanager
-def setup_lock(shared: Path, wait: float = 900.0) -> Iterator[None]:
-    """One `unbake setup` at a time across the slots: it writes beside the shared tree (tools, caches) that the other slot's
-    make is running from (10-24: a stamp's ROM check failed with no output while another diff was being extracted).
-    Waits `wait` seconds, then refuses naming the holder."""
+def setup_lock(shared: Path, wait: float = 900.0, exclusive: bool = True) -> Iterator[None]:
+    """Extraction against copying: an extraction (`exclusive`) writes beside the shared tree (tools, caches) that the other
+    slots' makes run from (10-24: a stamp's ROM check failed with no output while another diff was being extracted), so
+    it runs alone; a stamp that only COPIES from the shared tree into its own pool tree (`rewarm`, a fresh tree) holds the
+    lock shared, so those copies overlap each other and wait only for an extraction (10-27: one exclusive lock over every
+    6.6 GB copy made a stamp wait 152-602 s for a lock while computing 26-92 s). Waits `wait` seconds, then refuses naming
+    the holder."""
     folder = worktree.base(shared)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / ".stamp-setup.lock"
     end = time.monotonic() + wait
-    while (fd := take(path)) is None:
+    while (fd := (take(path) if exclusive else take_shared(path))) is None:
         if time.monotonic() > end:
             raise DecompError("data.stamp", f"the setup lock is held after {wait:.0f}s by {describe(path)}")
         time.sleep(2)
@@ -178,6 +194,23 @@ def reuse(profile: Any, tree: Path, rev: str) -> dict[str, Any] | None:
     return {"worktree": str(tree), "rev": rev, "reused": True}
 
 
+def sync_one(name: str, shared: Path, tree: Path) -> bool:
+    """One synced name copied from SHARED into TREE (rsync sends only what differs): True when it succeeded."""
+    src, dst = shared / name, tree / name
+    args = ["rsync", "-a", "--delete", f"{src}/", f"{dst}/"] if src.is_dir() else ["rsync", "-a", str(src), str(dst)]
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    return subprocess.run(args, capture_output=True).returncode == 0
+
+
+def sync_all(names: list[str], shared: Path, tree: Path) -> list[bool]:
+    """The names synced side by side: each rsync walks its own folder, so the walks (stat-bound, 24-35 s one after the
+    other) overlap instead of queueing."""
+    if len(names) < 2:
+        return [sync_one(n, shared, tree) for n in names]
+    with ThreadPoolExecutor(min(len(names), SYNC_WORKERS)) as pool:
+        return list(pool.map(lambda n: sync_one(n, shared, tree), names))
+
+
 def rewarm(profile: Any, shared: Path, tree: Path, rev: str) -> dict[str, Any] | None:
     """The pool tree at REV again after ONE sync step from SHARED, for a tree left at another commit or busy (killed or
     failed run): the commit is checked out in place, the shared tree's outputs and facts are synced over it (rsync copies
@@ -194,19 +227,9 @@ def rewarm(profile: Any, shared: Path, tree: Path, rev: str) -> dict[str, Any] |
     ):
         return None
     names = [*worktree.COPIED, *(f".unbake/{f}" for f in worktree.FACTS)]
-    with setup_lock(shared), treelock.hold(shared, who=f"decomp data stamp rewarm {tree.name}"):
-        for name in names:
-            src, dst = shared / name, tree / name
-            if not src.exists():
-                continue
-            args = (
-                ["rsync", "-a", "--delete", f"{src}/", f"{dst}/"]
-                if src.is_dir()
-                else ["rsync", "-a", str(src), str(dst)]
-            )
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if subprocess.run(args, capture_output=True).returncode:
-                return None
+    with setup_lock(shared, exclusive=False), treelock.hold(shared, who=f"decomp data stamp rewarm {tree.name}"):
+        if not all(sync_all([n for n in names if (shared / n).exists()], shared, tree)):
+            return None
         aligned = worktree.align_times(shared, tree)
         from abu_decomp import tools
 
@@ -254,7 +277,7 @@ def _tree(profile: Any, shared: Path, lane: str, rev: str | None):
     if rev and (made := rewarm(profile, shared, tree, rev)):
         return made, 0, []
     worktree.prune(shared, [lane])  # a leftover of an interrupted run, or a tree that could not be made current
-    with setup_lock(shared):
+    with setup_lock(shared, exclusive=False):  # copies from the shared tree, writes only the lane's own
         return worktree.new(profile, shared, lane, rev)
 
 
@@ -424,17 +447,40 @@ def settle(cfg: DataConfig, tree: Path) -> str | None:
     )
 
 
+def check_versions(builder: trial.Builder, versions: list[str]) -> list[dict[str, Any]]:
+    """`check` of every version side by side inside the stamp's slots, which the stamp has already queued for once
+    (`builder.holding`): as many makes as versions the slots allow, each at its share of the jobs, so the sum stays the
+    stamp's weight. Five serial makes each paid a make start-up and, under load, its own queue trip (10-27: 68 s wall
+    for 38 CPU s on a warm tree, 455 s for 47 on a cold one). Results come back in VERSIONS order."""
+    width = builder.width()
+    workers = max(1, min(len(versions), width))
+    outer = type(builder).make_jobs
+    type(builder).make_jobs = str(max(1, width // workers))
+    try:
+        if workers == 1:
+            return [check_mod.check(builder, v) for v in versions]
+        with ThreadPoolExecutor(workers) as pool:
+            return list(pool.map(lambda v: check_mod.check(builder, v), versions))
+    finally:
+        type(builder).make_jobs = outer
+
+
 def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
     started, cpu = time.monotonic(), meter.cpu()
+    slots_held = contextlib.ExitStack()  # the stamp's host slots from the settle until the link is done
     mark = [started, cpu]
-    free = [0.0]  # CPU seconds `settle` used: shown on its own line, not charged to the diff
+    # CPU and wall seconds the tree and `settle` used: shown on their own lines, not charged to the diff
+    free = [0.0, 0.0]
 
     def settled(tree: Path) -> list[dict[str, Any]]:
-        before = mark[1]
+        before, began = mark[1], mark[0]
         _phase("tree (not charged)", mark, cap=False)  # seeding a fresh tree is the slot's cost, not the diff's
+        # ONE queue trip for the settle, the check and the link
+        slots_held.enter_context(trial.Builder(cfg, tree).holding())
         why = settle(cfg, tree)
         _phase("settle (not charged)", mark, cap=False)
         free[0] += mark[1] - before
+        free[1] += mark[0] - began
         return [{"key": "data.stamp", "blocking": True, "message": why}] if why else []
 
     # The tree is at SHARED's own commit: any other base differs in symbol facts and splits the ROM again for every
@@ -511,7 +557,8 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         _phase("extract+regen", mark)
         builder = trial.Builder(cfg, tree, reference=shared if same else None)
         check_mod.prepare(builder, list(cfg.versions))
-        results = [check_mod.check(builder, v) for v in cfg.versions]
+        slots_held.enter_context(builder.holding())  # ONE queue trip for the check and the link
+        results = check_versions(builder, list(cfg.versions))
         _phase("check", mark)
         for line in filter(None, map(closure_line, results)):
             print(line, flush=True)
@@ -520,8 +567,10 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         if (
             same and _git(shared, "rev-parse", "HEAD").stdout.strip() != head
         ):  # the pool moved on: its objects are not ours
+            slots_held.close()
             builder = trial.Builder(cfg, tree)
-            results = [check_mod.check(builder, v) for v in cfg.versions]
+            slots_held.enter_context(builder.holding())
+            results = check_versions(builder, list(cfg.versions))
             _phase("check again", mark)
         findings = [
             {"key": "data.check", "blocking": True, "message": f"{r['version']}: {u} {fn} {why}"}
@@ -572,6 +621,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
             result["stamp"] = "not stamped: the check failed"
         return result, 1 if findings else 0, findings
     finally:
+        slots_held.close()
         wall, used = time.monotonic() - started, meter.cpu() - cpu - free[0]
         if kept and (tree / ".git").exists():
             (tree / STATE).write_text("busy\n")  # not reusable; the next stamp in this slot rebuilds it
@@ -584,6 +634,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
             stamp_mod.write(stamps, text, measured=record)
         print(
             f"stamp build: wall={wall:.0f}s cpu={used:.0f}s tree={lane} {'reused' if made.get('reused') else 'fresh'}"
-            + ("  FLAG CPU-OVER-5min" if used > CPU_CAP else ""),
+            + ("  FLAG CPU-OVER-5min" if used > CPU_CAP else "")
+            + (f"  (uncharged tree+settle: wall={free[1]:.0f}s cpu={free[0]:.0f}s)" if free[1] else ""),
             flush=True,
         )

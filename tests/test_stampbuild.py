@@ -758,3 +758,134 @@ def test_a_lease_prefers_the_free_tree_left_at_the_wanted_commit(tmp_path):
         assert lane == "STAMP-S1"
     with stampbuild.lease(tmp_path, 3, 0, "zzz") as lane:
         assert lane == "STAMP-S0"  # no tree at the commit: the first free one
+
+
+def test_copiers_share_the_setup_lock_but_an_extraction_waits_for_them_and_they_wait_for_it(tmp_path):
+    import pytest
+
+    from abu_decomp import DecompError
+
+    shared = tmp_path / "code" / "POOL-SRC"
+    with (  # a second copier does not wait; an extraction waits for both
+        stampbuild.setup_lock(shared, exclusive=False),
+        stampbuild.setup_lock(shared, exclusive=False),
+        pytest.raises(DecompError),
+        stampbuild.setup_lock(shared, wait=0, exclusive=True),
+    ):
+        pass
+    with (
+        stampbuild.setup_lock(shared, exclusive=True),
+        pytest.raises(DecompError),
+        stampbuild.setup_lock(shared, wait=0, exclusive=False),
+    ):
+        pass
+
+
+def test_a_builder_queues_for_the_slots_once_for_all_its_makes(tmp_path, monkeypatch):
+    from abu_decomp import slots
+
+    held = []
+
+    class Hold:
+        def __init__(self, klass, weight=1, label="", mem_gib=None):
+            held.append(weight)
+
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(slots, "hold", Hold)
+    monkeypatch.setattr(slots, "capacity", lambda: 14)
+    monkeypatch.setattr(slots, "STAMP_GIB", 0.0)
+    monkeypatch.setattr(slots, "STAMP_JOBS", 0)
+    ran = []
+    run = lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "1", "")  # noqa: E731
+    b = trial.Builder(replace(CFG, make=("make",), jobs=("n",)), tmp_path, run=run)
+    with b.holding() as width:
+        b.build("a", "u")
+        b.objects("b", ["v"])
+        assert b.jobs() == str(width)
+    assert held == [1] and not b.held and b.make_jobs is None  # one queue trip for two makes
+    # another Builder of the same stamp (the settle's, the link's) queues nothing inside it
+    with b.holding(), trial.Builder(CFG, tmp_path, run=run).holding():
+        trial.Builder(CFG, tmp_path, run=run).run_held(["make"])
+    assert held == [1, 1]  # one more trip for the whole nest
+
+
+def test_the_versions_are_checked_side_by_side_at_their_share_of_the_stamps_jobs(tmp_path, monkeypatch):
+    import threading
+
+    from abu_decomp.data import check as check_mod
+
+    monkeypatch.setattr(trial.Builder, "make_jobs", "4")  # the stamp's hold, restored by check_versions
+    b = trial.Builder(replace(CFG, make=("make",), jobs=()), tmp_path)
+    b.width = lambda: 4
+    seen, gate = [], threading.Barrier(2, timeout=5)
+
+    def fake(builder, v):
+        seen.append((v, builder.jobs()))
+        gate.wait()  # two versions must be inside check at the same moment
+        return {"version": v, "built": True, "broken": []}
+
+    monkeypatch.setattr(check_mod, "check", fake)
+    got = stampbuild.check_versions(b, ["a", "b", "c", "d"])
+    assert [r["version"] for r in got] == ["a", "b", "c", "d"]
+    assert {j for _, j in seen} == {"1"} and b.make_jobs == "4"  # 4 slots, 4 workers, 1 job each
+
+
+def test_one_version_takes_all_the_jobs(tmp_path, monkeypatch):
+    from abu_decomp.data import check as check_mod
+
+    b = trial.Builder(replace(CFG, make=("make",), jobs=()), tmp_path)
+    b.width = lambda: 3
+    seen = []
+    monkeypatch.setattr(check_mod, "check", lambda bb, v: seen.append(bb.jobs()) or {"version": v, "built": True})
+    stampbuild.check_versions(b, ["a"])
+    assert seen == ["3"]
+
+
+def test_a_rewarm_copies_its_synced_names_side_by_side_and_reports_a_failed_one(tmp_path, monkeypatch):
+    import threading
+
+    shared, tree = tmp_path / "s", tmp_path / "t"
+    for n in ("a", "b", "c"):
+        (shared / n).mkdir(parents=True)
+    gate, called = threading.Barrier(3, timeout=5), []
+
+    def fake(args, **k):
+        called.append(args[-1])
+        gate.wait()  # all three rsyncs must be running at once
+        return subprocess.CompletedProcess(args, 1 if args[-1].endswith("/b/") else 0)
+
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert stampbuild.sync_all(["a", "b", "c"], shared, tree) == [True, False, True] and len(called) == 3
+
+
+def test_a_stamp_queues_for_the_slots_once_from_the_settle_to_the_link(tmp_path, monkeypatch):
+    from abu_decomp import slots
+
+    held, depth = [], []
+
+    class Hold:  # re-entrant like the real one: a block inside a held block queues nothing
+        def __init__(self, klass, weight=1, label="", mem_gib=None):
+            self.outer = not depth
+            if self.outer:
+                held.append(weight)
+
+        def __enter__(self):
+            if self.outer:
+                depth.append(1)
+
+        def __exit__(self, *a):
+            if self.outer:
+                depth.clear()
+            return False
+
+    monkeypatch.setattr(slots, "hold", Hold)
+    cfg = replace(CFG, rom_check=("check",))
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    clock(monkeypatch, [0.0, 0.0])
+    _r, code, _f = stampbuild.build(cfg, None, tmp_path, diff, tmp_path / "stamps")
+    assert code == 0 and len(held) == 1  # the settle, the check and the link: one queue trip
