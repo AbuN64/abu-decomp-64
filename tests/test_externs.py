@@ -419,3 +419,22 @@ def test_c_split_only_batch_has_a_commit_subject_within_the_cap(tmp_path: Path) 
     moved(tmp_path, {"src/d/d.c": "extern int gQ, gR;\n"})  # no definer: refused, only split
     diff = (tmp_path / "out" / "externs-batch-00-split.diff").read_bytes()
     assert diff.startswith(b"# MSG: Split ") and diff.index(b"\n") <= 79
+
+
+def test_c_a_split_the_stamp_gate_refuses_is_undone_and_the_line_stays_refused(tmp_path: Path) -> None:
+    extra = {
+        "src/a/a.c": FILES["src/a/a.c"] + "int gA;\nint gB;\n",
+        "src/b/b.c": FILES["src/b/b.c"] + "extern int gA, gB;\nint useb2(void) { return gA; }\n",
+    }
+    root = project(tmp_path, extra)
+
+    def gate(text: str) -> list[str]:  # a data gate that cannot prove gB, so no diff may rewrite a line naming it
+        return ["INTERIOR gB: unproved" for line in text.splitlines() if line.startswith("-") and "gB" in line]
+
+    found = externs.plan(root, None, tmp_path / "out", gate=gate)
+    batches = "".join(p.read_text() for p in (tmp_path / "out").glob("externs-batch-*.diff"))
+    assert "-extern int gA, gB;" not in batches
+    assert found["split_units"] == 0
+    reasons = {r["id"]: r["reason"] for r in found["refused"]}
+    assert reasons["gA"] == reasons["gB"] == "declared together with other names"
+    assert found["unit_extern_ids_before"] - found["unit_extern_ids_after"] == found["planned_ids"]

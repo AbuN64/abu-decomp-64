@@ -216,9 +216,12 @@ def split_declaration(body: str) -> list[str] | None:
     return out
 
 
-def split_compound(root: Path, files: list[str]) -> dict[str, str]:
+def split_compound(
+    root: Path, files: list[str], keep: frozenset[str] = frozenset(), names: set[str] | None = None
+) -> dict[str, str]:
     """The source units whose multi-declarator `extern` lines are rewritten to one declaration per name (unit -> new
-    text). Only whole-line declarations without comments or preprocessor lines are rewritten."""
+    text). Only whole-line declarations without comments or preprocessor lines are rewritten, and none that names a
+    symbol of `keep`; `names`, when given, collects every identifier of the lines rewritten."""
     changed: dict[str, str] = {}
     for name in files:
         if not (name.startswith("src/") and name.lower().endswith(owners.SOURCE_SUFFIXES)):
@@ -238,6 +241,11 @@ def split_compound(root: Path, files: list[str]) -> dict[str, str]:
                 continue
             if " ".join(span.split()) != " ".join(body.split()):
                 continue  # other text shares the lines
+            idents = set(re.findall(r"[A-Za-z_]\w*", body))
+            if idents & keep:
+                continue
+            if names is not None:
+                names |= idents
             edits.append((c.first, c.last, pieces))
         if edits:
             nl = eol(lines)
@@ -411,6 +419,7 @@ def plan(
     batch_cpu: float = BATCH_CPU,
     unit_cpu: float = UNIT_CPU,
     gate: Callable[[str], list[str]] | None = None,
+    keep: frozenset[str] = frozenset(),
 ) -> dict[str, object]:
     map_path = map_path or root / "docs" / "MODULES.tsv"
     unit_module, module_header = owners.read_map(map_path)
@@ -418,7 +427,8 @@ def plan(
     files = tracked(root)
     for module in set(unit_module.values()):  # a module's own source file (the merged unit) belongs to that module
         unit_module.setdefault(module, module)
-    split = split_compound(root, files)
+    split_names: set[str] = set()
+    split = split_compound(root, files, keep, split_names)
     found = scan(root, files, split)
     found.originals = {n: (root / n).read_bytes().decode("latin-1") for n in split}
     derive = header_rules(module_header)
@@ -445,6 +455,8 @@ def plan(
         moves: list[dict[str, object]] = []
         refused: list[dict[str, object]] = []
         reach: dict[tuple[str, str], list[str]] = {}
+        for ident in sorted(found.compound - found.externs.keys()):  # only ever declared together with other names
+            refused.append({"id": ident, "reason": "declared together with other names", "protos": []})
         for ident, decls in sorted(found.externs.items()):
             users = sorted({d.unit for d in decls})
             defined = found.definitions.get(ident, [])
@@ -569,12 +581,17 @@ def plan(
             if m["id"] in refusing:
                 refused.append({"id": m["id"], "reason": "gate: " + refusing[str(m["id"])], "protos": [m["proto"]]})
         moves = [m for m in moves if m["id"] not in refusing]
+    held = {  # a violation naming a symbol only a split rewrote: leave that line unsplit and plan again
+        t for v in unattributed for t in re.findall(r"[A-Za-z_]\w*", v.split(":")[0]) if t in split_names
+    } - keep
+    if held:
+        return plan(root, map_path, packs, batch_cpu, unit_cpu, gate, keep | held)
     lines_before = sum(len(v) for v in found.externs.values())
     result: dict[str, object] = {
         "unit_extern_lines_before": lines_before,
-        "unit_extern_ids_before": len(found.externs),
+        "unit_extern_ids_before": len(found.externs.keys() | found.compound),
         "unit_extern_lines_after": lines_before - sum(len(m["decls"]) for m in moves),  # type: ignore[arg-type]
-        "unit_extern_ids_after": len(found.externs) - len(moves),
+        "unit_extern_ids_after": len(found.externs.keys() | found.compound) - len(moves),
         "split_units": len(found.originals),
         "created_headers": sorted({str(m["to"]) for m in moves} & found.created),
         "planned_ids": len(moves),
