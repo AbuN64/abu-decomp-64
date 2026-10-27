@@ -471,11 +471,21 @@ def plan(
                 if len(protos) > 1:
                     refused.append({"id": ident, "reason": "definitions differ", "protos": protos})
                     continue
+                if not any(re.search(rf"\b{re.escape(ident)}\b", p) for p in protos):  # `struct { .. } NAME = ..`
+                    shown = [*protos, *sorted({d.proto for d in decls})]
+                    refused.append({"id": ident, "reason": "definition names no type to declare", "protos": shown})
+                    continue
                 stated = arity(protos[0])
                 odd = sorted({d.proto for d in decls if stated is not None and arity(d.proto) not in (None, stated)})
                 if odd:  # callers written against it pass another number of arguments than the definition
                     why = "declaration parameter count differs from the definition"
                     refused.append({"id": ident, "reason": why, "protos": [*protos, *odd]})
+                    continue
+                flat = lambda x: re.sub(r"\[\w*\]", "[]", canonical(x, found.aliases))  # noqa: E731  one type, any extent
+                differ = sorted({d.proto for d in decls if flat(d.proto) != flat(protos[0])})
+                if differ:  # another type than the definition's (array for scalar..): its uses are written for it
+                    why = "declaration differs from the definition"
+                    refused.append({"id": ident, "reason": why, "protos": [*protos, *differ]})
                     continue
             else:
                 at = range_owner(ident, ranges)

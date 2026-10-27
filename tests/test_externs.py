@@ -408,7 +408,7 @@ def test_b_a_clash_with_a_name_the_plan_itself_removes_from_the_unit_is_no_clash
     extra = {
         "include/A/A.H": "#ifndef A_H\n#define A_H\nextern int gOther;\n#endif\n",
         "src/a/a.c": FILES["src/a/a.c"] + "int gOther = 2;\n",
-        "src/b/b.c": FILES["src/b/b.c"] + "extern long gOther;\n",
+        "src/b/b.c": FILES["src/b/b.c"] + "extern int gOther;\n",
     }
     _, found = moved(tmp_path, extra)
     assert "gScore" in {m for m in table(tmp_path / "out")}
@@ -438,3 +438,26 @@ def test_c_a_split_the_stamp_gate_refuses_is_undone_and_the_line_stays_refused(t
     reasons = {r["id"]: r["reason"] for r in found["refused"]}
     assert reasons["gA"] == reasons["gB"] == "declared together with other names"
     assert found["unit_extern_ids_before"] - found["unit_extern_ids_after"] == found["planned_ids"]
+
+
+def test_b_an_anonymous_aggregate_definition_is_residue_never_an_extern_struct(tmp_path: Path) -> None:
+    extra = {
+        "src/b/b.c": FILES["src/b/b.c"] + "extern unsigned char D_80001700[];\n",
+        "src/c/c.c": FILES["src/c/c.c"] + "struct {\n    int w;\n} D_80001700 = {1};\n",
+    }
+    _, found = moved(tmp_path, extra)
+    refusal = next(r for r in found["refused"] if r["id"] == "D_80001700")
+    assert refusal["reason"] == "definition names no type to declare"
+    assert refusal["protos"] == ["struct", "unsigned char D_80001700[]"]
+    assert not any("extern struct;" in f.read_text() for f in (tmp_path / "out").glob("*.diff"))
+
+
+def test_b_a_declaration_of_another_type_than_the_definition_is_residue_with_both_prototypes(tmp_path: Path) -> None:
+    extra = {
+        "src/b/b.c": FILES["src/b/b.c"] + "extern char D_80001800[];\n",
+        "src/c/c.c": FILES["src/c/c.c"] + "char D_80001800;\n",
+    }
+    _, found = moved(tmp_path, extra)
+    refusal = next(r for r in found["refused"] if r["id"] == "D_80001800")
+    assert refusal["reason"] == "declaration differs from the definition"
+    assert refusal["protos"] == ["char D_80001800", "char D_80001800[]"]
