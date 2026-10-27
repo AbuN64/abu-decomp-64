@@ -1372,7 +1372,7 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
 
             section = profile.section("cleanup")
             try:
-                done = gates.run(root, rev, section)
+                done = gates.run(root, rev, section, profile)
             except subprocess.CalledProcessError as e:
                 raise DecompError("cleanup.rev", f"{rev} cannot be unpacked: {e}") from None
             for g in done["gates"]:

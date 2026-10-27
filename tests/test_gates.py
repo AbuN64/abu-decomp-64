@@ -98,3 +98,58 @@ def test_marked_counts_functions_opened_and_not_closed_later(tmp_path):
     spec = {"kind": "marked", "file": str(claims), "open": "OPEN", "closed": "CLOSED"}
     value, detail = gates._marked(None, spec)  # type: ignore[arg-type]
     assert (value, detail) == (2, {"named": 3})
+
+
+def test_roms_gates_share_one_pool_tree_synced_to_the_revision(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    from abu_decomp import shipproof
+    from abu_decomp.data import config as config_mod
+    from abu_decomp.data import stampbuild, trial
+
+    root = _repo(tmp_path, {"src/a.c": "int x;\n"})
+    sha = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    pool = tmp_path / "pool"
+    subprocess.run(["git", "clone", "-q", str(root), str(pool)], check=True)
+    leased, linked = [], []
+
+    @contextmanager
+    def fake_at_rev(cfg, profile, shared, rev, wait):
+        leased.append((shared, rev, wait))
+        yield tmp_path / "STAMP-S0"
+
+    class FakeBuilder:
+        def __init__(self, cfg, tree):
+            linked.append(tree)
+
+        def rom_check(self):
+            return 0, ""
+
+    monkeypatch.setattr(config_mod, "load", lambda path, tree=None: object())
+    monkeypatch.setattr(stampbuild, "at_rev", fake_at_rev)
+    monkeypatch.setattr(trial, "Builder", FakeBuilder)
+    monkeypatch.setattr(
+        shipproof, "rom_report", lambda tree: {"us": {"ok": True}, "de": {"ok": False}, "eu": {"ok": True}}
+    )
+    gate = {"measure": {"kind": "roms", "pool": str(pool), "wait": 5}}
+    section = {
+        "scratch": str(tmp_path / "scratch"),
+        "gates": [{"id": f"r{i}", "phase": "P", "name": "roms", **gate} for i in range(3)],
+    }
+    done = gates.run(root, "HEAD", section)
+    assert [g["value"] for g in done["gates"]] == [1, 1, 1] and done["failed"] == 0
+    assert done["gates"][0]["detail"] == {"versions": 3, "exact": ["eu", "us"]}
+    assert leased == [(pool, sha, 5.0)] and linked == [tmp_path / "STAMP-S0"]  # one lease, one link, for all three
+
+
+def test_ledger_refuses_a_day_that_is_not_yyyy_mm_dd(tmp_path):
+    import pytest
+
+    from abu_decomp import DecompError
+
+    for bad in ("20261025", "2026-1-5", "2026-13-40", "yesterday"):
+        with pytest.raises(DecompError, match="YYYY-MM-DD"):
+            cleanup.ledger(tmp_path, day=bad)
+    assert cleanup.check_day("2026-10-25") == "2026-10-25" and cleanup.check_day(None) is None

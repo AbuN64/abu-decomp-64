@@ -252,6 +252,26 @@ def _tree(profile: Any, shared: Path, lane: str, rev: str | None):
         return worktree.new(profile, shared, lane, rev)
 
 
+@contextmanager
+def at_rev(cfg: DataConfig, profile: Any, shared: Path, rev: str, wait: float = 900.0) -> Iterator[Path]:
+    """A pool tree at REV for a caller that builds there without a diff (`cleanup count --rev`): leased like a stamp's,
+    reused, re-warmed by one sync or fresh, marked busy while the caller works, clean and marked at REV again after."""
+    from unbake import hdrnarrow
+
+    with lease(worktree.base(shared), cfg.stamp_trees, wait) as lane:
+        made, code, findings = _tree(profile, shared, lane, rev)
+        if code:
+            why = "; ".join(f.get("message", "") for f in findings) or f"exit {code}"
+            raise DecompError("data.stamp", f"no pool tree at {rev[:9]}: {why}"[:300])
+        tree = Path(made["worktree"])
+        before = dict(hdrnarrow.records(tree))
+        (tree / STATE).write_text("busy\n")
+        try:
+            yield tree
+        finally:
+            release(shared, tree, before)
+
+
 def missing_versions(cfg: DataConfig, shared: Path) -> list[str]:
     """Versions the project builds (versions/<v>/splat.yaml) that the data config does not list: a stamp run without the
     host profile and config checks only the default pseudo-version and passes (10-25: a false pass missed the eu build)."""

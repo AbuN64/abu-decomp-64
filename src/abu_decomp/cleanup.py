@@ -282,6 +282,22 @@ def train_rounds(history: Path, day: str | None, now: float) -> dict[str, Any]:
     }
 
 
+def check_day(day: str | None) -> str | None:
+    """DAY as given when it is a real YYYY-MM-DD date (or None): a day in another shape matched no row and printed an
+    empty table (`--day 20261025`, 10-26), so the shape is refused before anything is read."""
+    from abu_decomp import DecompError
+
+    if day is None:
+        return None
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            time.strptime(day, "%Y-%m-%d")
+            return day
+    except ValueError:
+        pass
+    raise DecompError("cleanup.day", f"--day {day!r} is not a date: write it as YYYY-MM-DD (e.g. 2026-10-25)")
+
+
 def ledger(
     names: Path, hours: float = 1.0, now: float | None = None, day: str | None = None, history: Path | None = None
 ) -> dict[str, Any]:
@@ -290,8 +306,8 @@ def ledger(
     how many of its functions have an accepted row. Read from the ledger, submits, events and slices files; nothing
     is written."""
     import json
-    import time
 
+    day = check_day(day)
     now = now or time.time()
     rows = _lines(names / "ledger.jsonl")
     state = {r["seq"]: "queued" for r in rows}

@@ -18,7 +18,9 @@ the reason it could not: nothing is estimated, and a gate that failed makes the 
   refused       percent of rows refused in the JSON-lines name-book submits `file`
   command       matches of `pattern` in the output of `argv` run in the unpacked revision
   style         `recipe style --full` findings on the unpacked revision, those of `rules` (all when none are named)
-  roms          versions whose built ROM under `tree` is not the Makefile's SHA1 (an error unless `tree` is at it)"""
+  roms          versions whose ROM, linked on a stamp-pool tree synced to the revision (`pool`: the shared tree the pool
+                is seeded from, `config`: its data config, `wait`: seconds to wait for a free tree), is not the
+                Makefile's SHA1; the revision is built at any commit and the train's own tree is never touched"""
 
 from __future__ import annotations
 
@@ -45,10 +47,12 @@ RECORD = re.compile(r"\b(?:struct|union|enum)\s+(\w+)\s*\{")
 class Revision:
     """One commit, read once: the source texts, and an unpacked tree for the measures that need files."""
 
-    def __init__(self, root: Path, rev: str, scratch: Path, link: Mapping[str, str] | None = None):
-        self.root, self.rev, self.scratch, self.link = root, rev, scratch, link or {}
+    def __init__(self, root: Path, rev: str, scratch: Path, link: Mapping[str, str] | None = None, profile: Any = None):
+        self.root, self.rev, self.scratch, self.link, self.profile = root, rev, scratch, link or {}, profile
         self._style: dict[str, Any] | None = None
         self._lock = threading.Lock()
+        self._linked: dict[str, dict[str, Any]] | None = None
+        self._linked_lock = threading.Lock()
         self.paths = cleanup.tracked(root, rev)
         self.texts = cleanup._texts(root, rev, self.paths)
         self._tree: Path | None = None
@@ -208,17 +212,33 @@ def _style(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]
     return len(mine), {"rules": dict(Counter(f.get("rule") for f in mine).most_common(5)), "all": len(found)}
 
 
-def _roms(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
+def _link(rev: Revision, spec: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """The revision's ROMs, once for all `roms` gates: a pool tree leased, synced to the revision, every version
+    linked."""
     from abu_decomp import shipproof
+    from abu_decomp.data import config as config_mod
+    from abu_decomp.data import stampbuild, trial
 
-    tree = Path(spec["tree"]).expanduser()
-    head = subprocess.run(["git", "-C", str(tree), "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
-    want = subprocess.run(
-        ["git", "-C", str(rev.root), "rev-parse", rev.rev], capture_output=True, text=True, check=True
-    )
-    if head.stdout != want.stdout:
-        raise RuntimeError(f"{tree} is at {head.stdout[:9]}, not {want.stdout[:9]}: no ROM of the revision to compare")
-    report = shipproof.rom_report(tree)
+    with rev._linked_lock:
+        if rev._linked is None:
+            pool = Path(spec["pool"]).expanduser()
+            sha = subprocess.run(
+                ["git", "-C", str(rev.root), "rev-parse", rev.rev], capture_output=True, text=True, check=True
+            ).stdout.strip()
+            if subprocess.run(["git", "-C", str(pool), "cat-file", "-e", f"{sha}^{{commit}}"]).returncode:
+                subprocess.run(["git", "-C", str(pool), "fetch", "-q", str(rev.root), sha], check=True)
+            config = Path(spec["config"]).expanduser() if spec.get("config") else None
+            cfg = config_mod.load(config, pool)
+            with stampbuild.at_rev(cfg, rev.profile, pool, sha, float(spec.get("wait", 600))) as tree:
+                trial.Builder(cfg, tree).rom_check()  # links every version; the report below judges the ROMs themselves
+                rev._linked = shipproof.rom_report(tree)
+        return rev._linked
+
+
+def _roms(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
+    report = _link(rev, spec)
+    if not report:
+        raise RuntimeError("the revision's Makefile names no ROM SHA1 to compare")
     return sum(1 for r in report.values() if not r["ok"]), {
         "versions": len(report),
         "exact": sorted(v for v, r in report.items() if r["ok"]),
@@ -256,15 +276,21 @@ def measure(rev: Revision, gate: Mapping[str, Any]) -> dict[str, Any]:
     return {**row, "value": value, "detail": detail, "seconds": round(time.monotonic() - started, 1)}
 
 
-def run(root: Path, rev: str, section: Mapping[str, Any]) -> dict[str, Any]:
-    """Every gate of `section` on commit `rev`: {"rev", "seconds", "gates": [...], "failed": n}."""
+def run(root: Path, rev: str, section: Mapping[str, Any], profile: Any = None) -> dict[str, Any]:
+    """Every gate of `section` on commit `rev`: {"rev", "seconds", "gates": [...], "failed": n}. The ROM gates start
+    first: their link is the one long step and the others count while it runs."""
     started = time.monotonic()
-    book = Revision(root, rev, Path(section.get("scratch", "~/rig-state/tmp")).expanduser(), section.get("link"))
+    book = Revision(
+        root, rev, Path(section.get("scratch", "~/rig-state/tmp")).expanduser(), section.get("link"), profile
+    )
+    gates = list(section["gates"])
     try:
-        if any(g["measure"]["kind"] in ("externs", "dead-decls", "command", "style") for g in section["gates"]):
-            _ = book.tree  # unpack once, before the gates share it
         with ThreadPoolExecutor(max_workers=int(section.get("workers", 8))) as pool:
-            rows = list(pool.map(lambda g: measure(book, g), section["gates"]))
+            futures = {i: pool.submit(measure, book, g) for i, g in enumerate(gates) if g["measure"]["kind"] == "roms"}
+            if any(g["measure"]["kind"] in ("externs", "dead-decls", "command", "style") for g in gates):
+                _ = book.tree  # unpack once, before the gates that read it share it
+            futures |= {i: pool.submit(measure, book, g) for i, g in enumerate(gates) if i not in futures}
+            rows = [futures[i].result() for i in range(len(gates))]
     finally:
         book.close()
     return {
