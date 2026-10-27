@@ -222,3 +222,57 @@ def test_ledger_report_counts_rows_lanes_batches_and_slice_progress(tmp_path):
         "rows_per_hour": 3.0,
     }
     assert got["slices"]["L1"] == {"slice": "S1", "owned_fns": 3, "named_fns": 2}  # the returned row does not count
+
+
+def _rev_args(verb, **over):
+    import argparse
+
+    base = dict(
+        verb=verb, profile=None, project=None, dir=None, rev=None, apply=False, packs=None, map=None, top=15,
+        distinct=False, evidence=False, lanes=None, assign=[], names=None, show=None, book=None, hours=1.0, day=None,
+        batch_cpu=300.0, unit_cpu=0.25,
+    )  # fmt: skip
+    return argparse.Namespace(**{**base, **over})
+
+
+def _rev_project(monkeypatch, tmp_path):
+    from abu_decomp import cli, tools
+
+    monkeypatch.setattr(cli, "_profile", lambda name: None)
+    monkeypatch.setattr(cli, "_own_tree", lambda args, verb: None)
+    monkeypatch.setattr(tools, "project_dir", lambda profile, tree: tmp_path)
+    commit = ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]
+    for argv in (["init", "-q"], commit):
+        subprocess.run(["git", "-C", str(tmp_path), *argv], check=True)
+
+
+def test_a_verb_that_cannot_read_a_commit_refuses_rev_instead_of_answering_from_the_work_tree(monkeypatch, tmp_path):
+    from abu_decomp import DecompError, cli
+
+    _rev_project(monkeypatch, tmp_path)
+    for verb, over in (
+        ("ledger", {}),
+        ("slices", {}),
+        ("owners", {}),
+        ("dead-decls", {"apply": True, "dir": "include"}),
+    ):
+        with pytest.raises(DecompError) as e:
+            cli._run_cleanup(_rev_args(verb, rev="HEAD", **over))
+        assert "--rev" in str(e.value)
+
+
+def test_dead_decls_and_owners_with_rev_read_the_commit_not_the_work_tree(monkeypatch, tmp_path):
+    from abu_decomp import DecompError, cli
+
+    _rev_project(monkeypatch, tmp_path)
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include/a.h").write_text("extern int gDead;\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    commit = ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "h"]
+    subprocess.run(["git", "-C", str(tmp_path), *commit], check=True)
+    (tmp_path / "include/a.h").write_text("")  # the stale work tree no longer holds the declaration
+    now = cli._run_cleanup(_rev_args("dead-decls", dir="include"))[0]
+    then = cli._run_cleanup(_rev_args("dead-decls", dir="include", rev="HEAD"))[0]
+    assert (now["dead"], then["dead"]) == (0, 1)
+    with pytest.raises(DecompError, match="no commit"):
+        cli._run_cleanup(_rev_args("dead-decls", dir="include", rev="nope"))

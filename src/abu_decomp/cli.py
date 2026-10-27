@@ -1167,7 +1167,11 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
         "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
     )
     parser.add_argument("--dir", help="only this folder and below (src/game/MENU_2, game/MENU_2 or the leaf MENU_2)")
-    parser.add_argument("--rev", help="count: the sources of this commit, read from git (no checkout)")
+    parser.add_argument(
+        "--rev",
+        help="count, preflight, dead-decls, owners --dir: measure this commit, read from git (no checkout); the"
+        " other verbs refuse it",
+    )
     parser.add_argument("--distinct", action="store_true", help="count: also the number of different names per class")
     parser.add_argument("--hours", type=float, default=1.0, help="ledger: the window the per-lane rates cover")
     parser.add_argument(
@@ -1226,7 +1230,39 @@ def _run_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[
     return {**found, "written": [str(p) for p in paths]}, int(found["unclassified"] > 0), []
 
 
+REV_VERBS = ("count", "dead-decls", "owners", "preflight")  # the cleanup verbs that can measure a commit, not the cwd
+
+
 def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    """A verb given --rev measures that commit or refuses: dead-decls and owners (with --dir) read it unpacked from
+    git, count and preflight take it themselves; the rest cannot, and never answer from the tree they run in."""
+    from abu_decomp import gates, tools
+
+    rev = getattr(args, "rev", None)  # a hand-made Namespace (tests, other verbs) has none
+    if not rev:
+        return _run_cleanup_verb(args)
+    if args.verb not in REV_VERBS or (args.verb == "owners" and not args.dir):
+        what = "the unit-local externs read the work tree's census" if args.verb == "owners" else "it reads no commit"
+        raise DecompError(
+            "cleanup.rev",
+            f"{args.verb} cannot measure --rev {rev} ({what}): drop --rev to use the work tree, or use one of"
+            f" {', '.join(REV_VERBS)} (owners with --dir)",
+        )
+    if getattr(args, "apply", False):
+        raise DecompError("cleanup.rev", f"--apply writes the work tree, which --rev {rev} does not read: drop one")
+    if args.verb in ("count", "preflight"):
+        return _run_cleanup_verb(args)
+    shared = tools.project_dir(_profile(args.profile), _own_tree(args, "cleanup"))
+    try:
+        with gates.at_rev(shared, rev, _profile(args.profile)) as tree:
+            return _run_cleanup_verb(args, tree)
+    except ValueError as e:
+        raise DecompError("cleanup.rev", str(e)) from None
+
+
+def _run_cleanup_verb(
+    args: argparse.Namespace, tree: Path | None = None
+) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import cleanup, tools
 
     if args.verb == "ledger":
@@ -1293,7 +1329,7 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
         return {"lane": args.show, **found, "file_set": owned}, 0, []
     if args.verb == "preflight":
         return _run_preflight(args)
-    root = tools.project_dir(_profile(args.profile), _own_tree(args, "cleanup"))
+    root = tree or tools.project_dir(_profile(args.profile), _own_tree(args, "cleanup"))
     if args.verb == "slices":
         from abu_decomp import filesets
 

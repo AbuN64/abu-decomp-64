@@ -24,6 +24,7 @@ the reason it could not: nothing is estimated, and a gate that failed makes the 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shutil
@@ -33,15 +34,51 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from abu_decomp import cleanup
+from abu_decomp.config import ConfigError
 
 RECORD = re.compile(r"\b(?:struct|union|enum)\s+(\w+)\s*\{")
+
+
+def unpack(root: Path, rev: str, scratch: Path, link: Mapping[str, str] | None = None) -> Path:
+    """Commit REV of ROOT as a tree on disk under SCRATCH (git-initialised, LINK names symlinked in: what the project
+    keeps out of git, the base ROMs); the caller removes it."""
+    scratch.mkdir(parents=True, exist_ok=True)
+    tree = Path(tempfile.mkdtemp(prefix="gates-", dir=scratch))
+    packed = subprocess.run(["git", "-C", str(root), "archive", rev], capture_output=True, check=True)
+    with tarfile.open(fileobj=BytesIO(packed.stdout)) as tar:
+        tar.extractall(tree, filter="data")
+    for name, target in (link or {}).items():
+        (tree / name).symlink_to(Path(target).expanduser())
+    subprocess.run(["git", "-C", str(tree), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(tree), "add", "-A"], check=True, capture_output=True)
+    return tree
+
+
+@contextmanager
+def at_rev(root: Path, rev: str, profile: Any = None) -> Iterator[Path]:
+    """A tree holding exactly commit REV of ROOT, for a verb that reads files: the profile's cleanup scratch and links,
+    removed after. An unknown REV raises ValueError."""
+    if subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", "-q", f"{rev}^{{commit}}"], capture_output=True
+    ).returncode:
+        raise ValueError(f"{rev} is no commit of {root}")
+    section: Mapping[str, Any] = {}
+    if profile is not None:
+        with contextlib.suppress(ConfigError):
+            section = profile.section("cleanup")
+    tree = unpack(root, rev, Path(section.get("scratch", "~/rig-state/tmp")).expanduser(), section.get("link"))
+    try:
+        yield tree
+    finally:
+        shutil.rmtree(tree, ignore_errors=True)
 
 
 class Revision:
@@ -61,15 +98,7 @@ class Revision:
     @property
     def tree(self) -> Path:
         if self._tree is None:
-            self.scratch.mkdir(parents=True, exist_ok=True)
-            self._tree = Path(tempfile.mkdtemp(prefix="gates-", dir=self.scratch))
-            packed = subprocess.run(["git", "-C", str(self.root), "archive", self.rev], capture_output=True, check=True)
-            with tarfile.open(fileobj=BytesIO(packed.stdout)) as tar:
-                tar.extractall(self._tree, filter="data")
-            for name, target in self.link.items():  # what the project keeps out of git (the base ROMs)
-                (self._tree / name).symlink_to(Path(target).expanduser())
-            subprocess.run(["git", "-C", str(self._tree), "init", "-q"], check=True)
-            subprocess.run(["git", "-C", str(self._tree), "add", "-A"], check=True, capture_output=True)
+            self._tree = unpack(self.root, self.rev, self.scratch, self.link)
         return self._tree
 
     def close(self) -> None:
