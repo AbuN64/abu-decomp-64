@@ -1078,7 +1078,7 @@ def prune_plays(
     return removed
 
 
-# an oracle trace is keyed by the port build: each new build strands the last one (10-27: 1006 keys, 7.6 GB, none removed)
+# an oracle trace is keyed by the port build: each build strands the last one (10-27: 1006 keys, 7.6 GB, none removed)
 KEEP_ORACLE_HOURS = 24
 
 
