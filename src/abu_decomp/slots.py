@@ -14,7 +14,9 @@ first queue time when its process asks again (a retry, a child of the same paren
 REQUEUE_GRACE. A grant needs the host's measured busy cores (every process, the holders and their children
 included, ticket or not) plus the request to fit the capacity, so a declared weight cannot oversubscribe the host:
 a weight-1 job that runs oracle + port + gdb uses ~2 cores and is counted as it runs, and no ticket is admitted
-beside a holder younger than SETTLE seconds, whose processes have not started showing their CPU.
+beside a holder younger than SETTLE seconds, whose processes have not started showing their CPU. A holder's cost is
+what it can burn: while it holds, its thread (and so every process it spawns) is pinned to the cores of its own slots
+(slot-NN is core NN), so a weight-2 play whose two n64host processes ask for 294% each uses 2 cores, not 6.
 """
 
 from __future__ import annotations
@@ -276,6 +278,7 @@ class Grant:
     def __init__(self, fds: list[int], files: list[Path], root: Path, waited: float, info: dict) -> None:
         self.fds, self.files, self.root, self.waited, self.info = fds, files, root, waited, info
         self.weight = len(fds)
+        self.cpus = {int(p.name.removeprefix("slot-")) for p in files}  # slot-NN is core NN
 
     def release(self) -> None:
         for fd in self.fds:
@@ -405,6 +408,17 @@ def acquire(
         _wake(root)
 
 
+def _pin(cpus: set[int]) -> set[int]:
+    """Restrict the calling thread, and every process it spawns, to CPUS; returns the set it had. Where the host has no
+    such core or refuses (no affinity support), the thread stays as it was."""
+    before = os.sched_getaffinity(0)
+    allowed = cpus & before
+    if allowed:
+        with contextlib.suppress(OSError):
+            os.sched_setaffinity(0, allowed)
+    return before
+
+
 def klass_from_env(default: str) -> str:
     if default == "owner":  # the owner's watched play is never downgraded by a lane's environment
         return default
@@ -416,16 +430,19 @@ def klass_from_env(default: str) -> str:
 def hold(
     klass: str = "batch", weight: int = 1, label: str = "", timeout: float | None = None, mem_gib: float | None = None
 ):
-    """Hold `weight` slots while the block runs. Re-entrant per thread and per process tree (ABU_SLOT_HELD): a play
-    that runs its coverage step inside the block does not queue a second time, so a full pool cannot deadlock itself."""
+    """Hold `weight` slots while the block runs, the thread and its children confined to those slots' cores.
+    Re-entrant per thread and per process tree (ABU_SLOT_HELD): a play that runs its coverage step inside the block does not queue a second time, so a full pool cannot deadlock itself."""
     if getattr(_local, "depth", 0) or os.environ.get("ABU_SLOT_HELD") or os.environ.get("ABU_SLOTS_OFF"):
         yield None
         return
     grant = acquire(klass_from_env(klass), weight, label, timeout, mem_gib)
     _local.depth = 1
+    before = _pin(grant.cpus)
     try:
         yield grant
     finally:
+        with contextlib.suppress(OSError):
+            os.sched_setaffinity(0, before)
         _local.depth = 0
         grant.release()
 

@@ -1303,14 +1303,15 @@ def _admitted(fn):
     take) is class owner and always gets a slot; a play a person watches (real time or k times, `speed` != 0) is
     interactive; every other play is automated (a corpus or lane batch, a turbo replay) and takes class background;
     `slot_class` (play_all passes background) or ABU_SLOT_CLASS overrides; the oracle beside the port takes a second
-    slot."""
+    slot. The weight is also the cap: the port and the oracle run pinned to the cores of the slots held, however many
+    threads they start (module slots)."""
 
     @functools.wraps(fn)
     def inner(profile, name, *args, **kwargs):
         klass = kwargs.pop("slot_class", None)
         if name is None or kwargs.get("take") or kwargs.get("source") is not None or kwargs.get("label") == HUMAN_LABEL:
             klass = "owner"
-        weight = 2 if kwargs.get("oracle") else 1
+        weight = 2 if kwargs.get("oracle") else 1  # the port and the oracle: one core each, enforced by the hold
         what = name or kwargs.get("start") or "human"
         watched = bool(kwargs.get("speed", 0))
         with slots.hold(klass or ("interactive" if watched else "background"), weight, f"play {what}"):
