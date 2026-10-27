@@ -208,7 +208,14 @@ def diff_windows(proto: Prototype, oracle: Call, port: Call) -> list[dict[str, s
             continue
         for at in range(0, min(len(ow), len(pw)), 8):
             if ow[at : at + 8] != pw[at : at + 8]:
-                out.append({"field": f"*{name}[{at // 8}]", "kind": "memory", "oracle": ow[at : at + 8], "port": pw[at : at + 8]})
+                out.append(
+                    {
+                        "field": f"*{name}[{at // 8}]",
+                        "kind": "memory",
+                        "oracle": ow[at : at + 8],
+                        "port": pw[at : at + 8],
+                    }
+                )
                 break
     return out
 
@@ -263,7 +270,11 @@ def _call_row(proto: Prototype, oracle: Call, port: Call, diffs: list[dict[str, 
             "ret": oracle.ret and oracle.ret["r"],
             "writes": _window_text(oracle, proto, 0),
         },
-        "port": {"args": [_hex(w) for w in port.words], "ret": port.ret and port.ret["r"], "writes": _window_text(port, proto, 1)},
+        "port": {
+            "args": [_hex(w) for w in port.words],
+            "ret": port.ret and port.ret["r"],
+            "writes": _window_text(port, proto, 1),
+        },
     }
 
 

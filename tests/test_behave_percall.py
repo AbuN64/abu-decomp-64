@@ -3,9 +3,7 @@
 import json
 from pathlib import Path
 
-import pytest
-
-from abu_decomp.behave.percall import align, read_calls, summarise
+from abu_decomp.behave.percall import align, read_calls
 from abu_decomp.behave.prototype import parse_declaration
 
 PROTOS = {

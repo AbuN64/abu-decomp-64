@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -103,21 +104,40 @@ class PlayAllFastTests(unittest.TestCase):
                 tas.play_all(None, jobs=1, gdb_all=True)
                 self.assertEqual(sorted(seen), [("a", True), ("b", True)])
 
-    def test_resume_skips_movies_with_a_result_from_the_current_build(self):
-        pins = {"rw": "b"}
+    def test_resume_skips_movies_with_a_result_from_the_current_code(self):
         prev = {
-            "a": (Path("run-a"), {"outcome": "ok", "pins": pins}),
-            "b": (Path("run-b"), {"outcome": "crash", "pins": pins}),
-            "c": (Path("run-c"), {"outcome": "ok", "pins": {"rw": "a"}}),
-            "d": (Path("run-d"), {"outcome": "refused", "pins": pins}),
-            "f": (Path("run-f"), {"outcome": "killed", "pins": pins}),
+            "a": (Path("run-a"), {"outcome": "ok"}),
+            "b": (Path("run-b"), {"outcome": "crash"}),
+            "d": (Path("run-d"), {"outcome": "refused"}),
+            "f": (Path("run-f"), {"outcome": "killed"}),
         }
-        with mock.patch.object(tas_select, "read_pins", return_value=pins):
-            replay, skipped, why = tas_select.resume_plan({}, ["a", "b", "c", "d", "e", "f"], prev)
+        replay, skipped, why = tas_select.resume_plan(["a", "b", "c", "d", "e", "f"], prev)
         self.assertEqual((replay, sorted(skipped)), (["c", "d", "e", "f"], ["a", "b"]))
         self.assertIn("2 of 6", why)
-        with mock.patch.object(tas_select, "read_pins", return_value=None):
-            self.assertEqual(tas_select.resume_plan({}, ["a"], prev)[0], ["a"])
+
+    def test_equivalent_build_keys_on_code_not_build_sha(self):
+        row = {"build": "sha-old", "code": "text1"}
+        self.assertTrue(tas.equivalent_build(row, "text1"))
+        self.assertFalse(tas.equivalent_build(row, "text2"))
+        self.assertFalse(tas.equivalent_build(row, ""))
+        with tempfile.TemporaryDirectory() as raw:  # an older record reads its code from the executable it ran
+            exe = Path(raw) / "ragewars"
+            exe.write_bytes(Path(sys.executable).resolve().read_bytes())
+            old = {"build": tas.build_id(exe), "port": str(exe)}
+            self.assertTrue(tas.equivalent_build(old, tas.code_hash(exe)))
+            self.assertFalse(tas.equivalent_build({**old, "build": "other"}, tas.code_hash(exe)))
+            self.assertEqual(tas.code_hash(Path(raw) / "missing"), "")
+
+    def test_code_hash_ignores_everything_outside_text(self):
+        with tempfile.TemporaryDirectory() as raw:
+            a, b = Path(raw) / "a", Path(raw) / "b"
+            data = bytearray(Path(sys.executable).resolve().read_bytes())
+            a.write_bytes(bytes(data))
+            data[-1] ^= 0xFF  # the section header table or a trailing section, not .text
+            b.write_bytes(bytes(data))
+            self.assertNotEqual(tas.build_id(a), tas.build_id(b))
+            self.assertEqual(tas.code_hash(a), tas.code_hash(b))
+            self.assertTrue(tas.code_hash(a))
 
     def test_lower_priority_takes_the_asked_niceness(self):
         with mock.patch("os.nice", side_effect=lambda n: n) as nice:

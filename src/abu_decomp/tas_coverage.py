@@ -32,6 +32,7 @@ from __future__ import annotations
 import bisect
 import contextlib
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -62,7 +63,7 @@ LISTED = 200  # rows each list of the page carries
 
 
 class Stages:
-    """Seconds spent per named stage of one `build` (summed over the worker threads), so a slow union says where it went."""
+    """Seconds spent per named stage of one `build` (summed over the worker threads): a slow union says where."""
 
     def __init__(self) -> None:
         self.seconds: dict[str, float] = {}
@@ -342,8 +343,8 @@ BEHAVIOUR = "behaviour.json"  # RUN/: the run's per-call verdicts and the signat
 def behaviour_signature(
     version: str, symbols: dict[str, int], prototypes: replay.Prototypes | None, extra: tuple[Path, ...] = ()
 ) -> str:
-    """What a run's cached verdicts depend on besides its own call files: the judging code, the ROM version, the source's
-    address tables (how names resolve) and its declarations (how arguments decode)."""
+    """What a run's cached verdicts depend on besides its own call files: the judging code, the ROM version,
+    the source's address tables (how names resolve) and its declarations (how arguments decode)."""
     digest = hashlib.sha256(version.encode())
     for module in (percall, prototype, abi):
         digest.update(Path(module.__file__).read_bytes())
@@ -856,6 +857,12 @@ def _build(
 
     deadline = None if oracle_seconds is None else time.monotonic() + oracle_seconds
 
+    @functools.cache
+    def current() -> tuple[
+        str, str
+    ]:  # the current port's (build sha, code hash): a run on equal code is a run on this build
+        return tas.build_id(Path(cfg["port"])), tas.code_hash(Path(cfg["port"]))
+
     def one(item: tuple[str, Path]) -> dict[str, Any]:
         name, run = item
         if not (run / COVERAGE).is_file():
@@ -881,7 +888,9 @@ def _build(
             "oracle": fold(got[0], resolve, _first_seen) if got else None,
             "port_polls": int(record.get("polls_reached") or 0),
             "oracle_polls": got[1] if got else 0,
-            "build": str(record.get("build") or "unknown"),
+            "build": current()[0]
+            if tas.equivalent_build(record, current()[1])
+            else str(record.get("build") or "unknown"),
         }
 
     with stage("runs-wall"), ThreadPoolExecutor(max_workers=max(1, jobs or slots.capacity())) as pool:

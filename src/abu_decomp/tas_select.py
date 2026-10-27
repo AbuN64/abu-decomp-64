@@ -104,23 +104,16 @@ def completed_outcome(row: dict[str, Any]) -> bool:
 
 
 def resume_plan(
-    cfg: dict[str, Any],
     names: list[str],
     previous: dict[str, tuple[Path, dict[str, Any]]],
 ) -> tuple[list[str], dict[str, tuple[Path, dict[str, Any]]], str]:
-    """`play --all --resume`: a movie whose newest finished run was made by the CURRENT build (equal pins) and ended
-    with a real outcome keeps that result. Missing, stale, killed, refused and unknown runs replay.
-    No profile section needed: an interrupted or throttled sweep restarts without redoing its finished movies."""
-    now = read_pins(cfg)
-    replay: list[str] = []
-    skipped: dict[str, tuple[Path, dict[str, Any]]] = {}
-    for name in names:
-        last = previous.get(name)
-        if now is None or last is None or last[1].get(PINS) != now or not completed_outcome(last[1]):
-            replay.append(name)
-        else:
-            skipped[name] = last
-    return replay, skipped, f"{len(skipped)} of {len(names)} movies already have a result from this build"
+    """`play --all --resume`: `previous` maps a movie to its newest run on this build's native code (equal `.text` hash,
+    tas.equivalent_build); one that ended with a real outcome keeps that result. Missing, killed, refused and unknown
+    runs replay. No profile section needed: an interrupted or throttled sweep restarts without redoing its finished
+    movies."""
+    replay = [n for n in names if n not in previous or not completed_outcome(previous[n][1])]
+    skipped = {n: previous[n] for n in names if n not in replay}
+    return replay, skipped, f"{len(skipped)} of {len(names)} movies already have a result from this build's code"
 
 
 def plan(

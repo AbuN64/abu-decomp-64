@@ -59,6 +59,7 @@ import resource
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -740,6 +741,61 @@ def build_id(port: Path) -> str:
     return _builds[key]
 
 
+_codes: dict[tuple[str, int, int], str] = {}
+
+
+def _text_section(path: Path) -> bytes:
+    """The bytes of an ELF executable's `.text` (32 or 64 bit, little endian); empty when there is none."""
+    with path.open("rb") as handle:
+        head = handle.read(64)
+        if head[:4] != b"\x7fELF" or head[5] != 1:
+            return b""
+        wide = head[4] == 2
+        shoff = struct.unpack_from("<Q" if wide else "<I", head, 0x28 if wide else 0x20)[0]
+        shentsize, shnum, shstrndx = struct.unpack_from("<HHH", head, 0x3A if wide else 0x2E)
+        handle.seek(shoff)
+        table = handle.read(shentsize * shnum)
+        fmt = "<IIQQQQ" if wide else "<IIIIII"  # name, type, flags, address, offset, size
+        sections = [struct.unpack_from(fmt, table, i * shentsize) for i in range(shnum)]
+        handle.seek(sections[shstrndx][4])
+        strings = handle.read(sections[shstrndx][5])
+        for sect in sections:
+            if strings[sect[0] : strings.index(b"\0", sect[0])] == b".text":
+                handle.seek(sect[4])
+                return handle.read(sect[5])
+    return b""
+
+
+def code_hash(port: Path) -> str:
+    """SHA-1 of the port executable's `.text` (cached per path, mtime and size): a rename or relink that leaves the
+    native code alone keeps it, so a run on an equivalent build counts as a run on this one. Empty for a missing or
+    non-ELF file."""
+    try:
+        stat = port.stat()
+        key = (str(port), stat.st_mtime_ns, stat.st_size)
+        if key not in _codes:
+            text = _text_section(port)
+            _codes[key] = hashlib.sha1(text).hexdigest() if text else ""
+        return _codes[key]
+    except (OSError, ValueError, struct.error):
+        return ""
+
+
+def run_code(row: dict[str, Any]) -> str:
+    """The code hash a run's record carries; an older record without one reads it from the executable it ran, when that
+    file still is the build the record names."""
+    if row.get("code"):
+        return str(row["code"])
+    port = Path(row["port"]) if row.get("port") else None
+    return code_hash(port) if port and build_id(port) == row.get("build") else ""
+
+
+def equivalent_build(row: dict[str, Any], code: str) -> bool:
+    """A run made by an executable with this `.text` hash (`code`, the current port's): a rename or relink that leaves
+    the native code alone does not change a replay's verdict."""
+    return bool(code) and run_code(row) == code
+
+
 _LABEL = re.compile(r"[A-Za-z0-9_.-]{1,40}")
 
 
@@ -1394,6 +1450,7 @@ def play(
         "speed": speed,
         "polls": len(polls),
         "build": build,
+        "code": code_hash(cfg["port"]),
         "status": "running",
         "started": time.time(),
         "pid": os.getpid(),
@@ -1734,16 +1791,18 @@ def play_all(
     why_skipped = ""
     if changed or resume:
         newest: dict[str, tuple[Path, dict[str, Any]]] = {}
+        code = code_hash(Path(cfg["port"])) if resume else ""
         for run, row in run_rows(cfg):  # oldest first: the newest good plain movie run of each movie wins
             if (
                 row.get("input") == "movie"
                 and row.get("status") == "done"
                 and row.get("outcome")
                 and not (row.get("stopped") or row.get("taken") or row.get("sanitizer") or row.get("start"))
+                and (not resume or equivalent_build(row, code))  # resume: a run on equal native code is this build's
             ):
                 newest[row["movie"]] = (run, row)
         if resume:
-            names_to_run, skipped, why_skipped = tas_select.resume_plan(cfg, names, newest)
+            names_to_run, skipped, why_skipped = tas_select.resume_plan(names, newest)
         else:
             names_to_run, skipped, why_skipped = tas_select.plan(profile, cfg, names, newest)
     else:
