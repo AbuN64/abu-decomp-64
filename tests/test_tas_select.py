@@ -115,6 +115,15 @@ class PlayAllFastTests(unittest.TestCase):
         self.assertEqual((replay, sorted(skipped)), (["c", "d", "e", "f"], ["a", "b"]))
         self.assertIn("2 of 6", why)
 
+    def test_shards_split_the_corpus_without_overlap(self):
+        names = [f"movie-{i}" for i in range(60)]
+        parts = [tas.in_shard(names, f"{k}/3") for k in range(3)]
+        self.assertEqual(sorted(n for part in parts for n in part), sorted(names))
+        self.assertTrue(all(parts))
+        self.assertEqual(tas.in_shard(names, None), names)
+        with self.assertRaises(tas.DecompError):
+            tas.in_shard(names, "3/3")
+
     def test_equivalent_build_keys_on_code_not_build_sha(self):
         row = {"build": "sha-old", "code": "text1"}
         self.assertTrue(tas.equivalent_build(row, "text1"))

@@ -431,8 +431,13 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     play.add_argument(
         "--resume",
         action="store_true",
-        help="with --all: skip a movie whose newest run came from the current build (same pins) with a real outcome, "
-        "so a throttled or interrupted sweep restarts cheaply",
+        help="with --all: skip a movie whose newest run came from this build's native code (same .text hash) with a "
+        "real outcome, so a throttled or interrupted sweep restarts cheaply",
+    )
+    play.add_argument(
+        "--shard",
+        metavar="K/N",
+        help="with --all: replay only the movies whose name hashes to shard K of N (hosts split one corpus)",
     )
     play.add_argument(
         "--nice", type=int, default=0, help="with --all: scheduling niceness of the sweep (default 0: 10, never lower)"
@@ -640,6 +645,7 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
             twice=args.twice,
             changed=args.changed,
             resume=args.resume,
+            shard=args.shard,
             nice=args.nice,
             gdb_all=args.gdb_all,
             **options,

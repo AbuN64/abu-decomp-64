@@ -64,6 +64,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -788,6 +789,17 @@ def run_code(row: dict[str, Any]) -> str:
         return str(row["code"])
     port = Path(row["port"]) if row.get("port") else None
     return code_hash(port) if port and build_id(port) == row.get("build") else ""
+
+
+def in_shard(names: list[str], shard: str | None) -> list[str]:
+    """The movies of shard `K/N` (by a stable hash of the name), so several hosts split one corpus; all without one."""
+    if not shard:
+        return names
+    match = re.fullmatch(r"(\d+)/(\d+)", shard)
+    if not match or not 0 <= int(match[1]) < int(match[2]):
+        raise DecompError("tas.shard", f"--shard is K/N with 0 <= K < N, not {shard!r}")
+    index, count = int(match[1]), int(match[2])
+    return [n for n in names if zlib.crc32(n.encode()) % count == index]
 
 
 def equivalent_build(row: dict[str, Any], code: str) -> bool:
@@ -1765,6 +1777,7 @@ def play_all(
     run_ids: dict[str, str] | None = None,
     changed: bool = False,
     resume: bool = False,
+    shard: str | None = None,
     nice: int = 0,
     gdb_all: bool = False,
     **options: Any,
@@ -1786,6 +1799,7 @@ def play_all(
 
     cfg = settings(profile)
     names = sorted(p.stem for p in cfg["movies"].glob("*.tas")) if cfg["movies"].is_dir() else []
+    names = in_shard(names, shard)
     health = tas_health.read(cfg, profile)
     skipped: dict[str, tuple[Path, dict[str, Any]]] = {}
     why_skipped = ""
