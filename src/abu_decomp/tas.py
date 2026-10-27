@@ -1039,6 +1039,41 @@ def reconcile_runs(cfg: dict[str, Any]) -> None:
             _write_record(run, row)
 
 
+KEEP_PLAYS = 200  # newest replay folders kept whatever their age (10-27: 2676 runs of ~30 MB = 77 GB in two days, none ever removed)
+KEEP_PLAY_HOURS = 6  # a replay folder younger than this stays whatever the count: lanes read their own run after it ends
+
+
+def prune_plays(cfg: dict[str, Any], keep: int = KEEP_PLAYS, hours: float = KEEP_PLAY_HOURS, now: float | None = None) -> int:
+    """Remove the replay folders nothing reads any more: all but the newest `keep` that are also older than `hours`,
+    never one a live play holds, plus the stray `*.gcov.json.gz` files an earlier gcovr left in the folder.
+    Returns the folders removed. A play is a run: what it writes lives and dies in its own folder (owner boundary)."""
+    plays = cfg["runs"] / "plays"
+    if not plays.is_dir():
+        return 0
+    cutoff = (now if now is not None else time.time()) - hours * 3600
+    removed = 0
+    with os.scandir(plays) as it:
+        entries = sorted(it, key=lambda e: e.name)
+    for entry in entries:
+        if not entry.is_dir(follow_symlinks=False) and entry.name.endswith(".gcov.json.gz"):
+            with contextlib.suppress(OSError):
+                if entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                    os.unlink(entry.path)
+    folders = [Path(e.path) for e in entries if e.is_dir(follow_symlinks=False)]
+    for run in folders[:-keep] if keep else folders:
+        try:
+            if run.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        row = read_record(run)
+        if row and row.get("status") == "running" and _record_live(run, row):
+            continue
+        shutil.rmtree(run, ignore_errors=True)
+        removed += 1
+    return removed
+
+
 def run_rows(cfg: dict[str, Any]) -> list[tuple[Path, dict[str, Any]]]:
     """Every replay folder with its record, oldest first; abandoned plays read as killed."""
     plays = cfg["runs"] / "plays"
@@ -1326,6 +1361,7 @@ def play(
     (module tas_sanitize) and the result's `sanitizer` counts them; the run is tagged `sanitizer` on the page."""
     cfg = settings(profile)
     reconcile_runs(cfg)
+    prune_plays(cfg)
     if sanitize and port is None:
         if not cfg.get("sanitizer_port"):
             raise DecompError("tas.sanitize", "no sanitizer port: set tas.sanitizer.port in the profile or pass --port")
