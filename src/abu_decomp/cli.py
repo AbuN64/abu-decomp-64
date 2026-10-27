@@ -1162,7 +1162,11 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
         help="dead-decls: write one diff per module folder here (dead-decls-NN-<module>.diff, dead-decls.json); owners:"
         " owners.tsv and owners.json",
     )
-    parser.add_argument("--apply", action="store_true", help="dead-decls: write the whole fixpoint into the tree")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="dead-decls: write the whole fixpoint into the tree; slices: write the file sets",
+    )
     parser.add_argument("--lanes", type=int, help="slices: the lane count (GLOBALS and STRUCT slices scale with it)")
     parser.add_argument(
         "--map", help="slices, owners: a module map file (unit<TAB>module lines; default docs/MODULES.tsv)"
@@ -1175,7 +1179,7 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--assign", action="append", default=[], metavar="LANE=ID[,ID]", help="slices: LANE owns these")
     parser.add_argument("--names", help="slices: the names directory (default: the name book's store)")
-    parser.add_argument("--show", metavar="LANE", help="slices: list what this lane owns (its ownership file)")
+    parser.add_argument("--show", metavar="LANE", help="slices: list what this lane owns (its slice and its file set)")
     parser.add_argument(
         "--evidence",
         action="store_true",
@@ -1209,15 +1213,33 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
             )
         return found, 0, []
     if args.verb == "slices" and getattr(args, "show", None):
-        found = cleanup.show_slice(Path(args.names or args.book or "~/rig-state/names").expanduser(), args.show)
-        print(
-            f"{found['lane']} owns slices {found['slice']}: {len(found['fns'])} functions, {len(found['data'])} data,"
-            f" {len(found['records'])} records",
-            file=sys.stderr,
-        )
-        for key in (*found["fns"], *found["data"], *found["records"]):
-            print(f"  {key}", file=sys.stderr)
-        return found, 0, []
+        from abu_decomp import filesets
+
+        names = Path(args.names or args.book).expanduser() if args.names or args.book else filesets.store()
+        try:
+            found = cleanup.show_slice(names, args.show)
+        except DecompError:
+            found = None
+        owned = filesets.load(names, args.show)
+        if found is None and owned is None:
+            cleanup.show_slice(names, args.show)  # neither view exists: the refusal names the lanes that have one
+        found = found or {}
+        if found:
+            print(
+                f"{found['lane']} owns slices {found['slice']}: {len(found['fns'])} functions,"
+                f" {len(found['data'])} data, {len(found['records'])} records",
+                file=sys.stderr,
+            )
+            for key in (*found["fns"], *found["data"], *found["records"]):
+                print(f"  {key}", file=sys.stderr)
+        if owned is not None:
+            print(
+                f"{args.show} file set: {len(owned.get('modules', []))} modules, {len(owned['files'])} files",
+                file=sys.stderr,
+            )
+            for name in owned["files"]:
+                print(f"  {name}", file=sys.stderr)
+        return {"lane": args.show, **found, "file_set": owned}, 0, []
     root = tools.project_dir(_profile(args.profile), _own_tree(args, "cleanup"))
     if args.verb == "slices":
         argv = cleanup.slices_argv(args.lanes, args.map, args.assign, args.names)
@@ -1227,7 +1249,19 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
             raise DecompError("cleanup.slices", f"recipe name slices failed: {why}")
         for line in cleanup.slices_lines(called.document):
             print(line, file=sys.stderr)
-        return dict(called.document), 0, []
+        from abu_decomp import filesets
+
+        names = Path(args.names or args.book).expanduser() if args.names or args.book else filesets.store()
+        try:
+            sets = filesets.build(root, names, args.lanes, args.map)
+        except ValueError as e:
+            raise DecompError("cleanup.files", f"the file sets are not exclusive: {e}") from None
+        written = [str(p) for p in filesets.write(names, sets)] if args.apply else []
+        for line in filesets.lines(sets):
+            print(line, file=sys.stderr)
+        where = f"written to {filesets.directory(names)}" if args.apply else "not written (--apply)"
+        print(f"file sets {where}", file=sys.stderr)
+        return {**called.document, "file_sets": {**sets, "written": written}}, 0, []
     if args.verb == "owners":
         from abu_decomp import owners
 

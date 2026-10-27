@@ -123,6 +123,7 @@ from abu_decomp import (
     events,
     evidence,
     evidence_gate,
+    filesets,
     meter,
     nextcmd,
     proposals,
@@ -1389,6 +1390,9 @@ class Landing:
             if not path.is_file():
                 row.update(status="excluded", reason=f"patch file {path} does not exist")
                 continue
+            if outside := self.outside_lane(lane, path):
+                row.update(status="excluded", reason=outside)
+                continue
             before = self.snapshot()
             mark = len(self.findings)
             cut = self.retarget(path, row)
@@ -1613,6 +1617,21 @@ class Landing:
         then skips both setup (a 5-version re-extract, ~150 s CPU) and the build."""
         self.proof = self.rename_proof() or (self.object_proof() if self.objects else None)
         return True
+
+    def outside_lane(self, lane: str, path: Path) -> str:
+        """Why `unbake lanecheck` refuses the lane's patch (a file another lane or GLOBALS owns, the owner named), or
+        "" when the lane holds no file set (a tool batch) or the patch stays inside it."""
+        names = filesets.store()
+        if not (filesets.directory(names) / f"{lane}.json").is_file():
+            return ""
+        called = self.invoke(
+            "unbake", self.profile, ["lanecheck", "--lane", lane, "--diff", str(path), "--names", str(names)],
+            project=self.tree,
+        )
+        if called.ok:
+            return ""
+        found = called.document.get("findings") or []
+        return "; ".join(str(f.get("message") or f.get("key")) for f in found) or "lanecheck refused the patch"
 
     def rename_proof(self) -> dict[str, Any] | None:
         """The landed change proved a pure rename by `unbake renameproof` (the tree over the base, one rename map,

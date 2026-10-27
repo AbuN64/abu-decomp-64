@@ -73,6 +73,7 @@ class LandTests(unittest.TestCase):
         self.on_sync = lambda: None
         self.on_check = lambda: None
         self.renameproofs, self.rename_pure = [], False
+        self.lanechecks, self.lane_owner = [], None
         self.check_result = lambda: (0, "built\n", "")
 
     def patch(self, lane, edits):
@@ -112,6 +113,11 @@ class LandTests(unittest.TestCase):
                 "findings": [] if ok else [{"message": "a file is added"}],
             }
             return SimpleNamespace(ok=ok, returncode=0 if ok else 1, document=document)
+        if args[0] == "lanecheck":
+            self.lanechecks.append(tuple(args))
+            ok = self.lane_owner is None
+            findings = [] if ok else [{"message": f"a.c is owned by {self.lane_owner}, not by {args[2]}"}]
+            return SimpleNamespace(ok=ok, returncode=0 if ok else 1, document={"ok": ok, "findings": findings})
         written = []
         if args[0] == "sync" and "--check" not in args:
             written = self.on_sync() or []
@@ -529,6 +535,20 @@ class LandTests(unittest.TestCase):
         self.assertEqual([g["gate"] for g in result["gates"]][:3], ["base", "apply", "setup"])
         self.assertFalse(result["gates"][2].get("skipped"))
         self.assertFalse((self.tree / ".git" / "abu-decomp-land.json").exists())
+
+    def test_a_hand_lane_patch_outside_its_file_set_is_excluded_naming_the_owner_and_a_tool_batch_is_not_asked(self):
+        names = self.root / "names"
+        (names / "files").mkdir(parents=True)
+        (names / "files" / "hand.json").write_text(json.dumps({"lane": "hand", "files": ["b.c"]}))
+        self.lane_owner = "P2-OTHER"
+        hand = self.patch("hand", {"a.c": "int func_1(void) { return 1; }\n"})
+        batch = self.patch("batch", {"b.c": "int func_3(void) { return 3; }\n"})
+        with mock.patch.dict(os.environ, {"NAMES_STATE": str(names)}):
+            result, code, findings = self.land([hand, batch])
+        self.assertEqual([r["status"] for r in result["lanes"]], ["excluded", "applied"])
+        self.assertIn("owned by P2-OTHER", result["lanes"][0]["reason"])
+        self.assertEqual(findings[0]["key"], "land.patch_excluded")
+        self.assertEqual([c[:3] for c in self.lanechecks], [("lanecheck", "--lane", "hand")])
 
     def test_conflicting_patch_is_excluded_with_its_reason_and_the_tree_is_restored(self):
         good = self.patch("good", {"b.c": "int func_3(void) { return 3; }\n"})

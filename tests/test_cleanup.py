@@ -146,13 +146,17 @@ def test_cleanup_slices_runs_recipe_in_the_project_and_refuses_when_recipe_does(
         lanes=8,
         map=None,
         assign=["x=S001"],
-        names=None,
+        names=str(tmp_path / "names"),
+        apply=False,
+        book=None,
         dir=None,
         rev=None,
         evidence=False,
     )
     document, code, rows = cli._run_cleanup(args)
-    assert seen == [("recipe", ["name", "slices", "--lanes", "8", "--assign", "x=S001"], tmp_path)]
+    assert seen == [
+        ("recipe", ["name", "slices", "--lanes", "8", "--assign", "x=S001", "--out", str(tmp_path / "names")], tmp_path)
+    ]
     assert document["summary"] == ["1 slices"] and code == 0 and rows == []
     assert "1 slices" in capsys.readouterr().err
     result.ok, result.document = False, {"ok": False, "findings": [{"message": "no evidence"}]}
