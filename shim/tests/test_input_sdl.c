@@ -32,6 +32,32 @@ static bool init_ok = true, open_ok = true;
 const char *SDL_GetCurrentVideoDriver(void) { return driver; }
 bool SDL_InitSubSystem(SDL_InitFlags flags) { CHECK(flags == SDL_INIT_GAMEPAD); ++inits; return init_ok; }
 void SDL_QuitSubSystem(SDL_InitFlags flags) { CHECK(flags == SDL_INIT_GAMEPAD); ++quits; }
+struct SDL_Joystick { int device; };
+static struct SDL_Joystick joysticks[5];
+static int virtual_attached;
+SDL_JoystickID SDL_AttachVirtualJoystick(const SDL_VirtualJoystickDesc *desc)
+{
+    CHECK(desc->type == SDL_JOYSTICK_TYPE_GAMEPAD && desc->nbuttons == SDL_GAMEPAD_BUTTON_COUNT);
+    devices[virtual_attached].connected = true;
+    return devices[virtual_attached++].id;
+}
+SDL_Joystick *SDL_OpenJoystick(SDL_JoystickID id)
+{
+    for (int i = 0; i < 5; ++i) if (devices[i].id == id) { joysticks[i].device = i; return &joysticks[i]; }
+    return NULL;
+}
+SDL_JoystickID SDL_GetJoystickID(SDL_Joystick *j) { return devices[j->device].id; }
+void SDL_CloseJoystick(SDL_Joystick *j) { (void)j; }
+bool SDL_DetachVirtualJoystick(SDL_JoystickID id)
+{
+    for (int i = 0; i < 5; ++i) if (devices[i].id == id) devices[i].connected = false;
+    return true;
+}
+bool SDL_SetJoystickVirtualButton(SDL_Joystick *j, int button, bool down) { devices[j->device].buttons[button] = down; return true; }
+SDL_GamepadButton SDL_GetGamepadButtonFromString(const char *s)
+{
+    return !strcmp(s, "a") ? SDL_GAMEPAD_BUTTON_SOUTH : !strcmp(s, "b") ? SDL_GAMEPAD_BUTTON_EAST : SDL_GAMEPAD_BUTTON_INVALID;
+}
 SDL_JoystickID *SDL_GetGamepads(int *count)
 {
     SDL_JoystickID *ids = calloc(6, sizeof *ids);
@@ -514,10 +540,38 @@ static void touch(void)
     n64c_touch_set_editing(0);
 }
 
+/* Proof hook: N64C_VIRTUAL_PADS gives a headless run one pad per port; N64C_VPAD_SCRIPT presses their buttons by input frame. */
+static void virtual_pads(void)
+{
+    const char *path = "n64c_vpad_script.txt";
+    FILE *f = fopen(path, "w");
+    CHECK(f != NULL);
+    if (f) {
+        fputs("2 1 a down\n2 4 b down\n3 1 a up\nbogus line\n", f);
+        fclose(f);
+    }
+    fresh();
+    virtual_attached = 0;
+    setenv("N64C_VIRTUAL_PADS", "4", 1);
+    setenv("N64C_VPAD_SCRIPT", path, 1);
+    CHECK(n64c_input_start(window));
+    CHECK(virtual_attached == 4 && present_bits() == 0xF);
+    n64c_input_update();
+    CHECK(read_port(0, NULL).button == 0 && read_port(3, NULL).button == 0);
+    n64c_input_update();
+    CHECK(read_port(0, NULL).button == 0x8000 && read_port(3, NULL).button == 0x4000 && read_port(1, NULL).button == 0);
+    n64c_input_update();
+    CHECK(read_port(0, NULL).button == 0 && read_port(3, NULL).button == 0x4000);
+    n64c_input_stop();
+    CHECK(!devices[0].connected && !devices[3].connected);
+    unsetenv("N64C_VIRTUAL_PADS");
+    unsetenv("N64C_VPAD_SCRIPT");
+    remove(path);
+}
 int main(void)
 {
     n64c_cont_reset(NULL);
-    policy(); binds_model(); mapping(); axes(); pad_defaults(); four_ports(); mouse(); rebinding(); page(); touch();
+    policy(); binds_model(); mapping(); axes(); pad_defaults(); four_ports(); virtual_pads(); mouse(); rebinding(); page(); touch();
     CHECK(inits - 1 == quits); /* exactly one unsuccessful init */
     printf("input_sdl: %d checks, %d failures (binds, mapping, SI, deadzone, policy, focus, 4-port hotplug, mouse, rebinding, page, touch)\n",
            checks, failures);

@@ -110,6 +110,18 @@ static void refresh_presence(void)
     for (int p = 0; p < N64C_PLAYERS; ++p)
         present[p] = p == 0 || pads[p] || n64c_binds_player_has_device(&binds, p, N64C_DEV_KEYBOARD) ||
                      n64c_binds_player_has_device(&binds, p, N64C_DEV_MOUSE);
+    if (getenv("N64C_INPUT_LOG")) {
+        static int last_mask = -1, last_pads = -1;
+        int mask = 0, pad_mask = 0;
+        for (int p = 0; p < N64C_PLAYERS; ++p) {
+            mask |= present[p] << p;
+            pad_mask |= (pads[p] != NULL) << p;
+        }
+        if (mask != last_mask || pad_mask != last_pads)
+            fprintf(stderr, "input: ports present 0x%x, gamepad on ports 0x%x\n", mask, pad_mask);
+        last_mask = mask;
+        last_pads = pad_mask;
+    }
     pthread_mutex_unlock(&snapshot_mutex);
 }
 static int port_present(int channel, void *user)
@@ -117,6 +129,68 @@ static int port_present(int channel, void *user)
     (void)user;
     return n64c_input_port_present(channel);
 }
+/* ---- scripted virtual pads (proof hook) ----
+ * N64C_VIRTUAL_PADS=N attaches N SDL virtual gamepads at start, so a headless run (Xvfb) has one pad per port. N64C_VPAD_SCRIPT=FILE
+ * presses their buttons: one "FRAME PORT BUTTON down|up" per line (BUTTON is an SDL gamepad button name: a, b, start, dpup ...),
+ * applied when the input frame count reaches FRAME. N64C_INPUT_LOG=1 prints each change of the present-port mask. */
+enum { VPAD_MAX = N64C_PLAYERS, VPAD_SCRIPT_MAX = 512 };
+static SDL_Joystick *vpads[VPAD_MAX];
+static struct { long frame; int port, button, down; } vscript[VPAD_SCRIPT_MAX];
+static int vscript_count, vscript_next;
+static long vframe;
+static int vpad_attach(int count)
+{
+    SDL_VirtualJoystickDesc desc;
+    SDL_INIT_INTERFACE(&desc);
+    desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+    desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+    desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+    desc.name = "n64c virtual pad";
+    for (int i = 0; i < count && i < VPAD_MAX; ++i) {
+        SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
+        if (id) vpads[i] = SDL_OpenJoystick(id);
+    }
+    return count;
+}
+static void vpad_load_script(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    char name[32], dir[8];
+    long frame;
+    int port;
+    vscript_count = vscript_next = 0;
+    vframe = 0;
+    while (f && vscript_count < VPAD_SCRIPT_MAX && fscanf(f, "%ld %d %31s %7s", &frame, &port, name, dir) == 4) {
+        SDL_GamepadButton b = SDL_GetGamepadButtonFromString(name);
+        if (b == SDL_GAMEPAD_BUTTON_INVALID || port < 1 || port > VPAD_MAX) continue;
+        vscript[vscript_count].frame = frame;
+        vscript[vscript_count].port = port - 1;
+        vscript[vscript_count].button = b;
+        vscript[vscript_count++].down = !strcmp(dir, "down");
+    }
+    if (f) fclose(f);
+}
+static void vpad_tick(void)
+{
+    ++vframe;
+    while (vscript_next < vscript_count && vscript[vscript_next].frame <= vframe) {
+        SDL_Joystick *j = vpads[vscript[vscript_next].port];
+        if (j) SDL_SetJoystickVirtualButton(j, vscript[vscript_next].button, vscript[vscript_next].down != 0);
+        ++vscript_next;
+    }
+}
+static void vpad_detach(void)
+{
+    for (int i = 0; i < VPAD_MAX; ++i)
+        if (vpads[i]) {
+            SDL_JoystickID id = SDL_GetJoystickID(vpads[i]);
+            SDL_CloseJoystick(vpads[i]);
+            SDL_DetachVirtualJoystick(id);
+            vpads[i] = NULL;
+        }
+    vscript_count = vscript_next = 0;
+}
+
 static void read_pad(int channel, OSContPad *pad, void *user)
 {
     (void)user;
@@ -165,6 +239,7 @@ void n64c_input_stop(void)
     }
     capture.state = 0;
     input_window = NULL;
+    vpad_detach();
     SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
 }
 int n64c_input_start(SDL_Window *window)
@@ -186,7 +261,13 @@ int n64c_input_start(SDL_Window *window)
     mouse_dx = mouse_dy = 0;
     capture.state = 0;
     for (int p = 0; p < N64C_PLAYERS; ++p) publish(p, (OSContPad){0}, p == 0);
+    {
+        const char *virt = getenv("N64C_VIRTUAL_PADS"), *script = getenv("N64C_VPAD_SCRIPT");
+        if (virt && atoi(virt) > 0) vpad_attach(atoi(virt));
+        if (script && *script) vpad_load_script(script);
+    }
     discover();
+    refresh_presence(); /* pads already plugged in at launch are present for the game's first osContInit */
     n64c_cont_set_presence(port_present, NULL);
     n64c_cont_set_input(read_pad, NULL);
     return 1;
@@ -325,6 +406,7 @@ static int clamp_stick(int value) { return value < -STICK_MAX ? -STICK_MAX : val
 void n64c_input_update(void)
 {
     if (!input_window) return;
+    vpad_tick();
     int has_focus = SDL_GetKeyboardFocus() == input_window;
     int page = n64c_controls_active() || capture.state == 1;
     int want_relative = has_focus && !page && n64c_binds_has_mouse_look(&binds);
