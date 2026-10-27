@@ -10,8 +10,11 @@ name (a slot with source evidence) and how many it cannot (`no_evidence`), so a 
 
 from __future__ import annotations
 
+import itertools
 import re
+import statistics
 import subprocess
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
@@ -255,11 +258,8 @@ def train_rounds(history: Path, day: str | None, now: float) -> dict[str, Any]:
     """The train's rounds (`train/history.jsonl`, dry runs left out) of `day` (YYYY-MM-DD) or the last 24 hours:
     inputs per round, landed and dropped, the gap between rounds in minutes, and rounds per hour. N is tuned from
     inputs per round."""
-    import statistics
 
     def when(ts: str) -> float:
-        import time
-
         return time.mktime(time.strptime(ts, "%Y%m%d-%H%M%S"))
 
     rounds = [
