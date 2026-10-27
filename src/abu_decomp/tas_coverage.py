@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import bisect
 import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -797,7 +798,26 @@ def latest_runs(cfg: dict[str, Any], since: float = 0) -> dict[str, Path]:
     return newest
 
 
-def build(
+@contextlib.contextmanager
+def union_lock(runs: Path) -> Iterator[None]:
+    """One full union at a time per runs dir: a union ends by deleting every coverage-builds/ file it did not use, so a
+    second one beside it (the cov-refresh timer beside a manual `tas coverage`) had its parts deleted under gcovr
+    ("The specified file does not exist", after 2788 s). The later one waits, then finds the merges cached."""
+    runs.mkdir(parents=True, exist_ok=True)
+    with open(runs / "coverage.lock", "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def build(profile: Profile, cfg: dict[str, Any], **options: Any) -> dict[str, Any] | None:
+    """`_build` under the union lock (the table-only path never touches the merge cache, so it does not wait)."""
+    if options.get("table_only"):
+        return _build(profile, cfg, **options)
+    with union_lock(cfg["runs"]):
+        return _build(profile, cfg, **options)
+
+
+def _build(
     profile: Profile,
     cfg: dict[str, Any],
     *,

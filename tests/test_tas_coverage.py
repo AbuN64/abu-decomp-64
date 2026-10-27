@@ -417,6 +417,20 @@ class RunReportTests(unittest.TestCase):
 
         return fake
 
+    def test_a_second_full_union_waits_for_the_first_and_table_only_does_not(self):
+        import fcntl
+
+        runs = self.cfg["runs"]
+        with cov.union_lock(runs):
+            with open(runs / "coverage.lock", "a") as probe:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with mock.patch.object(cov, "_build", return_value="table") as inner:
+                self.assertEqual(cov.build(self.profile, self.cfg, table_only=True), "table")
+            inner.assert_called_once()
+        with open(runs / "coverage.lock", "a") as probe:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
     def test_the_union_is_also_written_as_json_beside_the_html_report(self):
         runs = self.cfg["runs"]
         run = runs / "plays" / "r2"
