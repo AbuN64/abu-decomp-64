@@ -27,6 +27,17 @@ class SlotsTest(unittest.TestCase):
         mem = mock.patch.object(slots, "_mem_gib", return_value=50.0)
         mem.start()
         self.addCleanup(mem.stop)
+        self.busy = [0.0]  # cores the host measures busy, holders' children and outside batches alike
+        self.young = [False]  # whether a holder has not yet had SETTLE seconds to show its CPU
+        for name, fake in (("busy_cores", lambda: self.busy[0]), ("_fresh_holder", lambda root: self.young[0])):
+            patch = mock.patch.object(slots, name, side_effect=fake)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def waiting(self, count: int) -> None:
+        deadline = time.monotonic() + 10  # queued before the next step, whatever the host load
+        while len(slots.status()["queue"]) < count and time.monotonic() < deadline:
+            time.sleep(0.01)
 
     def test_pool_is_bounded_and_the_waiter_wakes_on_release(self) -> None:
         a = slots.acquire("batch", 1, "a")
@@ -104,6 +115,118 @@ class SlotsTest(unittest.TestCase):
         os.waitpid(pid, 0)
         self.assertEqual(slots.status()["used"], 0)
         slots.acquire("batch", 2, "after", timeout=2).release()
+
+    def test_a_wide_job_is_not_passed_by_narrower_later_ones(self) -> None:
+        """Strict FIFO with reservation: a later weight-1 ticket leaves the free slot the older weight-2 waits for."""
+        first = slots.acquire("batch", 1, "holder")
+        wide: list = []
+        thread = threading.Thread(target=lambda: wide.append(slots.acquire("batch", 2, "wide", timeout=20)))
+        thread.start()
+        self.waiting(1)
+        with self.assertRaises(TimeoutError):
+            slots.acquire("batch", 1, "late", timeout=0.5)  # one slot is free and it fits, but the wide job is older
+        first.release()
+        thread.join(10)
+        self.assertEqual(len(wide), 1)
+        wide[0].release()
+
+    def test_a_ticket_keeps_its_first_queue_time_across_re_requests(self) -> None:
+        """The names batch re-requested after a timeout and its ticket age read 119 s after 44 min."""
+        fill = slots.acquire("batch", 2, "fill")
+        began = time.time()
+        with self.assertRaises(TimeoutError):
+            slots.acquire("batch", 2, "names", timeout=0.2)
+        order: list[str] = []
+
+        def run(label: str, weight: int) -> None:
+            with slots.hold("batch", weight, label):
+                order.append(label)
+                time.sleep(0.1)
+
+        time.sleep(0.5)
+        late = threading.Thread(target=run, args=("late", 1))
+        late.start()
+        self.waiting(1)
+        again = threading.Thread(target=run, args=("names", 2))  # same parent, same label: the same request again
+        again.start()
+        self.waiting(2)
+        queue = {row["label"]: row for row in slots.status()["queue"]}
+        self.assertLess(queue["names"]["queued"], began + 0.1)
+        self.assertGreaterEqual(queue["names"]["age"], 0)
+        self.assertLess(queue["names"]["queued"], queue["late"]["queued"])
+        fill.release()
+        for thread in (late, again):
+            thread.join(10)
+        self.assertEqual(order, ["names", "late"])
+
+    def test_measured_busy_cores_gate_a_grant_whatever_the_declared_weight(self) -> None:
+        one = slots.acquire("batch", 1, "inside")
+        self.busy[0] = 2.0  # the weight-1 holder really runs oracle + port + gdb: 2 cores, the whole capacity
+        with self.assertRaises(TimeoutError):
+            slots.acquire("batch", 1, "next", timeout=0.3)
+        self.busy[0] = 1.0  # one core free beside it
+        slots.acquire("batch", 1, "next", timeout=5).release()
+        one.release()
+
+    def test_a_request_wider_than_the_free_cores_waits_for_them(self) -> None:
+        one = slots.acquire("batch", 1, "inside")
+        self.busy[0] = 1.5
+        with self.assertRaises(TimeoutError):
+            slots.acquire("batch", 1, "next", timeout=0.3)
+        one.release()
+
+    def test_no_ticket_is_admitted_beside_a_holder_that_has_not_shown_its_cpu(self) -> None:
+        one = slots.acquire("batch", 1, "inside")
+        self.young[0] = True
+        with self.assertRaises(TimeoutError):
+            slots.acquire("batch", 1, "next", timeout=0.3)
+        self.young[0] = False
+        slots.acquire("batch", 1, "next", timeout=5).release()
+        one.release()
+
+    def test_an_empty_pool_still_admits_beside_outside_work(self) -> None:
+        self.busy[0] = 11.0
+        slots.acquire("batch", 1, "alone", timeout=5).release()
+
+    def test_the_owner_ignores_the_measured_load(self) -> None:
+        one = slots.acquire("batch", 1, "inside")
+        self.busy[0] = 11.0
+        slots.acquire("owner", 1, "watched", timeout=5).release()
+        one.release()
+
+
+class BusyCoresTest(unittest.TestCase):
+    def setUp(self) -> None:
+        patch = mock.patch.object(slots, "_reading", None)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_busy_cores_are_the_host_busy_share_of_its_cores(self) -> None:
+        with (
+            mock.patch.object(slots, "_stat", side_effect=[(0, 0), (600, 1200)]),
+            mock.patch.object(slots, "cores", return_value=12),
+            mock.patch.object(slots.time, "sleep"),
+            mock.patch.object(slots.time, "monotonic", side_effect=[10.0, 10.5]),
+        ):
+            self.assertAlmostEqual(slots.busy_cores(), 6.0)  # half the ticks of a 12-core host were busy
+
+    def test_a_recent_reading_is_reused_and_a_later_one_spans_from_it(self) -> None:
+        with (
+            mock.patch.object(slots, "_stat", side_effect=[(0, 0), (600, 1200), (1200, 1800)]),
+            mock.patch.object(slots, "cores", return_value=12),
+            mock.patch.object(slots.time, "sleep"),
+            mock.patch.object(slots.time, "monotonic", side_effect=[10.0, 10.5, 10.9, 12.0, 12.0]),
+        ):
+            first = slots.busy_cores()
+            self.assertEqual(slots.busy_cores(), first)  # 0.4 s later: reused, nothing read
+            self.assertAlmostEqual(slots.busy_cores(), 12.0)  # 600 busy of the next 600 ticks
+
+    def test_status_reports_the_measured_busy_cores_and_each_waiter_s_true_wait(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"ABU_SLOTS_DIR": tempfile.mkdtemp(prefix="slots-")}),
+            mock.patch.object(slots, "busy_cores", return_value=3.25),
+        ):
+            self.assertEqual(slots.status()["busy_cores"], 3.2)
 
 
 if __name__ == "__main__":

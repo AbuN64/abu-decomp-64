@@ -7,13 +7,14 @@ lane count: cores minus a reserve, and memory (total minus a floor, over a measu
 while free memory is below the floor plus its own need. Waiters write a ticket (`tickets/<class>-<time>-<pid>`) and
 sleep on inotify; releases and ticket changes wake them (a 5 s timeout only covers a holder that crashed, which fires
 no event). Classes, best first: owner (the owner's watched play) > interactive (a lane's single play) > batch (play
---all, monkey, behave) > background (coverage union, cov-refresh). Owner work never waits behind queued work and may
-use the reserve slots above the soft capacity, so it always gets one. A heavy ticket at the head of the queue blocks
-smaller later ones only after it has waited BACKFILL seconds (until then they backfill the free slots).
-
-    with slots.hold("batch", weight=1, label="play boot"): ...        # in-process (re-entrant per thread)
-    python3 slots.py run --class background --weight 4 --label cov -- cmd ...   # SLOT_JOBS=<weight> for make -j
-    python3 slots.py status | free | capacity
+--all, monkey, behave) > background (coverage union, cov-refresh, an automated movie play). Owner work never waits
+behind queued work and may use the reserve slots above the soft capacity, so it always gets one. Admission is strict
+FIFO inside a class with reservation: no later ticket passes an older one that does not fit yet, and a ticket keeps its
+first queue time when its process asks again (a retry, a child of the same parent with the same label) within
+REQUEUE_GRACE. A grant needs the host's measured busy cores (every process, the holders and their children
+included, ticket or not) plus the request to fit the capacity, so a declared weight cannot oversubscribe the host:
+a weight-1 job that runs oracle + port + gdb uses ~2 cores and is counted as it runs, and no ticket is admitted
+beside a holder younger than SETTLE seconds, whose processes have not started showing their CPU.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import fcntl
+import hashlib
 import json
 import os
 import select
@@ -34,12 +36,17 @@ CLASSES = ("owner", "interactive", "batch", "background")
 RESERVE_CORES = float(os.environ.get("ABU_SLOT_RESERVE", "2"))  # cores left for the OS, the page and ssh
 MEM_FLOOR_GIB = float(os.environ.get("ABU_SLOT_MEM_FLOOR", "6"))  # never admit below this much free memory
 RSS_GIB = float(os.environ.get("ABU_SLOT_RSS_GIB", "0.75"))  # measured per-slot RSS (a port play ~0.25, a compile ~1)
-BACKFILL = float(os.environ.get("ABU_SLOT_BACKFILL", "60"))
+REQUEUE_GRACE = 900.0  # seconds after a ticket left unserved that the same request keeps its queue time
+WINDOW = 0.5  # seconds a first CPU reading spans
+STALE = 3.0  # seconds after which an earlier CPU reading no longer serves as the start of a window
+REUSE = 1.0  # seconds a CPU reading is reused
+SETTLE = 5.0  # seconds a holder's processes need to show their CPU: no ticket is admitted beside a younger holder
 STAMP_GIB = 0.0  # measured memory one stamp needs (seat profile land.slots.stamp_gib); 0: no per-stamp figure
 STAMP_JOBS = 0  # cores one stamp holds at most (land.slots.stamp_jobs); 0: as many as its build asks
 RAMP = 90.0  # seconds a fresh holder's memory need still counts as promised: it has not grown into it yet
 WAKE_TIMEOUT = 5.0
 _local = threading.local()
+_reading: tuple[float, int, int, float] | None = None  # (taken at, busy ticks, total ticks, cores busy)
 CANCEL = None  # a callable that raises when the caller was told to stop (tas sets it): checked on every wake
 
 
@@ -187,6 +194,58 @@ class _Wait:
             os.close(self.fd)
 
 
+def _stat() -> tuple[int, int]:
+    """(busy, total) CPU ticks of the whole host: every process, the pool's holders and their children included."""
+    with open("/proc/stat") as handle:
+        ticks = [int(v) for v in handle.readline().split()[1:9]]
+    return sum(ticks) - ticks[3] - ticks[4], sum(ticks)
+
+
+def busy_cores() -> float:
+    """Cores the host measures busy right now, over a window of at most STALE seconds: what the processes really use,
+    whatever weight their holders declared and whether or not they hold a ticket (a lane's raw `xargs -P 6` batch, a
+    holder whose job runs oracle + port + gdb on a weight of 1). A reading is reused for REUSE seconds."""
+    global _reading
+    now = time.monotonic()
+    if _reading and now - _reading[0] < REUSE:
+        return _reading[3]
+    busy, total = _stat()
+    prior = _reading if _reading and now - _reading[0] < STALE else None
+    if prior is None:
+        prior = (now, busy, total, 0.0)
+        time.sleep(WINDOW)
+        busy, total = _stat()
+        now = time.monotonic()
+    span = total - prior[2]
+    cores_busy = (busy - prior[1]) / span * cores() if span > 0 else prior[3]
+    _reading = (now, busy, total, cores_busy)
+    return cores_busy
+
+
+def _fresh_holder(root: Path) -> bool:
+    """Whether a holder was admitted in the last SETTLE seconds: its processes have not started using their cores, so
+    the host reading does not show them yet and a decision made now would admit the next ticket blind."""
+    now = time.time()
+    return any(now - _read(f).get("since", 0) < SETTLE for f in _slot_files(root) if _held(f, False))
+
+
+def _first_queued(root: Path, key: str, began: float) -> float:
+    """When this request first queued: a ticket that left unserved (timeout, retry, a killed child) within
+    REQUEUE_GRACE leaves its queue time under KEY, and the same request asking again takes it, so a retry never goes to
+    the back of the line (the names batch waited 44 min and its ticket read 119 s)."""
+    kept = root / "kept"
+    kept.mkdir(exist_ok=True)
+    queued = began
+    for path in kept.iterdir():
+        with contextlib.suppress(OSError):
+            if began - path.stat().st_mtime > REQUEUE_GRACE:
+                path.unlink(missing_ok=True)
+            elif path.name == key:
+                queued = min(began, float(_read(path).get("queued", began)))
+    (kept / key).write_text(json.dumps({"queued": queued}))
+    return queued
+
+
 class Grant:
     def __init__(self, fds: list[int], files: list[Path], root: Path, waited: float, info: dict) -> None:
         self.fds, self.files, self.root, self.waited, self.info = fds, files, root, waited, info
@@ -232,18 +291,25 @@ def _need_gib(weight: int, mem_gib: float | None) -> float:
 
 
 def _can_run(
-    weight: int, limit: int, rank: int, free: dict[int, int] | None = None, mem_gib: float | None = None
+    weight: int, limit: int, rank: int, free: dict[int, float] | None = None, mem_gib: float | None = None
 ) -> bool:
     """Whether WEIGHT slots of the first LIMIT are free (and memory allows a non-owner: the floor plus the job's own
-    MEM_GIB, else its per-slot RSS, plus what fresh holders have yet to use). FREE: the counts one pass of a waiter
-    reads once, so every decision of that pass sees the same pool."""
+    MEM_GIB, else its per-slot RSS, plus what fresh holders have yet to use; and the host's measured busy cores plus
+    WEIGHT fit LIMIT, however the holders declared their weight, once the youngest holder has had SETTLE seconds to show
+    its CPU). FREE: the counts one pass of a waiter reads once, so every decision of that pass sees the same pool."""
     if rank > 0 and _mem_gib("MemAvailable") < MEM_FLOOR_GIB + _need_gib(weight, mem_gib) + _promised_gib(_paths()[0]):
         return False
     if free is None:
-        return free_count(limit) >= weight
+        free = {}
     if limit not in free:
         free[limit] = free_count(limit)
-    return free[limit] >= weight
+    if free[limit] < weight:
+        return False
+    if rank > 0 and free[limit] < limit:  # an empty pool still admits: a job must make progress beside outside work
+        if -1 not in free:  # the same reading serves every decision of the pass
+            free[-1] = float("inf") if _fresh_holder(_paths()[0]) else busy_cores()
+        return free[-1] + weight <= limit
+    return True
 
 
 def acquire(
@@ -256,14 +322,17 @@ def acquire(
     weight = min(weight, soft if rank else cores())
     limit = soft if rank else cores()
     began = time.time()
-    name = f"{rank}-{time.time_ns():020d}-{os.getpid()}-{threading.get_ident() % 100000}"
+    key = hashlib.sha1(f"{os.getppid()}:{label}".encode()).hexdigest()[:20]  # the same parent asking for the same work
+    queued = _first_queued(root, key, began)
+    kept = root / "kept" / key
+    name = f"{rank}-{int(queued * 1e9):020d}-{os.getpid()}-{threading.get_ident() % 100000}"
     ticket = tickets / name
     info = {
         "class": klass,
         "weight": weight,
         "label": label,
         "pid": os.getpid(),
-        "queued": began,
+        "queued": queued,
         "mem_gib": mem_gib or 0,
         "cmd": " ".join(sys.argv[:4])[:120],
     }
@@ -275,26 +344,14 @@ def acquire(
     os.write(tfd, json.dumps(info).encode())
     os.rename(draft, ticket)
     waiter = _Wait(root, tickets)
+    served = False
     try:
         while True:
-            ahead = [(n, t) for n, t in _live_tickets(tickets) if n < name]
-            blocked = False
-            # one reading of the pool for the whole pass: a slot freed between "the earlier ticket cannot run" and
-            # "we can" let a background waiter overtake an interactive one (PF9, 6 of 40 under load)
-            free: dict[int, int] = {}
-            for n, t in ahead:
-                # an earlier ticket blocks us unless it cannot run now and has not waited past BACKFILL
-                older = time.time() - t.get("queued", time.time())
-                fits = _can_run(
-                    int(t.get("weight", 1)),
-                    soft if not n.startswith("0-") else cores(),
-                    int(n[0]),
-                    free,
-                    t.get("mem_gib") or None,
-                )
-                if fits or older > BACKFILL:
-                    blocked = True
-                    break
+            # strict FIFO with reservation: every older ticket (better class first, then first queue time) goes before
+            # this one, fitting yet or not, so a wide job is never passed by narrower later ones; one reading of the
+            # pool for the pass, so a slot freed meanwhile does not let a later ticket overtake (PF9)
+            blocked = any(n < name for n, _ in _live_tickets(tickets))
+            free: dict[int, float] = {}
             if not blocked and _can_run(weight, limit, rank, free, mem_gib):
                 got = _take(root, weight, limit)
                 if got:
@@ -302,6 +359,7 @@ def acquire(
                     for fd, _ in got:
                         os.ftruncate(fd, 0)
                         os.pwrite(fd, json.dumps(info).encode(), 0)
+                    served = True
                     return Grant([fd for fd, _ in got], [p for _, p in got], root, time.time() - began, info)
             if CANCEL:
                 CANCEL()
@@ -312,6 +370,11 @@ def acquire(
         waiter.close()
         os.close(tfd)
         ticket.unlink(missing_ok=True)
+        if served:
+            kept.unlink(missing_ok=True)
+        else:
+            with contextlib.suppress(OSError):
+                kept.touch()  # the grace for a re-request counts from the moment this ticket left
         _wake(root)
 
 
@@ -376,6 +439,7 @@ def status() -> dict:
         "stamp_gib": STAMP_GIB,
         "mem_floor_gib": MEM_FLOOR_GIB,
         "used": sum(len(r["slots"]) for r in held.values()),
+        "busy_cores": round(busy_cores(), 1),
         "mem_available_gib": round(_mem_gib("MemAvailable"), 1),
         "holders": sorted(held.values(), key=lambda r: r.get("since", 0)),
         "queue": queue,
