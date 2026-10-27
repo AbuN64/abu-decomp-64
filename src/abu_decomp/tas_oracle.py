@@ -111,7 +111,7 @@ def port_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
     """What the port adds to its environment so its poll timing lines up with the oracle's and, when `pictures` is on,
     its pictures too. Without pictures no frame is dumped (a monkey batch wrote ~650 .ppm per run and filled the rig
     disk twice, 10-23): only the trace, the run's latest picture (view.bmp) and a fault's own capture remain."""
-    env = {"N64C_TAS_TRACE": str(run / PORT_TRACE), "N64C_CALLS": str(run), "N64C_CALLS_FIRST": str(CALLS_FIRST)}
+    env = {"N64C_TAS_TRACE": str(run / PORT_TRACE)}
     if oracle.get("pictures"):
         shots = run / SHOTS / "port"
         shots.mkdir(parents=True, exist_ok=True)

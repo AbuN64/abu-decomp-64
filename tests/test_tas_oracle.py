@@ -270,6 +270,7 @@ class PortEnvTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"GCOV_PREFIX": "/elsewhere"}):
             env = tas.port_env(cfg, Path("/runs/r1/dumps"))
         self.assertEqual((env["GCOV_PREFIX"], env["N64C_X"]), ("/runs/r1/dumps/gcov", "1"))
+        self.assertEqual(env["N64C_CALLS"], "/runs/r1/dumps")  # every replay records the port's calls
 
     def test_the_state_dump_replay_spawns_the_port_with_that_environment(self):
         from types import SimpleNamespace

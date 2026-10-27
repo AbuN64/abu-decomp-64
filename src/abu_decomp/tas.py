@@ -476,7 +476,13 @@ def _argv(
 def port_env(cfg: dict[str, Any], folder: Path) -> dict[str, str]:
     """The environment of every port process: the host's plus the profile's, and `GCOV_PREFIX=<folder>/gcov` last so a
     coverage build leaves its run counters in the folder it ran for, never beside the notes in the build tree."""
-    return {**os.environ, **cfg["env"], "GCOV_PREFIX": str(folder / "gcov")}
+    return {
+        **os.environ,
+        **cfg["env"],
+        "GCOV_PREFIX": str(folder / "gcov"),
+        "N64C_CALLS": str(folder),  # the port's per-call record (RUN/calls.jsonl) is on in every replay, oracle or not
+        "N64C_CALLS_FIRST": str(tas_oracle.CALLS_FIRST),
+    }
 
 
 _FPS_LINE = re.compile(
