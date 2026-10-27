@@ -4,7 +4,9 @@
 // context; GLES builds have no fixed pipeline and report that once).
 #include "f3d_window.h"
 #include "n64c_controls.h"
+#include "n64c_touch.h"
 #include <SDL3/SDL_opengl.h>
+#include <cmath>
 #include <cstdio>
 
 namespace N64c {
@@ -90,16 +92,8 @@ void paint()
     }
     SDL_FlushRenderer(renderer);
 }
-} // namespace
-
-void DrawControlsOverlay(SDL_Window *window)
+void enter(int w, int h, GLint &program, GLint &unit)
 {
-    if (!n64c_controls_active() || !window || !initGl()) return;
-    paint();
-    int w = 0, h = 0;
-    SDL_GetWindowSizeInPixels(window, &w, &h);
-    if (w <= 0 || h <= 0) return;
-    GLint program = 0, unit = 0;
     gl.getIntegerv(GL_CURRENT_PROGRAM, &program);
     gl.getIntegerv(GL_ACTIVE_TEXTURE, &unit);
     gl.pushAttrib(GL_ALL_ATTRIB_BITS);
@@ -113,6 +107,55 @@ void DrawControlsOverlay(SDL_Window *window)
     gl.enable(GL_BLEND);
     gl.blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     gl.disable(GL_TEXTURE_2D);
+}
+void leave(GLint program, GLint unit)
+{
+    gl.matrixMode(GL_PROJECTION); gl.popMatrix();
+    gl.matrixMode(GL_MODELVIEW); gl.popMatrix();
+    gl.popAttrib();
+    gl.useProgram((GLuint)program);
+    gl.activeTexture((GLenum)unit);
+}
+// The touch zones: translucent discs at their layout positions, brighter while pressed or dragged.
+void drawTouch(SDL_Window *window)
+{
+    int w = 0, h = 0;
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    GLint program = 0, unit = 0;
+    enter(w, h, program, unit);
+    gl.disable(GL_TEXTURE_2D);
+    const unsigned active = n64c_touch_active_zones();
+    const bool editing = n64c_touch_editing() != 0;
+    const N64cTouchLayout *layout = n64c_touch_layout();
+    const float aspect = (float)w / (float)h;
+    for (int i = 0; i < N64C_TOUCH_ZONES; ++i) {
+        const N64cTouchZone &z = layout->zone[i];
+        const float cx = z.x * 2.f - 1.f, cy = 1.f - z.y * 2.f, rx = z.r * 2.f, ry = rx * aspect;
+        gl.color4f(1.f, editing ? 0.8f : 1.f, editing ? 0.2f : 1.f, (active >> i) & 1 ? 0.55f : 0.22f);
+        gl.begin(GL_TRIANGLE_FAN);
+        gl.vertex2f(cx, cy);
+        for (int k = 0; k <= 24; ++k)
+            gl.vertex2f(cx + rx * std::cos(k * 6.2831853f / 24.f), cy + ry * std::sin(k * 6.2831853f / 24.f));
+        gl.end();
+    }
+    leave(program, unit);
+}
+} // namespace
+
+void DrawControlsOverlay(SDL_Window *window)
+{
+    if (!window || !(n64c_controls_active() || n64c_touch_seen()) || !initGl()) return;
+    if (!n64c_controls_active()) {
+        drawTouch(window);
+        return;
+    }
+    paint();
+    int w = 0, h = 0;
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    GLint program = 0, unit = 0;
+    enter(w, h, program, unit);
     gl.color4f(0.f, 0.f, 0.f, 0.6f); // dim the whole frame, then the 4:3 page inside it
     gl.begin(GL_QUADS); gl.vertex2f(-1, -1); gl.vertex2f(1, -1); gl.vertex2f(1, 1); gl.vertex2f(-1, 1); gl.end();
     gl.bindTexture(GL_TEXTURE_2D, texture);
@@ -129,10 +172,6 @@ void DrawControlsOverlay(SDL_Window *window)
     gl.texCoord2f(1, 0); gl.vertex2f(sx, sy);
     gl.texCoord2f(0, 0); gl.vertex2f(-sx, sy);
     gl.end();
-    gl.matrixMode(GL_PROJECTION); gl.popMatrix();
-    gl.matrixMode(GL_MODELVIEW); gl.popMatrix();
-    gl.popAttrib();
-    gl.useProgram((GLuint)program);
-    gl.activeTexture((GLenum)unit);
+    leave(program, unit);
 }
 } // namespace N64c
