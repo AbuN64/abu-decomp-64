@@ -298,6 +298,36 @@ class PortEnvTests(unittest.TestCase):
                 tas_statediff._dump_pass(session, [2], mock.Mock())
         self.assertEqual([env["GCOV_PREFIX"] for env in seen], [str(run / tas_statediff.DUMPS / "gcov")])
 
+    def test_the_state_dump_replay_drops_the_port_rom_copy_and_counters_but_keeps_the_dumps(self):
+        from types import SimpleNamespace
+
+        from abu_decomp import tas_statediff
+
+        with tempfile.TemporaryDirectory() as name:
+            run, cache = Path(name) / "run", Path(name) / "cache"
+            run.mkdir()
+            cache.mkdir()
+            (run / "movie.raw").write_text("1\n2\n")
+            (cache / "dump-2.bin").write_bytes(b"x")
+            cfg = {"port": "port", "args": [], "env": {}, "timeout_seconds": 1}
+            session = SimpleNamespace(
+                cfg=cfg, run=run, pads=1, pak="on", oracle_dir=cache, folder=Path(name), oracle_cfg={}
+            )
+            dumps = run / tas_statediff.DUMPS
+
+            def popen(argv, env, **_):  # the port leaves its ROM copy, counters and one dump
+                (dumps / "user" / "base").mkdir(parents=True)
+                (dumps / "user" / "base" / "rom.z64").write_bytes(b"r" * 8)
+                (dumps / "gcov" / "home").mkdir(parents=True)
+                (dumps / "gcov" / "home" / "a.gcda").write_bytes(b"g")
+                (dumps / "state-2.bin").write_bytes(b"d")
+
+            with mock.patch.object(tas_statediff.subprocess, "Popen", popen), mock.patch.object(tas, "_wait"):
+                tas_statediff._dump_pass(session, [2], mock.Mock())
+            self.assertEqual(
+                sorted(p.name for p in dumps.iterdir() if p.name != "output.txt"), ["movie.raw", "state-2.bin"]
+            )
+
 
 class ServeTests(unittest.TestCase):
     def setUp(self):

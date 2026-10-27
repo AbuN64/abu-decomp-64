@@ -840,3 +840,49 @@ def test_a_run_without_both_sides_calls_has_no_verdicts(tmp_path):
     (tmp_path / cov.PORT_CALLS).write_text("p\n")
     assert cov.cached_behaviour(tmp_path, str, str, "sig") is None
     assert not (tmp_path / cov.BEHAVIOUR).exists()
+
+
+class SupersededTests(unittest.TestCase):
+    """The union reads the newest run of every movie: older reports are dead disk."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.plays = Path(directory.name) / "runs" / "plays"
+        self.cfg = {"runs": self.plays.parent}
+        self.rows = {}
+
+    def made(self, name, movie, report=True):
+        folder = self.plays / name
+        folder.mkdir(parents=True)
+        if report:
+            (folder / "coverage.json").write_text("{}")
+        self.rows[folder] = {"movie": movie, "status": "done"}
+        return folder
+
+    def drop(self, run, newest):
+        with (
+            mock.patch("abu_decomp.tas.read_record", side_effect=lambda r: self.rows.get(r)),
+            mock.patch("abu_decomp.tas.run_rows", return_value=sorted(self.rows.items())),
+            mock.patch.object(cov, "latest_runs", return_value=newest),
+        ):
+            return cov.drop_superseded(self.cfg, run)
+
+    def test_older_reports_of_the_same_movie_go_and_other_movies_stay(self):
+        old, mid, new = self.made("r1", "m"), self.made("r2", "m"), self.made("r3", "m")
+        other = self.made("r0", "other")
+        self.assertEqual(self.drop(new, {"m": new, "other": other}), 2)
+        self.assertEqual([(p / "coverage.json").exists() for p in (old, mid, new, other)], [False, False, True, True])
+
+    def test_a_run_the_union_would_not_read_deletes_nothing(self):
+        old, new = (
+            self.made("r1", "m"),
+            self.made("r2", "m"),
+        )  # r2 played an unpublished build: the union still reads r1
+        self.assertEqual(self.drop(new, {"m": old}), 0)
+        self.assertTrue((old / "coverage.json").exists())
+
+    def test_a_run_with_no_movie_deletes_nothing(self):
+        old, new = self.made("r1", "m"), self.made("r2", "")
+        self.assertEqual(self.drop(new, {}), 0)
+        self.assertTrue((old / "coverage.json").exists())

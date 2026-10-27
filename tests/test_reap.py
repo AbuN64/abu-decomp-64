@@ -115,7 +115,7 @@ class WorktreeTests(unittest.TestCase):
             now=lambda: self.now,
         )
         with mock.patch.object(
-            reap.worktree, "prune", side_effect=lambda s, n: pruned.append(n) or ({"removed": n}, 0, [])
+            reap.worktree, "prune", side_effect=lambda s, n, *a: pruned.append(n) or ({"removed": n}, 0, [])
         ):
             dry, code, _ = reap.run(profile(), self.shared, dry_run=True, **common)
             self.assertEqual((kills, pruned, code), ([], [], 0))
@@ -127,6 +127,20 @@ class WorktreeTests(unittest.TestCase):
         self.assertIn((101, signal.SIGKILL), kills)
         self.assertEqual(real["worktrees"]["removed"], ["ended", "live"])
         self.assertEqual(slept[0], 3)  # the sample window comes from the profile
+
+    def test_an_ended_lane_goes_with_its_scratch_even_when_it_is_not_idle(self) -> None:
+        results = Path(tempfile.mkdtemp(prefix="results-"))
+        (results / "fresh").mkdir()
+        (results / "fresh" / "RESULT.md").write_text("DONE shipped\n")
+        (results / "next").mkdir()
+        (results / "next" / "RESULT.md").write_text("CONTINUE\n")
+        section = {**REAP, "ended_results": str(results), "lane_scratch": ["/rig/lanes"], "salvage": "/rig/salvage"}
+        calls = []
+        with mock.patch.object(reap.worktree, "prune", side_effect=lambda *a: calls.append(a) or ({}, 0, [])):
+            reap.run(profile(section), self.shared, read=lambda: [], sleep=lambda s: None, now=lambda: self.now)
+        _, names, results_arg, scratch, salvage = calls[0]
+        self.assertEqual(names, ["ended", "fresh", "live"])  # idle ones plus the DONE one; CONTINUE stays
+        self.assertEqual((results_arg, scratch, salvage), (None, [Path("/rig/lanes")], Path("/rig/salvage")))
 
 
 class ScheduleTests(unittest.TestCase):

@@ -51,6 +51,18 @@ def settings(profile: Profile) -> dict[str, float]:
     return {k: float(section[k]) for k in KEYS}
 
 
+def places(profile: Profile) -> dict[str, Any]:
+    """The optional `land.reap` places: `ended_results` (lanes' RESULT.md folder), `lane_scratch` (folders a
+    lane leaves files in, by lane name) and `salvage` (where an ended tree's uncommitted work is saved first)."""
+    section = profile.section("land").get("reap") or {}
+    expand = lambda value: Path(str(value)).expanduser()  # noqa: E731
+    return {
+        "results": expand(section["ended_results"]) if section.get("ended_results") else None,
+        "scratch": [expand(v) for v in section.get("lane_scratch", [])],
+        "salvage": expand(section["salvage"]) if section.get("salvage") else None,
+    }
+
+
 def snapshot(proc: Path = Path("/proc")) -> list[Proc]:
     """Every process the caller can read."""
     hertz = os.sysconf("SC_CLK_TCK")
@@ -188,12 +200,14 @@ def run(
         cfg["chromium_sample_seconds"],
         cfg["chromium_idle_cpu_percent"],
     )
-    stale = stale_worktrees(shared, after, cfg["worktree_idle_hours"], now(), os.getpid())
+    where = places(profile)
+    ended = sorted(worktree.ended_lanes(where["results"])) if where["results"] else []
+    stale = sorted(set(stale_worktrees(shared, after, cfg["worktree_idle_hours"], now(), os.getpid())) | set(ended))
     if not dry_run:
         _kill_trees(trees, kill, sleep)
     gone: dict[str, Any] = {"removed": [], "kept": [], "freed_mb": 0}
     if stale and not dry_run:
-        gone = worktree.prune(shared, stale)[0]
+        gone = worktree.prune(shared, stale, None, where["scratch"], where["salvage"])[0]
     result = {
         "dry_run": dry_run,
         "chromium": {"trees": len(trees), "processes": sum(len(t) for t in trees)},

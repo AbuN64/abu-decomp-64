@@ -239,39 +239,140 @@ def lane_tree(profile: Profile, shared: Path, lane: str, rev: str) -> tuple[Path
     return target, sha
 
 
+TOOL_TREES = (
+    "decomp",
+    "unbake",
+    "recipe",
+    "taste",
+)  # the tool-repo worktrees a lane gets beside its own (pool-mint --release)
+
+
+def ended_lanes(results: Path) -> set[str]:
+    """The lanes under RESULT.md folders `results` whose card is over: a first line DONE. CONTINUE, BLOCKED and PARTIAL
+    are read by a successor card, which needs the tree and the scratch the HANDOFF names."""
+    out = set()
+    for path in results.glob("*/RESULT.md"):
+        with contextlib.suppress(OSError):
+            if path.read_text(errors="replace").lstrip().startswith("DONE"):
+                out.add(path.parent.name)
+    return out
+
+
+def _claims(entry: str, lane: str) -> bool:
+    return entry == lane or (entry.startswith(lane) and entry[len(lane)] in ".-")
+
+
+def lane_scratch(root: Path, lane: str) -> list[Path]:
+    """What LANE left under ROOT: its folder, its tool-tree folders, and its loose logs and diffs (`LANE.log`,
+    `LANE-build.log`) unless a longer sibling folder name owns them (`LANE-x` is another lane's folder)."""
+    if not root.is_dir():
+        return []
+    entries = list(root.iterdir())
+    longer = [e.name for e in entries if e.is_dir() and len(e.name) > len(lane) and _claims(e.name, lane)]
+    out = []
+    for entry in entries:
+        if entry.is_dir():
+            if entry.name == lane or entry.name in {f"{lane}-{t}" for t in TOOL_TREES}:
+                out.append(entry)
+        elif _claims(entry.name, lane) and not any(_claims(entry.name, other) for other in longer):
+            out.append(entry)
+    return out
+
+
+def _live_paths() -> list[str]:
+    """Where every process stands or has files open, and what it was started with: one scan of /proc."""
+    out = []
+    for proc in Path("/proc").glob("[0-9]*"):
+        if proc.name == str(os.getpid()):
+            continue
+        with contextlib.suppress(OSError):
+            out.append(os.readlink(proc / "cwd"))
+        with contextlib.suppress(OSError):
+            out.append((proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace"))
+        with contextlib.suppress(OSError):
+            for fd in (proc / "fd").iterdir():
+                with contextlib.suppress(OSError):
+                    out.append(os.readlink(fd))
+    return out
+
+
+def _busy(path: Path, live: list[str]) -> bool:
+    text = str(path)
+    return any(
+        item == text or item.startswith(text + "/") or text + "/" in item or item.endswith(text) for item in live
+    )
+
+
+def _salvage(tree: Path, folder: Path) -> Path | None:
+    """The uncommitted work of a tree that is about to go, as a patch (build outputs left out): a kept product."""
+    with contextlib.suppress(WorktreeError, OSError):
+        parts = [_git(tree, "diff", "HEAD")]
+        for name in _git(tree, "ls-files", "--others", "--exclude-standard", "--", ".", ":!build", ":!.unbake").split(
+            "\n"
+        ):
+            if name:
+                done = subprocess.run(
+                    ["git", "-C", str(tree), "diff", "--no-index", "/dev/null", name], capture_output=True, text=True
+                )
+                parts.append(done.stdout)
+        text = "".join(parts)
+        if text.strip():
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / f"{tree.name}.patch"
+            target.write_text(text)
+            return target
+    return None
+
+
 def prune(
-    shared: Path, ended: list[str], results: Path | None = None
+    shared: Path,
+    ended: list[str],
+    results: Path | None = None,
+    scratch: list[Path] | None = None,
+    salvage: Path | None = None,
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    """Remove the worktrees of ended lanes: the names given, and every lane with a RESULT.md under `results`. A
-    worktree a queued ship still names is kept and reported. The disk freed is the result's `freed_mb`."""
+    """Remove what ended lanes left: the names given, and every lane with a RESULT.md saying DONE under `results`.
+    Each lane's worktree goes, with its tool-tree worktrees, and its folders and loose files under every `scratch` root.
+    A worktree a queued ship still names, or any path a live process stands in or has open, is kept and reported. A
+    tree with uncommitted work leaves it as a patch under `salvage` first. The disk freed is the result's `freed_mb`."""
     shared = shared.expanduser().resolve()
     folder = base(shared)
     names = set(ended)
     if results is not None:
-        names |= {p.parent.name for p in results.glob("*/RESULT.md")}
-    removed, kept = [], []
-    before = shutil.disk_usage(folder).free if folder.is_dir() else 0
+        names |= ended_lanes(results)
+    removed, kept, saved = [], [], []
+    probe = folder if folder.is_dir() else Path("/")
+    before = shutil.disk_usage(probe).free
+    live = _live_paths()
     for name in sorted(names):
-        path = folder / name
-        if not path.is_dir():
-            continue
-        if why := _referenced(shared, path):
-            kept.append({"worktree": str(path), "why": why})
-            continue
-        try:
-            _git(shared, "worktree", "remove", "--force", str(path))
-        except (
-            WorktreeError
-        ):  # a half-removed tree (git forgot it, its files stay) would refuse every later prune: delete it
-            shutil.rmtree(path, ignore_errors=True)
-        removed.append(str(path))
+        trees = [folder / name] + [folder / f"{name}-{t}" for t in TOOL_TREES]
+        for path in (t for t in trees if t.is_dir()):
+            if why := _referenced(shared, path) or (["a live process uses it"] if _busy(path, live) else []):
+                kept.append({"worktree": str(path), "why": why})
+                continue
+            if salvage and (patch := _salvage(path, salvage)):
+                saved.append(str(patch))
+            try:
+                _git(shared, "worktree", "remove", "--force", str(path))
+            except (
+                WorktreeError
+            ):  # a half-removed tree (git forgot it, its files stay) would refuse every later prune: delete it
+                shutil.rmtree(path, ignore_errors=True)
+            removed.append(str(path))
+        for root in scratch or []:
+            for path in lane_scratch(root.expanduser(), name):
+                if _busy(path, live):
+                    kept.append({"worktree": str(path), "why": ["a live process uses it"]})
+                    continue
+                shutil.rmtree(path, ignore_errors=True) if path.is_dir() else path.unlink(missing_ok=True)
+                removed.append(str(path))
     _git(shared, "worktree", "prune")
-    freed = (shutil.disk_usage(folder).free - before) // 2**20 if folder.is_dir() else 0
+    freed = (shutil.disk_usage(probe).free - before) // 2**20
     findings = [
         {"key": "worktree.referenced", "message": f"{k['worktree']} kept: {', '.join(k['why'])}", "blocking": False}
         for k in kept
     ]
-    return {"removed": removed, "kept": kept, "freed_mb": freed}, 0, findings
+    return {"removed": removed, "kept": kept, "salvaged": saved, "freed_mb": freed}, 0, findings
 
 
 MAX_BEHIND = 25  # commits: the pool is refreshed after each landing (~20 an hour), so more means it was not

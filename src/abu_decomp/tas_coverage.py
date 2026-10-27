@@ -723,6 +723,25 @@ def run_report(profile: Profile, cfg: dict[str, Any], run: Path) -> Path | None:
     return out
 
 
+def drop_superseded(cfg: dict[str, Any], run: Path) -> int:
+    """Called once RUN's record is final. Delete the coverage reports of the runs RUN's movie has been replayed since:
+    the union reads only the newest run of every movie (`latest_runs`), so an older report (13 MB a run, 35 GB across
+    2700 runs on 10-27) is read by no one. Returns how many went."""
+    from abu_decomp import tas
+
+    name = str((tas.read_record(run) or {}).get("movie") or "")
+    newest = latest_runs(cfg).get(name) if name else None
+    if newest is None or newest.name < run.name:
+        return 0
+    dropped = 0
+    for other, other_row in tas.run_rows(cfg):
+        report = other / COVERAGE
+        if other_row.get("movie") == name and other.name < newest.name and report.is_file():
+            report.unlink(missing_ok=True)
+            dropped += 1
+    return dropped
+
+
 def drop_orphan_notes(build: Path) -> int:
     """Delete every .gcno (and its .gcda) under build/decomp whose unit source is gone from the build's source link
     (units a pin bump renamed or merged): gcovr dies reading a missing source. Returns how many were dropped."""

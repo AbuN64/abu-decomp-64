@@ -1677,6 +1677,9 @@ def play(
         }
         _check_play_signal()
         _write_record(run, final)
+        if not human:  # this run's report replaces the movie's older ones in the union: they are dead disk
+            with contextlib.suppress(DecompError, OSError):
+                tas_coverage.drop_superseded(cfg, run)
         if (
             not human
         ):  # a crash, stop, hang or exit is a finding (tas_findings; sanitized: crash-sanitized); clean clears

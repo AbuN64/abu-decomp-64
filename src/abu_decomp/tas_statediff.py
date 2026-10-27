@@ -731,6 +731,9 @@ def _dump_pass(session: Session, polls: list[int], profile: Profile) -> dict[int
             cwd=port_dir,
         )
         tas._wait(process, cfg["timeout_seconds"])
+    # the port's ROM copy and counters are read by no one after the dump: 13 MB a run, 40 GB over 2700 runs (10-27)
+    for scrap in (user, port_dir / "gcov"):
+        shutil.rmtree(scrap, ignore_errors=True)
     if original is not None and work is not None:
         tas._wait(original, session.oracle_cfg["timeout_seconds"])
         for p in missing:
