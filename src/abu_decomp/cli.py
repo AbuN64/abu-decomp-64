@@ -1149,7 +1149,7 @@ def _run_owes(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "verb",
-        choices=["count", "dead-decls", "slices", "ledger", "owners"],
+        choices=["count", "dead-decls", "slices", "ledger", "owners", "preflight"],
         help="count: placeholder names (func_/D_/unk/pad/spNN/var_/argN) per folder; dead-decls: the declarations of"
         " --dir (headers, and the unit-local declarations of its sources) nothing reads, removed to a fixpoint as one"
         " batch per module folder; slices: one owner for every placeholder"
@@ -1157,7 +1157,10 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
         " ledger's queue, batches, rows accepted/refused per lane and slice progress (WATCH); owners: the owning"
         " module of every declaration of --dir (definer for externs, majority user for types and macros), as a"
         " move list (--packs DIR writes owners.tsv and owners.json); without --dir: the unit-local externs of every"
-        " source hoisted into the owning header as batches (--packs DIR writes externs-batch-NN.diff, externs.json)",
+        " source hoisted into the owning header as batches (--packs DIR writes externs-batch-NN.diff, externs.json);"
+        " preflight: every bulk generator above and in `recipe`/`data` previewed on --rev in a lane worktree, one"
+        " refusal list grouped by (tool, code) with counts and examples, each group a stage S defect or an expected"
+        " residue (--packs DIR writes <rev>.json and <rev>.tsv; exit 1 on an unclassified group)",
     )
     parser.add_argument(
         "--project", type=Path, help="project tree (default: the work tree of the cwd, else the profile's)"
@@ -1198,6 +1201,24 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
         help="per listed folder, how many locals (L), data (N4) and functions (N5) Recipe Maker can name from source"
         " evidence and how many have none (one read-only `recipe name count` for every listed folder)",
     )
+
+
+def _run_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from abu_decomp import preflight, tools, worktree
+
+    if not args.rev:
+        raise DecompError("cleanup.rev", "preflight needs --rev (the pinned main revision to census)")
+    shared = tools.project_dir(_profile(args.profile), args.project)
+    tree, sha = worktree.lane_tree(_profile(args.profile), shared, f"PREFLIGHT-{args.rev}", args.rev)
+    scratch = Path.home() / "rig-state" / "tmp" / f"preflight-{args.rev}"
+    report = preflight.run(tree, scratch)
+    found = preflight.document(args.rev, sha, report)
+    out = args.packs or Path.home() / "rig-state" / "preflight"
+    paths = preflight.write(out, args.rev, found)
+    for line in preflight.tsv(found["groups"]).splitlines():
+        print(line, file=sys.stderr)
+    print(f"preflight {args.rev}: {found['refusals']} refusals, {found['unclassified']} unclassified -> {paths[0]}", file=sys.stderr)
+    return {**found, "written": [str(p) for p in paths]}, int(found["unclassified"] > 0), []
 
 
 def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -1252,6 +1273,8 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
             for name in owned["files"]:
                 print(f"  {name}", file=sys.stderr)
         return {"lane": args.show, **found, "file_set": owned}, 0, []
+    if args.verb == "preflight":
+        return _run_preflight(args)
     root = tools.project_dir(_profile(args.profile), _own_tree(args, "cleanup"))
     if args.verb == "slices":
         argv = cleanup.slices_argv(args.lanes, args.map, args.assign, args.names)

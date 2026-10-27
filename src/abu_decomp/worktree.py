@@ -225,6 +225,20 @@ def _referenced(shared: Path, path: Path) -> list[str]:
     return why
 
 
+def lane_tree(profile: Profile, shared: Path, lane: str, rev: str) -> tuple[Path, str]:
+    """The worktree of LANE at REV and the commit REV names: made by `new` when absent, reused when it already stands
+    at that commit (a rerun is warm), refused when it stands anywhere else."""
+    sha = _git(shared, "rev-parse", "--verify", f"{rev}^{{commit}}").strip()
+    target = base(shared) / lane
+    if not target.exists():
+        result, code, found = new(profile, shared, lane, sha)
+        if code:
+            raise WorktreeError("worktree.setup", f"{target}: {found[0]['message'] if found else 'setup refused'}")
+    elif _git(target, "rev-parse", "HEAD").strip() != sha:
+        raise WorktreeError("worktree.exists", f"{target} stands at another revision than {sha}: prune it first")
+    return target, sha
+
+
 def prune(
     shared: Path, ended: list[str], results: Path | None = None
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
