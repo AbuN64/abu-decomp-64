@@ -1139,7 +1139,8 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
         "verb",
         choices=["count", "dead-decls", "slices", "ledger", "owners"],
         help="count: placeholder names (func_/D_/unk/pad/spNN/var_/argN) per folder; dead-decls: the declarations of"
-        " --dir (a header folder) nothing reads, as layered removal packs; slices: one owner for every placeholder"
+        " --dir (headers, and the unit-local declarations of its sources) nothing reads, removed to a fixpoint as one"
+        " batch per module folder; slices: one owner for every placeholder"
         " target (80-100 functions per slice), the lane ownership files the name ledger gates on; ledger: the name"
         " ledger's queue, batches, rows accepted/refused per lane and slice progress (WATCH); owners: the owning"
         " module of every declaration of --dir (definer for externs, majority user for types and macros), as a"
@@ -1158,9 +1159,10 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--packs",
         type=Path,
-        help="dead-decls: write one diff per layer here (dead-decls-L<n>.diff); owners: owners.tsv and owners.json",
+        help="dead-decls: write one diff per module folder here (dead-decls-NN-<module>.diff, dead-decls.json); owners:"
+        " owners.tsv and owners.json",
     )
-    parser.add_argument("--apply", action="store_true", help="dead-decls: write layer 0 into the tree")
+    parser.add_argument("--apply", action="store_true", help="dead-decls: write the whole fixpoint into the tree")
     parser.add_argument("--lanes", type=int, help="slices: the lane count (GLOBALS and STRUCT slices scale with it)")
     parser.add_argument(
         "--map", help="slices, owners: a module map file (unit<TAB>module lines; default docs/MODULES.tsv)"
@@ -1265,10 +1267,15 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
         from abu_decomp import deaddecls
 
         if not args.dir:
-            raise DecompError("cleanup.dir", "dead-decls needs --dir (the header folder, e.g. include/COMMON)")
+            raise DecompError(
+                "cleanup.dir", "dead-decls needs --dir (a folder of headers or sources, e.g. include/COMMON or src/game)"
+            )
         found = deaddecls.run(root, args.dir, args.packs, args.apply)
-        sizes = [row["declarations"] for row in found["layers"]]  # type: ignore[attr-defined]
-        print(f"dead-decls {found['dead']} in {found['headers']} headers, layers {sizes}", file=sys.stderr)
+        print(
+            f"dead-decls {found['dead']} in {found['headers']} headers and {found['units']} units, "
+            f"{len(found['batches'])} batches, {found['passes']} passes",  # type: ignore[arg-type]
+            file=sys.stderr,
+        )
         return found, 0, []
     rev = getattr(args, "rev", None)  # a hand-made Namespace (tests, other verbs) has none
     if rev and args.evidence:

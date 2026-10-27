@@ -1,4 +1,5 @@
-"""`decomp cleanup dead-decls`: the declarations of one header folder that nothing reads, as layered removal packs.
+"""`decomp cleanup dead-decls`: the declarations of one folder that nothing reads, removed to a fixpoint as one batch per
+module folder.
 A header folder collects declarations (types, enum constants, externs, prototypes, inline functions) whose last use
 went away in the cleanup. A name is live when a file outside the folder spells it, or when a live declaration of the
 folder spells it (a type used only by an inline, an extern used only by another header); a preprocessor line or a
@@ -7,12 +8,24 @@ construct this reader does not recognize keeps every name it spells. Three cases
 - a dead declaration used by another dead declaration goes in a later layer, so each layer leaves a tree that
   still compiles (layer 0 first, then layer 1 over it); a cycle of dead declarations is one layer;
 - an enum constant used elsewhere keeps its enum.
+Headers of the folder are one scope (a name is live when a file outside the folder spells it). Each source unit of the
+folder is a scope of its own (unit-local): a typedef, tag, extern or prototype the unit never spells again is dead; a
+definition (function, variable, initialized data) is never touched, so the objects stay byte-identical. A unit's
+outside words are the preprocessor lines of every header it includes (a macro expands in the unit) and the full text of
+any non-header file it includes; a source another file includes is not a unit and is left alone.
+The run repeats passes (sources, then headers over the reduced sources) until a pass finds nothing: the layers of one
+pass already cover every transitive user, the next pass covers a header name whose last user was a dead unit-local
+declaration. `--apply` writes the whole fixpoint. `packs` gets one diff per module folder (`dead-decls-NN-<module>.diff`,
+no file cap: the train applies a tool batch whole) and `dead-decls.json`; module folders whose dead declarations use
+each other share one batch, and source batches come before header batches.
 The reader is a declaration splitter over comment-free text (not a C parser): a chunk ends at `;` at brace depth 0, or
 at the `}` of a function definition. It is conservative: when unsure a declaration is live."""
 
 from __future__ import annotations
 
 import difflib
+import json
+import posixpath
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -58,7 +71,11 @@ KEYWORDS = frozenset(
     ]
 )
 C_SUFFIXES = (".h", ".hpp", ".inc")
+SOURCE_SUFFIXES = (".c", ".cpp", ".cc")
+HEADER_SUFFIXES = (".h", ".hpp", ".hh")
+INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.M)
 MAX_BYTES = 8 << 20
+MAX_PASSES = 16
 
 
 def strip_comments(text: str) -> str:
@@ -221,24 +238,78 @@ def analyse(chunk: Chunk) -> None:
     chunk.enforced = _enforced(text)
 
 
-def outside_words(root: Path, exclude: set[str]) -> set[str]:
-    """Every word of the tracked files but `exclude` (comments blanked in C text): the names the project spells."""
-    listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=True).stdout
-    words: set[str] = set()
-    for name in listed.decode("utf-8", "replace").split("\0"):
-        path = root / name
-        if not name or name in exclude or not path.is_file() or path.stat().st_size > MAX_BYTES:
-            continue
-        try:
-            text = path.read_bytes().decode("latin-1")
-        except OSError:
-            continue
+class Index:
+    """The words every tracked file spells (comments blanked in C text), its `#include` lines and, for a header, the
+    words of its preprocessor lines: what a scope reads of the files around it. `put` swaps in a reduced text."""
+
+    def __init__(self, root: Path) -> None:
+        self.words: dict[str, set[str]] = {}
+        self.includes: dict[str, list[str]] = {}
+        self.directives: dict[str, set[str]] = {}
+        listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=True).stdout
+        for name in listed.decode("utf-8", "replace").split("\0"):
+            path = root / name
+            if not name or not path.is_file() or path.stat().st_size > MAX_BYTES:
+                continue
+            try:
+                self.put(name, path.read_bytes().decode("latin-1"))
+            except OSError:
+                continue
+        lower: dict[str, list[str]] = {}
+        for name in self.words:
+            lower.setdefault(name.lower(), []).append(name)
+        self.by_lower = {k: v[0] for k, v in lower.items() if len(v) == 1}
+        base: dict[str, list[str]] = {}
+        for name in self.words:
+            base.setdefault(posixpath.basename(name).lower(), []).append(name)
+        self.by_base = {k: v[0] for k, v in base.items() if len(v) == 1}
+
+    def put(self, name: str, text: str) -> None:
         if "\0" in text:
-            continue
-        if name.lower().endswith((".c", ".cpp", ".cc", ".h", ".hpp", ".inc")):
+            return
+        if name.lower().endswith(C_SUFFIXES + SOURCE_SUFFIXES):
             text = strip_comments(text)
-        words.update(IDENT.findall(text))
-    return words
+            self.includes[name] = INCLUDE.findall(text)
+            if name.lower().endswith(HEADER_SUFFIXES):
+                self.directives[name] = directive_words(text)
+        self.words[name] = set(IDENT.findall(text))
+
+    def resolve(self, includer: str, name: str) -> str | None:
+        """The tracked file `#include "name"` of `includer` reads: next to it, from the root, under include/, else the
+        one file of that name (case folded)."""
+        here = posixpath.dirname(includer)
+        for cand in (posixpath.normpath(posixpath.join(here, name)), name, "include/" + name):
+            if cand in self.words:
+                return cand
+            if cand.lower() in self.by_lower:
+                return self.by_lower[cand.lower()]
+        return self.by_base.get(posixpath.basename(name).lower())
+
+    def outside(self, exclude: set[str]) -> set[str]:
+        """Every word of the tracked files but `exclude`: the names the project spells."""
+        out: set[str] = set()
+        for name, words in self.words.items():
+            if name not in exclude:
+                out |= words
+        return out
+
+    def unit_outside(self, unit: str) -> set[str]:
+        """What a source unit reads of other files: the preprocessor lines of every header it includes (a macro
+        expands in the unit) and the full text of any other file it includes."""
+        out: set[str] = set()
+        seen = {unit}
+        stack = [unit]
+        while stack:
+            for name in self.includes.get(stack.pop(), ()):
+                target = self.resolve(unit, name)
+                if target and target not in seen:
+                    seen.add(target)
+                    stack.append(target)
+                    out |= self.directives[target] if target in self.directives else self.words.get(target, set())
+        return out
+
+    def included_files(self) -> set[str]:
+        return {t for f, names in self.includes.items() for n in names if (t := self.resolve(f, n))}
 
 
 def directive_words(text: str) -> set[str]:
@@ -313,59 +384,205 @@ def remove(text: str, chunks: list[Chunk]) -> str:
     return "\n".join(out)
 
 
-def header_files(root: Path, folder: str) -> list[str]:
-    listed = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "-z", "--", folder], capture_output=True, check=True
-    ).stdout
-    return sorted(n for n in listed.decode().split("\0") if n.lower().endswith(C_SUFFIXES))
+TAG_ONLY = re.compile(r"(struct|union|enum)\b[^;{}]*(\{.*\})?\s*;\Z", re.S)
+PROTOTYPE = re.compile(r"(?:\w+[\s*]+)+(\w+)\s*\(\s*[^*\s]", re.S)
 
 
-def run(root: Path, folder: str, packs: Path | None = None, apply: bool = False) -> dict[str, object]:
-    """Find the dead declarations of `folder` (a path in the project). `packs` gets one diff per layer
-    (`dead-decls-L<n>.diff`, each over the tree the earlier ones leave); `apply` writes layer 0 into the tree."""
-    names = header_files(root, folder)
-    texts = {n: (root / n).read_text(encoding="latin-1") for n in names}
-    files = {}
-    for n, t in texts.items():
-        chunks = split(strip_comments(t))
-        for c in chunks:
-            analyse(c)
-        files[n] = chunks
-    layers = dead_layers(files, outside_words(root, set(names)))
-    state = dict(texts)
-    rows = []
-    for k, layer in enumerate(layers):
-        by_file: dict[str, list[Chunk]] = {}
-        for p, c in layer:
-            by_file.setdefault(p, []).append(c)
-        # the chunks' line numbers refer to the original text: later layers re-read the reduced text
-        diff: list[str] = []
-        for p, chunks in sorted(by_file.items()):
-            if k:
-                chunks = _reparse(state[p], {name for c in chunks for name in c.defs})
-            new = remove(state[p], chunks)
-            diff += difflib.unified_diff(state[p].splitlines(), new.splitlines(), f"a/{p}", f"b/{p}", lineterm="", n=3)
-            state[p] = new
-        if packs is not None:
-            packs.mkdir(parents=True, exist_ok=True)
-            (packs / f"dead-decls-L{k}.diff").write_text("\n".join(diff) + "\n")
-        rows.append(
-            {
-                "layer": k,
-                "declarations": len(layer),
-                "files": len(by_file),
-                "names": sorted({n for _, c in layer for n in c.defs})[:8],
-            }
-        )
-        if apply and k == 0:
-            for p in by_file:
-                (root / p).write_text(state[p], encoding="latin-1")
-    return {"folder": folder, "headers": len(names), "dead": sum(r["declarations"] for r in rows), "layers": rows}  # type: ignore[misc]
+def declaration_only(text: str) -> bool:
+    """A chunk that only declares (a typedef, a tag, an extern, a prototype): the cut that leaves the object as it was.
+    A definition (a function, a variable, initialized data) is not."""
+    t = text.strip()
+    if t.startswith("typedef"):
+        return True
+    if "=" in t or t.startswith("static"):
+        return False
+    if TAG_ONLY.match(t):
+        return True
+    if "{" in t:
+        return False
+    return t.startswith("extern") or bool(PROTOTYPE.match(t))
 
 
-def _reparse(text: str, defs: set[str]) -> list[Chunk]:
-    """The chunks of `text` (a state after earlier layers) that define any of `defs`."""
+def chunks_of(text: str) -> list[Chunk]:
     chunks = split(strip_comments(text))
     for c in chunks:
         analyse(c)
-    return [c for c in chunks if not c.opaque and c.defs & defs]
+    return chunks
+
+
+def source_files(index: Index, folder: str) -> list[str]:
+    """The units of `folder`: its sources that no other file includes (an included source is part of its includer)."""
+    included = index.included_files()
+    return sorted(n for n in index.words if under(n, folder) and n.lower().endswith(SOURCE_SUFFIXES) and n not in included)
+
+
+def header_files(index: Index, folder: str) -> list[str]:
+    return sorted(n for n in index.words if under(n, folder) and n.lower().endswith(C_SUFFIXES))
+
+
+def under(name: str, folder: str) -> bool:
+    folder = folder.strip("/")
+    return not folder or folder == "." or name == folder or name.startswith(folder + "/")
+
+
+def layer_row(kind: str, k: int, layer: list[tuple[str, Chunk]]) -> dict[str, object]:
+    return {
+        "scope": kind,
+        "layer": k,
+        "declarations": len(layer),
+        "files": len({p for p, _ in layer}),
+        "names": sorted({n for _, c in layer for n in c.defs})[:8],
+    }
+
+
+def cut(state: dict[str, str], layer_sets: list[list[tuple[str, Chunk]]]) -> dict[str, list[Chunk]]:
+    """Remove every layer of one scope from `state` at once (a chunk's lines refer to the text the scope read)."""
+    by_file: dict[str, list[Chunk]] = {}
+    for layer in layer_sets:
+        for p, c in layer:
+            by_file.setdefault(p, []).append(c)
+    for p, chunks in by_file.items():
+        state[p] = remove(state[p], chunks)
+    return by_file
+
+
+def lines_of(text: str) -> list[str]:
+    out = re.findall(r"[^\n]*\n|[^\n]+", text)
+    if out and not out[-1].endswith("\n"):
+        out[-1] += "\n\\ No newline at end of file\n"
+    return out
+
+
+def file_diff(path: str, before: str, after: str) -> str:
+    return f"diff --git a/{path} b/{path}\n" + "".join(
+        difflib.unified_diff(lines_of(before), lines_of(after), f"a/{path}", f"b/{path}")
+    )
+
+
+def slug(folders: list[str]) -> str:
+    name = re.sub(r"[^A-Za-z0-9]+", "_", folders[0]).strip("_") or "root"
+    return name + (f"+{len(folders) - 1}" if len(folders) > 1 else "")
+
+
+def merge(folders: list[str], needs: set[tuple[str, str]]) -> list[list[str]]:
+    """Folders whose dead declarations use each other's, as groups (one batch each)."""
+    parent = {f: f for f in folders}
+
+    def find(f: str) -> str:
+        while parent[f] != f:
+            parent[f] = parent[parent[f]]
+            f = parent[f]
+        return f
+
+    for a, b in needs:
+        parent[find(a)] = find(b)
+    groups: dict[str, list[str]] = {}
+    for f in folders:
+        groups.setdefault(find(f), []).append(f)
+    return [sorted(g) for g in sorted(groups.values())]
+
+
+def run(root: Path, folder: str, packs: Path | None = None, apply: bool = False) -> dict[str, object]:
+    """Find the dead declarations of `folder` (a path in the project) to a fixpoint: the headers of the folder are one
+    scope, each source unit of it a scope of its own, and the passes repeat while one scope's removal frees the other's
+    names. `packs` gets one diff per module folder (`dead-decls-NN-<module>.diff`, in landing order, each over the
+    tree the earlier ones leave) and `dead-decls.json`; `apply` writes the whole fixpoint into the tree."""
+    index = Index(root)
+    headers = header_files(index, folder)
+    units = source_files(index, folder)
+    original = {n: (root / n).read_bytes().decode("latin-1") for n in [*headers, *units]}
+    state = dict(original)
+    removed: dict[str, list[Chunk]] = {}
+    scopes: dict[str, str] = {}  # file -> "source" | "header"
+    rows: list[dict[str, object]] = []
+    passes = 0
+    todo = {"source": True, "header": True}
+    while any(todo.values()) and passes < MAX_PASSES:
+        passes += 1
+        now, todo = todo, {"source": False, "header": False}
+        for unit in units if now["source"] else []:
+            chunks = chunks_of(state[unit])
+            for c in chunks:
+                if not c.opaque and not declaration_only(c.text):
+                    c.opaque = True
+            layers = dead_layers({unit: chunks}, index.unit_outside(unit))
+            if layers:
+                rows += [layer_row("source", k, layer) for k, layer in enumerate(layers)]
+                for p, cs in cut(state, layers).items():
+                    removed.setdefault(p, []).extend(cs)
+                    scopes[p] = "source"
+                    index.put(p, state[p])
+                todo["header"] = True
+        files = {n: chunks_of(state[n]) for n in headers} if now["header"] else {}
+        layers = dead_layers(files, index.outside(set(headers))) if files else []
+        if layers:
+            rows += [layer_row("header", k, layer) for k, layer in enumerate(layers)]
+            for p, cs in cut(state, layers).items():
+                removed.setdefault(p, []).extend(cs)
+                scopes[p] = "header"
+                index.put(p, state[p])
+            todo["source"] = True
+    changed = sorted(n for n in state if state[n] != original[n])
+    batches = emit_batches(changed, original, state, removed, scopes, packs)
+    if apply:
+        for n in changed:
+            (root / n).write_bytes(state[n].encode("latin-1"))
+    dead = sum(int(r["declarations"]) for r in rows)  # type: ignore[call-overload]
+    return {
+        "folder": folder,
+        "headers": len(headers),
+        "units": len(units),
+        "passes": passes,
+        "dead": dead,
+        "layers": rows,
+        "batches": batches,
+    }
+
+
+def emit_batches(
+    changed: list[str],
+    original: dict[str, str],
+    state: dict[str, str],
+    removed: dict[str, list[Chunk]],
+    scopes: dict[str, str],
+    packs: Path | None,
+) -> list[dict[str, object]]:
+    """One batch per module folder (the folders whose dead declarations use each other's share one): sources first,
+    then headers, which the sources' removal may have freed."""
+    batches: list[dict[str, object]] = []
+    for kind in ("source", "header"):
+        by_folder: dict[str, list[str]] = {}
+        for n in changed:
+            if scopes[n] == kind:
+                by_folder.setdefault(posixpath.dirname(n), []).append(n)
+        owner = {name: f for f, ns in by_folder.items() for n in ns for c in removed[n] for name in c.defs}
+        needs = {
+            (f, owner[ref])
+            for f, ns in by_folder.items()
+            for n in ns
+            for c in removed[n]
+            for ref in c.refs
+            if ref in owner and owner[ref] != f
+        }
+        for group in merge(sorted(by_folder), needs) if kind == "header" else [[f] for f in sorted(by_folder)]:
+            files = sorted(n for f in group for n in by_folder[f])
+            count = sum(len(removed[n]) for n in files)
+            name = f"dead-decls-{len(batches):02d}-{slug(group)}.diff"
+            message = f"Remove {count} dead declarations of {', '.join(group)}"
+            if packs is not None:
+                packs.mkdir(parents=True, exist_ok=True)
+                diff = f"# MSG: {message}\n" + "".join(file_diff(n, original[n], state[n]) for n in files)
+                (packs / name).write_bytes(diff.encode("latin-1"))
+            batches.append(
+                {
+                    "batch": name,
+                    "scope": kind,
+                    "folders": group,
+                    "files": len(files),
+                    "declarations": count,
+                    "patch": f"dead-decls={name}:{message}",
+                }
+            )
+    if packs is not None:
+        (packs / "dead-decls.json").write_text(json.dumps({"batches": batches}, indent=1, sort_keys=True) + "\n")
+    return batches
