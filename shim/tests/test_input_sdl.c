@@ -38,8 +38,11 @@ static int virtual_attached;
 SDL_JoystickID SDL_AttachVirtualJoystick(const SDL_VirtualJoystickDesc *desc)
 {
     CHECK(desc->type == SDL_JOYSTICK_TYPE_GAMEPAD && desc->nbuttons == SDL_GAMEPAD_BUTTON_COUNT);
-    devices[virtual_attached].connected = true;
-    return devices[virtual_attached++].id;
+    int slot = 0;
+    while (slot < 4 && devices[slot].connected) ++slot; /* the lowest free virtual slot, so a re-plug returns to its port */
+    devices[slot].connected = true;
+    ++virtual_attached;
+    return devices[slot].id;
 }
 SDL_Joystick *SDL_OpenJoystick(SDL_JoystickID id)
 {
@@ -568,10 +571,42 @@ static void virtual_pads(void)
     unsetenv("N64C_VPAD_SCRIPT");
     remove(path);
 }
+/* The script's plug/unplug lines: a pad leaves and returns mid-run (SDL reports each as a gamepad event on its next pump). */
+static void virtual_hotplug(void)
+{
+    const char *path = "n64c_vpad_hotplug.txt";
+    FILE *f = fopen(path, "w");
+    CHECK(f != NULL);
+    if (f) {
+        fputs("2 2 unplug\n3 2 plug\n4 2 a down\n", f);
+        fclose(f);
+    }
+    fresh();
+    virtual_attached = 0;
+    setenv("N64C_VIRTUAL_PADS", "4", 1);
+    setenv("N64C_VPAD_SCRIPT", path, 1);
+    CHECK(n64c_input_start(window) && present_bits() == 0xF);
+    n64c_input_update();
+    CHECK(present_bits() == 0xF);
+    n64c_input_update(); /* frame 2: player 2's pad is pulled */
+    CHECK(!devices[1].connected);
+    event(SDL_EVENT_GAMEPAD_REMOVED, 22);
+    CHECK(present_bits() == 0xD && port_errno(1) == CONT_ERR_NO_CONTROLLER && port_errno(0) == 0);
+    n64c_input_update(); /* frame 3: it comes back and takes its old port */
+    CHECK(devices[1].connected && virtual_attached == 5);
+    event(SDL_EVENT_GAMEPAD_ADDED, 22);
+    CHECK(present_bits() == 0xF);
+    n64c_input_update(); /* frame 4: the new pad answers the script */
+    CHECK(read_port(1, NULL).button == 0x8000 && read_port(0, NULL).button == 0);
+    n64c_input_stop();
+    unsetenv("N64C_VIRTUAL_PADS");
+    unsetenv("N64C_VPAD_SCRIPT");
+    remove(path);
+}
 int main(void)
 {
     n64c_cont_reset(NULL);
-    policy(); binds_model(); mapping(); axes(); pad_defaults(); four_ports(); virtual_pads(); mouse(); rebinding(); page(); touch();
+    policy(); binds_model(); mapping(); axes(); pad_defaults(); four_ports(); virtual_pads(); virtual_hotplug(); mouse(); rebinding(); page(); touch();
     CHECK(inits - 1 == quits); /* exactly one unsuccessful init */
     printf("input_sdl: %d checks, %d failures (binds, mapping, SI, deadzone, policy, focus, 4-port hotplug, mouse, rebinding, page, touch)\n",
            checks, failures);

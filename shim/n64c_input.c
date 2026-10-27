@@ -132,13 +132,15 @@ static int port_present(int channel, void *user)
 /* ---- scripted virtual pads (proof hook) ----
  * N64C_VIRTUAL_PADS=N attaches N SDL virtual gamepads at start, so a headless run (Xvfb) has one pad per port. N64C_VPAD_SCRIPT=FILE
  * presses their buttons: one "FRAME PORT BUTTON down|up" per line (BUTTON is an SDL gamepad button name: a, b, start, dpup ...),
- * applied when the input frame count reaches FRAME. N64C_INPUT_LOG=1 prints each change of the present-port mask. */
+ * applied when the input frame count reaches FRAME. "FRAME PORT plug|unplug" attaches or removes that port's pad (a hot-plug run;
+ * those two lines take no up/down). N64C_INPUT_LOG=1 prints each change of the present-port mask. */
 enum { VPAD_MAX = N64C_PLAYERS, VPAD_SCRIPT_MAX = 512 };
 static SDL_Joystick *vpads[VPAD_MAX];
 static struct { long frame; int port, button, down; } vscript[VPAD_SCRIPT_MAX];
 static int vscript_count, vscript_next;
 static long vframe;
-static int vpad_attach(int count)
+enum { VSCRIPT_PLUG = -1, VSCRIPT_UNPLUG = -2 };
+static void vpad_plug(int slot)
 {
     SDL_VirtualJoystickDesc desc;
     SDL_INIT_INTERFACE(&desc);
@@ -146,26 +148,40 @@ static int vpad_attach(int count)
     desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
     desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
     desc.name = "n64c virtual pad";
-    for (int i = 0; i < count && i < VPAD_MAX; ++i) {
-        SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
-        if (id) vpads[i] = SDL_OpenJoystick(id);
-    }
+    if (vpads[slot]) return;
+    SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
+    if (id) vpads[slot] = SDL_OpenJoystick(id);
+}
+static void vpad_unplug(int slot)
+{
+    if (!vpads[slot]) return;
+    SDL_JoystickID id = SDL_GetJoystickID(vpads[slot]);
+    SDL_CloseJoystick(vpads[slot]);
+    SDL_DetachVirtualJoystick(id);
+    vpads[slot] = NULL;
+}
+static int vpad_attach(int count)
+{
+    for (int i = 0; i < count && i < VPAD_MAX; ++i) vpad_plug(i);
     return count;
 }
 static void vpad_load_script(const char *path)
 {
     FILE *f = fopen(path, "r");
-    char name[32], dir[8];
+    char line[96], name[32], dir[8];
     long frame;
     int port;
     vscript_count = vscript_next = 0;
     vframe = 0;
-    while (f && vscript_count < VPAD_SCRIPT_MAX && fscanf(f, "%ld %d %31s %7s", &frame, &port, name, dir) == 4) {
-        SDL_GamepadButton b = SDL_GetGamepadButtonFromString(name);
-        if (b == SDL_GAMEPAD_BUTTON_INVALID || port < 1 || port > VPAD_MAX) continue;
+    while (f && vscript_count < VPAD_SCRIPT_MAX && fgets(line, sizeof line, f)) {
+        dir[0] = 0;
+        if (sscanf(line, "%ld %d %31s %7s", &frame, &port, name, dir) < 3) continue;
+        const int plug = !strcmp(name, "plug"), unplug = !strcmp(name, "unplug");
+        SDL_GamepadButton b = plug || unplug ? SDL_GAMEPAD_BUTTON_INVALID : SDL_GetGamepadButtonFromString(name);
+        if ((b == SDL_GAMEPAD_BUTTON_INVALID && !plug && !unplug) || port < 1 || port > VPAD_MAX) continue;
         vscript[vscript_count].frame = frame;
         vscript[vscript_count].port = port - 1;
-        vscript[vscript_count].button = b;
+        vscript[vscript_count].button = plug ? VSCRIPT_PLUG : unplug ? VSCRIPT_UNPLUG : (int)b;
         vscript[vscript_count++].down = !strcmp(dir, "down");
     }
     if (f) fclose(f);
@@ -174,20 +190,16 @@ static void vpad_tick(void)
 {
     ++vframe;
     while (vscript_next < vscript_count && vscript[vscript_next].frame <= vframe) {
-        SDL_Joystick *j = vpads[vscript[vscript_next].port];
-        if (j) SDL_SetJoystickVirtualButton(j, vscript[vscript_next].button, vscript[vscript_next].down != 0);
+        const int port = vscript[vscript_next].port, button = vscript[vscript_next].button;
+        if (button == VSCRIPT_PLUG) vpad_plug(port);
+        else if (button == VSCRIPT_UNPLUG) vpad_unplug(port);
+        else if (vpads[port]) SDL_SetJoystickVirtualButton(vpads[port], button, vscript[vscript_next].down != 0);
         ++vscript_next;
     }
 }
 static void vpad_detach(void)
 {
-    for (int i = 0; i < VPAD_MAX; ++i)
-        if (vpads[i]) {
-            SDL_JoystickID id = SDL_GetJoystickID(vpads[i]);
-            SDL_CloseJoystick(vpads[i]);
-            SDL_DetachVirtualJoystick(id);
-            vpads[i] = NULL;
-        }
+    for (int i = 0; i < VPAD_MAX; ++i) vpad_unplug(i);
     vscript_count = vscript_next = 0;
 }
 
