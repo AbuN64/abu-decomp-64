@@ -62,6 +62,7 @@ void n64c_f3d_window_shot(N64cF3d *f3d, const char *path);
 void n64c_f3d_render_scale(N64cF3d *f3d, int percent);
 size_t n64c_f3d_display_sizes(N64cF3d *f3d, uint32_t (*sizes)[2], size_t max);
 void n64c_f3d_quit(N64cF3d *f3d);
+void n64c_f3d_open_controls(N64cF3d *f3d); /* the Controls page, from the options screen */
 /* Pixels (of w x h) where the interpolated draw differs from the game's own picture of the same frame: meaningful at
  * alpha 1 only; -1 when either picture is missing. The refresh rate of the display the window is on (60 when unknown). */
 int n64c_f3d_interp_check(N64cF3d *f3d, uint32_t w, uint32_t h, uint32_t *drawn, uint32_t *game);

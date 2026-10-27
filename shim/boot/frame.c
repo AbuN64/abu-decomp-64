@@ -203,6 +203,7 @@ static void menu_update(void)
     if (what&N64C_DO_WINDOW) n64c_f3d_window_mode(frame.f3d,now.window_mode,now.width,now.height);
     if (what&N64C_DO_SCALE) n64c_f3d_render_scale(frame.f3d,now.render_scale);
     if (what&N64C_DO_UNLOCK) unlock_request=now.fps_unlock;
+    if (what&N64C_DO_CONTROLS) n64c_f3d_open_controls(frame.f3d);
     if (what&N64C_DO_QUIT) { fprintf(stderr,"boot-frame: quit from the options screen\n");n64c_f3d_quit(frame.f3d); }
     char text[512];
     int selected,scale;

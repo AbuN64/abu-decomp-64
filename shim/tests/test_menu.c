@@ -69,7 +69,7 @@ int main(void)
     Test_Check(pad.button == 0, "buttons do not reach the game while it is open");
     (void)sample(0, 0);
 
-    /* navigation: rows are resume, window mode, resolution, unlock, quit (desktop) */
+    /* navigation: rows are resume, window mode, resolution, unlock, controls, quit (desktop) */
     Test_Check(n64c_menu_text(text, sizeof text, &line, &scale) > 0 && line == 2, "resume is highlighted first");
     tap(DOWN);
     tap(RIGHT);
@@ -89,7 +89,14 @@ int main(void)
     Test_Check(n64c_options_load(path, &back) && back.fps_unlock == 1 && back.window_mode == N64C_WIN_BORDERLESS,
                "every change is saved to the file at once");
 
-    /* quit asks twice */
+    /* controls opens the page and closes the screen */
+    tap(DOWN);
+    tap(A);
+    Test_Check((n64c_menu_take(&now) & N64C_DO_CONTROLS) && !n64c_menu_is_open(), "the controls row asks for the Controls page");
+    (void)sample(L | R, 0);
+    (void)sample(0, 0);
+    Test_Check(n64c_menu_is_open(), "the screen opens again");
+    for (int i = 0; i < 4; i++) tap(DOWN); /* resume, window, resolution, unlock, controls, quit */
     tap(DOWN);
     tap(A);
     Test_Check(n64c_menu_take(&now) == 0, "the first A on quit only arms it");

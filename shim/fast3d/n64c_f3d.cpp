@@ -6,6 +6,7 @@
 // G_SETCIMG); the root list runs inside [G_DL root][OTR_G_RESETFB][G_ENDDL] so no framebuffer stays bound.
 #include "n64c_f3d.h"
 #include "f3d_window.h"
+#include "n64c_controls.h"
 #include "f3d_surface.h"
 #include "fast/interpreter.h"
 #include "fast/backends/gfx_opengl.h"
@@ -711,6 +712,7 @@ extern "C" size_t n64c_f3d_display_sizes(N64cF3d* f3d, uint32_t (*sizes)[2], siz
     return f3d->window->DisplaySizes(sizes, max);
 }
 extern "C" void n64c_f3d_quit(N64cF3d* f3d) { f3d->window->Close(); }
+extern "C" void n64c_f3d_open_controls(N64cF3d*) { n64c_controls_open(); }
 extern "C" const char* n64c_f3d_renderer(const N64cF3d* f3d) { return f3d->gl_renderer.c_str(); }
 
 extern "C" void n64c_f3d_close(N64cF3d* f3d)

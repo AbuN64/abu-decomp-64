@@ -82,6 +82,7 @@ void n64c_f3d_window_shot(N64cF3d *f,const char *path) { (void)f;(void)path; }
 void n64c_f3d_render_scale(N64cF3d *f,int percent) { (void)f;(void)percent; }
 size_t n64c_f3d_display_sizes(N64cF3d *f,uint32_t (*sizes)[2],size_t max) { (void)f;(void)sizes;(void)max;return 0; }
 void n64c_f3d_quit(N64cF3d *f) { (void)f; }
+void n64c_f3d_open_controls(N64cF3d *f) { (void)f; }
 /* Window stand-in: records what the VI showed; a live window is closed by its third presentation. */
 int n64c_f3d_present(N64cF3d *f,uint32_t phys)
 {

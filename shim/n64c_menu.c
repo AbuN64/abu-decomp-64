@@ -10,7 +10,7 @@ enum {
     PAD_A = 0x8000, PAD_B = 0x4000, PAD_START = 0x1000, PAD_UP = 0x0800, PAD_DOWN = 0x0400,
     PAD_LEFT = 0x0200, PAD_RIGHT = 0x0100, PAD_L = 0x0020, PAD_R = 0x0010
 };
-enum { ROW_RESUME, ROW_WINDOW, ROW_RESOLUTION, ROW_SCALE, ROW_UNLOCK, ROW_QUIT };
+enum { ROW_RESUME, ROW_WINDOW, ROW_RESOLUTION, ROW_SCALE, ROW_UNLOCK, ROW_CONTROLS, ROW_QUIT };
 enum { STICK_ON = 40, REPEAT_DELAY = 20, REPEAT_EVERY = 4, MAX_SIZES = 64, SCALE_STEP = 25 };
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -96,11 +96,11 @@ void n64c_menu_context(unsigned flags)
 
 static int row_at(int index)
 {
-    static const int desktop[] = {ROW_RESUME, ROW_WINDOW, ROW_RESOLUTION, ROW_UNLOCK, ROW_QUIT};
-    static const int phone[] = {ROW_RESUME, ROW_SCALE, ROW_UNLOCK, ROW_QUIT};
+    static const int desktop[] = {ROW_RESUME, ROW_WINDOW, ROW_RESOLUTION, ROW_UNLOCK, ROW_CONTROLS, ROW_QUIT};
+    static const int phone[] = {ROW_RESUME, ROW_SCALE, ROW_UNLOCK, ROW_CONTROLS, ROW_QUIT};
     return mobile ? phone[index] : desktop[index];
 }
-static int row_count(void) { return mobile ? 4 : 5; }
+static int row_count(void) { return mobile ? 5 : 6; }
 
 static void changed(unsigned what)
 {
@@ -155,6 +155,7 @@ static void press(unsigned button)
         adjust(row, button == PAD_RIGHT ? 1 : -1);
     } else if (button == PAD_A) {
         if (row == ROW_RESUME) close_screen();
+        else if (row == ROW_CONTROLS) { todo |= N64C_DO_CONTROLS; close_screen(); } /* the Controls page takes over the pads */
         else if (row == ROW_QUIT) {
             if (quit_armed) { todo |= N64C_DO_QUIT; close_screen(); }
             else quit_armed = 1;
@@ -258,6 +259,7 @@ size_t n64c_menu_text(char *buf, size_t cap, int *selected_line, int *scale)
             break;
         case ROW_SCALE: label = "RENDER SCALE"; snprintf(value, sizeof value, "< %d%% >", opts.render_scale); break;
         case ROW_UNLOCK: label = "FRAMERATE UNLOCK"; snprintf(value, sizeof value, "< %s >", opts.fps_unlock ? "ON" : "OFF"); break;
+        case ROW_CONTROLS: label = "CONTROLS"; break;
         case ROW_QUIT: label = quit_armed ? "PRESS A AGAIN TO QUIT" : "QUIT GAME"; break;
         }
         if (i == selected) *selected_line = 2 + i;

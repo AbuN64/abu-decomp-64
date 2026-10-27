@@ -12,7 +12,7 @@ extern "C" {
 #endif
 enum { N64C_WIN_WINDOWED, N64C_WIN_BORDERLESS, N64C_WIN_FULLSCREEN };
 enum { N64C_MENU_MAIN = 1, N64C_MENU_PAUSE = 2 };                   /* n64c_menu_context: which game menu is up */
-enum { N64C_DO_WINDOW = 1, N64C_DO_UNLOCK = 2, N64C_DO_SCALE = 4, N64C_DO_QUIT = 8 }; /* n64c_menu_take */
+enum { N64C_DO_WINDOW = 1, N64C_DO_UNLOCK = 2, N64C_DO_SCALE = 4, N64C_DO_QUIT = 8, N64C_DO_CONTROLS = 16 }; /* n64c_menu_take */
 typedef struct {
     int window_mode;     /* N64C_WIN_* */
     u32 width, height;   /* the window's size (windowed) or the display mode (fullscreen) */
