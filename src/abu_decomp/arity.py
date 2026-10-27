@@ -801,16 +801,26 @@ def gate_worktree(census: Census, base: str) -> dict[str, Any]:
             ["git", "-c", "core.quotepath=off", *args], cwd=census.project, capture_output=True, text=True, check=False
         )
 
-    listing = git("diff", base, "--name-only", "--no-renames")
+    listing = git("diff", base, "--name-status", "-M")
+    moved: dict[str, str] = {}
+    changed_set: set[str] = set()
+    for line in listing.stdout.split("\n"):
+        parts = line.split("\t")
+        if parts[0].startswith("R") and len(parts) == 3:
+            moved[parts[2]] = parts[1]
+            changed_set.add(parts[2])
+        elif len(parts) >= 2 and parts[0]:
+            changed_set.update(parts[1:])
     others = git("ls-files", "--others", "--exclude-standard")
-    changed = sorted(set(listing.stdout.split("\n")) | set(others.stdout.split("\n")) - {""})
+    changed = sorted(changed_set | set(others.stdout.split("\n")) - {""})
     changed = [f for f in changed if f and f.lower().endswith(census.cfg["suffixes"])]
     census.close()
+    # a moved file is judged against its text at the old path, so its sites keep their meaning under the new path
     report = check_change(
         census.project,
         census.cfg,
         changed,
-        lambda f: (lambda p: p.stdout if p.returncode == 0 else None)(git("show", f"{base}:{f}")),
+        lambda f: (lambda p: p.stdout if p.returncode == 0 else None)(git("show", f"{base}:{moved.get(f, f)}")),
         census.cache.path.parent if census.cache.path else None,
     )
     return {"base": base, "changed": len(changed), "pass": not report["refused"], **report}

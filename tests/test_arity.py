@@ -355,3 +355,34 @@ def test_a_type_split_by_a_preprocessor_line_is_unknown_not_a_return_type():
     text = "#if A\nfunc_80209CD8_de\n#else\nfunc_80209CD9_de\n#endif\n(1);\n"
     assert arity.rows_of(text, SYM)[0][6] == "?"
     assert not arity.class_conflict(arity.type_class("?"), "void")
+
+
+def test_gate_leaves_a_moved_file_with_an_existing_disagreement_alone(tmp_path):
+    import subprocess
+
+    def git(*args: str) -> str:
+        done = subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return done.stdout.strip()
+
+    git("init", "-q")
+    (tmp_path / "include").mkdir()
+    (tmp_path / "src" / "old").mkdir(parents=True)
+    (tmp_path / "src" / "a.c").write_text(DEF)
+    (tmp_path / "src" / "old" / "b.c").write_text("void g(void) { func_80209CD8_de(p, q); }\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    base = git("rev-parse", "HEAD")
+    (tmp_path / "src" / "new").mkdir()
+    git("mv", "src/old/b.c", "src/new/b.c")
+    census = arity.Census(tmp_path, None, tmp_path / "state")
+    report = arity.gate_worktree(census, base)
+    assert report["pass"] is True and report["refused"] == [] and report["changed"] == 1
+    (tmp_path / "src" / "new" / "b.c").write_text("void g(void) { func_80209CD8_de(p, q, r); }\n")
+    census = arity.Census(tmp_path, None, tmp_path / "state")
+    assert arity.gate_worktree(census, base)["pass"] is False
