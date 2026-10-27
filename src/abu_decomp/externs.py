@@ -842,7 +842,7 @@ def write_batches(
         )
     lone = {n: t for n, t in found.originals.items() if n not in touched}
     if lone:  # batch 0: the units whose multi-declarator lines no move batch edits are split on their own
-        split = [f"# MSG: Split multi-declarator unit externs into one declaration per name ({len(lone)} units)\n"]
+        split = [f"# MSG: Split multi-declarator unit externs per name ({len(lone)} units)\n"]
         split += [git_diff(n, rows(t), rows(found.texts[n])) for n, t in sorted(lone.items())]
         diffs.insert(0, "".join(split))
         if packs is not None:

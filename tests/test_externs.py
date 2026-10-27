@@ -413,3 +413,9 @@ def test_b_a_clash_with_a_name_the_plan_itself_removes_from_the_unit_is_no_clash
     _, found = moved(tmp_path, extra)
     assert "gScore" in {m for m in table(tmp_path / "out")}
     assert not [r for r in found["refused"] if r["id"] in {"gScore", "gOther"}]
+
+
+def test_c_split_only_batch_has_a_commit_subject_within_the_cap(tmp_path: Path) -> None:
+    moved(tmp_path, {"src/d/d.c": "extern int gQ, gR;\n"})  # no definer: refused, only split
+    diff = (tmp_path / "out" / "externs-batch-00-split.diff").read_bytes()
+    assert diff.startswith(b"# MSG: Split ") and diff.index(b"\n") <= 79
