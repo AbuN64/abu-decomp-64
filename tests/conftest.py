@@ -30,4 +30,7 @@ def _run_without_gcovr(command, *args, **kwargs):
 @pytest.fixture(autouse=True)
 def _isolated_rig(tmp_path, monkeypatch):
     monkeypatch.setenv("ABU_SLOTS_DIR", str(tmp_path / "slots"))
+    from abu_decomp import slots
+
+    monkeypatch.setattr(slots, "DISK_FLOOR_GIB", 0.0)  # the real disk's free space decides no unrelated test
     monkeypatch.setattr(subprocess, "run", _run_without_gcovr)

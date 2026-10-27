@@ -32,9 +32,12 @@ import threading
 import time
 from pathlib import Path
 
+from . import DecompError
+
 CLASSES = ("owner", "interactive", "batch", "background")
 RESERVE_CORES = float(os.environ.get("ABU_SLOT_RESERVE", "2"))  # cores left for the OS, the page and ssh
 MEM_FLOOR_GIB = float(os.environ.get("ABU_SLOT_MEM_FLOOR", "6"))  # never admit below this much free memory
+DISK_FLOOR_GIB = float(os.environ.get("ABU_SLOT_DISK_FLOOR", "40"))  # refuse a new heavy job below this much free disk
 RSS_GIB = float(os.environ.get("ABU_SLOT_RSS_GIB", "0.75"))  # measured per-slot RSS (a port play ~0.25, a compile ~1)
 REQUEUE_GRACE = 900.0  # seconds after a ticket left unserved that the same request keeps its queue time
 WINDOW = 0.5  # seconds a first CPU reading spans
@@ -53,9 +56,10 @@ CANCEL = None  # a callable that raises when the caller was told to stop (tas se
 def configure(section: dict | None) -> None:
     """Apply the seat profile's `land.slots` (floor_gib, stamp_gib, stamp_jobs, reserve_cores): project facts live in
     the profile, the pool only reads them. Absent keys keep the pool's own defaults."""
-    global RESERVE_CORES, MEM_FLOOR_GIB, STAMP_GIB, STAMP_JOBS
+    global RESERVE_CORES, MEM_FLOOR_GIB, STAMP_GIB, STAMP_JOBS, DISK_FLOOR_GIB
     if not section:
         return
+    DISK_FLOOR_GIB = float(section.get("disk_floor_gib", DISK_FLOOR_GIB))
     RESERVE_CORES = float(section.get("reserve_cores", RESERVE_CORES))
     MEM_FLOOR_GIB = float(section.get("floor_gib", MEM_FLOOR_GIB))
     STAMP_GIB = float(section.get("stamp_gib", STAMP_GIB))
@@ -64,6 +68,28 @@ def configure(section: dict | None) -> None:
 
 def pool_dir() -> Path:
     return Path(os.environ.get("ABU_SLOTS_DIR") or Path.home() / "rig-state/slots")
+
+
+class DiskFloorError(DecompError):
+    """A new heavy job was refused: the disk under the pool is below the floor, so a running job's write must not hit ENOSPC."""
+
+
+def disk_free_gib() -> float:
+    root = pool_dir()
+    usage = os.statvfs(root if root.exists() else Path.home())
+    return usage.f_bavail * usage.f_frsize / 2**30
+
+
+def check_disk(klass: str = "batch") -> None:
+    """Refuse (before queueing) a job that would start below the disk floor. The owner's watched play is exempt."""
+    free = disk_free_gib()
+    if klass != "owner" and free < DISK_FLOOR_GIB:
+        raise DiskFloorError(
+            "slots.disk_floor",
+            f"only {free:.1f} GiB free on the disk under {pool_dir()} (floor {DISK_FLOOR_GIB:.0f} GiB): "
+            f"new {klass} job refused so running jobs do not hit ENOSPC",
+            "free disk (decomp worktree prune; pool-mint.sh --release LANE) or lower land.slots.disk_floor_gib",
+        )
 
 
 def _mem_gib(field: str) -> float:
@@ -316,8 +342,9 @@ def acquire(
     klass: str = "batch", weight: int = 1, label: str = "", timeout: float | None = None, mem_gib: float | None = None
 ) -> Grant:
     rank = CLASSES.index(klass)
-    weight = max(1, min(int(weight), cores()))
     root, tickets = _paths()
+    check_disk(klass)
+    weight = max(1, min(int(weight), cores()))
     soft = capacity()
     weight = min(weight, soft if rank else cores())
     limit = soft if rank else cores()
@@ -438,6 +465,8 @@ def status() -> dict:
         "stamp_slots": stamp_slots(),
         "stamp_gib": STAMP_GIB,
         "mem_floor_gib": MEM_FLOOR_GIB,
+        "disk_floor_gib": DISK_FLOOR_GIB,
+        "disk_free_gib": round(disk_free_gib(), 1),
         "used": sum(len(r["slots"]) for r in held.values()),
         "busy_cores": round(busy_cores(), 1),
         "mem_available_gib": round(_mem_gib("MemAvailable"), 1),
@@ -466,9 +495,13 @@ def main(argv: list[str]) -> int:
         split = argv.index("--")
         opts, child = argv[1:split], argv[split + 1 :]
         weight = int(_arg(opts, "--weight", "1"))
-        with hold(_arg(opts, "--class", "batch"), weight, _arg(opts, "--label", child[0])) as grant:
-            env = dict(os.environ, ABU_SLOT_HELD="1", SLOT_JOBS=str(grant.weight if grant else weight))
-            return subprocess.call(child, env=env)
+        try:
+            with hold(_arg(opts, "--class", "batch"), weight, _arg(opts, "--label", child[0])) as grant:
+                env = dict(os.environ, ABU_SLOT_HELD="1", SLOT_JOBS=str(grant.weight if grant else weight))
+                return subprocess.call(child, env=env)
+        except DiskFloorError as refusal:
+            print(f"REFUSE {refusal.key}: {refusal.detail}; {refusal.next}", file=sys.stderr)
+            return 1
     print(__doc__)
     return 2
 
