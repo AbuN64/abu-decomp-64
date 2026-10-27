@@ -1039,11 +1039,15 @@ def reconcile_runs(cfg: dict[str, Any]) -> None:
             _write_record(run, row)
 
 
-KEEP_PLAYS = 200  # newest replay folders kept whatever their age (10-27: 2676 runs of ~30 MB = 77 GB in two days, none ever removed)
-KEEP_PLAY_HOURS = 6  # a replay folder younger than this stays whatever the count: lanes read their own run after it ends
+# newest replay folders kept whatever their age (10-27: 2676 runs of ~30 MB = 77 GB in two days, none ever removed)
+KEEP_PLAYS = 200
+# a replay folder younger than this stays whatever the count: lanes read their own run after it ends
+KEEP_PLAY_HOURS = 6
 
 
-def prune_plays(cfg: dict[str, Any], keep: int = KEEP_PLAYS, hours: float = KEEP_PLAY_HOURS, now: float | None = None) -> int:
+def prune_plays(
+    cfg: dict[str, Any], keep: int = KEEP_PLAYS, hours: float = KEEP_PLAY_HOURS, now: float | None = None
+) -> int:
     """Remove the replay folders nothing reads any more: all but the newest `keep` that are also older than `hours`,
     never one a live play holds, plus the stray `*.gcov.json.gz` files an earlier gcovr left in the folder.
     Returns the folders removed. A play is a run: what it writes lives and dies in its own folder (owner boundary)."""

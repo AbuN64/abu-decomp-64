@@ -71,7 +71,7 @@ def pool_dir() -> Path:
 
 
 class DiskFloorError(DecompError):
-    """A new heavy job was refused: the disk under the pool is below the floor, so a running job's write must not hit ENOSPC."""
+    """A new heavy job was refused: the disk under the pool is below the floor (a running job must not hit ENOSPC)."""
 
 
 def disk_free_gib() -> float:
