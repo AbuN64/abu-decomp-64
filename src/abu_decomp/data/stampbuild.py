@@ -303,7 +303,10 @@ def warm_pool(cfg: DataConfig, profile: Any, shared: Path) -> list[dict[str, Any
             if not why:
                 release(shared, tree)
             done.append({"tree": tree.name, "rev": head, "rewarmed": made.get("rewarmed", False), "settled": not why})
-            print(f"stamp pool: warmed {tree.name} at {head[:9]}" + (f" (settle failed: {why[:120]})" if why else ""), flush=True)
+            print(
+                f"stamp pool: warmed {tree.name} at {head[:9]}" + (f" (settle failed: {why[:120]})" if why else ""),
+                flush=True,
+            )
         finally:
             os.close(fd)
     return done

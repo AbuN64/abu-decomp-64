@@ -82,6 +82,9 @@ def _fake_wait(process, timeout, run=None):
 
 class MovieTests(unittest.TestCase):
     def setUp(self):
+        patcher = mock.patch.dict(os.environ, {"ABU_SLOTS_OFF": "1"})  # plays here never queue on the host's real pool
+        patcher.start()
+        self.addCleanup(patcher.stop)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
