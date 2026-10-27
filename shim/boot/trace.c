@@ -296,10 +296,10 @@ NOINST static int ca_collect(struct dl_phdr_info *info, size_t size, void *data)
 }
 NOINST static int ca_points_in(unsigned long p, unsigned long bytes)
 {
-    if (ca_ram_lo && p >= ca_ram_lo && p + bytes <= ca_ram_hi)
+    if (ca_ram_lo && p >= ca_ram_lo && p < ca_ram_hi && ca_ram_hi - p >= bytes) /* no p + bytes: it wraps at 4 GiB on i386 */
         return 1;
     for (unsigned k = 0; k < ca_segments; k++)
-        if (p >= ca_seg_lo[k] && p + bytes <= ca_seg_hi[k])
+        if (p >= ca_seg_lo[k] && p < ca_seg_hi[k] && ca_seg_hi[k] - p >= bytes)
             return 1;
     return 0;
 }
