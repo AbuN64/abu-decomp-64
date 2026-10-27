@@ -398,8 +398,9 @@ def newly_seen_clash(
     extern with another prototype) no longer compiles beside them. Returns `header:name` for each."""
     gained = ({dest} | sees.get(dest, set())) - sees.get(unit, set()) - {unit}
     mine: dict[str, set[str]] = defaultdict(set)  # name -> the unit's extern prototypes ({} = not an extern)
-    for ident in found.externs.keys() & {n for h in gained for n in header_ids.get(h, {})}:
-        mine[ident] |= {d.proto for d in found.externs[ident] if d.unit == unit}
+    for ident in (found.externs.keys() | found.definitions.keys()) & {n for h in gained for n in header_ids.get(h, {})}:
+        mine[ident] |= {d.proto for d in found.externs.get(ident, ()) if d.unit == unit}
+        mine[ident] |= {p for u, p in found.definitions.get(ident, ()) if u == unit}  # its own definition, too
     own = found.local_names.get(unit, set()) | found.compound_in.get(unit, set())
     out = []
     for h in sorted(gained):

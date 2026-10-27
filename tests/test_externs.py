@@ -510,3 +510,17 @@ def test_b_a_block_scope_extern_of_the_same_type_in_a_user_is_no_conflict(tmp_pa
     extra = {"src/b/b.c": FILES["src/b/b.c"] + "int useb2(void) {\n    extern int gScore;\n    return gScore;\n}\n"}
     moved(tmp_path, extra)
     assert "gScore" in table(tmp_path / "out")
+
+
+def test_b_a_user_whose_own_definition_differs_from_a_header_declaration_the_new_include_brings_is_refused(
+    tmp_path: Path,
+) -> None:
+    extra = {
+        "include/A/A.H": '#ifndef A_H\n#define A_H\n#include "Z/Z.H"\n#endif\n',
+        "include/Z/Z.H": GUARD.format("Z_H").replace("#endif", "extern void Scale(int *, int);\n#endif"),
+        "src/b/b.c": FILES["src/b/b.c"] + "void Scale(void *p, int n) {}\n",
+    }
+    _, found = moved(tmp_path, extra)
+    refusal = next(r for r in found["refused"] if r["id"] == "gScore")
+    assert refusal["reason"].startswith("include clashes in ")
+    assert "Z/Z.H:Scale" in refusal["reason"]
