@@ -451,6 +451,8 @@ def plan(
             spelled[ident].add(n)
 
     removed: set[str] = set(found.externs) - found.compound  # optimistic start: every extern line leaves its users
+    flat = lambda x: re.sub(r"\[\w*\]", "[]", canonical(x, found.aliases))  # noqa: E731  one type, any extent
+    in_file: dict[str, dict[str, list[str]]] = {}  # source file -> what it spells, read once
     while True:
         moves: list[dict[str, object]] = []
         refused: list[dict[str, object]] = []
@@ -481,11 +483,16 @@ def plan(
                     why = "declaration parameter count differs from the definition"
                     refused.append({"id": ident, "reason": why, "protos": [*protos, *odd]})
                     continue
-                flat = lambda x: re.sub(r"\[\w*\]", "[]", canonical(x, found.aliases))  # noqa: E731  one type, any extent
                 differ = sorted({d.proto for d in decls if flat(d.proto) != flat(protos[0])})
                 if differ:  # another type than the definition's (array for scalar..): its uses are written for it
                     why = "declaration differs from the definition"
                     refused.append({"id": ident, "reason": why, "protos": [*protos, *differ]})
+                    continue
+                stated = {p for ps in found.in_headers.get(ident, {}).values() for p in ps}
+                heads = sorted(p for p in stated if flat(p) != flat(protos[0]))
+                if heads:  # a header already states it as another type than the definition: every includer would clash
+                    why = "header declaration differs from the definition"
+                    refused.append({"id": ident, "reason": why, "protos": [*protos, *heads]})
                     continue
             else:
                 at = range_owner(ident, ranges)
@@ -562,6 +569,17 @@ def plan(
                     clash += reach[u, dest]
             if clash:
                 refused.append({"id": ident, "reason": "include clashes in " + ", ".join(clash[:3]), "protos": protos})
+                continue
+            kept: set[str] = set()  # what a file that will see the header still spells for the name, as another type
+            for n in includers[dest] | set(users) | {u for u, _ in defined}:
+                if n in found.texts and not n.lower().endswith(HEADER_SUFFIXES):
+                    if n not in in_file:
+                        in_file[n] = spelled_statements(found.texts[n])
+                    gone = {d.proto for d in decls if d.unit == n}  # the lines this move removes
+                    kept |= {p for p in in_file[n].get(ident, ()) if p not in gone and flat(p) != flat(protos[0])}
+            if kept:
+                why = "a declaration kept in a file that sees the header differs"
+                refused.append({"id": ident, "reason": why, "protos": [protos[0], *sorted(kept)]})
                 continue
             moves.append(
                 {
@@ -741,6 +759,35 @@ def include_anchor(lines: list[str], first: int) -> int:
         elif word.group(1) == "include" and depth == 0:
             anchor = i
     return anchor
+
+
+STATEMENT = re.compile(
+    r"^[ \t]*(?!(?:return|else|goto|case|break|continue|do|sizeof|typedef|delete|new|throw)\b)"
+    r"((?:[A-Za-z_]\w*[ \t*]+)+)([A-Za-z_]\w*)[ \t]*(?=[(\[;=])",
+    re.M,
+)
+
+
+def spelled_statements(text: str) -> dict[str, list[str]]:
+    """Every declaration-shaped statement of a source file (an `extern` at any depth, a bare prototype, a definition's
+    head, a local): name -> its normalised prototypes. Over-reads on purpose: a false hit only refuses a move."""
+    out: dict[str, list[str]] = defaultdict(list)
+    for m in STATEMENT.finditer(deaddecls.strip_comments(text)):
+        end = m.end()
+        body = m.string
+        while end < len(body) and body[end] in "([":
+            depth = 0
+            for i in range(end, len(body)):
+                depth += (body[i] in "([") - (body[i] in ")]")
+                if depth == 0:
+                    end = i + 1
+                    break
+            else:
+                break
+            while end < len(body) and body[end] in " \t":
+                end += 1
+        out[m.group(2)].append(proto_of(body[m.start(1) : end]))
+    return out
 
 
 def arity(proto: str) -> int | None:

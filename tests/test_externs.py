@@ -486,3 +486,27 @@ def test_b_a_declaration_of_another_type_than_the_definition_is_residue_with_bot
     refusal = next(r for r in found["refused"] if r["id"] == "D_80001800")
     assert refusal["reason"] == "declaration differs from the definition"
     assert refusal["protos"] == ["char D_80001800", "char D_80001800[]"]
+
+
+def test_b_a_header_declaration_of_another_type_than_the_definition_is_residue_with_both_prototypes(
+    tmp_path: Path,
+) -> None:
+    extra = {"include/A/A.H": "#ifndef A_H\n#define A_H\nextern char Helper(int x);\n#endif\n"}
+    _, found = moved(tmp_path, extra)
+    refusal = next(r for r in found["refused"] if r["id"] == "Helper")
+    assert refusal["reason"] == "header declaration differs from the definition"
+    assert refusal["protos"] == ["int Helper(int x)", "char Helper(int x)"]
+
+
+def test_b_a_block_scope_extern_of_another_type_in_a_user_is_residue_with_both_prototypes(tmp_path: Path) -> None:
+    extra = {"src/b/b.c": FILES["src/b/b.c"] + "int useb2(void) {\n    extern long gScore;\n    return gScore;\n}\n"}
+    _, found = moved(tmp_path, extra)
+    refusal = next(r for r in found["refused"] if r["id"] == "gScore")
+    assert refusal["reason"] == "a declaration kept in a file that sees the header differs"
+    assert refusal["protos"] == ["int gScore", "long gScore"]
+
+
+def test_b_a_block_scope_extern_of_the_same_type_in_a_user_is_no_conflict(tmp_path: Path) -> None:
+    extra = {"src/b/b.c": FILES["src/b/b.c"] + "int useb2(void) {\n    extern int gScore;\n    return gScore;\n}\n"}
+    moved(tmp_path, extra)
+    assert "gScore" in table(tmp_path / "out")
