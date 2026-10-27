@@ -9,11 +9,10 @@ import re
 import subprocess
 import sys
 import time
-from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 EXAMPLES = 3
 GENERATORS = (
@@ -31,18 +30,70 @@ GENERATORS = (
 # (tool, code regex, class, reference): the first match classifies a group. `defect` names the stage S card that fixes
 # it, `residue` the class the Codex wave takes over; the codes are normalised (paths and names become <path>/<key>).
 RULES: tuple[tuple[str, str, str, str], ...] = (
-    ("owners.units", r"^no header for (<path>|any module)$", "residue", "unit-local extern whose module has no header: the Codex wave creates it"),
-    ("owners.units", r"^declared together with other names$", "residue", "declarations sharing one statement: the Codex wave splits them"),
-    ("owners.units", r"^(declarations conflict|declaration parameter count differs from the definition|definitions differ)$", "residue", "conflicting prototypes: the S4 residue TSV"),
-    ("owners.units", r"^(include|name) clashes in <path>$", "residue", "hoist would clash with an include or a name: the S4 residue TSV"),
+    (
+        "owners.units",
+        r"^no header for (<path>|any module)$",
+        "residue",
+        "unit-local extern whose module has no header: the Codex wave creates it",
+    ),
+    (
+        "owners.units",
+        r"^declared together with other names$",
+        "residue",
+        "declarations sharing one statement: the Codex wave splits them",
+    ),
+    (
+        "owners.units",
+        r"^(declarations conflict|declaration parameter count differs from the definition|definitions differ)$",
+        "residue",
+        "conflicting prototypes: the S4 residue TSV",
+    ),
+    (
+        "owners.units",
+        r"^(include|name) clashes in <path>$",
+        "residue",
+        "hoist would clash with an include or a name: the S4 residue TSV",
+    ),
     ("owners.units", r"^type not visible from <path>$", "defect", "S4: hoist the type with its extern"),
-    ("owners.include", r"^fault: ", "defect", "S4: owners --dir include crashes (a Path reaches deaddecls.header_files)"),
+    (
+        "owners.include",
+        r"^fault: ",
+        "defect",
+        "S4: owners --dir include crashes (a Path reaches deaddecls.header_files)",
+    ),
     ("name.auto", r"^strings (unverifiable|duplicate|banned)$", "residue", "string names a reader decides"),
-    ("name.T", r"^(already the original name|named here, not invented: a reader decides|<name> is already a name in the project)$", "residue", "settled or a reader decides"),
-    ("name.T", r"^(member <name> is named in words, the catalog says <name> there: a reader decides|not every member is a whole original member, or a pointer is not one)$", "residue", "member names a reader decides"),
-    ("data.place", r"^no read-only data of its own to place in any version$", "defect", "S5.3: literal-pool consumers own no data `data place` can move"),
-    ("structure.map", r"^tree not built: <path>$", "defect", "S1: structure --map needs a built warm tree (build/<v>/link.ld)"),
-    ("record.rename", r"^no scoped record rename command$", "defect", "S5.1: scoped record rename by site (0evAlAtaxw2p)"),
+    (
+        "name.T",
+        r"^(already the original name|named here, not invented: a reader decides"
+        r"|<name> is already a name in the project)$",
+        "residue",
+        "settled or a reader decides",
+    ),
+    (
+        "name.T",
+        r"^(member <name> is named in words, the catalog says <name> there: a reader decides"
+        r"|not every member is a whole original member, or a pointer is not one)$",
+        "residue",
+        "member names a reader decides",
+    ),
+    (
+        "data.place",
+        r"^no read-only data of its own to place in any version$",
+        "defect",
+        "S5.3: literal-pool consumers own no data `data place` can move",
+    ),
+    (
+        "structure.map",
+        r"^tree not built: <path>$",
+        "defect",
+        "S1: structure --map needs a built warm tree (build/<v>/link.ld)",
+    ),
+    (
+        "record.rename",
+        r"^no scoped record rename command$",
+        "defect",
+        "S5.1: scoped record rename by site (0evAlAtaxw2p)",
+    ),
     ("*", r"^fault: ", "defect", "S0: the generator itself failed"),
 )
 
@@ -50,7 +101,10 @@ RULES: tuple[tuple[str, str, str, str], ...] = (
 SHAPES: tuple[tuple[str, str], ...] = (
     (r"^(type not visible from <path>).*$", r"\1"),
     (r"^\S+ is already a name in the project$", "<name> is already a name in the project"),
-    (r"^member \S+ is named in words, the catalog says \S+ there: a reader decides$", "member <name> is named in words, the catalog says <name> there: a reader decides"),
+    (
+        r"^member \S+ is named in words, the catalog says \S+ there: a reader decides$",
+        "member <name> is named in words, the catalog says <name> there: a reader decides",
+    ),
 )
 
 
@@ -93,7 +147,9 @@ def groups(refusals: Sequence[Refusal]) -> list[dict[str, Any]]:
     out = []
     for (tool, code), keys in sorted(found.items()):
         kind, ref = classify(tool, code)
-        out.append({"tool": tool, "code": code, "class": kind, "ref": ref, "count": len(keys), "examples": keys[:EXAMPLES]})
+        out.append(
+            {"tool": tool, "code": code, "class": kind, "ref": ref, "count": len(keys), "examples": keys[:EXAMPLES]}
+        )
     return out
 
 
@@ -109,18 +165,18 @@ def tsv(rows: Sequence[Mapping[str, Any]]) -> str:
 
 
 def _dead(doc: Mapping[str, Any]) -> tuple[dict[str, Any], list[Refusal]]:
-    r = (doc.get("result") or {})
+    r = doc.get("result") or {}
     return {"dead": r.get("dead"), "headers": r.get("headers"), "layers": len(r.get("layers", []))}, []
 
 
 def _owners_include(doc: Mapping[str, Any]) -> tuple[dict[str, Any], list[Refusal]]:
-    r = (doc.get("result") or {})
+    r = doc.get("result") or {}
     keep = ("declarations", "headers", "owned", "shared", "no_header", "unused")
     return {k: r.get(k) for k in keep}, []
 
 
 def _slices(doc: Mapping[str, Any]) -> tuple[dict[str, Any], list[Refusal]]:
-    r = (doc.get("result") or {})
+    r = doc.get("result") or {}
     return {"slices": r.get("slices"), "summary": r.get("summary")}, []
 
 
@@ -159,7 +215,10 @@ def _place(doc: Mapping[str, Any]) -> tuple[dict[str, Any], list[Refusal]]:
 
 
 def _structure(doc: Mapping[str, Any]) -> tuple[dict[str, Any], list[Refusal]]:
-    found = [Refusal("structure.map", normal(str(r.get("reason", ""))), str(r.get("module", ""))) for r in doc.get("refused", [])]
+    found = [
+        Refusal("structure.map", normal(str(r.get("reason", ""))), str(r.get("module", "")))
+        for r in doc.get("refused", [])
+    ]
     return {k: doc.get(k) for k in ("moves", "files")} | {"deferred": len(doc.get("deferred", []))}, found
 
 
@@ -168,7 +227,10 @@ def _units(root: Path) -> tuple[dict[str, Any], list[Refusal]]:
 
     plan = externs.plan(root, None, None, 300.0, 0.25, externs.stamp_gate(root))
     stats = {k: v for k, v in plan.items() if k not in ("refused", "batches", "gate_unattributed")}
-    found = [Refusal("owners.units", normal(str(r["reason"])), str(r["id"])) for r in plan["refused"]]
+    found = [
+        Refusal("owners.units", normal(str(r["reason"])), str(r["id"]))
+        for r in cast(list[dict[str, Any]], plan["refused"])
+    ]
     return stats, found
 
 
@@ -185,7 +247,9 @@ def _call(argv: Sequence[str], cwd: Path) -> tuple[dict[str, Any], str]:
     return doc, ""
 
 
-def _commands(tree: Path, names: Path, scratch: Path, functions: list[str]) -> dict[str, tuple[list[str], Callable[..., Any]]]:
+def _commands(
+    tree: Path, names: Path, scratch: Path, functions: list[str]
+) -> dict[str, tuple[list[str], Callable[..., Any]]]:
     decomp = [sys.executable, "-m", "abu_decomp"]
     recipe = [str(Path(sys.executable).parent / "recipe"), "--project", str(tree)]
     cleanup = [*decomp, "cleanup", "--project", str(tree)]
@@ -207,18 +271,27 @@ def literal_functions(tree: Path, scratch: Path) -> tuple[list[str], str]:
     """The functions that read a literal pool, from one data census of the tree."""
     done = subprocess.run(
         [sys.executable, "-m", "abu_decomp", "data", "census", "--tree", str(tree), "--out", str(scratch / "census")],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     path = scratch / "census" / "census.json"
     if done.returncode or not path.is_file():
-        return [], f"fault: data census exit {done.returncode}: {(done.stderr.strip().splitlines() or ['no output'])[-1][:160]}"
+        tail = (done.stderr.strip().splitlines() or ["no output"])[-1][:160]
+        return [], f"fault: data census exit {done.returncode}: {tail}"
     found = json.loads(path.read_text())
-    names = {c for k in found["clusters"] if k.get("class") == "LITERAL_POOL" for m in k["members"] for c in m.get("consumers", [])}
+    names = {
+        c
+        for k in found["clusters"]
+        if k.get("class") == "LITERAL_POOL"
+        for m in k["members"]
+        for c in m.get("consumers", [])
+    }
     return sorted(names), ""
 
 
 def run(tree: Path, scratch: Path) -> Report:
-    """Every generator over TREE (a lane worktree of the pinned revision), in preview. SCRATCH holds their scratch files."""
+    """Every generator over TREE (a lane worktree of the pinned revision), in preview. SCRATCH holds their files."""
     scratch.mkdir(parents=True, exist_ok=True)
     report = Report()
 
@@ -232,7 +305,12 @@ def run(tree: Path, scratch: Path) -> Report:
         report.refusals.append(Refusal("data.place", why, "data census"))
     started = time.monotonic()
     has = subprocess.run([sys.executable, "-m", "abu_decomp", "record", "--help"], capture_output=True, check=False)
-    record("record.rename", {}, [] if not has.returncode else [Refusal("record.rename", "no scoped record rename command", "0evAlAtaxw2p")], started)
+    record(
+        "record.rename",
+        {},
+        [] if not has.returncode else [Refusal("record.rename", "no scoped record rename command", "0evAlAtaxw2p")],
+        started,
+    )
     started = time.monotonic()
     try:
         stats, found = _units(tree)
@@ -248,7 +326,11 @@ def run(tree: Path, scratch: Path) -> Report:
         stats, found = parse(doc)
         if not found and doc.get("ok") is False:  # a refusal no parser reads: its first finding is the group
             first = (doc.get("findings") or [{}])[0]
-            found = [Refusal(tool, "fault: " + normal(str(first.get("reason") or first.get("message") or "refused"))[:160], "")]
+            found = [
+                Refusal(
+                    tool, "fault: " + normal(str(first.get("reason") or first.get("message") or "refused"))[:160], ""
+                )
+            ]
         record(tool, stats, found, started)
     return report
 

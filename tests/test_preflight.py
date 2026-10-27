@@ -19,7 +19,9 @@ def test_classify_names_defects_residues_and_the_rest() -> None:
 
 
 def test_groups_count_and_keep_three_examples() -> None:
-    rows = [Refusal("data.place", "<key> has no read-only data", f"f{i}") for i in range(5)] + [Refusal("x", "odd", "k")]
+    rows = [Refusal("data.place", "<key> has no read-only data", f"f{i}") for i in range(5)] + [
+        Refusal("x", "odd", "k")
+    ]
     got = preflight.groups(rows)
     assert [(g["tool"], g["count"], g["examples"]) for g in got] == [
         ("data.place", 5, ["f0", "f1", "f2"]),
@@ -33,27 +35,46 @@ def test_parsers_turn_documents_into_refusals() -> None:
         {"rows": 4, "refused": {"strings": {"banned": 3}}, "examples": {"strings banned": ["a -> s_a", "b -> s_b"]}}
     )
     assert stats["rows"] == 4
-    assert [(r.code, r.key) for r in found] == [("strings banned", "a"), ("strings banned", "b"), ("strings banned", "")]
+    assert [(r.code, r.key) for r in found] == [
+        ("strings banned", "a"),
+        ("strings banned", "b"),
+        ("strings banned", ""),
+    ]
     _, found = preflight._structure({"refused": [{"module": "src/a.CPP", "reason": "tree not built: src/b.CPP"}]})
     assert [(r.code, r.key) for r in found] == [("tree not built: <path>", "src/a.CPP")]
-    _, found = preflight._place({"findings": [{"key": "Fn", "message": "Fn has no read-only data"}], "result": {"lines": ["x"]}})
+    _, found = preflight._place(
+        {"findings": [{"key": "Fn", "message": "Fn has no read-only data"}], "result": {"lines": ["x"]}}
+    )
     assert [(r.code, r.key) for r in found] == [("no read-only data", "Fn")]
     _, found = preflight._step_t(
-        {"reasons": {"already the original name": 2, "Foo is already a name in the project": 1},
-         "skipped": [{"why": "Foo is already a name in the project", "tag": "T", "subject": "s"}]}
+        {
+            "reasons": {"already the original name": 2, "Foo is already a name in the project": 1},
+            "skipped": [{"why": "Foo is already a name in the project", "tag": "T", "subject": "s"}],
+        }
     )
     assert [(r.code, r.key) for r in found] == [
-        ("already the original name", ""), ("already the original name", ""), ("<name> is already a name in the project", "T.s")]
+        ("already the original name", ""),
+        ("already the original name", ""),
+        ("<name> is already a name in the project", "T.s"),
+    ]
     assert all(preflight.classify(r.tool, r.code)[0] == "residue" for r in found)
-    _, found = preflight._place({"findings": [{"message": "A B has no read-only data of its own to place in any version"}], "result": {}})
-    assert [(r.code, r.key) for r in found] == [("no read-only data of its own to place in any version", "A")] + [
-        ("no read-only data of its own to place in any version", "B")]
+    _, found = preflight._place(
+        {"findings": [{"message": "A B has no read-only data of its own to place in any version"}], "result": {}}
+    )
+    none = "no read-only data of its own to place in any version"
+    assert [(r.code, r.key) for r in found] == [(none, "A"), (none, "B")]
     assert preflight.classify("data.place", found[0].code)[0] == "defect"
     assert preflight.normal("type not visible from a/b.H Foo, Bar") == "type not visible from <path>"
 
 
 def test_document_counts_unclassified_and_write_makes_json_and_tsv(tmp_path) -> None:
-    report = preflight.Report(refusals=[Refusal("owners.units", "no header for <path>", "A"), Refusal("t", "odd", "k"), Refusal("t", "odd", "j")])
+    report = preflight.Report(
+        refusals=[
+            Refusal("owners.units", "no header for <path>", "A"),
+            Refusal("t", "odd", "k"),
+            Refusal("t", "odd", "j"),
+        ]
+    )
     doc = preflight.document("abc", "abc123", report)
     assert doc["refusals"] == 3 and doc["unclassified"] == 2
     paths = preflight.write(tmp_path, "abc", doc)
