@@ -39,7 +39,6 @@ CONTRACT = {
     "/audio/",
     "/diff/",
     "/shot/",
-    "/api/coverage/behaviour",
     "/api/play",
     "/api/take",
     "/api/stop",
@@ -59,7 +58,7 @@ def fn_rows():
     for i in range(30):
         name = {0: "Menu_Draw", 1: "Engine_Tick", 2: "Gfx_Init"}.get(i, f"func_8000{i:04X}")
         reach = "both" if i < 3 else ("port" if i < 9 else "none")
-        rows.append([name, 0x1000 + i * 64, 700 + i, STATES[i % 4], i % 3, reach, i == 1])
+        rows.append([name, 0x1000 + i * 64, 700 + i, STATES[i % 4], i % 3, reach, i == 1, {0: "behaves", 1: "differs-args"}.get(i, "")])
     return rows
 
 
@@ -125,7 +124,14 @@ FN_FILE = {
     "movies_total": 1,
     "port": {"count": 7},
     "oracle": {"count": 3},
-    "behaviour": "differs",
+    "behaviour": "differs-args",
+    "call": {
+        "verdict": "differs-args", "compared": 4, "cause": "input", "unmatched_oracle": 0, "unmatched_port": 0,
+        "first": {"caller": "Engine_Tick", "ordinal": 2, "what": "arguments", "frame": {"oracle": 31, "port": 33},
+                  "diffs": [{"field": "a0", "kind": "int", "oracle": "00000005", "port": "00000006"}],
+                  "oracle": {"args": ["00000005", "0", "0", "0"], "ret": ["00000000", "00000000"], "writes": None},
+                  "port": {"args": ["00000006", "0", "0", "0"], "ret": ["00000000", "00000000"], "writes": None}},
+    },
     "claims": [],
     "behave": ["Menu_Draw(a0=1) -> v0=0"],
 }
@@ -200,8 +206,6 @@ class Stub:
                     self.js({"fns": "fns.abc123def.json", "fnrows": "fnrows.abc123def.txt"})
                 elif path == "/data/fns.abc123def.json":
                     self.js(FNS)
-                elif path == "/api/coverage/behaviour":
-                    self.js({"behaves": ["Menu_Draw"], "differs": ["Engine_Tick"], "missing": []})
                 elif path == "/data/movies.json":
                     self.js(MOVIES)
                 elif path == "/data/summary.json":
@@ -388,10 +392,10 @@ assert.deepEqual(padState(new Set(), none, [pad]), { buttons: 0x8000 | 0x1000, x
 
     def test_three_bars_filter_ors_within_a_bar_and_ands_across(self):
         self.run_node("""
-const row = (name, dec, reach) => [name, 0, 100, dec, 0, reach, false];
+const verdict = new Map([["b", "differs-args"], ["c", "behaves"], ["d", "differs-result"], ["f", "missing"]]);
+const row = (name, dec, reach) => [name, 0, 100, dec, 0, reach, false, verdict.get(name) || ""];
 const rows = [row("a", "asm", "none"), row("b", "fuzzy", "port"), row("c", "exact", "both"), row("d", "named", "port"), row("e", "fuzzy", "oracle"), row("f", "asm", "both")];
-const verdict = new Map([["b", "differs"], ["c", "behaves"], ["d", "differs"], ["f", "differs"]]);
-const segs = rows.map(r => rowSegs(r, verdict));
+const segs = rows.map(r => rowSegs(r));
 assert.deepEqual(segs.map(s => s.join("/")), ["asm/never/pending", "fuzzy/port/differs", "exact/both/behaves", "exact/port/differs", "fuzzy/oracle/pending", "asm/both/differs"]);
 const shown = sel => rows.filter((r, i) => passesSel(sel, segs[i])).map(r => r[0]).join("");
 // the default: exercised = port + both, behaviour = differs, decomp = all
@@ -415,9 +419,8 @@ assert.ok(sameSel(s4, defaultSel()));
 
     def test_three_bars_weight_segments_by_code_bytes(self):
         self.run_node("""
-const rows = [["a", 0, 100, "asm", 0, "none"], ["b", 0, 300, "exact", 0, "both"], ["c", 0, 50, "fuzzy", 0, "port"]];
-const verdict = new Map([["b", "behaves"]]);
-const st = barStats(rows, verdict);
+const rows = [["a", 0, 100, "asm", 0, "none", false, ""], ["b", 0, 300, "exact", 0, "both", false, "behaves"], ["c", 0, 50, "fuzzy", 0, "port", false, ""]];
+const st = barStats(rows);
 assert.deepEqual(st.stat.dec.asm, [1, 100]);
 assert.deepEqual(st.stat.dec.exact, [1, 300]);
 assert.deepEqual(st.stat.exe.port, [1, 50]);

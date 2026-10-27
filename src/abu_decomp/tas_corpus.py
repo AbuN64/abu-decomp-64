@@ -24,7 +24,7 @@ every run the corpus names (`kept_runs`).
 - Gate (`gate`): every entry replayed at turbo (`tas.play`, label `corpus-gate`, so every gate run is on the page),
   in parallel: any non-ok outcome fails, even with an identical or missing baseline. Compared with its baseline,
   a worse outcome, a spot that passed and no longer does, or a function
-  that behaved like the original (tas_coverage.behaviour) and no longer does is `fail`; better outcome, a spot or
+  that behaved like the original (tas_coverage.call_behaviour) and no longer does is `fail`; better outcome, a spot or
   function that now passes is `improved`; another RDRAM hash at some poll or other functions entered is `changed`
   (shown, not judged); else `pass`. Exit 1 on a fail. A gate on the profile's port moves every non-failed entry's
   baseline to its new run and minimises; `accept` moves failed ones on purpose; a `--port` gate (a lane's own build)
@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError, slots, tas, tas_coverage, tas_health, tas_oracle
+from abu_decomp.behave import prototype
 from abu_decomp.config import Profile
 
 CORPUS, GATE = "corpus.json", "corpus-gate.json"
@@ -553,13 +554,12 @@ def first_change(base: Path, now: Path) -> int | None:
 
 
 def behaviour_of(cfg: dict[str, Any], run: Path, oracle: str | None) -> dict[str, str] | None:
+    """Per function the per-call verdict of this run's port calls against the reference run's original calls."""
     reference = _run(cfg, oracle)
     if reference is None:
         return None
-    record = tas.read_record(run) or {}
-    bracket = tas_coverage.oracle_bracket(reference, int(record.get("polls_reached") or 0))
-    counts = tas_coverage.read_gcovr(run / tas_coverage.COVERAGE)
-    return tas_coverage.behaviour(counts, bracket) if bracket and counts is not None else None
+    judged = tas_coverage.call_behaviour(run, str, prototype.inferred, reference)
+    return None if judged is None else {name: v["verdict"] for name, v in judged.items()}
 
 
 def outcome_failure(record: dict[str, Any]) -> str | None:

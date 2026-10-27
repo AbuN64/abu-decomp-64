@@ -347,7 +347,7 @@ def p3(profile: Profile, cfg: dict[str, Any], game: str, version: str) -> tuple[
         "branch": gcovr.get("branch_percent") or 0.0,
         "oracle_only": states.get("oracle-only", 0),
         "neither": states.get("neither", 0),
-        "differs_missing": behaviour.get("differs", 0) + behaviour.get("missing", 0),
+        "differs_missing": sum(behaviour.get(v, 0) for v in ("differs-args", "differs-result", "missing")),
         "crash": crash,
     }
     rows = [

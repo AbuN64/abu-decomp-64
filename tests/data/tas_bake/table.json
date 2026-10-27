@@ -139,7 +139,7 @@
   },
   {
    "address": 2149597960,
-   "behaviour": "differs",
+   "behaviour": "differs-args",
    "elf_name": "func_80204308_de",
    "file": "src/game/LEVEL/8020402C.CPP",
    "in_version": true,
@@ -170,7 +170,7 @@
   },
   {
    "address": 2149603104,
-   "behaviour": "differs",
+   "behaviour": "differs-args",
    "file": "src/game/WEAPONS/80204E78_6.CPP",
    "in_version": true,
    "mixed_build": false,

@@ -165,7 +165,9 @@ def reach_of(row: dict[str, Any] | None) -> str:
 
 
 def function_rows(body: dict[str, Any], table: dict[str, Any]) -> tuple[list[str], list[list[Any]]]:
-    """(files, rows): [name, rom, size, decomp state, file#, reach, foundation] in ROM order. The map's combined
+    """(files, rows): [name, rom, size, decomp state, file#, reach, foundation, behaviour] in ROM order; behaviour is
+    the per-call verdict (tas_coverage.call_behaviour: behaves, differs-args, differs-result, missing, port-only; "" when
+    no movie judged the function). The map's combined
     `covered` state is not used: decomp state (named/exact/fuzzy/asm) and reach are separate columns."""
     cov = {r["name"]: r for r in table.get("functions", []) if r.get("in_version")}
     files: list[str] = []
@@ -188,6 +190,7 @@ def function_rows(body: dict[str, Any], table: dict[str, Any]) -> tuple[list[str
                 index[file],
                 reach_of(cov.get(name)),
                 1 if foundation else 0,
+                (cov.get(name) or {}).get("behaviour") or "",
             ]
         )
     return files, rows
@@ -587,7 +590,7 @@ def fn_files(inputs: Inputs, files: list[str], rows: list[list[Any]], parts: dic
     behave = behave_rows(inputs, names)
     src, gut, xref = parts["source"], parts["gutter"], parts["xref"]
     out = {}
-    for name, rom, size, state, file_ix, reach, _foundation in rows:
+    for name, rom, size, state, file_ix, reach, _foundation, _behaviour in rows:
         c = cov.get(name) or {}
         s = src.get(name) or {}
         x = xref.get(name) or {}
@@ -602,6 +605,7 @@ def fn_files(inputs: Inputs, files: list[str], rows: list[list[Any]], parts: dic
                 "state": state,
                 "reach": reach,
                 "behaviour": c.get("behaviour"),
+                "call": c.get("behaviour_detail"),
                 "port": c.get("port"),
                 "oracle": c.get("oracle"),
                 "html": s.get("html") or [],

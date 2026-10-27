@@ -68,28 +68,6 @@ class ReadTests(unittest.TestCase):
         )
         self.assertEqual(cov.read_gcovr(self.root / "c.json"), {"inl": 2, "own": 5, "bare": 0})
 
-    def test_a_port_one_snapshot_interval_behind_the_oracle_still_behaves(self):
-        golden = self.root / cov.ORACLE_DIR
-        golden.mkdir()
-        head = "order\tsymbol\tfirst_vi\tfirst_thread\tcount\n"
-        for poll, count in ((25, 10), (50, 35), (75, 60)):
-            (golden / f"trace-poll-{poll}.tsv").write_text(head + f"1\tf\t0\t1\t{count}\n")
-        bracket = cov.oracle_bracket(self.root, 55)
-        self.assertEqual(cov.behaviour({"f": 10}, bracket), {"f": "behaves"})  # 25 behind the 35 at poll 50
-        self.assertEqual(cov.behaviour({"f": 9}, bracket), {"f": "differs"})  # more than one interval behind
-
-    def test_a_port_one_snapshot_interval_ahead_of_the_oracle_still_behaves(self):
-        golden = self.root / cov.ORACLE_DIR
-        golden.mkdir()
-        head = "order\tsymbol\tfirst_vi\tfirst_thread\tcount\n"
-        for poll, count in ((25, 10), (50, 35), (75, 60), (100, 85)):
-            (golden / f"trace-poll-{poll}.tsv").write_text(head + f"1\tf\t0\t1\t{count}\n")
-        bracket = cov.oracle_bracket(self.root, 50)
-        self.assertEqual(cov.behaviour({"f": 60}, bracket), {"f": "behaves"})  # the 60 at poll 75, one interval on
-        self.assertEqual(cov.behaviour({"f": 61}, bracket), {"f": "differs"})  # more than one interval ahead
-        last = cov.oracle_bracket(self.root, 100)  # the oracle ended with the port's last poll: no bound beyond
-        self.assertEqual(cov.behaviour({"f": 90}, last), {"f": "behaves"})
-
     def test_oracle_trace_maps_vi_to_the_poll_count(self):
         golden = self.root / cov.ORACLE_DIR
         golden.mkdir()
@@ -120,7 +98,15 @@ class ReadTests(unittest.TestCase):
             self.assertTrue(cov.run_oracle(profile, {"exit_after": 7}, self.root, {"pak": "off", "pads": 2}))
         args, kwargs = start.call_args
         self.assertEqual((args[1], args[2], args[3]), (self.root, 7, "off"))
-        self.assertEqual(kwargs["extra"], {"N64R_GOLDEN_DIR": str(self.root / cov.ORACLE_DIR)})
+        golden = str(self.root / cov.ORACLE_DIR)
+        self.assertEqual(
+            kwargs["extra"],
+            {
+                "N64R_GOLDEN_DIR": golden,
+                "N64R_LOCKSTEP_DIR": golden,
+                "N64R_LOCKSTEP_CALLS": str(cov.tas_oracle.CALLS_FIRST),
+            },
+        )
         self.assertEqual(kwargs["pads"], 2)
         profile.section.return_value = {}
         self.assertFalse(cov.run_oracle(profile, {"exit_after": 7}, self.root, {}))
@@ -236,7 +222,7 @@ class RunReportTests(unittest.TestCase):
         (folder / "A.CPP.gcda").write_text("counts")
         return folder
 
-    def test_empty_upper_snapshot_is_zero_not_an_unbounded_horizon(self):
+    def test_the_runs_behaviour_is_the_per_call_verdict(self):
         (self.run / "coverage.json").write_text(
             json.dumps(
                 {
@@ -256,15 +242,16 @@ class RunReportTests(unittest.TestCase):
             mock.patch.object(cov, "resolver", return_value=lambda name: name),
             mock.patch.object(cov, "union", side_effect=lambda *a, **k: {"covered": [[]], "summary": {}}) as union,
             mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
-            mock.patch.object(cov, "oracle_bracket") as bracket,
+            mock.patch.object(cov, "call_behaviour") as judged,
             mock.patch.object(cov, "read_oracle", return_value=None),
             mock.patch("abu_decomp.tas.read_record", return_value={}),
         ):
-            for upper, expected in (({}, "port-only"), (None, "behaves")):
-                with self.subTest(upper=upper):
-                    bracket.return_value = ({}, upper)
+            verdicts = {"f": {"verdict": "differs-args", "compared": 3, "first": None, "cause": "input"}}
+            for got in (verdicts, None):
+                with self.subTest(got=got):
+                    judged.return_value = got
                     cov.build(self.profile, self.cfg, oracle=False, jobs=1, table_only=True)
-                    self.assertEqual(union.call_args.args[3][0]["behaviour"], {"f": expected})
+                    self.assertEqual(union.call_args.args[3][0]["behaviour"], got)
 
     def test_a_run_without_counters_has_no_report(self):
         with mock.patch.object(cov, "gcovr") as gcovr:
@@ -387,7 +374,7 @@ class RunReportTests(unittest.TestCase):
             mock.patch.object(cov, "universe", return_value=([], {})),
             mock.patch.object(cov, "union", side_effect=lambda *a, **k: {"covered": [[]], "summary": {}}),
             mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
-            mock.patch.object(cov, "oracle_bracket", return_value=None),
+            mock.patch.object(cov, "call_behaviour", return_value=None),
             mock.patch.object(cov, "read_oracle", return_value=None),
             mock.patch("abu_decomp.tas.read_record", return_value={}),
         ):
@@ -412,7 +399,7 @@ class RunReportTests(unittest.TestCase):
             mock.patch.object(cov, "universe", return_value=([], {})),
             mock.patch.object(cov, "union", side_effect=lambda *a, **k: {"covered": [[]], "summary": {}}),
             mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
-            mock.patch.object(cov, "oracle_bracket", return_value=None),
+            mock.patch.object(cov, "call_behaviour", return_value=None),
             mock.patch.object(cov, "read_oracle", return_value=None),
             mock.patch.object(cov, "run_oracle", replay),
             mock.patch("abu_decomp.tas.read_record", return_value={}),
@@ -544,7 +531,7 @@ class RunReportTests(unittest.TestCase):
             mock.patch.object(cov, "universe", return_value=([], {})),
             mock.patch.object(cov, "union", return_value={"covered": [[]], "summary": {}}),
             mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
-            mock.patch.object(cov, "oracle_bracket", return_value=None),
+            mock.patch.object(cov, "call_behaviour", return_value=None),
             mock.patch.object(cov, "read_oracle", return_value=None),
             mock.patch("abu_decomp.tas.read_record", return_value={}),
         ):
@@ -569,7 +556,7 @@ class RunReportTests(unittest.TestCase):
             mock.patch.object(cov, "universe", return_value=([], {})),
             mock.patch.object(cov, "union", return_value={"covered": [[]], "summary": {}}),
             mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
-            mock.patch.object(cov, "oracle_bracket", return_value=None),
+            mock.patch.object(cov, "call_behaviour", return_value=None),
             mock.patch.object(cov, "read_oracle", return_value=None),
             mock.patch("abu_decomp.tas.read_record", return_value={}),
         ):

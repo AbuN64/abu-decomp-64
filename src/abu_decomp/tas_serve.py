@@ -329,24 +329,6 @@ class Server:
         except OSError:
             return {}
 
-    def behaviour(self) -> dict[str, list[str]]:
-        """The page grid's runtime channel: the game functions by the union's behave verdict (`behaves`, `differs`,
-        `missing`), from the same table as /api/coverage, which lists only LISTED rows per bucket.
-        All empty before a table."""
-        path = self.cfg["runs"] / tas_coverage.TABLE
-
-        def read() -> dict[str, list[str]]:
-            out: dict[str, list[str]] = {"behaves": [], "differs": [], "missing": []}
-            for row in self.table().get("functions", []):
-                if row.get("in_version") and row.get("behaviour") in out:
-                    out[row["behaviour"]].append(row["name"])
-            return {verdict: sorted(names) for verdict, names in out.items()}
-
-        try:
-            return self._cached(("behaviour", path.stat().st_mtime_ns), read)
-        except OSError:
-            return {"behaves": [], "differs": [], "missing": []}
-
     def table(self) -> dict[str, Any]:
         """The raw coverage table ({} before the first one), cached by its mtime."""
         path = self.cfg["runs"] / tas_coverage.TABLE
@@ -1238,8 +1220,6 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.reply(PAGE().encode(), "text/html; charset=utf-8")
                 elif path == "/api/coverage":
                     self.json(server.coverage())
-                elif path == "/api/coverage/behaviour":
-                    self.json(server.behaviour())
                 elif path == "/api/pool":
                     self.json(server.slot_pool())
                 elif path == "/api/runs":

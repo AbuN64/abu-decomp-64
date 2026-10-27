@@ -44,6 +44,7 @@ _KEYS = frozenset({"host", "env", "shot_every", "pictures", "timeout_seconds", "
 VIEW, LOG, DIFF = "oracle.bmp", "oracle.txt", "diff.json"
 AUDIO = "audio-oracle.pcm"  # the original's sound, as the port's audio.pcm (+ ".rate")
 PORT_TRACE, ORACLE_TRACE = "port-trace.txt", "oracle-trace.txt"
+CALLS_FIRST = 16  # calls per (caller, function) each side records for the per-call behaviour (RUN/calls.jsonl)
 SHOTS = "shots"
 SIDES = ("port", "oracle")
 WIDTH, HEIGHT = 320, 240
@@ -110,7 +111,7 @@ def port_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
     """What the port adds to its environment so its poll timing lines up with the oracle's and, when `pictures` is on,
     its pictures too. Without pictures no frame is dumped (a monkey batch wrote ~650 .ppm per run and filled the rig
     disk twice, 10-23): only the trace, the run's latest picture (view.bmp) and a fault's own capture remain."""
-    env = {"N64C_TAS_TRACE": str(run / PORT_TRACE)}
+    env = {"N64C_TAS_TRACE": str(run / PORT_TRACE), "N64C_CALLS": str(run), "N64C_CALLS_FIRST": str(CALLS_FIRST)}
     if oracle.get("pictures"):
         shots = run / SHOTS / "port"
         shots.mkdir(parents=True, exist_ok=True)

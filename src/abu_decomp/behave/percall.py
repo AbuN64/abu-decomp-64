@@ -213,8 +213,8 @@ def _call_row(oracle: Call, port: Call, diffs: list[dict[str, str]], what: str) 
         "ordinal": oracle.ordinal,
         "frame": {"oracle": oracle.frame, "port": port.frame},
         "diffs": diffs,
-        "oracle": {"args": [_hex(w) for w in oracle.words[:4]], "ret": oracle.ret and oracle.ret["r"]},
-        "port": {"args": [_hex(w) for w in port.words], "ret": port.ret and port.ret["r"]},
+        "oracle": {"args": [_hex(w) for w in oracle.words[:4]], "ret": oracle.ret and oracle.ret["r"], "writes": oracle.writes},
+        "port": {"args": [_hex(w) for w in port.words], "ret": port.ret and port.ret["r"], "writes": port.writes},
     }
 
 

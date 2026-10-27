@@ -229,49 +229,29 @@ class CompareTests(Fixture):
         self.assertEqual(tas_corpus.compare(self.cfg, self.entry(base), base, now, {})["verdict"], "improved")
         self.assertEqual(tas_corpus.compare(self.cfg, {}, None, now, {})["verdict"], "new")
 
+    def calls(self, run, name, rows):
+        """Write one side's recorded calls: rows of (fn, caller, ordinal, a0, ret)."""
+        out = [{"k": "meta", "first": 16}]
+        for fn, caller, o, a0, ret in rows:
+            out.append({"k": "call", "fn": fn, "caller": caller, "o": o, "frame": 1, "i": o, "a": [f"{a0:08x}", "0", "0", "0"]})
+            out.append({"k": "ret", "fn": fn, "i": o, "r": [f"{ret:08x}", "0"], "f0": "0"})
+        (run / name).write_text("\n".join(json.dumps(r) for r in out) + "\n")
+
     def test_a_function_that_stops_behaving_like_the_original_fails(self):
         reference = self.make_run("m")
         golden = reference / tas_coverage.ORACLE_DIR
         golden.mkdir()
-        head = "order\tsymbol\tfirst_vi\tfirst_thread\tcount\n"
-        (golden / "trace-poll-0.tsv").write_text(head)
-        for poll in (25, 50):
-            (golden / f"trace-poll-{poll}.tsv").write_text(head + "1\tf1\t0\t1\t4\n2\tf2\t0\t1\t9\n")
+        self.calls(golden, tas_coverage.ORACLE_CALLS, [("f1", "main", 0, 1, 7), ("f2", "main", 0, 2, 9)])
         base = self.make_run("m", functions={"f1": 4, "f2": 9})
         now = self.make_run("m", functions={"f1": 4, "f2": 30})
+        self.calls(base, tas_coverage.PORT_CALLS, [("f1", "main", 0, 1, 7), ("f2", "main", 0, 2, 9)])
+        self.calls(now, tas_coverage.PORT_CALLS, [("f1", "main", 0, 1, 7), ("f2", "main", 0, 2, 5)])
         entry = self.entry(base, oracle=reference.name)
         row = tas_corpus.compare(self.cfg, entry, base, now, {})
         self.assertEqual(row["verdict"], "fail")
         self.assertEqual(row["behaviour"]["lost"], ["f2"])
         back = tas_corpus.compare(self.cfg, self.entry(now, oracle=reference.name), now, base, {})
         self.assertEqual((back["verdict"], back["behaviour"]["won"]), ("improved", ["f2"]))
-
-
-class BehaviourTests(unittest.TestCase):
-    def test_count_brackets(self):
-        bracket = ({"a": 2, "b": 5, "c": 1}, {"a": 4, "b": 5, "c": 1, "e": 3})
-        port = {"a": 3, "b": 9, "c": 0, "d": 2, "e": 0, "z": 0}
-        self.assertEqual(
-            tas_coverage.behaviour(port, bracket),
-            {"a": "behaves", "b": "differs", "c": "missing", "d": "port-only", "e": "behaves"},
-        )
-        self.assertEqual(tas_coverage.behaviour({"a": 7}, ({"a": 2}, None)), {"a": "behaves"})  # oracle ended earlier
-
-    def test_bracket_reads_the_snapshots_around_the_poll(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run = Path(tmp)
-            golden = run / tas_coverage.ORACLE_DIR
-            golden.mkdir()
-            head = "order\tsymbol\tfirst_vi\tfirst_thread\tcount\n"
-            for poll, count in ((25, 1), (50, 2), (75, 3)):
-                (golden / f"trace-poll-{poll}.tsv").write_text(head + f"1\tf\t0\t1\t{count}\n")
-            # both bounds reach one snapshot interval out: the port runs up to one behind or ahead of the oracle
-            self.assertEqual(tas_coverage.oracle_bracket(run, 60), ({"f": 1}, None))
-            self.assertEqual(tas_coverage.oracle_bracket(run, 50), ({"f": 1}, {"f": 3}))
-            self.assertEqual(tas_coverage.oracle_bracket(run, 90), ({"f": 2}, None))
-            self.assertEqual(tas_coverage.oracle_bracket(run, 10), ({}, {"f": 2}))
-            self.assertEqual(tas_coverage.oracle_bracket(run, 30), ({}, {"f": 3}))
-            self.assertIsNone(tas_coverage.oracle_bracket(run / "none", 10))
 
 
 class GateTests(Fixture):

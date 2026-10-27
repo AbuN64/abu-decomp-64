@@ -213,6 +213,7 @@ canvas#map { display: block; touch-action: manipulation; }
 .empty svg { width: 16px; height: 16px; }
 .claims { font: 11.5px var(--mono); color: var(--dim); margin: 6px 0 0; padding-left: 16px; }
 .claims li { margin: 2px 0; }
+.dv { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; } .dv th { text-align: left; color: var(--dim); font-weight: 600; padding: 2px 8px; } .dv td { padding: 2px 8px; border-top: 1px solid var(--line, #2a2a2a); } .dv tr.x td { background: color-mix(in srgb, var(--b-diff) 18%, transparent); }
 .cases { list-style: none; margin: 6px 0 0; padding: 0; font-size: 12px; }
 .case { display: flex; align-items: center; gap: 6px; padding: 2px 0; } .case .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .case .side { margin-left: auto; display: inline-flex; } .case .side + .side { margin-left: 0; } .case .side svg { width: 14px; height: 14px; }
@@ -394,18 +395,17 @@ const BARS = [
 ];
 const DEC_SEG = { asm: "asm", unmapped: "asm", fuzzy: "fuzzy", exact: "exact", named: "exact", covered: "exact" };  // named = exact C with a clean name
 const EXE_SEG = { none: "never", port: "port", both: "both", oracle: "oracle" };
-function rowSegs(row, verdict) {  // fns.json row + behave verdicts -> [decomp seg, exercised seg, behaviour seg]
-  const v = verdict.get(row[0]);
-  return [DEC_SEG[row[3]] || "asm", EXE_SEG[row[5]] || "never", v === "behaves" || v === "differs" ? v : "pending"];
+function rowSegs(row) {  // fns.json row -> [decomp seg, exercised seg, behaviour seg]; row[7] is the per-call verdict (behaves, differs-args, differs-result, missing, port-only, "" = not compared)
+  return [DEC_SEG[row[3]] || "asm", EXE_SEG[row[5]] || "never", row[7] === "behaves" ? "behaves" : row[7] ? "differs" : "pending"];
 }
 const defaultSel = () => ({ dec: new Set(["asm", "fuzzy", "exact"]), exe: new Set(["port", "both"]), beh: new Set(["differs"]) });
 const allSel = () => Object.fromEntries(BARS.map(b => [b.key, new Set(b.segs.map(s => s[0]))]));
 const passesSel = (sel, segs) => BARS.every((b, i) => sel[b.key].has(segs[i]));
 const sameSel = (a, b) => BARS.every(x => a[x.key].size === b[x.key].size && [...a[x.key]].every(k => b[x.key].has(k)));
 function toggleSeg(sel, bar, k) { const s = sel[bar]; s.has(k) ? s.delete(k) : s.add(k); }
-function barStats(rows, verdict) {  // per bar and segment [functions, bytes]; scope = exercised or compared code (the Behaviour big number's base)
+function barStats(rows) {  // per bar and segment [functions, bytes]; scope = exercised or compared code (the Behaviour big number's base)
   const stat = Object.fromEntries(BARS.map(b => [b.key, Object.fromEntries(b.segs.map(s => [s[0], [0, 0]]))]));
-  const segs = rows.map(r => rowSegs(r, verdict)), scope = [0, 0], total = [0, 0];
+  const segs = rows.map(r => rowSegs(r)), scope = [0, 0], total = [0, 0];
   rows.forEach((r, i) => {
     BARS.forEach((b, a) => { const c = stat[b.key][segs[i][a]]; c[0]++; c[1] += r[2]; });
     total[0]++; total[1] += r[2];
@@ -453,10 +453,10 @@ async function boot() {
 }
 async function loadBaked() {
   try {
-    const [fns, movies, summary, beh] = await Promise.all([getJson(dataPath(D.man, "fns", "fns.json")), getJson("/data/movies.json"), getJson("/data/summary.json"), getJson("/api/coverage/behaviour")]);
+    const [fns, movies, summary] = await Promise.all([getJson(dataPath(D.man, "fns", "fns.json")), getJson("/data/movies.json"), getJson("/data/summary.json")] );
     Object.assign(D, { fns, movies, summary });
     D.fnIndex = new Map(fns.rows.map((r, i) => [r[0], i]));
-    gridData(beh);
+    gridData();
     initSearch();
     dataReady();
   } catch (e) { toast("circle-alert", "baked data unavailable: " + e.message); }
@@ -985,11 +985,9 @@ const short = n => n.length > 22 ? n.slice(0, 21) + "…" : n;
 // it passes all three bars and fades the rest; square size grows as the shown set shrinks.
 const REACH_TXT = { both: "port + original", port: "port only", oracle: "original only", none: "not reached" };
 const segLabel = (bar, k) => BARS.find(b => b.key === bar).segs.find(s => s[0] === k)[1];
-function gridData(beh) {  // D.segs per row, D.stat (BARS counts), D.pass/D.nShown from the current selection
-  const verdict = new Map();
-  for (const v of ["behaves", "differs", "missing"]) for (const n of beh[v] || []) verdict.set(n, v);
-  const st = barStats(D.fns.rows, verdict);
-  Object.assign(D, { segs: st.segs, stat: st.stat, big: bigNumbers(st), total: st.total, verdict });
+function gridData() {  // D.segs per row, D.stat (BARS counts), D.pass/D.nShown from the current selection
+  const st = barStats(D.fns.rows);
+  Object.assign(D, { segs: st.segs, stat: st.stat, big: bigNumbers(st), total: st.total });
   refilter();
 }
 function refilter() {
@@ -1134,7 +1132,7 @@ function fnCard(fi) {
     const exe = (f.lines || []).filter(Boolean), hit = exe.filter(x => x[0] > 0).length;
     more = `<div class="hg"><span>lines</span><b>${exe.length ? hit + "/" + exe.length : "–"}</b><span>movies</span><b>${f.movies_total ?? (f.movies || []).length}</b>
       <span>callers</span><b>${(f.callers || []).length}</b><span>callees</span><b>${(f.callees || []).length}</b>
-      ${f.behaviour ? `<span>behave</span><b>${esc(f.behaviour)}</b>` : ""}<span>port</span><b>${f.port ? f.port.count : 0}</b></div>`;
+      ${f.behaviour ? `<span>behave</span><b>${esc(f.behaviour)}${f.call && f.call.cause ? " · " + (f.call.cause === "input" ? "fix upstream" : "own fault") : ""}</b>` : ""}<span>port</span><b>${f.port ? f.port.count : 0}</b></div>`;
   } else more = `<div class="hr dim">…</div>`;
   return `<div class="hn">${esc(row[0])}</div>
     <div class="hr">${segLabel("dec", D.segs[fi][0])} · ${row[2]} B${row[6] ? ` <span class="tag">foundation</span>` : ""}</div>
@@ -1288,6 +1286,8 @@ async function renderFn() {
       <div><h4>${icon("arrow-down-right")}callees ${callees.length}</h4>${callees.map(hop).join("") || `<div class="empty">none</div>`}</div></div>
     <div class="sec">${icon("code-xml")}C <span style="margin-left:auto;font-weight:400">${exe.length ? `${hit}/${exe.length} lines` : "no line counts yet"}</span></div>
     ${rows ? `<div class="code"><table>${rows}</table></div>` : `<div class="empty">${icon("circle-alert")}no source slice</div>`}
+    <div class="sec">${icon("columns-2")}first diverging call, port vs original</div>
+    ${divergence(f.call) || `<div class="empty">${icon("circle-alert")}no per-call capture of this function yet</div>`}
     <div class="sec">${icon("clapperboard")}reached by ${f.movies_total ?? movies.length}</div>
     <div class="movies">${movies.slice(0, 12).map(m => `<span class="chip" data-movie="${esc(m)}">${icon("play")}${esc(m)}</span>`).join("") || `<div class="empty">${icon("clapperboard")}no movie yet</div>`}</div>
     <div class="sec">${icon("columns-2")}inputs → outputs, port vs original</div>
@@ -1295,6 +1295,23 @@ async function renderFn() {
     ${claims.length ? `<ul class="claims">${claims.map(c => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
   </div>`;
   wireFn();
+}
+// The first diverging call (fns.json `call`, tas_coverage.call_behaviour): the differing arguments, then the call's raw words, return and writes, port vs original.
+const CAUSE_TXT = { input: "input already differs: fix upstream", own: "same input, other output: fix here" };
+function divergence(c, line) {
+  if (!c) return "";
+  if (!c.first) return `<div class="empty">${icon("circle-check")}${c.compared} calls compared, none differ${c.unmatched_oracle || c.unmatched_port ? ` (${c.unmatched_oracle} only in the original, ${c.unmatched_port} only in the port)` : ""}</div>`;
+  const f = c.first, o = f.oracle || {}, p = f.port || {}, bad = new Set((f.diffs || []).map(d => d.field));
+  const hex = v => v == null ? "–" : Array.isArray(v) ? v.join(" ") : String(v);
+  const row = (what, pv, ov, x) => `<tr class="${x ? "x" : ""}"><td>${esc(what)}</td><td class="mono">${esc(hex(pv))}</td><td class="mono">${esc(hex(ov))}</td></tr>`;
+  const diffs = (f.diffs || []).map(d => row(`${d.field} (${d.kind})`, d.port, d.oracle, true)).join("");
+  const raw = [0, 1, 2, 3].map(i => row(`word a${i}`, (p.args || [])[i], (o.args || [])[i], (p.args || [])[i] !== (o.args || [])[i])).join("");
+  const who = c.cause ? ` · <span class="tag" title="${esc(CAUSE_TXT[c.cause] || "")}">${c.cause === "input" ? "fix upstream" : "own fault"}</span>` : "";
+  const at = f.frame ? `poll ${f.frame.port} (port) / ${f.frame.oracle} (original)` : "";
+  return `<div class="hr">${esc(c.verdict)} · ${c.compared} calls compared${who}</div>
+    <div class="dim mono">${esc(f.what || "")} · caller ${esc(f.caller)} · call #${f.ordinal} · ${esc(at)}</div>
+    <table class="dv"><tr><th>differs</th><th>port</th><th>original</th></tr>${diffs}</table>
+    <table class="dv"><tr><th>whole call</th><th>port</th><th>original</th></tr>${raw}${row("return", p.ret, o.ret, bad.has("return"))}${row("memory writes", p.writes, o.writes, bad.has("writes"))}</table>`;
 }
 // A behave case row is a string, or {text|call, port, oracle} with one tick or cross per side (decoded by the bake).
 function caseRow(c) {
