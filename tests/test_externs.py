@@ -31,6 +31,10 @@ FILES = {
 }
 
 
+# the map spells a header from its module the same way twice: `mod/X/Q` -> `include/X/Q.H` (the rule the planner learns)
+MAP2 = MAP + "src/x/q.c\tmod/X/Q\tX\tX\tinclude/X/Q.H\t-\t-\nsrc/x/p.c\tmod/X/P\tX\tX\tinclude/X/P.H\t-\t-\n"
+
+
 def project(tmp_path: Path, extra: dict[str, str] | None = None) -> Path:
     for name, text in {**FILES, **(extra or {})}.items():
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
@@ -245,3 +249,93 @@ def test_unconditional_includes_skip_conditions_but_not_the_include_guard() -> N
     text = '#ifndef X_H\n#define X_H\n#include "a.h"\n#if 1\n#include "b.h"\n#endif\n#include "c.h"\n#endif\n'
     assert externs.unconditional_includes(text, True) == ["a.h", "c.h"]
     assert externs.unconditional_includes(text, False) == []
+
+
+def land(root: Path, out: Path, found: dict) -> None:
+    for batch in found["batches"]:
+        subprocess.run(["git", "-C", str(root), "apply", "--check", str(out / batch["batch"])], check=True)
+        subprocess.run(["git", "-C", str(root), "apply", str(out / batch["batch"])], check=True)
+
+
+def test_c_multi_declarator_lines_are_split_and_then_planned(tmp_path: Path) -> None:
+    extra = {
+        "src/a/a.c": FILES["src/a/a.c"] + "int gA;\nint *gB;\nint gC[3];\n",
+        "src/b/b.c": FILES["src/b/b.c"] + "extern int gA, *gB, gC[3];\nint useb2(void) { return gA; }\n",
+    }
+    root, found = moved(tmp_path, extra)
+    out = tmp_path / "out"
+    assert found["split_units"] == 1 and found["batches"][0]["batch"] == "externs-batch-00-split.diff"
+    rows = table(out)
+    assert {i: rows[i][2] for i in ("gA", "gB", "gC")} == dict.fromkeys(("gA", "gB", "gC"), "include/A/A.H")
+    split = (out / "externs-batch-00-split.diff").read_text()
+    assert "+extern int gA;" in split and "+extern int *gB;" in split and "+extern int gC[3];" in split
+    land(root, out, found)
+    assert "gA," not in (root / "src/b/b.c").read_text()
+    header = (root / "include/A/A.H").read_text()
+    assert all(f in header for f in ("extern int gA;", "extern int*gB;", "extern int gC[3];"))
+
+
+def test_c_a_declarator_the_split_cannot_state_stays_refused(tmp_path: Path) -> None:
+    extra = {"src/b/b.c": FILES["src/b/b.c"] + "extern int gP, (*gFn)(int);\n"}
+    _, found = moved(tmp_path, extra)
+    assert found["split_units"] == 0
+    assert externs.split_declaration("extern int gP, (*gFn)(int);") is None
+    assert externs.split_declaration("extern int x = 1, y;") is None
+    assert externs.split_declaration("extern char *a, b[2];") == ["extern char *a;", "extern char b[2];"]
+
+
+def test_a_the_planner_creates_the_missing_module_header_and_includes_it_in_definer_and_users(tmp_path: Path) -> None:
+    extra = {
+        "docs/MODULES.tsv": MAP2 + "src/n/n.c\tmod/N\tN\tN\t-\t-\t-\n",
+        "src/n/n.c": "int gNew = 3;\nint gOther[4] = {1};\n",
+        "src/b/b.c": FILES["src/b/b.c"] + "extern int gNew;\nextern int gOther[4];\n",
+    }
+    root, found = moved(tmp_path, extra)
+    out = tmp_path / "out"
+    assert found["created_headers"] == ["include/N.H"]
+    assert table(out)["gNew"][2] == "include/N.H"
+    diff = (out / found["batches"][0]["batch"]).read_text()
+    assert "new file mode 100644" in diff and "--- /dev/null" in diff
+    land(root, out, found)
+    header = (root / "include/N.H").read_text()
+    assert header.startswith("#ifndef N_H\n#define N_H\n") and "extern int gNew;" in header
+    assert "extern int gOther[4];" in header and header.rstrip().endswith("#endif")
+    for unit in ("src/n/n.c", "src/b/b.c"):  # the definer and the user both include it
+        assert '#include "N.H"' in (root / unit).read_text()
+    assert "extern int gNew" not in (root / "src/b/b.c").read_text()
+
+
+def test_a_the_created_header_includes_the_provider_of_the_types_it_spells(tmp_path: Path) -> None:
+    extra = {
+        "docs/MODULES.tsv": MAP2 + "src/n/n.c\tmod/N\tN\tN\t-\t-\t-\n",
+        "include/T.H": "#ifndef T_H\n#define T_H\ntypedef struct Thing { int v; } Thing;\n#endif\n",
+        "src/n/n.c": '#include "T.H"\nThing gThing;\n',
+        "src/b/b.c": FILES["src/b/b.c"] + "extern Thing gThing;\n",
+    }
+    root, found = moved(tmp_path, extra)
+    assert table(tmp_path / "out")["gThing"][2] == "include/N.H"
+    land(root, tmp_path / "out", found)
+    assert '#include "T.H"' in (root / "include/N.H").read_text()
+
+
+def test_b_one_type_under_two_spellings_is_one_declaration(tmp_path: Path) -> None:
+    extra = {
+        "include/R/R.H": "#ifndef R_H\n#define R_H\ntypedef float f32;\n#endif\n",
+        "src/b/b.c": FILES["src/b/b.c"] + "extern float D_80001600;\nextern int func_80001700(int a);\n",
+        "src/c/c.c": FILES["src/c/c.c"] + "extern f32 D_80001600;\nextern int func_80001700(int b);\n",
+    }
+    _, found = moved(tmp_path, extra)
+    rows = table(tmp_path / "out")
+    assert rows["D_80001600"][2] == "include/R/R.H" and rows["D_80001600"][4] in ("float D_80001600", "f32 D_80001600")
+    assert "func_80001700" in rows
+    assert not [r for r in found["refused"] if r["id"] in ("D_80001600", "func_80001700")]
+
+
+def test_b_what_the_definition_cannot_settle_is_residue_with_both_prototypes(tmp_path: Path) -> None:
+    extra = {
+        "src/b/b.c": FILES["src/b/b.c"] + "extern float D_80001600;\n",
+        "src/c/c.c": FILES["src/c/c.c"] + "extern int D_80001600;\n",
+    }
+    _, found = moved(tmp_path, extra)
+    refusal = next(r for r in found["refused"] if r["id"] == "D_80001600")
+    assert refusal["protos"] == ["float D_80001600", "int D_80001600"]

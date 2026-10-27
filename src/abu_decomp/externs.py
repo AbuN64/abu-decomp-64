@@ -27,7 +27,7 @@ import tempfile
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from abu_decomp import DecompError, deaddecls, owners
 from abu_decomp.data import config as data_config
@@ -41,6 +41,8 @@ DEFINED = re.compile(r"^\s*#\s*define\s+(\w+)", re.M)
 TAG = re.compile(r"\b(?:struct|union|enum)\s+(\w+)\s*[{;]")
 USED_TAG = re.compile(r"\b(?:struct|union|enum)\s+(\w+)")
 WORD = re.compile(r"[A-Za-z_]\w*")
+ALIAS = re.compile(r"^[ \t]*typedef[ \t]+((?:[A-Za-z_]\w*[ \t]+)*[A-Za-z_]\w*)[ \t]+(\w+)[ \t]*;", re.M)
+BASE_WORDS = {"int", "char", "short", "long", "float", "double", "void", "unsigned", "signed", "const", "volatile"}
 BATCH_CPU = 300.0  # estimated CPU s per batch: half of the 600 s a header-changing stamp may spend (CARD-RULES rule 3)
 UNIT_CPU = 0.25  # estimated CPU s a stamp spends per recompiled unit (calibrated by the recorded `stamp build: cpu=`)
 
@@ -66,6 +68,10 @@ class Scan:
     texts: dict[str, str] = field(default_factory=dict)
     types: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # type/macro -> declaring files
     tags: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # struct/union/enum tag -> files
+    aliases: dict[str, str] = field(default_factory=dict)  # `typedef <words> NAME;` -> the words (unambiguous ones)
+    originals: dict[str, str] = field(default_factory=dict)  # unit -> its text before the multi-declarator split
+    created: set[str] = field(default_factory=set)  # headers the plan creates (their text is in `texts`)
+    needs: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # created header -> includes it needs
 
 
 def tracked(root: Path) -> list[str]:
@@ -104,16 +110,23 @@ def unconditional_includes(text: str, is_header: bool) -> list[str]:
     return out
 
 
-def scan(root: Path, files: list[str]) -> Scan:
+def scan(root: Path, files: list[str], texts: dict[str, str] | None = None) -> Scan:
     found = Scan()
+    clash: set[str] = set()
     for name in files:
         low = name.lower()
         is_header = low.endswith(HEADER_SUFFIXES)
         if not (is_header or (name.startswith("src/") and low.endswith(owners.SOURCE_SUFFIXES))):
             continue
-        raw = (root / name).read_bytes().decode("latin-1")
+        raw = texts[name] if texts and name in texts else (root / name).read_bytes().decode("latin-1")
         found.texts[name] = raw
         text = deaddecls.strip_comments(raw)
+        for m in ALIAS.finditer(text):
+            base = " ".join(m.group(1).split())
+            if base.split()[0] in ("struct", "union", "enum", "typedef", "extern", "static"):
+                continue
+            if found.aliases.setdefault(m.group(2), base) != base:
+                clash.add(m.group(2))
         found.plain_includes[name] = unconditional_includes(text, is_header)
         for m in TYPEDEF.finditer(text):
             found.types[m.group(1) or m.group(2) or m.group(3)].add(name)
@@ -146,7 +159,131 @@ def scan(root: Path, files: list[str]) -> Scan:
                     found.definitions[ident].append((name, definition_proto(body)))
             else:
                 found.local_names[name] |= c.defs
+    for name in clash:
+        found.aliases.pop(name, None)
     return found
+
+
+def top_commas(text: str) -> list[str]:
+    """TEXT cut at the commas outside any bracket."""
+    parts, level, cut = [], 0, 0
+    for i, ch in enumerate(text):
+        level += (ch in "([{") - (ch in ")]}")
+        if ch == "," and level == 0:
+            parts.append(text[cut:i])
+            cut = i + 1
+    return [*parts, text[cut:]]
+
+
+def split_declaration(body: str) -> list[str] | None:
+    """`extern char *a, b[2];` as one declaration per name (`extern char *a;`, `extern char b[2];`); None when the text
+    is not a plain list of declarators (an initialiser, a function or function-pointer declarator, a body)."""
+    flat = " ".join(body.strip().rstrip(";").split())
+    if not flat.startswith("extern ") or re.search(r"[={}#]|/[*/]", flat):
+        return None
+    parts = [p.strip() for p in top_commas(flat)]
+    if len(parts) < 2 or "(" in flat:
+        return None
+    first = re.match(r"^(.*?[\s*])([A-Za-z_]\w*)\s*((?:\[[^\]]*\]\s*)*)$", parts[0])
+    if not first or first.group(1).strip() == "extern":
+        return None
+    head = first.group(1).rstrip("* ")
+    stars = first.group(1)[len(head) :].replace(" ", "")
+    out = [f"{head} {stars}{first.group(2)}{first.group(3).replace(' ', '')};"]
+    for part in parts[1:]:
+        m = re.match(r"^(\*[\s*]*)?([A-Za-z_]\w*)\s*((?:\[[^\]]*\]\s*)*)$", part)
+        if not m:
+            return None
+        out.append(f"{head} {(m.group(1) or '').replace(' ', '')}{m.group(2)}{m.group(3).replace(' ', '')};")
+    return out
+
+
+def split_compound(root: Path, files: list[str]) -> dict[str, str]:
+    """The source units whose multi-declarator `extern` lines are rewritten to one declaration per name (unit -> new
+    text). Only whole-line declarations without comments or preprocessor lines are rewritten."""
+    changed: dict[str, str] = {}
+    for name in files:
+        if not (name.startswith("src/") and name.lower().endswith(owners.SOURCE_SUFFIXES)):
+            continue
+        raw = (root / name).read_bytes().decode("latin-1")
+        if not re.search(r"\bextern\b[^;{}()=]*,", raw):
+            continue
+        lines = rows(raw)
+        edits: list[tuple[int, int, list[str]]] = []
+        for c in deaddecls.split(deaddecls.strip_comments(raw)):
+            body = c.text.strip()
+            if not re.match(r"extern\b", body) or "{" in body or c.opaque:
+                continue
+            span = "".join(lines[c.first : c.last + 1])
+            pieces = split_declaration(body)
+            if not pieces or re.search(r"/[*/]|^\s*#", span, re.M):
+                continue
+            if " ".join(span.split()) != " ".join(body.split()):
+                continue  # other text shares the lines
+            edits.append((c.first, c.last, pieces))
+        if edits:
+            nl = eol(lines)
+            for first, last, pieces in sorted(edits, reverse=True):
+                lines[first : last + 1] = [p + nl for p in pieces]
+            changed[name] = "".join(lines)
+    return changed
+
+
+def canonical(proto: str, aliases: dict[str, str]) -> str:
+    """The declaration with its typedef aliases spelled out and its parameter names dropped: two spellings of one
+    type compare equal."""
+    out = proto
+    for _ in range(4):
+        spelled = re.sub(r"[A-Za-z_]\w*", lambda m: aliases.get(m.group(0), m.group(0)), out)
+        if spelled == out:
+            break
+        out = spelled
+    if out.endswith(")") and "(" in out:
+        head, _, params = out.partition("(")
+
+        def bare(param: str) -> str:
+            words = WORD.findall(param)
+            if len(words) >= 2 and words[-1] not in BASE_WORDS and words[-2] not in ("struct", "union", "enum"):
+                param = re.sub(r"\b" + words[-1] + r"\b(?!.*\b" + words[-1] + r"\b)", "", param)
+            return param.strip()
+
+        out = head + "(" + ", ".join(bare(p) for p in top_commas(params[:-1])) + ")"
+    return re.sub(r"\s+", " ", out).strip()
+
+
+def header_rules(module_header: dict[str, str]) -> Callable[[str], str]:
+    """Learn how the map spells a module's header from the modules that have one (the module path and the header path
+    share their trailing components: `src/game/MENU/TRACK.CPP` -> `include/MENU/TRACK.H` is the rule
+    `src/game/` -> `include/` and `.H`), and return the function that spells it for a module that has none ('' when
+    no learned rule fits)."""
+    votes: Counter[tuple[tuple[str, ...], tuple[str, ...], str]] = Counter()
+    for module, header in module_header.items():
+        m, h = PurePosixPath(module), PurePosixPath(header)
+        mp, hp = list(m.with_suffix("").parts), list(h.with_suffix("").parts)
+        while mp and hp and mp[-1] == hp[-1]:
+            mp.pop()
+            hp.pop()
+        votes[tuple(mp), tuple(hp), h.suffix] += 1
+
+    def derive(module: str) -> str:
+        parts = list(PurePosixPath(module).with_suffix("").parts)
+        fits = [
+            (len(mp), n, hp, ext)
+            for (mp, hp, ext), n in votes.items()
+            if len(parts) > len(mp) and tuple(parts[: len(mp)]) == mp
+        ]
+        if not fits:
+            return ""
+        k, _, hp, ext = max(fits)
+        return str(PurePosixPath(*hp, *parts[k:]).with_suffix(ext))
+
+    return derive
+
+
+def new_header(path: str, includes: list[str]) -> str:
+    guard = re.sub(r"\W", "_", owners.include_path(str(PurePosixPath(path).with_suffix("")))).upper() + "_H"
+    body = "".join(f'#include "{owners.include_path(h)}"\n' for h in includes)
+    return f"#ifndef {guard}\n#define {guard}\n{body}#endif\n"
 
 
 def unseen_types(found: Scan, ident: str, proto: str, visible: set[str]) -> list[str]:
@@ -253,7 +390,10 @@ def plan(
     unit_module, module_header = owners.read_map(map_path)
     ranges = address_ranges(map_path)
     files = tracked(root)
-    found = scan(root, files)
+    split = split_compound(root, files)
+    found = scan(root, files, split)
+    found.originals = {n: (root / n).read_bytes().decode("latin-1") for n in split}
+    derive = header_rules(module_header)
     sees = closures(found, files)
     includers: dict[str, set[str]] = defaultdict(set)
     for n, hs in sees.items():
@@ -308,17 +448,44 @@ def plan(
             evidence = {d.proto for d in (blind if headed else decls)}
             protos = sorted(evidence | headed)
             if len(protos) > 1:
-                refused.append({"id": ident, "reason": "declarations conflict", "protos": protos})
-                continue
-        dest = module_header.get(owner, "")
-        if not owner or not dest or dest not in found.texts:
+                spellings: dict[str, list[str]] = defaultdict(list)
+                for p in protos:
+                    spellings[canonical(p, found.aliases)].append(p)
+                if len(spellings) > 1:
+                    refused.append({"id": ident, "reason": "declarations conflict", "protos": protos})
+                    continue
+                # one type under several spellings: the header's, else the most used, else the first
+                (same,) = spellings.values()
+                votes = Counter(d.proto for d in decls)
+                protos = [min(same, key=lambda p: (p not in headed, -votes[p], p))]
+        dest = module_header.get(owner, "") or (derive(owner) if owner else "")
+        if not owner or not dest:
             refused.append({"id": ident, "reason": f"no header for {owner or 'any module'}", "protos": protos})
             continue
+        if dest not in found.texts:  # the module has none: the plan creates it, with the includes its types need
+            found.texts[dest] = new_header(dest, [])
+            found.created.add(dest)
+            sees.setdefault(dest, set())
         held = found.in_headers.get(ident, {})
         if held and dest not in held:
             dest = sorted(held)[0]  # already declared once in a header: that one stays the owner
             reason += ", declared in header"
         absent = unseen_types(found, ident, protos[0], sees.get(dest, set()) | {dest})
+        if absent and dest in found.created:
+            provide = {
+                t: sorted(
+                    h
+                    for h in found.types.get(t, set()) | found.tags.get(t, set())
+                    if h.lower().endswith(HEADER_SUFFIXES) and h != dest
+                )
+                for t in absent
+            }
+            if all(provide.values()):
+                for t in absent:
+                    found.needs[dest].add(provide[t][0])
+                    sees[dest] |= {provide[t][0], *sees.get(provide[t][0], ())}
+                found.texts[dest] = new_header(dest, sorted(found.needs[dest]))
+                absent = unseen_types(found, ident, protos[0], sees[dest] | {dest})
         if absent:
             why = "type not visible from " + dest + ": " + ", ".join(absent[:4])
             refused.append({"id": ident, "reason": why, "protos": protos})
@@ -353,6 +520,7 @@ def plan(
                 "proto": protos[0],
                 "has_decl": dest in held,
                 "decls": decls,
+                "definers": sorted({u for u, _ in defined}),
                 "units": users,
             }
         )
@@ -373,6 +541,8 @@ def plan(
         "unit_extern_ids_before": len(found.externs),
         "unit_extern_lines_after": lines_before - sum(len(m["decls"]) for m in moves),  # type: ignore[arg-type]
         "unit_extern_ids_after": len(found.externs) - len(moves),
+        "split_units": len(found.originals),
+        "created_headers": sorted({str(m["to"]) for m in moves} & found.created),
         "planned_ids": len(moves),
         "refused_ids": len(refused),
         "batches": [],
@@ -417,7 +587,7 @@ def refused_by_gate(
     violation that names none of its batch's ids is kept in `unattributed` (the plan cannot drop it)."""
     refusing: dict[str, str] = {}
     diffs = write_batches(found, batches, None, sees, unit_cpu)[1]
-    for batch, text in zip(batches, diffs, strict=True):
+    for batch, text in zip(batches, diffs[len(diffs) - len(batches) :], strict=True):
         for violation in gate(text):
             named = [str(m["id"]) for m in batch if re.search(r"\b" + re.escape(str(m["id"])) + r"\b", violation)]
             for ident in named:
@@ -535,9 +705,21 @@ def write_batches(
     the destination header before its closing `#endif`, a unit that no longer sees the destination
     includes it. Returns the batch records and the diff texts; the files are written only when `packs` is given."""
     texts = {n: rows(t) for n, t in found.texts.items()}
-    seen = {n: set(h) for n, h in sees.items()}
+    seen: dict[str, set[str]] = defaultdict(set, {n: set(h) for n, h in sees.items()})
     written: list[dict[str, object]] = []
     diffs: list[str] = []
+    fresh = set(found.created)
+    if found.originals:  # batch 0: the multi-declarator lines become one declaration per name, nothing else
+        split = [
+            f"# MSG: Split multi-declarator unit externs into one declaration per name ({len(found.originals)} units)\n"
+        ]
+        split += [git_diff(n, rows(t), rows(found.texts[n])) for n, t in sorted(found.originals.items())]
+        diffs.append("".join(split))
+        if packs is not None:
+            (packs / "externs-batch-00-split.diff").write_text(diffs[-1], encoding="latin-1")
+        written.append(
+            {"batch": "externs-batch-00-split.diff", "ids": 0, "files": len(found.originals), "destinations": []}
+        )
     for number, batch in enumerate(batches, 1):
         before: dict[str, list[str]] = {}
         removals: dict[str, list[tuple[int, int]]] = defaultdict(list)
@@ -555,13 +737,17 @@ def write_batches(
                     wants[d.unit].add(dest)
             if not m["has_decl"]:
                 adds[dest].append(f"extern {m['proto']};" + eol(texts[dest]))
-        edited = set(removals) | set(adds)
+            if dest in found.created:  # the definer states the header's declaration too: it is checked against it
+                for u in m.get("definers", ()):  # type: ignore[attr-defined]
+                    if dest not in seen[u]:
+                        wants[u].add(dest)
+        edited = set(removals) | set(adds) | {n for n, w in wants.items() if w}
         for n in edited:
-            before[n] = list(texts[n])
-        for n, spans in removals.items():
-            cur = texts[n]
+            before[n] = [] if n in fresh else list(texts[n])
+        for n in sorted(set(removals) | {n for n, w in wants.items() if w}):
+            cur, spans = texts[n], removals.get(n, [])
             drop = {i for a, b in spans for i in range(a, b)}
-            last_inc = include_anchor(cur, min(a for a, _ in spans))
+            last_inc = include_anchor(cur, min((a for a, _ in spans), default=len(cur)))
             out: list[str] = []
             for i, ln in enumerate(cur):
                 if i not in drop:
@@ -581,7 +767,16 @@ def write_batches(
             texts[dest] = [*cur[:end], *new, *cur[end:]]
         diff = [f"# MSG: Hoist {len(batch)} unit externs into their owning headers (batch {number})\n"]
         for n in sorted(edited):
-            diff.append(git_diff(n, before[n], texts[n]))
+            if n in fresh:
+                fresh.discard(n)
+                body = texts[n]
+                diff.append(
+                    f"diff --git a/{n} b/{n}\nnew file mode 100644\n--- /dev/null\n+++ b/{n}\n"
+                    f"@@ -0,0 +1,{len(body)} @@\n"
+                    + "".join("+" + ln if ln.endswith("\n") else "+" + ln + "\n" for ln in body)
+                )
+            else:
+                diff.append(git_diff(n, before[n], texts[n]))
         name = f"externs-batch-{number:02d}.diff"
         diffs.append("".join(diff))
         if packs is not None:
