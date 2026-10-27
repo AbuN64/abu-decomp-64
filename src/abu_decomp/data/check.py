@@ -4,6 +4,7 @@ stopped matching (the MIXED finder, seconds instead of a ROM bisect); `--mixed` 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import re
 import subprocess
@@ -17,6 +18,7 @@ from abu_decomp.data.trial import Builder, fn_unit  # noqa: F401  re-export for 
 
 _MARK = ".unbake/data-extracted.json"
 _SPLAT = re.compile(r"(^|/)splat\.ya?ml$")
+_FACTS_REFUSED = re.compile(r"asm/\S+ was extracted from other symbol_addrs\.txt/splat\.yaml")
 
 
 def marker_refusal(tree: Path) -> str | None:
@@ -81,8 +83,46 @@ def _extracted_from(tree: Path, config: str) -> bool:
         return False
 
 
+def stale_extractions(cfg: DataConfig, tree: Path) -> list[str]:
+    """Versions whose asm mark names other facts than the tree's configs hold: every compile of such a version refuses
+    (FACTS_CHECK), so no unit has an object. A tree a sync moved to a newer main is stale until it is re-extracted; the
+    sync alone never does (10-27 STAMP-S0: de/eu/eu-x stale, a stamp scored nothing for 24 min). An empty or missing mark
+    is not checked, as the build does not."""
+    stale = []
+    for v in cfg.versions:
+        try:
+            mark = (tree / cfg.path(cfg.extract_mark, v)).read_text().strip()
+        except OSError:
+            continue
+        h = hashlib.sha1()
+        for f in cfg.extract_facts:
+            with contextlib.suppress(OSError):
+                h.update((tree / cfg.path(f, v)).read_bytes())
+        if mark and mark != h.hexdigest():
+            stale.append(v)
+    return stale
+
+
+def refresh_extractions(cfg: DataConfig, profile, tree: Path, run=subprocess.run) -> str | None:
+    """Re-extract a tree whose asm marks differ from its configs, whatever the diff touches (`reextract` forced, paying the
+    re-split: a leased tree is warm, its stale asm is the debt). None when every mark is current afterwards, else why not."""
+    if not stale_extractions(cfg, tree):
+        return None
+    if why := reextract(profile, tree, [], always=True, allow=True, run=run, force=True):
+        return why
+    if left := stale_extractions(cfg, tree):
+        return f"asm of {', '.join(left)} still names other symbol_addrs.txt/splat.yaml than the tree holds after `unbake setup`"
+    return None
+
+
 def reextract(
-    profile, tree: Path, files: list[str], always: bool = False, allow: bool = False, run=subprocess.run
+    profile,
+    tree: Path,
+    files: list[str],
+    always: bool = False,
+    allow: bool = False,
+    run=subprocess.run,
+    force: bool = False,
 ) -> str | None:
     """Bring the tree's extraction up to the symbol rows it now holds (`unbake setup --no-make`: a rename takes unbake's rename
     path, no splat; a current tree costs ~6 s). Without it fncmp finds no function under its new name (`no-score`: the asm
@@ -90,19 +130,19 @@ def reextract(
     MoveMenuFocus edit=91 in every version on a check tree older than the rename). The tree records the inputs it was
     extracted from (`.unbake/data-extracted.json`): an unchanged set skips the call, and a tree whose HEAD moved over
     splat.yaml changes since its extraction is refused (`allow`: `--reextract`), because the full re-split is ~450 CPU s and
-    a fresh pool lease is free. None when nothing needed it or it worked, else why not."""
+    a fresh pool lease is free. `force`: whatever the record says (marks that differ from the configs). None when nothing needed it or it worked, else why not."""
     from unbake import treelock
 
     from abu_decomp import tools
     from abu_decomp.data import stamp
 
-    if not always and not stamp.extraction_files(files):
+    if not (always or force) and not stamp.extraction_files(files):
         return None
     now, _names = _inputs(tree, run)
     mark: dict = {}
     with contextlib.suppress(OSError, ValueError):
         mark = json.loads((tree / _MARK).read_text())
-    if mark.get("inputs") == now:
+    if mark.get("inputs") == now and not force:
         return None
     moved = [] if allow else _moved_splat(tree, mark, run)
     if moved:
@@ -334,15 +374,31 @@ def broken(
         wanted += [(names.get(fn, fn), unit) for fn in fns]
     scores = getattr(b, "scores", None)
     known = scores(version, wanted) if scores is not None and getattr(b.cfg, "fncmp_batch", None) else {}
-    for fn, unit in wanted:
-        sc = known[(fn, unit)] if (fn, unit) in known else b.score(version, fn, unit)
-        if sc is None:
-            # the map still files FN under the unit it had (a split-asm unit) while the diff made it C in another one:
-            # match by symbol, in the other units this check built (10-24 Render_GetSpatialEffectLevel, US)
-            sc = next((s2 for u2 in units if u2 != unit and (s2 := b.score(version, fn, u2)) is not None), None)
+    got = {(fn, unit): known[(fn, unit)] if (fn, unit) in known else b.score(version, fn, unit) for fn, unit in wanted}
+    # the map still files FN under the unit it had (a split-asm unit) while the diff made it C in another one: match by
+    # symbol, in the other units this check built (10-24 Render_GetSpatialEffectLevel, US). ONE batch over the objects
+    # that exist, never a process per unit (10-27: 2756 forks, ~340 s per function on a tree whose units had no object)
+    lost = [key for key, sc in got.items() if sc is None]
+    if lost:
+        built = [u for u in units if (b.tree / b.cfg.object.format(v=version, unit=u)).is_file()]
+        pairs = [(fn, u2) for fn, unit in lost for u2 in built if u2 != unit]
+        other = _scores_of(b, version, pairs)
+        for fn, unit in lost:
+            got[(fn, unit)] = next((s2 for u2 in built if u2 != unit and (s2 := other[(fn, u2)]) is not None), None)
+    for (fn, unit), sc in got.items():
         if sc != 0:
             bad.append((unit, fn, "edit=%s" % sc if sc is not None else "no-score"))
     return bad
+
+
+def _scores_of(b: Builder, version: str, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], int | None]:
+    """{(fn, unit): edit count or None}: one fncmp process when the builder batches, else one per pair."""
+    if not pairs:
+        return {}
+    scores = getattr(b, "scores", None)
+    if scores is not None and getattr(b.cfg, "fncmp_batch", None):
+        return scores(version, pairs)
+    return {(fn, u): b.score(version, fn, u) for fn, u in pairs}
 
 
 def failures(b: Builder, version: str, units: list[str], log: str) -> dict[str, str]:
@@ -421,6 +477,16 @@ def check(b: Builder, version: str, units: list[str] | None = None, baseline: di
     for line in log.splitlines():
         if "make.front:" in line:  # how many compiles the cache answered: the make is most of the check's CPU
             print(f"check {version}: " + line[line.index("make.front:") :], flush=True)
+    if refused := sorted({m.group(0) for m in map(_FACTS_REFUSED.search, log.splitlines()) if m}):
+        # every compile of this version refused its asm's facts: no unit has an object, so nothing can be scored
+        return {
+            "version": version,
+            "units": len(units),
+            "built": False,
+            "broken": [],
+            "refused": len(units),
+            "errors": [f"{len(units)} units refused: {', '.join(refused)} (the asm needs `make extract-{version}`)"],
+        }
     failed = failures(b, version, units, log)
     old = {u: why for u, why in failed.items() if baseline and baseline.get(u) == why}
     failed = {u: why for u, why in failed.items() if u not in old}

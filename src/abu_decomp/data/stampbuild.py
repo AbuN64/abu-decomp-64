@@ -512,7 +512,12 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         _phase("tree (not charged)", mark, cap=False)  # seeding a fresh tree is the slot's cost, not the diff's
         # ONE queue trip for the settle, the check and the link
         slots_held.enter_context(trial.Builder(cfg, tree).holding())
-        why = settle(cfg, tree)
+        # a leased tree whose asm marks differ from its configs (a sync moved it) is re-extracted before anything compiles
+        why = None
+        if check_mod.stale_extractions(cfg, tree):
+            with setup_lock(shared):
+                why = check_mod.refresh_extractions(cfg, profile, tree)
+        why = why or settle(cfg, tree)
         _phase("settle (not charged)", mark, cap=False)
         free[0] += mark[1] - before
         free[1] += mark[0] - began
@@ -595,6 +600,9 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         slots_held.enter_context(builder.holding())  # ONE queue trip for the check and the link
         results = check_versions(builder, list(cfg.versions))
         _phase("check", mark)
+        if refused := [r for r in results if r.get("refused")]:  # a build failure: no scoring, no second check, no link
+            msg = "; ".join(f"{r['version']}: {r['errors'][0]}" for r in refused)
+            return {"worktree": made}, 1, [{"key": "data.build", "blocking": True, "message": msg}]
         for line in filter(None, map(closure_line, results)):
             print(line, flush=True)
         if os.environ.get("ABU_STAMP_ROM_SKIP", "1") == "1":
@@ -613,6 +621,9 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         ] + [
             {"key": "data.build", "blocking": True, "message": f"{r['version']}: {u} does not compile: {why}"}
             for r in results for u, why in r.get("failed", [])
+        ] + [
+            {"key": "data.build", "blocking": True, "message": f"{r['version']}: not built: {'; '.join(r['errors'])}"}
+            for r in results if not r["built"] and not r.get("failed")
         ]  # fmt: skip
         # units == 0 proves nothing unless the narrowing proved the includers unreachable (skipped): a dead declaration
         if not findings and results and all(r.get("units", 1) == 0 and not skipped(r) for r in results):

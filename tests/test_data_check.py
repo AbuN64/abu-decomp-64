@@ -203,6 +203,8 @@ def test_a_fn_that_moved_to_another_unit_is_scored_by_symbol(tmp_path):
         ("f1", "src/a/c_unit.CPP"): 0,
         ("f2", "src/a/c_unit.CPP"): 5,
     }  # both became C in c_unit; asm_unit no longer holds them
+    (tmp_path / "build/a/src/a").mkdir(parents=True)
+    (tmp_path / "build/a/src/a/c_unit.CPP.o").write_text("")
     builder = SimpleNamespace(
         cfg=CFG,
         tree=tmp_path,
@@ -211,6 +213,94 @@ def test_a_fn_that_moved_to_another_unit_is_scored_by_symbol(tmp_path):
     )
     bad = check.broken(builder, "a", ["src/a/asm_unit.CPP", "src/a/c_unit.CPP"])
     assert bad == [("src/a/asm_unit.CPP", "f2", "edit=5")]  # f1 matched by symbol; f2 is really broken, not "no-score"
+
+
+def test_the_no_object_fallback_is_one_batch_over_the_objects_that_exist_not_a_process_per_unit(tmp_path):
+    """10-27 STAMP-S0: 2606 of 2733 units had no object, and each exact function was asked of every other unit, one fncmp
+    process each (~340 s per function). One batch of the pairs whose object exists; none when no unit has one."""
+    (tmp_path / "docs").mkdir()
+    units = [f"src/a/u{i}.CPP" for i in range(50)]
+    (tmp_path / "docs/map-a.json").write_text(json.dumps({"fns": [["f1", 0, 0, 100, units[0]], ["f2", 0, 0, 100, units[1]]]}))
+    calls = {"batch": [], "single": 0}
+
+    def scores(v, pairs):
+        calls["batch"].append(list(pairs))
+        return {p: (0 if p == ("f1", units[2]) else None) for p in pairs}
+
+    def single(v, fn, unit):
+        calls["single"] += 1
+
+    cfg = dataclasses.replace(CFG, fncmp_batch=("fncmp", "--batch"))
+    builder = SimpleNamespace(cfg=cfg, tree=tmp_path, run=lambda *a, **k: done(), score=single, scores=scores)
+    (tmp_path / "build/a/src/a").mkdir(parents=True)
+    assert [x[1] for x in check.broken(builder, "a", units)] == ["f1", "f2"]  # nothing built: no fallback batch
+    assert len(calls["batch"]) == 1 and calls["single"] == 0
+    for u in units[2:4]:
+        (tmp_path / f"build/a/{u}.o").write_text("")
+    calls["batch"].clear()
+    bad = check.broken(builder, "a", units)
+    assert bad == [(units[1], "f2", "no-score")]  # f1 was found by symbol in u2
+    assert len(calls["batch"]) == 2 and calls["single"] == 0  # the unit scores, then ONE fallback batch
+    assert sorted(calls["batch"][1]) == sorted(
+        [("f1", u) for u in (*units[2:4],)] + [("f2", u) for u in units[2:4]]
+    )
+
+
+def test_a_tree_whose_asm_marks_differ_from_its_configs_is_stale_per_version(tmp_path):
+    import hashlib
+
+    cfg = dataclasses.replace(CFG, versions=("a", "b", "c"))
+    for v, text in {"a": "x", "b": "y", "c": "z"}.items():
+        (tmp_path / f"versions/{v}").mkdir(parents=True)
+        (tmp_path / f"asm/{v}").mkdir(parents=True)
+        (tmp_path / f"versions/{v}/splat.yaml").write_text(text)
+        (tmp_path / f"versions/{v}/symbol_addrs.txt").write_text("rows")
+        (tmp_path / f"asm/{v}/.extracted").write_text(hashlib.sha1(f"{text}rows".encode()).hexdigest() + "\n")
+    assert check.stale_extractions(cfg, tmp_path) == []
+    (tmp_path / "versions/b/symbol_addrs.txt").write_text("renamed")  # a sync moved the tree
+    (tmp_path / "asm/c/.extracted").write_text("")  # an empty mark is not checked, as the build does not
+    assert check.stale_extractions(cfg, tmp_path) == ["b"]
+
+
+def test_refresh_re_extracts_a_stale_tree_once_whatever_the_diff_and_refuses_when_the_marks_stay_stale(tmp_path, monkeypatch):
+    from abu_decomp import tools
+
+    cfg = dataclasses.replace(CFG, versions=("a",))
+    (tmp_path / "versions/a").mkdir(parents=True)
+    (tmp_path / "asm/a").mkdir(parents=True)
+    (tmp_path / "versions/a/symbol_addrs.txt").write_text("rows")
+    (tmp_path / "asm/a/.extracted").write_text("old")
+    calls = []
+    fresh = {"on": True}
+
+    def setup(*a, **k):
+        calls.append(a)
+        if fresh["on"]:
+            import hashlib
+
+            (tmp_path / "asm/a/.extracted").write_text(hashlib.sha1(b"rows").hexdigest())
+        return SimpleNamespace(ok=True)
+
+    monkeypatch.setattr(tools, "invoke", setup)
+    run = lambda cmd, **kw: done("H1\n" if "rev-parse" in cmd else "")  # noqa: E731
+    assert check.refresh_extractions(cfg, None, tmp_path, run) is None and len(calls) == 1
+    assert check.refresh_extractions(cfg, None, tmp_path, run) is None and len(calls) == 1  # current: no call
+    (tmp_path / "asm/a/.extracted").write_text("old")
+    fresh["on"] = False
+    why = check.refresh_extractions(cfg, None, tmp_path, run)
+    assert why and "still names other" in why and len(calls) == 2  # force: the record of the last setup does not skip it
+
+
+def test_a_facts_check_refusal_is_a_build_failure_with_the_unit_count_and_no_scoring(tmp_path):
+    log = "asm/de was extracted from other symbol_addrs.txt/splat.yaml than this tree holds (1629f8fd, now 2f43cf53): run make extract-de\n" * 3
+    scored = []
+    builder = SimpleNamespace(
+        cfg=CFG, tree=tmp_path, run=lambda *a, **k: done(), objects=lambda v, u, keep_going: (2, log),
+        score=lambda *a: scored.append(a), scores=lambda *a: scored.append(a),
+    )  # fmt: skip
+    res = check.check(builder, "a", ["src/a/u1.CPP", "src/a/u2.CPP"])
+    assert res["built"] is False and res["refused"] == 2 and res["broken"] == [] and scored == []
+    assert "2 units refused" in res["errors"][0] and "make extract-a" in res["errors"][0]
 
 
 def test_a_rename_already_staged_in_the_tree_is_still_the_diffs_rename(tmp_path):
