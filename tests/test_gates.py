@@ -61,6 +61,61 @@ def test_every_gate_answers_a_number_and_a_broken_one_says_why_without_stopping_
     assert not list((tmp_path / "scratch").glob("gates-*"))  # the unpacked revision is removed
 
 
+def test_misfiled_and_address_named_count_per_folder_and_survive_a_rename_that_keeps_the_old_map_paths(tmp_path):
+    tsv = "unit\tmodule\n" + "".join(
+        f"{u}\t{m}\n"
+        for u, m in (
+            ("src/game/MENU_2/800E0B40.CPP", "src/game/MENU/TRACK.CPP"),
+            ("src/game/MENU_2/800E0B48.CPP", "src/game/MENU/TRACK.CPP"),
+            ("src/game/OTHER/80400000.CPP", "src/game/OTHER/NAMED.CPP"),
+            ("src/game/A/dup.CPP", "src/game/A/X.CPP"),
+            ("src/game/B/dup.CPP", "src/game/B/Y.CPP"),
+        )
+    )
+    files = {"docs/MODULES.tsv": tsv, "src/game/MENU_2/stray.CPP": "", "include/COMMON/X.H": ""}
+    section = {
+        "scratch": str(tmp_path / "scratch"),
+        "gates": [
+            {"id": "m", "phase": "P2", "name": "misfiled", "measure": {"kind": "misfiled", "map": "docs/MODULES.tsv"}},
+            {"id": "u", "phase": "P2", "name": "unmapped", "measure": {"kind": "unmapped", "map": "docs/MODULES.tsv"}},
+            {
+                "id": "a",
+                "phase": "P2",
+                "name": "addr",
+                "measure": {"kind": "files", "paths": r"^src/.*/[0-9A-F]{8}(_\d+)?\.cpp$"},
+            },
+        ],
+    }
+    before = _repo(
+        tmp_path / "before",
+        {**files, **{u: "" for u in ("src/game/MENU_2/800E0B40.CPP", "src/game/MENU_2/800E0B48.CPP")}}
+        | {u: "" for u in ("src/game/OTHER/80400000.CPP", "src/game/A/dup.CPP", "src/game/B/dup.CPP")},
+    )
+    got = {g["id"]: g for g in gates.run(before, "HEAD", section)["gates"]}
+    assert (got["m"]["value"], got["u"]["value"], got["a"]["value"]) == (
+        5,
+        1,
+        3,
+    )  # stray.CPP has no row; the five mapped units all sit beside, not in, their module folder
+    assert got["m"]["detail"] == {
+        "units": 5,
+        "unmapped": 1,
+        "folders": {"game/MENU_2": 2, "game/A": 1, "game/B": 1, "game/OTHER": 1},
+    }
+    assert got["a"]["detail"]["folders"] == {"game/MENU_2": 2, "game/OTHER": 1}
+    after = _repo(
+        tmp_path / "after",
+        {**files, **{u: "" for u in ("src/game/MENU/TRACK/800E0B40.CPP", "src/game/MENU/TRACK/800E0B48.CPP")}}
+        | {u: "" for u in ("src/game/OTHER/NAMED/80400000.CPP", "src/game/A/X/dup.CPP", "src/game/B/Y/dup.CPP")},
+    )
+    now = {g["id"]: g for g in gates.run(after, "HEAD", section)["gates"]}
+    assert (now["m"]["value"], now["u"]["value"], now["a"]["value"]) == (0, 1, 3)  # names stay address names
+    assert now["a"]["detail"]["folders"] == {"game/MENU/TRACK": 2, "game/OTHER/NAMED": 1}
+    lines = gates.gate_lines(list(got.values()), 1)
+    assert lines[0].split()[:3] == ["P2", "5", "misfiled"] and lines[1].strip() == "4 folders: game/MENU_2=2"
+    assert "folders" not in lines[0]
+
+
 def test_hourly_rows_and_train_rounds_come_from_the_events_submits_and_history(tmp_path):
     book = tmp_path / "names"
     book.mkdir()

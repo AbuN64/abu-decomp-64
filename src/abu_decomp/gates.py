@@ -6,11 +6,14 @@ the reason it could not: nothing is estimated, and a gate that failed makes the 
 
   placeholders  func_/D_/unk/... tokens (`classes`) in files matching `paths`, minus `exclude` (regexes on the path)
   regex         matches of `pattern` in the same files
-  files         tracked files whose path matches `paths` and not `exclude`
+  files         tracked files whose path matches `paths` and not `exclude`; `folders` lists the count per folder
   tags          struct/union/enum tags defined in more than one place (`records`: tags defined at all)
   externs       unit-local externs: `of`="header-declared" (a name some header declares) or "all"
   dead-decls    declarations nothing reads under `dir`, in `passes` layers
-  unmapped      units without a row in the module map `map`
+  unmapped      units without a row in the module map `map` (a row is found by the unit's path, else by its file name:
+                a rename moves a file and the map keeps the old path)
+  misfiled      units whose module folder (the module's path without its extension) is not the folder they sit in;
+                `folders` lists the count per folder the unit sits in
   probe         commands in `argv` lists that fail (a tool the rig must have deployed)
   lines         lines of the JSON-lines `file` whose fields equal `where`
   length        length of the list at `key` of the JSON `file`
@@ -33,12 +36,12 @@ import tarfile
 import tempfile
 import threading
 import time
-from collections import Counter
-from collections.abc import Callable, Iterator, Mapping
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from abu_decomp import cleanup
@@ -136,7 +139,13 @@ def _files(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]
     drop = re.compile(spec["exclude"], re.I) if spec.get("exclude") else None
     every = _all_files(rev.root, rev.rev)
     mine = [p for p in every if keep.search(p) and not (drop and drop.search(p))]
-    return len(mine), {"examples": mine[:3]}
+    return len(mine), {"examples": mine[:3], "folders": _by_folder(mine)}
+
+
+def _by_folder(paths: Iterable[str]) -> dict[str, int]:
+    """{folder: files} for PATHS, the largest folder first (the folder as `cleanup count` names it)."""
+    got = Counter(cleanup.folder_of(p) for p in paths)
+    return dict(sorted(got.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
 def _all_files(root: Path, rev: str) -> list[str]:
@@ -170,14 +179,41 @@ def _dead(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
     return int(got["dead"]), {"headers": got["headers"], "units": got["units"], "passes": got["passes"]}  # type: ignore[call-overload]
 
 
-def _unmapped(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
+def _units(rev: Revision, spec: Mapping[str, Any]) -> tuple[list[str], dict[str, list[str]]]:
+    """The units of the revision (C and C++ sources under src/) and, for each, the modules the map `map` gives it: its
+    own row by path, else the rows of its file name (a rename moves a file; the map keeps the old path). A unit
+    nothing in the map names gets none."""
     done = subprocess.run(
         ["git", "-C", str(rev.root), "show", f"{rev.rev}:{spec['map']}"], capture_output=True, text=True
     )
-    rows = done.stdout if done.returncode == 0 else ""  # no map yet: every unit lacks its row
-    listed = {line.split("\t")[0].strip() for line in rows.splitlines() if line.strip() and not line.startswith("#")}
+    by_path: dict[str, str] = {}
+    by_name: dict[str, list[str]] = defaultdict(list)
+    for line in done.stdout.splitlines() if done.returncode == 0 else ():  # no map yet: every unit lacks its row
+        unit, _, rest = line.partition("\t")
+        unit = unit.strip()
+        if not unit or unit.startswith("#") or unit == "unit":
+            continue
+        module = rest.partition("\t")[0].strip()
+        by_path[unit] = module
+        by_name[PurePosixPath(unit).name].append(module)
     units = [p for p in rev.paths if p.startswith("src/") and p.lower().endswith((".c", ".cpp"))]
-    return sum(1 for u in units if u not in listed), {"units": len(units), "rows": len(listed)}
+    return units, {u: [by_path[u]] if u in by_path else by_name.get(PurePosixPath(u).name, []) for u in units}
+
+
+def _unmapped(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
+    units, modules = _units(rev, spec)
+    return sum(1 for u in units if not modules[u]), {"units": len(units), "rows": sum(1 for u in units if modules[u])}
+
+
+def _misfiled(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
+    units, modules = _units(rev, spec)
+    mapped = [u for u in units if modules[u]]
+    bad = [
+        u
+        for u in mapped
+        if PurePosixPath(u).parent.as_posix() not in {PurePosixPath(m).with_suffix("").as_posix() for m in modules[u]}
+    ]
+    return len(bad), {"units": len(mapped), "unmapped": len(units) - len(mapped), "folders": _by_folder(bad)}
 
 
 def _probe(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -287,6 +323,7 @@ MEASURES: dict[str, Callable[[Revision, Mapping[str, Any]], tuple[int, dict[str,
     "externs": _externs,
     "dead-decls": _dead,
     "unmapped": _unmapped,
+    "misfiled": _misfiled,
     "probe": _probe,
     "lines": _lines,
     "length": _length,
@@ -308,6 +345,21 @@ def measure(rev: Revision, gate: Mapping[str, Any]) -> dict[str, Any]:
     except Exception as e:  # a gate that cannot be counted says why; its siblings still run
         return {**row, "error": f"{type(e).__name__}: {e}"[:300]}
     return {**row, "value": value, "detail": detail, "seconds": round(time.monotonic() - started, 1)}
+
+
+def gate_lines(rows: list[dict[str, Any]], top: int = 0) -> list[str]:
+    """The plain report of gate rows: one line each, then the largest TOP folders (0 = every one) of a gate that counts
+    per folder (`detail.folders`)."""
+    out = []
+    for g in rows:
+        got = g.get("value", "ERROR " + g.get("error", ""))
+        detail = {k: v for k, v in g.get("detail", {}).items() if k != "folders"}
+        out.append(f"  {g['phase']:<3} {got!s:>8}  {g['name']}  {detail or ''}")
+        folders = list((g.get("detail") or {}).get("folders", {}).items())
+        if folders:
+            shown = folders if top == 0 else folders[:top]
+            out.append(f"      {len(folders)} folders: " + " ".join(f"{k}={v}" for k, v in shown))
+    return out
 
 
 def run(root: Path, rev: str, section: Mapping[str, Any], profile: Any = None) -> dict[str, Any]:

@@ -1412,9 +1412,8 @@ def _run_cleanup_verb(
                 done = gates.run(root, rev, section, profile)
             except subprocess.CalledProcessError as e:
                 raise DecompError("cleanup.rev", f"{rev} cannot be unpacked: {e}") from None
-            for g in done["gates"]:
-                got = g.get("value", "ERROR " + g.get("error", ""))
-                print(f"  {g['phase']:<3} {got!s:>8}  {g['name']}  {g.get('detail', '')}", file=sys.stderr)
+            for line in gates.gate_lines(done["gates"], args.top):
+                print(line, file=sys.stderr)
             print(
                 f"gates {len(done['gates'])} failed {done['failed']} in {done['seconds']} s at {rev}", file=sys.stderr
             )
