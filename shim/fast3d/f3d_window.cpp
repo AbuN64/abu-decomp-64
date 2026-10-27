@@ -34,7 +34,7 @@ void F3dWindow::Init(const char* gameName, const char*, bool startFullScreen, ui
         std::fprintf(stderr, "f3d window: %s\n", SDL_GetError());
         std::exit(1);
     }
-    if (!n64c_input_start(mWindow, nullptr)) {
+    if (!n64c_input_start(mWindow)) {
         std::fprintf(stderr, "f3d input: %s\n", SDL_GetError());
         std::exit(1);
     }
@@ -112,6 +112,7 @@ void F3dWindow::HandleEvents()
 bool F3dWindow::IsFrameReady() { return true; } // the port's VI paces frames
 void F3dWindow::SwapBuffersBegin()
 {
+    DrawControlsOverlay(mWindow);
     if (mWindow)
         SDL_GL_SwapWindow(mWindow);
 }

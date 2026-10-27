@@ -241,7 +241,7 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/fast3d-shaders.o2r"
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fast3d-generated"
     DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/fast3d-generated/shaders/opengl/default.shader.glsl"
     VERBATIM)
-add_library(n64c_fast3d STATIC "${fast3d_dir}/f3d_window.cpp" "${fast3d_dir}/n64c_f3d.cpp")
+add_library(n64c_fast3d STATIC "${fast3d_dir}/f3d_window.cpp" "${fast3d_dir}/f3d_controls_overlay.cpp" "${fast3d_dir}/n64c_f3d.cpp")
 target_include_directories(n64c_fast3d PUBLIC "${fast3d_dir}")
 target_link_libraries(n64c_fast3d PUBLIC rage_fast3d n64compat)
 if(FAST3D_EGL_LIBRARY)

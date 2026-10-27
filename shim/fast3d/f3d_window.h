@@ -51,4 +51,6 @@ class F3dWindow final : public Fast::GfxWindowBackend {
     SDL_GLContext mContext = nullptr;
     uint32_t mWidth = 0, mHeight = 0;
 };
+// The Controls page over the finished frame (f3d_controls_overlay.cpp); draws nothing while it is closed.
+void DrawControlsOverlay(SDL_Window* window);
 } // namespace N64c

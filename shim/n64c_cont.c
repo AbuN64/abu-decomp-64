@@ -17,6 +17,8 @@
 
 static N64cInputFn input_fn;
 static void *input_user;
+static N64cPortFn presence_fn;
+static void *presence_user;
 static OSContPad latched[MAXCONTROLLERS];
 static u8 serial_packet[64];
 static char eeprom_path[512], pak_path[512];
@@ -59,6 +61,15 @@ void n64c_cont_set_input(N64cInputFn fn, void *user)
     input_fn = fn;
     input_user = user;
 }
+void n64c_cont_set_presence(N64cPortFn fn, void *user)
+{
+    presence_fn = fn;
+    presence_user = user;
+}
+static int port_present(int port)
+{
+    return presence_fn ? presence_fn(port, presence_user) != 0 : port < n64c_tas_pads();
+}
 void n64c_cont_reset(const N64cConfig *cfg)
 {
 #ifdef N64C_INPUT_SDL3
@@ -78,6 +89,7 @@ void n64c_cont_reset(const N64cConfig *cfg)
         pak_open();
     }
     input_fn = NULL;
+    presence_fn = NULL;
     n64c_si_reset();
 }
 void n64c_cont_close(void)
@@ -87,13 +99,14 @@ void n64c_cont_close(void)
 #endif
     input_fn = NULL;
     input_user = NULL;
+    presence_fn = NULL;
 }
 static int pak_on(int channel) { return channel == 0 && pak_path[0] && pak_ok; }
 int n64c_cont_pak_present(int channel) { return pak_on(channel) != 0; }
 static void query(OSContStatus *s)
 {
     for (int i = 0; i < MAXCONTROLLERS; i++) {
-        int present = i < n64c_tas_pads(); /* standard controllers on the first N64C_PADS ports (default 1) */
+        int present = port_present(i); /* scripted: standard controllers on the first N64C_PADS ports (default 1) */
         s[i].type = present ? 0x0005 : 0;
         s[i].status = pak_on(i) ? CONT_CARD_ON : 0;
         s[i].errno_ = present ? 0 : CONT_ERR_NO_CONTROLLER;
@@ -116,8 +129,11 @@ s32 osContInit(OSMesgQueue *mq, u8 *bitpattern, OSContStatus *status)
     query(last_status);
     if (status)
         memcpy(status, last_status, sizeof last_status);
-    if (bitpattern)
-        *bitpattern = (u8)((1u << n64c_tas_pads()) - 1);
+    if (bitpattern) {
+        *bitpattern = 0;
+        for (int i = 0; i < MAXCONTROLLERS; i++)
+            *bitpattern |= (u8)(port_present(i) << i);
+    }
     (void)mq;
     return 0;
 }
@@ -140,9 +156,9 @@ s32 osContStartReadData(OSMesgQueue *mq)
 {
     for (int i = 0; i < MAXCONTROLLERS; i++) {
         memset(&latched[i], 0, sizeof latched[i]);
-        if (i == 0 && input_fn)
+        if (input_fn && (presence_fn ? port_present(i) : i == 0))
             input_fn(i, &latched[i], input_user);
-        else if (i >= n64c_tas_pads())
+        else if (!port_present(i))
             latched[i].errno_ = CONT_ERR_NO_CONTROLLER;
     }
     N64C_ZONE(zi,"input-poll");

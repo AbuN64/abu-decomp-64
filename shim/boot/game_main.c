@@ -8,6 +8,7 @@
 #include "frame.h"
 #include "install/inst.h"
 #include "install/inst_ui.h"
+#include "n64c_input.h"
 #include "n64c_internal.h"
 #include "n64c_memory.h"
 #include "os/n64c_host.h"
@@ -170,9 +171,10 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
         fprintf(stderr,"boot-input: cart image extent differs from the project layout\n");
         return EXIT_RUNTIME;
     }
-    char shaders[INST_PATH],settings[INST_PATH];
+    char shaders[INST_PATH],settings[INST_PATH],controls[INST_PATH];
     if (snprintf(shaders,sizeof shaders,"%sfast3d-shaders.o2r",base)>=(int)sizeof shaders ||
-        snprintf(settings,sizeof settings,"%s/config/fast3d-settings.json",user)>=(int)sizeof settings) {
+        snprintf(settings,sizeof settings,"%s/config/fast3d-settings.json",user)>=(int)sizeof settings ||
+        snprintf(controls,sizeof controls,"%s/config/controls.cfg",user)>=(int)sizeof controls) {
         fprintf(stderr,"boot-input: path too long\n");
         return EXIT_RUNTIME;
     }
@@ -290,6 +292,7 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
         return rc;
     }
     const int live=!o->capture;
+    n64c_input_set_config_path(controls); /* the Controls page keeps its binds here; the window loads them */
     n64c_boot_frame_host(shaders,settings,o->offscreen);
     {
         const char *env=getenv("N64C_FPS_UNLOCK");
