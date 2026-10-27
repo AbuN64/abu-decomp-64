@@ -38,6 +38,7 @@ include = ["abu_decomp", "abu_decomp.*"]
 "abu_decomp" = ["runner.html", "static/*"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]  # a bare pytest imports this tree, never the venv copy
+testpaths = ["tests"]  # shim/boot/test_*.py are scripts that parse argv on import: a bare pytest must not collect them
 
 [tool.ruff]
 line-length = 120
