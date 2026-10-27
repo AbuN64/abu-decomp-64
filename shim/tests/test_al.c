@@ -549,6 +549,19 @@ static void test_csp(u32 bank_rate)
     CHECK(peak_late > 1000);                   /* the 8000-sample wave still sounding at 0.25 s: unity pitch */
     CHECK(peak_second > 1000);                 /* second note one beat later */
     CHECK(alCSPGetState(&csp) == AL_STOPPED);  /* track ended, notes released */
+    /* channel effect send: the dry level of a note started after it falls; a bad channel and a player with no state are ignored */
+    alCSPPlay(&csp);
+    alCSPSetChlFXMix(&csp, 0, 127);
+    alCSPSetChlFXMix(&csp, 200, 127);
+    int peak_fx = 0;
+    for (int f = 0; f < 30; f++) {
+        run_frame(abi, 256);
+        int p = stereo_peak(256, 0);
+        if (p > peak_fx) peak_fx = p;
+    }
+    CHECK(peak_fx < peak_first);
+    ALCSPlayer none = {0};
+    alCSPSetChlFXMix(&none, 0, 127);
     /* stop mid-song */
     alCSPPlay(&csp);
     for (int f = 0; f < 4; f++) run_frame(abi, 256);

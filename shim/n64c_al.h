@@ -249,6 +249,7 @@ void alCSeqNew(ALCSeq *seq, u8 *data);
 void alCSPSetSeq(ALCSPlayer *csp, ALCSeq *seq);
 void alCSPSetBank(ALCSPlayer *csp, void *bank);
 void alCSPSetChlProgram(ALCSPlayer *csp, u8 chan, u8 program);
+void alCSPSetChlFXMix(ALCSPlayer *csp, u8 chan, u8 fxmix);
 void alCSPSetVol(ALCSPlayer *csp, s16 vol);
 void alCSPPlay(ALCSPlayer *csp);
 void alCSPStop(ALCSPlayer *csp);

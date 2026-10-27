@@ -359,6 +359,17 @@ void alCSPSetChlProgram(ALCSPlayer *csp, u8 chan, u8 program)
     if (csp->st && chan < CSP_CHANNELS) csp->st->program[chan] = program;
 }
 
+/* The effect-send level of one channel (control 91): held notes follow it at once, later notes start with it. */
+void alCSPSetChlFXMix(ALCSPlayer *csp, u8 chan, u8 fxmix)
+{
+    N64cCsp *cp = csp->st;
+    if (!cp || chan >= CSP_CHANNELS) return;
+    cp->chanFx[chan] = fxmix > 127 ? 127 : fxmix;
+    for (s32 i = 0; i < cp->maxVoices; i++) {
+        CspNote *n = &cp->notes[i];
+        if (n->active && n->chan == chan) n64c_voice_set_fxmix(n->voice, cp->chanFx[chan]);
+    }
+}
 void alCSPSetVol(ALCSPlayer *csp, s16 vol)
 {
     if (!csp->st) return;
