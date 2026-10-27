@@ -492,14 +492,14 @@ def arity(proto: str) -> int | None:
 def git_diff(name: str, old: list[str], new: list[str]) -> str:
     """The section git itself would print for NAME going from OLD to NEW: the train compares each landed file's added
     and removed line counts with the queued ones, and another alignment (difflib's) counts blank lines differently."""
+    pair = (f"a/{name}", f"b/{name}")
     with tempfile.TemporaryDirectory() as tmp:
         for side, lines in (("a", old), ("b", new)):
             target = Path(tmp, side, name)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes("".join(lines).encode("latin-1"))
         run = subprocess.run(
-            ["git", "diff", "--no-index", "--no-color", "--no-ext-diff", "--src-prefix=", "--dst-prefix="]
-            + [f"a/{name}", f"b/{name}"],
+            ["git", "diff", "--no-index", "--no-color", "--no-ext-diff", "--src-prefix=", "--dst-prefix=", *pair],
             cwd=tmp,
             capture_output=True,
         )
