@@ -105,15 +105,16 @@ def take(path: Path) -> int | None:
 
 
 @contextmanager
-def lease(folder: Path, count: int, wait: float = 900.0) -> Iterator[str]:
+def lease(folder: Path, count: int, wait: float = 900.0, prefer: str | None = None) -> Iterator[str]:
     """The lane name of a pool tree nobody else holds (a flock the kernel drops with the process, a dead holder's lock
     broken by `take`) and no process still works in (busy_in), leased for the stamp; waits for one, then refuses
-    naming the holders. One log line names the tree and the wait."""
+    naming the holders. PREFER: a free tree left clean at that commit is taken before the others (a build there is
+    a no-op, in another tree it is the whole diff). One log line names the tree and the wait."""
     folder.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
     end = start + wait
     while True:
-        for i in range(count):
+        for i in sorted(range(count), key=lambda i: _left_at(folder / f"STAMP-S{i}") != prefer):
             fd = take(folder / f".stamp-{i}.lock")
             if fd is None:
                 continue
@@ -134,6 +135,11 @@ def lease(folder: Path, count: int, wait: float = 900.0) -> Iterator[str]:
                 f"all {count} pool trees are leased after {wait:.0f}s (stamp_trees in the data config): {who}",
             )
         time.sleep(2)
+
+
+def _left_at(tree: Path) -> str:
+    marker = tree / STATE
+    return marker.read_text().strip() if marker.is_file() else ""
 
 
 @contextmanager
@@ -258,7 +264,7 @@ def at_rev(cfg: DataConfig, profile: Any, shared: Path, rev: str, wait: float = 
     reused, re-warmed by one sync or fresh, marked busy while the caller works, clean and marked at REV again after."""
     from unbake import hdrnarrow
 
-    with lease(worktree.base(shared), cfg.stamp_trees, wait) as lane:
+    with lease(worktree.base(shared), cfg.stamp_trees, wait, rev) as lane:
         made, code, findings = _tree(profile, shared, lane, rev)
         if code:
             why = "; ".join(f.get("message", "") for f in findings) or f"exit {code}"

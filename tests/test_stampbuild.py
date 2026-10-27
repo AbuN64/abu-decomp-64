@@ -748,3 +748,13 @@ def test_a_build_whose_includers_were_all_proved_unreachable_by_the_narrowing_is
     monkeypatch.setattr(check_mod, "check", lambda b, v: {"version": v, **done})
     _r, code, findings = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 0 and not findings
+
+
+def test_a_lease_prefers_the_free_tree_left_at_the_wanted_commit(tmp_path):
+    for i, state in enumerate(["aaa", "bbb", "busy"]):
+        (tmp_path / f"STAMP-S{i}").mkdir()
+        (tmp_path / f"STAMP-S{i}" / stampbuild.STATE).write_text(state + "\n")
+    with stampbuild.lease(tmp_path, 3, 0, "bbb") as lane:
+        assert lane == "STAMP-S1"
+    with stampbuild.lease(tmp_path, 3, 0, "zzz") as lane:
+        assert lane == "STAMP-S0"  # no tree at the commit: the first free one
