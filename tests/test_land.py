@@ -544,7 +544,7 @@ class LandTests(unittest.TestCase):
         hand = self.patch("hand", {"a.c": "int func_1(void) { return 1; }\n"})
         batch = self.patch("batch", {"b.c": "int func_3(void) { return 3; }\n"})
         with mock.patch.dict(os.environ, {"NAMES_STATE": str(names)}):
-            result, code, findings = self.land([hand, batch])
+            result, _code, findings = self.land([hand, batch])
         self.assertEqual([r["status"] for r in result["lanes"]], ["excluded", "applied"])
         self.assertIn("owned by P2-OTHER", result["lanes"][0]["reason"])
         self.assertEqual(findings[0]["key"], "land.patch_excluded")

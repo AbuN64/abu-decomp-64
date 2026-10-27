@@ -123,8 +123,9 @@ def test_a_unit_drops_the_declarations_it_never_spells_again_and_keeps_every_def
     found = deaddecls.run(root, "src", apply=True)
     assert names(found, "source") == {"Local", "LocalUser", "gGone", "Gone", "Tag", "gPart"}
     text = (root / "src/game/unit.c").read_text()
-    for kept in ("extern int gKept;", "void Kept(void);", "int (*gFn)(int);", "int gData[2]", "int Func(void)", "Entry"):
+    for kept in ("extern int gKept;", "void Kept(void);", "int (*gFn)(int);", "int gData[2]", "int Func(void)"):
         assert kept in text
+    assert "Entry" in text
     for gone in ("Local", "gGone", "Gone(int", "struct Tag"):
         assert gone not in text.replace("Local_Macro", "")
     assert "gInPart" in (root / "src/game/part.c").read_text()  # an included source is part of its includer

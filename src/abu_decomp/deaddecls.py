@@ -1,5 +1,5 @@
-"""`decomp cleanup dead-decls`: the declarations of one folder that nothing reads, removed to a fixpoint as one batch per
-module folder.
+"""`decomp cleanup dead-decls`: the declarations of one folder that nothing reads, removed to a fixpoint as one batch
+per module folder.
 A header folder collects declarations (types, enum constants, externs, prototypes, inline functions) whose last use
 went away in the cleanup. A name is live when a file outside the folder spells it, or when a live declaration of the
 folder spells it (a type used only by an inline, an extern used only by another header); a preprocessor line or a
@@ -15,9 +15,9 @@ outside words are the preprocessor lines of every header it includes (a macro ex
 any non-header file it includes; a source another file includes is not a unit and is left alone.
 The run repeats passes (sources, then headers over the reduced sources) until a pass finds nothing: the layers of one
 pass already cover every transitive user, the next pass covers a header name whose last user was a dead unit-local
-declaration. `--apply` writes the whole fixpoint. `packs` gets one diff per module folder (`dead-decls-NN-<module>.diff`,
-no file cap: the train applies a tool batch whole) and `dead-decls.json`; module folders whose dead declarations use
-each other share one batch, and source batches come before header batches.
+declaration. `--apply` writes the whole fixpoint. `packs` gets one diff per module folder
+(`dead-decls-NN-<module>.diff`, no file cap: the train applies a tool batch whole) and `dead-decls.json`; module
+folders whose dead declarations use each other share one batch, and source batches come before header batches.
 The reader is a declaration splitter over comment-free text (not a C parser): a chunk ends at `;` at brace depth 0, or
 at the `}` of a function definition. It is conservative: when unsure a declaration is live."""
 
@@ -413,7 +413,8 @@ def chunks_of(text: str) -> list[Chunk]:
 def source_files(index: Index, folder: str) -> list[str]:
     """The units of `folder`: its sources that no other file includes (an included source is part of its includer)."""
     included = index.included_files()
-    return sorted(n for n in index.words if under(n, folder) and n.lower().endswith(SOURCE_SUFFIXES) and n not in included)
+    names = (n for n in index.words if under(n, folder) and n.lower().endswith(SOURCE_SUFFIXES))
+    return sorted(n for n in names if n not in included)
 
 
 def header_files(index: Index, folder: str) -> list[str]:

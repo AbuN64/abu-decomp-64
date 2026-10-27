@@ -1355,7 +1355,7 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
 
         if not args.dir:
             raise DecompError(
-                "cleanup.dir", "dead-decls needs --dir (a folder of headers or sources, e.g. include/COMMON or src/game)"
+                "cleanup.dir", "dead-decls needs --dir (a folder of headers or sources, e.g. include/COMMON, src/game)"
             )
         found = deaddecls.run(root, args.dir, args.packs, args.apply)
         print(
