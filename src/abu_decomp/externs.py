@@ -378,7 +378,12 @@ def majority(units: list[str], unit_module: dict[str, str]) -> str:
 
 
 def newly_seen_clash(
-    found: Scan, sees: dict[str, set[str]], unit: str, dest: str, header_ids: dict[str, dict[str, set[str]]]
+    found: Scan,
+    sees: dict[str, set[str]],
+    unit: str,
+    dest: str,
+    header_ids: dict[str, dict[str, set[str]]],
+    removed: set[str] | frozenset[str] = frozenset(),
 ) -> list[str]:
     """The names a unit would meet when it gets `#include dest`: every header of dest's closure the unit does not see
     yet comes with its declarations, and the unit's own spelling of such a name (a compound extern, a static, a type, an
@@ -391,7 +396,10 @@ def newly_seen_clash(
     out = []
     for h in sorted(gained):
         for ident, protos in header_ids.get(h, {}).items():
-            if ident in own or (mine.get(ident) and mine[ident] - protos):
+            spelled = {canonical(q, found.aliases) for q in protos}
+            if ident in own or (
+                ident not in removed and any(canonical(q, found.aliases) not in spelled for q in mine.get(ident, ()))
+            ):
                 out.append(f"{h}:{ident}")
     return out
 
@@ -427,123 +435,129 @@ def plan(
         if h.lower().endswith(HEADER_SUFFIXES):
             for ident in names:
                 header_ids[h].setdefault(ident, set())
-    reach: dict[tuple[str, str], list[str]] = {}
     spelled: dict[str, set[str]] = defaultdict(set)  # id -> files that spell it as something other than an extern
     for n, names in found.local_names.items():
         for ident in names & found.externs.keys():
             spelled[ident].add(n)
 
-    moves: list[dict[str, object]] = []
-    refused: list[dict[str, object]] = []
-    for ident, decls in sorted(found.externs.items()):
-        users = sorted({d.unit for d in decls})
-        defined = found.definitions.get(ident, [])
-        if ident in found.compound:
-            refused.append({"id": ident, "reason": "declared together with other names", "protos": []})
-            continue
-        if defined:
-            definers = sorted({u for u, _ in defined})
-            owner_unit, reason = majority(definers, unit_module), "definer"
-            owner = owner_unit
-            protos = sorted({p for u, p in defined if unit_module.get(u) == owner} or {defined[0][1]})
-            if len(protos) > 1:
-                refused.append({"id": ident, "reason": "definitions differ", "protos": protos})
+    removed: set[str] = set(found.externs) - found.compound  # optimistic start: every extern line leaves its users
+    while True:
+        moves: list[dict[str, object]] = []
+        refused: list[dict[str, object]] = []
+        reach: dict[tuple[str, str], list[str]] = {}
+        for ident, decls in sorted(found.externs.items()):
+            users = sorted({d.unit for d in decls})
+            defined = found.definitions.get(ident, [])
+            if ident in found.compound:
+                refused.append({"id": ident, "reason": "declared together with other names", "protos": []})
                 continue
-            stated = arity(protos[0])
-            odd = sorted({d.proto for d in decls if stated is not None and arity(d.proto) not in (None, stated)})
-            if odd:  # callers written against it pass another number of arguments than the definition
-                why = "declaration parameter count differs from the definition"
-                refused.append({"id": ident, "reason": why, "protos": [*protos, *odd]})
-                continue
-        else:
-            at = range_owner(ident, ranges)
-            owner = unit_module.get(at, "") if at else ""
-            reason = "address range"
-            if not owner:
-                owner, reason = majority([d.unit for d in decls], unit_module), "majority user"
-            held = found.in_headers.get(ident, {})
-            headed = {p for ps in held.values() for p in ps}
-            # a unit that already sees a header declaring the name compiles with both, so its text is no evidence
-            blind = [d for d in decls if not held.keys() & sees.get(d.unit, set())]
-            evidence = {d.proto for d in (blind if headed else decls)}
-            protos = sorted(evidence | headed)
-            if len(protos) > 1:
-                spellings: dict[str, list[str]] = defaultdict(list)
-                for p in protos:
-                    spellings[canonical(p, found.aliases)].append(p)
-                if len(spellings) > 1:
-                    refused.append({"id": ident, "reason": "declarations conflict", "protos": protos})
+            if defined:
+                definers = sorted({u for u, _ in defined})
+                owner_unit, reason = majority(definers, unit_module), "definer"
+                owner = owner_unit
+                protos = sorted({p for u, p in defined if unit_module.get(u) == owner} or {defined[0][1]})
+                if len(protos) > 1:
+                    refused.append({"id": ident, "reason": "definitions differ", "protos": protos})
                     continue
-                # one type under several spellings: the header's, else the most used, else the first
-                (same,) = spellings.values()
-                votes = Counter(d.proto for d in decls)
-                protos = [min(same, key=lambda p: (p not in headed, -votes[p], p))]
-        dest = module_header.get(owner, "") or (derive(owner) if owner else "")
-        if not owner or not dest:
-            refused.append({"id": ident, "reason": f"no header for {owner or 'any module'}", "protos": protos})
-            continue
-        if dest not in found.texts:  # the module has none: the plan creates it, with the includes its types need
-            found.texts[dest] = new_header(dest, [])
-            found.created.add(dest)
-            sees.setdefault(dest, set())
-        held = found.in_headers.get(ident, {})
-        if held and dest not in held:
-            dest = sorted(held)[0]  # already declared once in a header: that one stays the owner
-            reason += ", declared in header"
-        absent = unseen_types(found, ident, protos[0], sees.get(dest, set()) | {dest})
-        if absent and dest in found.created:
-            provide = {
-                t: sorted(
-                    h
-                    for h in found.types.get(t, set()) | found.tags.get(t, set())
-                    if h.lower().endswith(HEADER_SUFFIXES) and h != dest
-                )
-                for t in absent
-            }
-            if all(provide.values()):
-                for t in absent:
-                    found.needs[dest].add(provide[t][0])
-                    sees[dest] |= {provide[t][0], *sees.get(provide[t][0], ())}
-                found.texts[dest] = new_header(dest, sorted(found.needs[dest]))
-                absent = unseen_types(found, ident, protos[0], sees[dest] | {dest})
-        if absent:
-            why = "type not visible from " + dest + ": " + ", ".join(absent[:4])
-            refused.append({"id": ident, "reason": why, "protos": protos})
-            continue
-        seeing = includers[dest] | set(users)
-        clash = sorted(n for n in spelled.get(ident, ()) if n in seeing and n not in {u for u, _ in defined})
-        clash += sorted(
-            h
-            for h in found.local_names
-            if h in sees
-            and ident in found.local_names[h]
-            and h.lower().endswith(HEADER_SUFFIXES)
-            and includers[h] & seeing
-        )
-        if clash:
-            refused.append({"id": ident, "reason": "name clashes in " + ", ".join(clash[:4]), "protos": protos})
-            continue
-        for u in users:
-            if dest not in sees.get(u, set()):
-                if (u, dest) not in reach:
-                    reach[u, dest] = newly_seen_clash(found, sees, u, dest, header_ids)
-                clash += reach[u, dest]
-        if clash:
-            refused.append({"id": ident, "reason": "include clashes in " + ", ".join(clash[:3]), "protos": protos})
-            continue
-        moves.append(
-            {
-                "id": ident,
-                "owner": owner,
-                "to": dest,
-                "reason": reason,
-                "proto": protos[0],
-                "has_decl": dest in held,
-                "decls": decls,
-                "definers": sorted({u for u, _ in defined}),
-                "units": users,
-            }
-        )
+                stated = arity(protos[0])
+                odd = sorted({d.proto for d in decls if stated is not None and arity(d.proto) not in (None, stated)})
+                if odd:  # callers written against it pass another number of arguments than the definition
+                    why = "declaration parameter count differs from the definition"
+                    refused.append({"id": ident, "reason": why, "protos": [*protos, *odd]})
+                    continue
+            else:
+                at = range_owner(ident, ranges)
+                owner = unit_module.get(at, "") if at else ""
+                reason = "address range"
+                if not owner:
+                    owner, reason = majority([d.unit for d in decls], unit_module), "majority user"
+                held = found.in_headers.get(ident, {})
+                headed = {p for ps in held.values() for p in ps}
+                # a unit that already sees a header declaring the name compiles with both, so its text is no evidence
+                blind = [d for d in decls if not held.keys() & sees.get(d.unit, set())]
+                evidence = {d.proto for d in (blind if headed else decls)}
+                protos = sorted(evidence | headed)
+                if len(protos) > 1:
+                    spellings: dict[str, list[str]] = defaultdict(list)
+                    for p in protos:
+                        spellings[canonical(p, found.aliases)].append(p)
+                    if len(spellings) > 1:
+                        refused.append({"id": ident, "reason": "declarations conflict", "protos": protos})
+                        continue
+                    # one type under several spellings: the header's, else the most used, else the first
+                    (same,) = spellings.values()
+                    votes = Counter(d.proto for d in decls)
+                    protos = [min(same, key=lambda p: (p not in headed, -votes[p], p))]
+            dest = module_header.get(owner, "") or (derive(owner) if owner else "")
+            if not owner or not dest:
+                refused.append({"id": ident, "reason": f"no header for {owner or 'any module'}", "protos": protos})
+                continue
+            if dest not in found.texts:  # the module has none: the plan creates it, with the includes its types need
+                found.texts[dest] = new_header(dest, [])
+                found.created.add(dest)
+                sees.setdefault(dest, set())
+            held = found.in_headers.get(ident, {})
+            if held and dest not in held:
+                dest = sorted(held)[0]  # already declared once in a header: that one stays the owner
+                reason += ", declared in header"
+            absent = unseen_types(found, ident, protos[0], sees.get(dest, set()) | {dest})
+            if absent and dest in found.created:
+                provide = {
+                    t: sorted(
+                        h
+                        for h in found.types.get(t, set()) | found.tags.get(t, set())
+                        if h.lower().endswith(HEADER_SUFFIXES) and h != dest
+                    )
+                    for t in absent
+                }
+                if all(provide.values()):
+                    for t in absent:
+                        found.needs[dest].add(provide[t][0])
+                        sees[dest] |= {provide[t][0], *sees.get(provide[t][0], ())}
+                    found.texts[dest] = new_header(dest, sorted(found.needs[dest]))
+                    absent = unseen_types(found, ident, protos[0], sees[dest] | {dest})
+            if absent:
+                why = "type not visible from " + dest + ": " + ", ".join(absent[:4])
+                refused.append({"id": ident, "reason": why, "protos": protos})
+                continue
+            seeing = includers[dest] | set(users)
+            clash = sorted(n for n in spelled.get(ident, ()) if n in seeing and n not in {u for u, _ in defined})
+            clash += sorted(
+                h
+                for h in found.local_names
+                if h in sees
+                and ident in found.local_names[h]
+                and h.lower().endswith(HEADER_SUFFIXES)
+                and includers[h] & seeing
+            )
+            if clash:
+                refused.append({"id": ident, "reason": "name clashes in " + ", ".join(clash[:4]), "protos": protos})
+                continue
+            for u in users:
+                if dest not in sees.get(u, set()):
+                    if (u, dest) not in reach:
+                        reach[u, dest] = newly_seen_clash(found, sees, u, dest, header_ids, removed)
+                    clash += reach[u, dest]
+            if clash:
+                refused.append({"id": ident, "reason": "include clashes in " + ", ".join(clash[:3]), "protos": protos})
+                continue
+            moves.append(
+                {
+                    "id": ident,
+                    "owner": owner,
+                    "to": dest,
+                    "reason": reason,
+                    "proto": protos[0],
+                    "has_decl": dest in held,
+                    "decls": decls,
+                    "definers": sorted({u for u, _ in defined}),
+                    "units": users,
+                }
+            )
+        moved = {str(m["id"]) for m in moves}
+        if moved == removed:  # fixpoint: each clash was judged against exactly the externs the plan removes
+            break
+        removed = moved
     unattributed: list[str] = []
     while True:
         sees_dest = {m["to"]: includers[str(m["to"])] for m in moves}

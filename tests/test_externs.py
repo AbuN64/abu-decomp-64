@@ -402,3 +402,14 @@ def test_batches_share_no_file_and_each_applies_to_main_alone(tmp_path: Path) ->
     assert not files[0] & files[1]
     for n in names:  # each one checks against main with the others unapplied
         subprocess.run(["git", "-C", str(root), "apply", "--check", str(out / n)], check=True)
+
+
+def test_b_a_clash_with_a_name_the_plan_itself_removes_from_the_unit_is_no_clash(tmp_path: Path) -> None:
+    extra = {
+        "include/A/A.H": "#ifndef A_H\n#define A_H\nextern int gOther;\n#endif\n",
+        "src/a/a.c": FILES["src/a/a.c"] + "int gOther = 2;\n",
+        "src/b/b.c": FILES["src/b/b.c"] + "extern long gOther;\n",
+    }
+    _, found = moved(tmp_path, extra)
+    assert "gScore" in {m for m in table(tmp_path / "out")}
+    assert not [r for r in found["refused"] if r["id"] in {"gScore", "gOther"}]
