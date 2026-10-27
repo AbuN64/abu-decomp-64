@@ -89,6 +89,12 @@ RULES: tuple[tuple[str, str, str, str], ...] = (
         "S1: structure --map needs a built warm tree (build/<v>/link.ld)",
     ),
     (
+        "structure.map",
+        r"^fault: FileNotFoundError.* at modcheck\.py",
+        "defect",
+        "S1: structure --map needs a built warm tree (build/<v>/link.ld) and refuses an unbuilt one by name",
+    ),
+    (
         "record.rename",
         r"^no scoped record rename command$",
         "defect",
