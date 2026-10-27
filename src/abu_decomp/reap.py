@@ -23,7 +23,13 @@ from abu_decomp.config import Profile
 
 UNIT = "decomp-reap"
 TERM_GRACE = 5.0  # seconds between SIGTERM and SIGKILL of a reaped tree
-KEYS = ("worktree_idle_hours", "chromium_sample_seconds", "chromium_min_age_minutes", "interval_minutes")
+KEYS = (
+    "worktree_idle_hours",
+    "chromium_sample_seconds",
+    "chromium_min_age_minutes",
+    "chromium_idle_cpu_percent",
+    "interval_minutes",
+)
 
 
 @dataclass(frozen=True)
@@ -48,7 +54,9 @@ def settings(profile: Profile) -> dict[str, float]:
 def snapshot(proc: Path = Path("/proc")) -> list[Proc]:
     """Every process the caller can read."""
     hertz = os.sysconf("SC_CLK_TCK")
-    uptime = float((proc / "uptime").read_text().split()[0])
+    # the boot time, not /proc/uptime: a container's uptime is its own while a process start is counted from the host's
+    boot = next(int(line.split()[1]) for line in (proc / "stat").read_text().splitlines() if line.startswith("btime"))
+    now = time.time()
     out = []
     for entry in proc.glob("[0-9]*"):
         try:
@@ -68,7 +76,7 @@ def snapshot(proc: Path = Path("/proc")) -> list[Proc]:
                     args,
                     cwd,
                     int(rest[11]) + int(rest[12]),
-                    uptime - int(rest[19]) / hertz,
+                    now - (boot + int(rest[19]) / hertz),
                 )
             )
         except (OSError, ValueError, IndexError):
@@ -93,21 +101,24 @@ def _is_browser(p: Proc) -> bool:
     return p.comm.startswith(("chrom", "headless_shell")) or "/chromium" in p.args.split(" ", 1)[0]
 
 
-def idle_browsers(before: list[Proc], after: list[Proc], min_age: float) -> list[list[Proc]]:
+def idle_browsers(
+    before: list[Proc], after: list[Proc], min_age: float, seconds: float, max_cpu_percent: float
+) -> list[list[Proc]]:
     """Orphaned browser trees (the root has no `--type=` and its parent is init or the user manager) whose whole
-    tree spent no CPU between the two snapshots and whose root is at least MIN_AGE seconds old."""
+    tree used at most MAX_CPU_PERCENT of one core over the SECONDS between the two snapshots, started no process in
+    it, and whose root is at least MIN_AGE seconds old."""
     names = {p.pid: p.comm for p in after}
-    now = {p.pid: p.ticks for p in after}
+    old = {p.pid: p.ticks for p in before}
+    allowed = max_cpu_percent / 100 * seconds * os.sysconf("SC_CLK_TCK")
     found = []
     for root in after:
-        if not _is_browser(root) or "--type=" in root.args or root.age < min_age:
+        if not _is_browser(root) or "--type=" in root.args or "crashpad" in root.comm or root.age < min_age:
             continue
         if root.ppid != 1 and names.get(root.ppid) != "systemd":
             continue
         members = _tree(root.pid, after)
-        old = {p.pid: p.ticks for p in before}
         # a process missing from the first snapshot started inside the window: the tree is not idle
-        if all(p.pid in old and old[p.pid] == now[p.pid] for p in members):
+        if all(p.pid in old for p in members) and sum(p.ticks - old[p.pid] for p in members) <= allowed:
             found.append(members)
     return found
 
@@ -170,7 +181,13 @@ def run(
     before = read()
     sleep(cfg["chromium_sample_seconds"])
     after = read()
-    trees = idle_browsers(before, after, cfg["chromium_min_age_minutes"] * 60)
+    trees = idle_browsers(
+        before,
+        after,
+        cfg["chromium_min_age_minutes"] * 60,
+        cfg["chromium_sample_seconds"],
+        cfg["chromium_idle_cpu_percent"],
+    )
     stale = stale_worktrees(shared, after, cfg["worktree_idle_hours"], now(), os.getpid())
     if not dry_run:
         _kill_trees(trees, kill, sleep)

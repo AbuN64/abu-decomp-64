@@ -3,6 +3,7 @@
 import os
 import signal
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ REAP = {
     "worktree_idle_hours": 6,
     "chromium_sample_seconds": 3,
     "chromium_min_age_minutes": 10,
+    "chromium_idle_cpu_percent": 5,
     "interval_minutes": 30,
 }
 
@@ -37,20 +39,46 @@ class BrowserTests(unittest.TestCase):
 
         before = tree(100) + tree(200) + tree(300) + tree(400, parent=50) + [proc(50, 1, comm="node", args="node x")]
         after = (
-            tree(100)
-            + tree(200, ticks=11)  # spent CPU in the window
+            tree(100, ticks=11)  # a little CPU, under the idle share
+            + tree(200, ticks=30)  # spent more than 5% of a core in the window
             + tree(300, age=60.0)  # younger than the minimum age
             + tree(400, parent=50)  # a live lane's browser: its parent is not init
             + [proc(50, 1, comm="node", args="node x")]
             + [proc(500, 1)]  # started inside the window
+            + [proc(600, 1, comm="chrome_crashpad", args="/usr/lib/chromium/chrome_crashpad_handler")]
         )
-        found = reap.idle_browsers(before, after, 600)
+        found = reap.idle_browsers(before, after, 600, 3, 5)
         self.assertEqual([[p.pid for p in t] for t in found], [[100, 101]])
 
     def test_the_user_manager_counts_as_an_orphan_parent(self) -> None:
         manager = proc(7, 1, comm="systemd", args="systemd --user")
         both = [manager, proc(70, 7)]
-        self.assertEqual(len(reap.idle_browsers(both, both, 600)), 1)
+        self.assertEqual(len(reap.idle_browsers(both, both, 600, 3, 5)), 1)
+
+
+class SnapshotTests(unittest.TestCase):
+    def test_age_counts_from_the_boot_time_not_the_container_uptime(self) -> None:
+        proc_dir = Path(tempfile.mkdtemp(prefix="reap-proc-"))
+        hertz = os.sysconf("SC_CLK_TCK")
+        boot = int(time.time()) - 100_000
+        (proc_dir / "stat").write_text(f"cpu 1 2 3\nbtime {boot}\n")
+        (proc_dir / "uptime").write_text("50.00 40.00\n")  # a container's own uptime must not matter
+        entry = proc_dir / "42"
+        entry.mkdir()
+        fields = [
+            "S",
+            "1",
+            *["0"] * 9,
+            "5",
+            "7",
+            *["0"] * 6,
+            str(90_000 * hertz),
+        ]  # state, ppid, ... utime stime ... start
+        (entry / "stat").write_text("42 (chromium) " + " ".join(fields) + " 0 0\n")
+        (entry / "cmdline").write_bytes(b"/usr/lib/chromium/chromium\0--headless\0")
+        [found] = reap.snapshot(proc_dir)
+        self.assertEqual((found.pid, found.ppid, found.comm, found.ticks), (42, 1, "chromium", 12))
+        self.assertAlmostEqual(found.age, 10_000, delta=5)
 
 
 class WorktreeTests(unittest.TestCase):
