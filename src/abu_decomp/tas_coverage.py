@@ -30,6 +30,7 @@ source, first file names win; e.g. "versions/us-rev1/symbol_addrs.txt", ".../ali
 from __future__ import annotations
 
 import bisect
+import contextlib
 import hashlib
 import json
 import os
@@ -39,9 +40,10 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +58,26 @@ _DEFINITION = re.compile(r"^(?:[A-Za-z_][\w]*[\s\*]+)+\**([A-Za-z_]\w*)\s*\([^;]
 _INCLUDE_ASM = re.compile(r"INCLUDE_ASM\s*\([^,]*,\s*([A-Za-z_]\w*)")
 _SOURCE_SUFFIXES = {".c", ".cpp", ".h"}
 LISTED = 200  # rows each list of the page carries
+
+
+class Stages:
+    """Seconds spent per named stage of one `build` (summed over the worker threads), so a slow union says where it went."""
+
+    def __init__(self) -> None:
+        self.seconds: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    @contextlib.contextmanager
+    def __call__(self, name: str) -> Iterator[None]:
+        start = time.monotonic()
+        try:
+            yield
+        finally:
+            with self._lock:
+                self.seconds[name] = self.seconds.get(name, 0.0) + time.monotonic() - start
+
+    def report(self) -> dict[str, float]:
+        return {name: round(sec, 1) for name, sec in self.seconds.items()}
 
 
 def settings(profile: Profile, cfg: dict[str, Any]) -> dict[str, Any] | None:
@@ -761,11 +783,13 @@ def build(
     cov = settings(profile, cfg)
     if cov is None:
         return None
-    runs = latest_runs(cfg, cov["since"])
-    drop_orphan_notes(build_dir(cfg))
-    symbols = symbol_tables(cov)
-    rows, totals = universe(cov, symbols)
-    resolve = resolver(rows, cov["version"], symbols[0])
+    stage = Stages()
+    with stage("setup"):
+        runs = latest_runs(cfg, cov["since"])
+        drop_orphan_notes(build_dir(cfg))
+        symbols = symbol_tables(cov)
+        rows, totals = universe(cov, symbols)
+        resolve = resolver(rows, cov["version"], symbols[0])
     protos = replay.Prototypes(cov["source"], HEADERS).get if cov.get("source") else prototype.inferred
 
     deadline = None if oracle_seconds is None else time.monotonic() + oracle_seconds
@@ -773,29 +797,32 @@ def build(
     def one(item: tuple[str, Path]) -> dict[str, Any]:
         name, run = item
         if not (run / COVERAGE).is_file():
-            run_report(profile, cfg, run)
+            with stage("run-report"):
+                run_report(profile, cfg, run)
         record = tas.read_record(run) or {}
-        got = read_oracle(run)
-        if (
-            got is None
-            and oracle
-            and (deadline is None or time.monotonic() < deadline)
-            and run_oracle(profile, cfg, run, record)
-        ):
+        with stage("read-oracle"):
             got = read_oracle(run)
-        port = fold(read_gcovr(run / COVERAGE) or {}, resolve, _add)
+        if got is None and oracle and (deadline is None or time.monotonic() < deadline):
+            with stage("oracle-replay"):
+                replayed = run_oracle(profile, cfg, run, record)
+            if replayed:
+                got = read_oracle(run)
+        with stage("read-gcovr"):
+            port = fold(read_gcovr(run / COVERAGE) or {}, resolve, _add)
+        with stage("call-behaviour"):
+            behaviour = call_behaviour(run, resolve, protos)
         return {
             "movie": name,
             "run": run.name,
             "port": port,
-            "behaviour": call_behaviour(run, resolve, protos),
+            "behaviour": behaviour,
             "oracle": fold(got[0], resolve, _first_seen) if got else None,
             "port_polls": int(record.get("polls_reached") or 0),
             "oracle_polls": got[1] if got else 0,
             "build": str(record.get("build") or "unknown"),
         }
 
-    with ThreadPoolExecutor(max_workers=max(1, jobs or slots.capacity())) as pool:
+    with stage("runs-wall"), ThreadPoolExecutor(max_workers=max(1, jobs or slots.capacity())) as pool:
         collected = list(pool.map(one, sorted(runs.items())))
     build_tree = build_dir(cfg)
     changed: dict[str, set[str]] = {}
@@ -819,10 +846,12 @@ def build(
         tag = base.stem.rsplit("-", 1)[-1]
         tracefiles, changed, keep = [base], {}, set()
         for group, paths in sorted(groups.items()):
-            merged = merge_build(group, paths, cache, build_tree, keep)
+            with stage("merge-build"):
+                merged = merge_build(group, paths, cache, build_tree, keep)
             changed[group] = {f for f, sig in file_signatures(merged).items() if current.get(f) != sig}
             key = merged.stem if merged.parent == cache else merged.parent.name
-            out = comparable(merged, changed[group], cache / f"{key}.on-{tag}.json")
+            with stage("comparable"):
+                out = comparable(merged, changed[group], cache / f"{key}.on-{tag}.json")
             keep.update({merged.name, out.name})
             tracefiles.append(out)
         for old in cache.iterdir():
@@ -844,10 +873,12 @@ def build(
             shutil.copy2(final_summary, summary_file)
         else:
             page.mkdir(parents=True)
-            _merge_page(build_tree, page, summary_file, tracefiles)
+            with stage("merge-page"):
+                _merge_page(build_tree, page, summary_file, tracefiles)
             (page / MERGE_KEY).write_text(merged_key)
     _, names = tas_symbolize.symbols(cfg["port"])
-    report = union(rows, totals, cov["version"], collected, set(names) if names else None)
+    with stage("union"):
+        report = union(rows, totals, cov["version"], collected, set(names) if names else None)
     report["runs"] = [
         {"movie": r["movie"], "run": r["run"], "polls": r["port_polls"], "covered": cov, "build": r["build"]}
         for r, cov in zip(collected, report.pop("covered"), strict=True)
@@ -923,10 +954,13 @@ def build(
         shutil.rmtree(final_page, ignore_errors=True)
         page.replace(final_page)
         summary_file.replace(final_summary)
+    report["timing"] = stage.report()
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(report, sort_keys=True) + "\n")
     tmp.replace(path)
-    bake_coverage(profile)
+    with stage("bake"):
+        bake_coverage(profile)
+    print(f"coverage stage seconds: {json.dumps(stage.report())}", file=sys.stderr)
     return report
 
 
