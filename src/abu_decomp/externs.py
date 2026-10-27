@@ -528,7 +528,7 @@ def plan(
                     t: sorted(
                         h
                         for h in found.types.get(t, set()) | found.tags.get(t, set())
-                        if h.lower().endswith(HEADER_SUFFIXES) and h != dest
+                        if h.lower().endswith(HEADER_SUFFIXES) and h != dest and h.startswith("include/")
                     )
                     for t in absent
                 }
@@ -591,6 +591,10 @@ def plan(
             if m["id"] in refusing:
                 refused.append({"id": m["id"], "reason": "gate: " + refusing[str(m["id"])], "protos": [m["proto"]]})
         moves = [m for m in moves if m["id"] not in refusing]
+    if gate:  # batch 0 (units only split) is gated like the move batches
+        whole = write_batches(found, batches, None, sees, unit_cpu)[1]
+        if len(whole) > len(batches):
+            unattributed += [v for v in gate(whole[0]) if v not in unattributed]
     held = {  # a violation naming a symbol only a split rewrote: leave that line unsplit and plan again
         t for v in unattributed for t in re.findall(r"[A-Za-z_]\w*", v.split(":")[0]) if t in split_names
     } - keep

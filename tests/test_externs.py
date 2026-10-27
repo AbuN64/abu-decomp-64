@@ -361,6 +361,20 @@ def test_a_the_created_header_includes_the_provider_of_the_types_it_spells(tmp_p
     assert '#include "T.H"' in (root / "include/N.H").read_text()
 
 
+def test_a_a_type_only_a_header_outside_the_include_root_provides_is_not_included_by_the_created_header(
+    tmp_path: Path,
+) -> None:
+    extra = {
+        "docs/MODULES.tsv": MAP2 + "src/n/n.c\tmod/N\tN\tN\t-\t-\t-\n",
+        "src/sdk/t.h": "#ifndef T_H\n#define T_H\ntypedef struct Thing { int v; } Thing;\n#endif\n",
+        "src/n/n.c": '#include "src/sdk/t.h"\nThing gThing;\n',
+        "src/b/b.c": FILES["src/b/b.c"] + "extern Thing gThing;\n",
+    }
+    _, found = moved(tmp_path, extra)
+    refusal = next(r for r in found["refused"] if r["id"] == "gThing")
+    assert refusal["reason"].startswith("type not visible from include/N.H")
+
+
 def test_b_one_type_under_two_spellings_is_one_declaration(tmp_path: Path) -> None:
     extra = {
         "include/R/R.H": "#ifndef R_H\n#define R_H\ntypedef float f32;\n#endif\n",
@@ -438,6 +452,17 @@ def test_c_a_split_the_stamp_gate_refuses_is_undone_and_the_line_stays_refused(t
     reasons = {r["id"]: r["reason"] for r in found["refused"]}
     assert reasons["gA"] == reasons["gB"] == "declared together with other names"
     assert found["unit_extern_ids_before"] - found["unit_extern_ids_after"] == found["planned_ids"]
+
+
+def test_c_a_split_only_batch_the_stamp_gate_refuses_is_not_written(tmp_path: Path) -> None:
+    root = project(tmp_path, {"src/d/d.c": "extern int gQ, gR;\n"})  # no definer: the line is only split
+
+    def gate(text: str) -> list[str]:
+        return ["INTERIOR gR: unproved" for line in text.splitlines() if line.startswith("-") and "gR" in line]
+
+    found = externs.plan(root, None, tmp_path / "out", gate=gate)
+    assert found["split_units"] == 0
+    assert not (tmp_path / "out" / "externs-batch-00-split.diff").exists()
 
 
 def test_b_an_anonymous_aggregate_definition_is_residue_never_an_extern_struct(tmp_path: Path) -> None:
