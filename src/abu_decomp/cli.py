@@ -1221,7 +1221,8 @@ def _run_preflight(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[
     paths = preflight.write(out, args.rev, found)
     for line in preflight.tsv(found["groups"]).splitlines():
         print(line, file=sys.stderr)
-    print(f"preflight {args.rev}: {found['refusals']} refusals, {found['unclassified']} unclassified -> {paths[0]}", file=sys.stderr)
+    summary = f"{found['refusals']} refusals, {found['unclassified']} unclassified -> {paths[0]}"
+    print(f"preflight {args.rev}: {summary}", file=sys.stderr)
     return {**found, "written": [str(p) for p in paths]}, int(found["unclassified"] > 0), []
 
 

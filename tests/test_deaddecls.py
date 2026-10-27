@@ -107,7 +107,7 @@ def units(tmp_path: Path) -> Path:
     for name, text in {
         "src/game/unit.c": UNIT,
         "src/game/unit.h": "#define UNIT_MACRO Local_Macro\n",
-        "src/game/owner.c": "#include \"part.c\"\nextern int gPart;\nint x;\n",
+        "src/game/owner.c": '#include "part.c"\nextern int gPart;\nint x;\n',
         "src/game/part.c": "extern int gInPart;\nint y = 1;\n",
         "include/COMMON/common.h": "extern int gGone;\nextern int gKept;\ntypedef struct Local { int a; } Local;\n",
     }.items():

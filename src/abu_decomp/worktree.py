@@ -231,7 +231,7 @@ def lane_tree(profile: Profile, shared: Path, lane: str, rev: str) -> tuple[Path
     sha = _git(shared, "rev-parse", "--verify", f"{rev}^{{commit}}").strip()
     target = base(shared) / lane
     if not target.exists():
-        result, code, found = new(profile, shared, lane, sha)
+        _result, code, found = new(profile, shared, lane, sha)
         if code:
             raise WorktreeError("worktree.setup", f"{target}: {found[0]['message'] if found else 'setup refused'}")
     elif _git(target, "rev-parse", "HEAD").strip() != sha:

@@ -1627,7 +1627,9 @@ class Landing:
         if not (filesets.directory(names) / f"{lane}.json").is_file():
             return ""
         called = self.invoke(
-            "unbake", self.profile, ["lanecheck", "--lane", lane, "--diff", str(path), "--names", str(names)],
+            "unbake",
+            self.profile,
+            ["lanecheck", "--lane", lane, "--diff", str(path), "--names", str(names)],
             project=self.tree,
         )
         if called.ok:
