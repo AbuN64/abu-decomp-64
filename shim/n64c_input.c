@@ -3,6 +3,7 @@
 #ifdef N64C_INPUT_SDL3
 #include "n64c_input.h"
 #include "n64c_controls.h"
+#include "n64c_touch.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +14,7 @@ static SDL_Window *input_window;
 static SDL_Gamepad *pads[N64C_PLAYERS];
 static N64cBinds binds;
 static int binds_ready;
-static char config_path[512];
+static char config_path[512], touch_path[512];
 static OSContPad snapshot[N64C_PLAYERS];
 static int present[N64C_PLAYERS];
 static pthread_mutex_t snapshot_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -47,6 +48,24 @@ N64cBinds *n64c_input_binds(void)
 void n64c_input_set_config_path(const char *path)
 {
     snprintf(config_path, sizeof config_path, "%s", path ? path : "");
+    touch_path[0] = 0; /* the touch layout sits beside the binds */
+    if (config_path[0]) {
+        const char *slash = strrchr(config_path, '/');
+        snprintf(touch_path, sizeof touch_path, "%.*stouch-layout.cfg", slash ? (int)(slash - config_path) + 1 : 0, config_path);
+    }
+}
+int n64c_input_touch_save(void)
+{
+    if (!touch_path[0]) return 0;
+    if (n64c_touch_save(n64c_touch_layout(), touch_path)) return 1;
+    fprintf(stderr, "input: cannot save the touch layout to %s\n", touch_path);
+    return 0;
+}
+void n64c_input_touch_edit(int editing)
+{
+    if (editing == n64c_touch_editing()) return;
+    n64c_touch_set_editing(editing);
+    if (!editing) n64c_input_touch_save();
 }
 int n64c_input_binds_save(void)
 {
@@ -157,6 +176,13 @@ int n64c_input_start(SDL_Window *window)
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) return 0;
     input_window = window;
     load_config();
+    {
+        char err[160] = "";
+        if (touch_path[0] && !n64c_touch_load(n64c_touch_layout(), touch_path, err, sizeof err))
+            fprintf(stderr, "input: %s: %s; using the current touch layout\n", touch_path, err);
+    }
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0"); /* fingers drive the touch zones, not a mouse pointer */
+    n64c_touch_release_all();
     mouse_dx = mouse_dy = 0;
     capture.state = 0;
     for (int p = 0; p < N64C_PLAYERS; ++p) publish(p, (OSContPad){0}, p == 0);
@@ -232,6 +258,26 @@ void n64c_input_event(const SDL_Event *event)
     } else if (event->type == SDL_EVENT_GAMEPAD_ADDED) {
         discover();
         refresh_presence();
+    } else if (event->type == SDL_EVENT_FINGER_DOWN || event->type == SDL_EVENT_FINGER_MOTION ||
+               event->type == SDL_EVENT_FINGER_UP || event->type == SDL_EVENT_FINGER_CANCELED) {
+        int w = 0, h = 0;
+        SDL_GetWindowSize(input_window, &w, &h);
+        if (w > 0 && h > 0) n64c_touch_set_aspect((float)w / (float)h);
+        long long id = (long long)event->tfinger.fingerID;
+        if (event->type == SDL_EVENT_FINGER_DOWN) {
+            int corner = n64c_touch_down(id, event->tfinger.x, event->tfinger.y);
+            if (corner == N64C_TOUCH_CORNER_MENU) n64c_input_touch_edit(!n64c_touch_editing());
+            else if (corner == N64C_TOUCH_CORNER_RESET && n64c_touch_editing()) {
+                n64c_touch_defaults(n64c_touch_layout());
+                n64c_input_touch_save();
+            }
+        } else if (event->type == SDL_EVENT_FINGER_MOTION) n64c_touch_move(id, event->tfinger.x, event->tfinger.y);
+        else n64c_touch_up(id);
+        return;
+    } else if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && event->gbutton.button == SDL_GAMEPAD_BUTTON_BACK &&
+               !n64c_controls_active() && capture.state != 1) {
+        n64c_controls_open(); /* a pad's Back button opens the Controls page, as F10 does on a keyboard */
+        return;
     } else if (event->type == SDL_EVENT_MOUSE_MOTION) {
         mouse_dx += (int)event->motion.xrel;
         mouse_dy += (int)event->motion.yrel;
@@ -301,6 +347,14 @@ void n64c_input_update(void)
             }
             pad.stick_x = (s8)clamp_stick(level[N64C_ACT_STICK_RIGHT] - level[N64C_ACT_STICK_LEFT]);
             pad.stick_y = (s8)clamp_stick(level[N64C_ACT_STICK_UP] - level[N64C_ACT_STICK_DOWN]);
+        }
+        if (p == 0 && !page && n64c_touch_seen()) {
+            unsigned tb;
+            int tx, ty;
+            n64c_touch_pad(&tb, &tx, &ty);
+            pad.button |= (u16)tb;
+            if (!pad.stick_x) pad.stick_x = (s8)tx;
+            if (!pad.stick_y) pad.stick_y = (s8)ty;
         }
         publish(p, pad, -1);
     }

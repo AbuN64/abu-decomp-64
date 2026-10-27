@@ -12,7 +12,7 @@ static struct {
 } page;
 static const char *const device_names[N64C_DEV_COUNT] = {"KEYBOARD", "GAMEPAD", "MOUSE"};
 
-static void say(const char *text) { snprintf(page.message, sizeof page.message, "%s", text); }
+static void say(const char *text) { snprintf(page.message, sizeof page.message, "%.*s", N64C_CONTROLS_COLUMNS, text); }
 void n64c_controls_open(void)
 {
     if (page.open) return;

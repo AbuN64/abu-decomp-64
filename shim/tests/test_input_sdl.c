@@ -3,9 +3,12 @@
 #define _POSIX_C_SOURCE 200809L
 #include "n64c_controls.h"
 #include "n64c_input.h"
+#include "n64c_touch.h"
 #include "n64c_internal.h"
 #include "n64c_tas.h"
+#include <math.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -52,6 +55,8 @@ bool SDL_GamepadConnected(SDL_Gamepad *p) { return p->connected; }
 bool SDL_GetGamepadButton(SDL_Gamepad *p, SDL_GamepadButton b) { ++pumps; return p->buttons[b]; }
 Sint16 SDL_GetGamepadAxis(SDL_Gamepad *p, SDL_GamepadAxis a) { ++pumps; return p->axes[a]; }
 Uint32 SDL_GetMouseState(float *x, float *y) { (void)x; (void)y; return mouse_mask; }
+bool SDL_SetHint(const char *name, const char *value) { (void)name; (void)value; return true; }
+bool SDL_GetWindowSize(SDL_Window *w, int *wd, int *ht) { (void)w; *wd = 1600; *ht = 900; return true; }
 bool SDL_SetWindowRelativeMouseMode(SDL_Window *w, bool on) { (void)w; ++relative_calls; relative_on = on; return true; }
 const char *SDL_GetGamepadName(SDL_Gamepad *p) { return p->id == 11 ? "Pad Eleven" : "Pad"; }
 const char *SDL_GetScancodeName(SDL_Scancode c)
@@ -447,12 +452,74 @@ static void binds_model(void)
     CHECK(n64c_binds_load(&d, "/tmp/n64c_binds_absent.cfg", err, sizeof err) && !memcmp(&a, &d, sizeof a));
     CHECK(!n64c_binds_save(&a, "/nonexistent-dir/x.cfg"));
 }
+static void finger(Uint32 type, long long id, float x, float y)
+{
+    SDL_Event e = {0}; e.type = type; e.tfinger.fingerID = (SDL_FingerID)id; e.tfinger.x = x; e.tfinger.y = y; n64c_input_event(&e);
+}
+static void touch(void)
+{
+    char dir[] = "/tmp/n64c_touch_XXXXXX", ctl[80], tp[80], err[100] = "";
+    CHECK(mkdtemp(dir));
+    snprintf(ctl, sizeof ctl, "%s/controls.cfg", dir); /* the layout is kept beside the binds file */
+    snprintf(tp, sizeof tp, "%s/touch-layout.cfg", dir);
+    fresh();
+    n64c_touch_defaults(n64c_touch_layout());
+    n64c_input_set_config_path(ctl);
+    CHECK(n64c_input_start(window));
+    N64cTouchLayout *l = n64c_touch_layout();
+    CHECK(read_port(0, NULL).button == 0);
+    /* Play: a finger on A presses A; sliding it to B presses B; the stick drag steers to full scale. */
+    finger(SDL_EVENT_FINGER_DOWN, 1, l->zone[N64C_ACT_A].x, l->zone[N64C_ACT_A].y); n64c_input_update();
+    CHECK(read_port(0, NULL).button == N64C_PAD_A);
+    finger(SDL_EVENT_FINGER_MOTION, 1, l->zone[N64C_ACT_B].x, l->zone[N64C_ACT_B].y); n64c_input_update();
+    CHECK(read_port(0, NULL).button == N64C_PAD_B);
+    finger(SDL_EVENT_FINGER_UP, 1, 0, 0); n64c_input_update();
+    CHECK(read_port(0, NULL).button == 0);
+    float sx = l->zone[N64C_TOUCH_STICK].x, sy = l->zone[N64C_TOUCH_STICK].y;
+    finger(SDL_EVENT_FINGER_DOWN, 2, sx, sy); finger(SDL_EVENT_FINGER_MOTION, 2, sx + 0.5f, sy); n64c_input_update();
+    CHECK(read_port(0, NULL).stick_x == 80 && read_port(0, NULL).stick_y == 0 && read_port(1, NULL).stick_x == 0);
+    finger(SDL_EVENT_FINGER_UP, 2, 0, 0);
+    /* Edit: the top-left corner starts editing; drag moves a zone, a second finger drags its size; leaving saves. */
+    finger(SDL_EVENT_FINGER_DOWN, 3, 0.01f, 0.01f); finger(SDL_EVENT_FINGER_UP, 3, 0, 0);
+    CHECK(n64c_touch_editing());
+    float ax = l->zone[N64C_ACT_A].x, ay = l->zone[N64C_ACT_A].y, ar = l->zone[N64C_ACT_A].r;
+    finger(SDL_EVENT_FINGER_DOWN, 4, ax, ay); n64c_input_update();
+    CHECK(read_port(0, NULL).button == 0); /* editing does not press buttons */
+    finger(SDL_EVENT_FINGER_MOTION, 4, ax - 0.2f, ay - 0.1f);
+    CHECK(fabsf(l->zone[N64C_ACT_A].x - (ax - 0.2f)) < 1e-4f && fabsf(l->zone[N64C_ACT_A].y - (ay - 0.1f)) < 1e-4f);
+    finger(SDL_EVENT_FINGER_DOWN, 5, 0.5f, 0.5f); finger(SDL_EVENT_FINGER_MOTION, 5, 0.5f, 0.3f);
+    CHECK(l->zone[N64C_ACT_A].r > ar);
+    finger(SDL_EVENT_FINGER_UP, 5, 0, 0); finger(SDL_EVENT_FINGER_UP, 4, 0, 0);
+    float moved_x = l->zone[N64C_ACT_A].x, moved_r = l->zone[N64C_ACT_A].r;
+    finger(SDL_EVENT_FINGER_DOWN, 6, 0.01f, 0.01f); finger(SDL_EVENT_FINGER_UP, 6, 0, 0);
+    CHECK(!n64c_touch_editing());
+    /* Restore: a fresh start reads the saved layout back; reset in edit mode restores the factory one. */
+    n64c_touch_defaults(l);
+    CHECK(n64c_input_start(window) && fabsf(n64c_touch_layout()->zone[N64C_ACT_A].x - moved_x) < 1e-4f &&
+          fabsf(n64c_touch_layout()->zone[N64C_ACT_A].r - moved_r) < 1e-4f);
+    finger(SDL_EVENT_FINGER_DOWN, 7, 0.01f, 0.01f); finger(SDL_EVENT_FINGER_UP, 7, 0, 0);
+    finger(SDL_EVENT_FINGER_DOWN, 8, 0.99f, 0.01f); finger(SDL_EVENT_FINGER_UP, 8, 0, 0);
+    N64cTouchLayout def; n64c_touch_defaults(&def);
+    CHECK(!memcmp(&def, n64c_touch_layout(), sizeof def));
+    /* Bad file: refused with its line number, layout untouched. */
+    N64cTouchLayout keep = *n64c_touch_layout();
+    CHECK(!n64c_touch_parse(n64c_touch_layout(), "a = 0.5 0.5 0.05\nq = 1 1 1\n", err, sizeof err) && strstr(err, "line 2") &&
+          !memcmp(&keep, n64c_touch_layout(), sizeof keep));
+    CHECK(!n64c_touch_parse(n64c_touch_layout(), "a = 2 0.5 0.05\n", err, sizeof err));
+    /* A pad's Back button opens the Controls page. */
+    CHECK(!n64c_controls_active()); pad_button_event(SDL_GAMEPAD_BUTTON_BACK); CHECK(n64c_controls_active());
+    n64c_controls_close();
+    remove(tp); remove(ctl); rmdir(dir);
+    n64c_input_stop();
+    n64c_touch_set_editing(0);
+}
+
 int main(void)
 {
     n64c_cont_reset(NULL);
-    policy(); binds_model(); mapping(); axes(); pad_defaults(); four_ports(); mouse(); rebinding(); page();
+    policy(); binds_model(); mapping(); axes(); pad_defaults(); four_ports(); mouse(); rebinding(); page(); touch();
     CHECK(inits - 1 == quits); /* exactly one unsuccessful init */
-    printf("input_sdl: %d checks, %d failures (binds, mapping, SI, deadzone, policy, focus, 4-port hotplug, mouse, rebinding, page)\n",
+    printf("input_sdl: %d checks, %d failures (binds, mapping, SI, deadzone, policy, focus, 4-port hotplug, mouse, rebinding, page, touch)\n",
            checks, failures);
     return failures ? 1 : 0;
 }

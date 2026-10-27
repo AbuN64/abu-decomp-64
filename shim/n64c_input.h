@@ -31,6 +31,9 @@ void n64c_input_binds_reset(int player /* -1 = all */);
  * on stderr and the factory table stays. NULL/"" disables persistence. */
 void n64c_input_set_config_path(const char *path);
 int n64c_input_binds_save(void);
+/* Touch zones (n64c_touch.h): edit mode on/off (leaving saves config/touch-layout.cfg, beside the binds). */
+int n64c_input_touch_save(void);
+void n64c_input_touch_edit(int editing);
 /* NULL/offscreen windows and every N64C_LOCKSTEP environment disable live input. */
 int n64c_input_start(SDL_Window *window);
 void n64c_input_event(const SDL_Event *event);
