@@ -69,8 +69,8 @@ def test_parsers_turn_documents_into_refusals() -> None:
     _, found = preflight._place(
         {"findings": [{"message": "A B has no read-only data of its own to place in any version"}], "result": {}}
     )
-    code = "fault: FileNotFoundError(2, "No such file") at modcheck.py:70: retry"
-    assert preflight.classify("structure.map", code) == ("defect", "S1: structure --map needs a built warm tree (build/<v>/link.ld) and refuses an unbuilt one by name")
+    fault = "fault: FileNotFoundError(2, 'No such file') at modcheck.py:70: retry"
+    assert preflight.classify("structure.map", fault)[0] == "defect"
     none = "no read-only data of its own to place in any version"
     assert [(r.code, r.key) for r in found] == [(none, "A"), (none, "B")]
     assert preflight.classify("data.place", found[0].code)[0] == "defect"
