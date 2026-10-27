@@ -718,7 +718,15 @@ def write_batches(
         if packs is not None:
             (packs / "externs-batch-00-split.diff").write_text(diffs[-1], encoding="latin-1")
         written.append(
-            {"batch": "externs-batch-00-split.diff", "ids": 0, "files": len(found.originals), "destinations": []}
+            {
+                "batch": "externs-batch-00-split.diff",
+                "ids": 0,
+                "files": len(found.originals),
+                "destinations": [],
+                "lines_removed": 0,
+                "recompiled_units": len(found.originals),
+                "estimated_cpu": round(len(found.originals) * unit_cpu, 1),
+            }
         )
     for number, batch in enumerate(batches, 1):
         before: dict[str, list[str]] = {}

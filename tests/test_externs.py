@@ -265,6 +265,7 @@ def test_c_multi_declarator_lines_are_split_and_then_planned(tmp_path: Path) -> 
     root, found = moved(tmp_path, extra)
     out = tmp_path / "out"
     assert found["split_units"] == 1 and found["batches"][0]["batch"] == "externs-batch-00-split.diff"
+    assert all({"estimated_cpu", "recompiled_units", "lines_removed"} <= set(b) for b in found["batches"])
     rows = table(out)
     assert {i: rows[i][2] for i in ("gA", "gB", "gC")} == dict.fromkeys(("gA", "gB", "gC"), "include/A/A.H")
     split = (out / "externs-batch-00-split.diff").read_text()
