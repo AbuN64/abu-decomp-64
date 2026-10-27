@@ -62,7 +62,7 @@ class Scan:
     compound: set[str] = field(default_factory=set)  # ids declared together with others: not movable line-wise
     compound_in: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # file -> its compound ids
     local_names: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # file -> names it spells itself
-    includes: dict[str, list[str]] = field(default_factory=dict)  # file -> raw include targets
+    plain_includes: dict[str, list[str]] = field(default_factory=dict)  # file -> include targets under no `#if`
     texts: dict[str, str] = field(default_factory=dict)
     types: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # type/macro -> declaring files
     tags: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # struct/union/enum tag -> files
@@ -84,6 +84,26 @@ def definition_proto(text: str) -> str:
     return proto_of(re.sub(r"^(?:static|inline)\s+", "", head.strip()).rstrip(";"))
 
 
+def unconditional_includes(text: str, is_header: bool) -> list[str]:
+    """The `#include` targets every build of the file reads: none under an `#if`/`#ifdef`/`#ifndef` (a header's own
+    include guard excepted). An include under a condition does not make the header visible to the other builds."""
+    out: list[str] = []
+    depth, first = 0, True
+    for ln in text.splitlines():
+        word = re.match(r"\s*#\s*(\w+)", ln)
+        if not word:
+            continue
+        kind = word.group(1)
+        if kind.startswith("if") and not (first and is_header and kind == "ifndef"):
+            depth += 1
+        elif kind == "endif" and depth:
+            depth -= 1
+        elif kind == "include" and depth == 0 and (m := INCLUDE.match(ln)):
+            out.append(m.group(1))
+        first = False
+    return out
+
+
 def scan(root: Path, files: list[str]) -> Scan:
     found = Scan()
     for name in files:
@@ -94,7 +114,7 @@ def scan(root: Path, files: list[str]) -> Scan:
         raw = (root / name).read_bytes().decode("latin-1")
         found.texts[name] = raw
         text = deaddecls.strip_comments(raw)
-        found.includes[name] = INCLUDE.findall(text)
+        found.plain_includes[name] = unconditional_includes(text, is_header)
         for m in TYPEDEF.finditer(text):
             found.types[m.group(1) or m.group(2) or m.group(3)].add(name)
         for m in DEFINED.finditer(text):
@@ -148,7 +168,7 @@ def resolve(index: dict[str, list[str]], including: str, target: str) -> str | N
 
 
 def closures(found: Scan, files: list[str]) -> dict[str, set[str]]:
-    """Every header each file sees through its includes (transitively)."""
+    """Every header each file sees in every build, through its unconditional includes (transitively)."""
     index: dict[str, list[str]] = defaultdict(list)
     for h in files:
         if h.lower().endswith(HEADER_SUFFIXES):
@@ -157,7 +177,7 @@ def closures(found: Scan, files: list[str]) -> dict[str, set[str]]:
                 index["/".join(parts[i:])].append(h)
     direct = {
         n: [r for t in targets if (r := resolve(index, n, t.lower().replace("\\", "/")))]
-        for n, targets in found.includes.items()
+        for n, targets in found.plain_includes.items()
     }
     seen: dict[str, set[str]] = {}
 
@@ -173,7 +193,7 @@ def closures(found: Scan, files: list[str]) -> dict[str, set[str]]:
             seen[name] = out
         return out
 
-    return {n: sees(n) for n in found.includes}
+    return {n: sees(n) for n in found.plain_includes}
 
 
 def address_ranges(path: Path) -> list[tuple[int, int, str]]:

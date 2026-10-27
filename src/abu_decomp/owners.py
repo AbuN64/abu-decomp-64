@@ -74,7 +74,10 @@ def is_definition(chunk: deaddecls.Chunk) -> bool:
 def declarations(root: Path, folder: str) -> list[dict[str, object]]:
     """One row per declaration (and macro) of the folder's headers: header, line, kind, names, the chunk."""
     rows: list[dict[str, object]] = []
-    for name in deaddecls.header_files(root, folder):
+    listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=True)
+    for name in sorted(n for n in listed.stdout.decode().split("\0") if n and deaddecls.under(n, folder)):
+        if not name.lower().endswith(deaddecls.C_SUFFIXES):
+            continue
         text = (root / name).read_text(encoding="latin-1")
         guard = next(iter(DEFINE.findall(text)), "")
         for c in deaddecls.split(deaddecls.strip_comments(text)):

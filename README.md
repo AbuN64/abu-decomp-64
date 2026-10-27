@@ -40,7 +40,9 @@ majority user for types and macros). Without `--dir` it plans the unit-local `ex
 the owning header of an id is its definer's (for a symbol no C unit defines: the header of the unit whose `start`/`end`
 address range in the module map holds it, else its majority user), the prototype is the definition's or the one every
 declaration agrees on, and an id whose declarations conflict, or whose name an includer of the destination header spells
-otherwise, is refused and listed with the reason. `--packs DIR` writes `externs-batch-NN.diff` (each over the tree the
+otherwise, is refused and listed with the reason. A unit sees a header only through its unconditional `#include`s (one under an
+`#if`/`#ifdef` is not read by every build): a unit that has the destination header only that way gets a plain `#include`.
+`--packs DIR` writes `externs-batch-NN.diff` (each over the tree the
 earlier ones leave, applied like any tool batch: one stamp per batch), `externs.json` (unit-extern counts before and
 after, per batch the estimated stamp CPU, the refusals) and `externs.tsv`; `--batch-cpu` and `--unit-cpu` size a batch
 under the stamp CPU cap. Project facts come from `--map` (default `docs/MODULES.tsv`).

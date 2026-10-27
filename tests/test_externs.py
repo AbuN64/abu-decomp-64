@@ -229,3 +229,19 @@ def test_a_batch_section_counts_blank_lines_as_git_does(tmp_path: Path) -> None:
         ["git", "-C", str(repo), "apply", "--numstat", "-"], input=section.encode(), capture_output=True, check=True
     ).stdout.decode()
     assert counts.split() == ["0", "2", "src/u.c"]
+
+
+def test_an_include_under_a_condition_does_not_make_the_header_visible_to_every_build(tmp_path: Path) -> None:
+    body = (
+        '#include "B/B.H"\n#if VERSION_EU\n#include "A/A.H"\n#endif\nextern int gScore;\nint useb(void) { return 1; }\n'
+    )
+    root, _ = moved(tmp_path, {"src/b/b.c": body})
+    subprocess.run(["git", "-C", str(root), "apply", str(tmp_path / "out" / "externs-batch-01.diff")], check=True)
+    lines = (root / "src/b/b.c").read_text().splitlines()
+    assert lines.count('#include "A/A.H"') == 2 and lines[1] == '#include "A/A.H"'  # the plain include goes first
+
+
+def test_unconditional_includes_skip_conditions_but_not_the_include_guard() -> None:
+    text = '#ifndef X_H\n#define X_H\n#include "a.h"\n#if 1\n#include "b.h"\n#endif\n#include "c.h"\n#endif\n'
+    assert externs.unconditional_includes(text, True) == ["a.h", "c.h"]
+    assert externs.unconditional_includes(text, False) == []
