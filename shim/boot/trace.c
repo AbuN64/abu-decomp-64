@@ -17,6 +17,7 @@
 #include <time.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -130,6 +131,16 @@ static const unsigned char *ls_ram;
 static unsigned ls_pages, ls_points, ls_stored_mask, ls_stored_n, ls_zero_stored;
 static uint64_t *ls_last, *ls_stored;
 static unsigned *ls_calls;
+/* Per-call capture (N64C_CALLS=DIR): the lockstep call/ret machinery without the page hashing, for whole movies. */
+enum { CA_SLOTS = 1 << 20, CA_PROBES = 64, CA_FIRST = 16 };
+typedef struct {
+    uint64_t key; /* caller address << 32 | callee entry + 1; 0 = free */
+    unsigned n;   /* calls from that caller to that callee so far */
+} CaSlot;
+static CaSlot *ca_table;
+static int ca_on;
+static unsigned ls_limit = LS_CALLS; /* calls of one function recorded: LS_CALLS in lockstep, N64C_CALLS_FIRST here */
+static long reach_poll;
 static char *ls_line;
 static unsigned char *ls_seen; /* RDRAM as of the last point */
 static pthread_mutex_t ls_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -244,6 +255,49 @@ NOINST static void ls_init(void)
             n64c_trace_count, ls_watch ? 0x80000000ul + (unsigned long)((const unsigned char *)ls_watch - ls_ram) : 0ul);
     ls_on = 1;
     fprintf(stderr, "boot-lockstep: on, %u pages hashed at each first hit, files in %s\n", ls_pages, dir);
+}
+/* N64C_CALLS=DIR: DIR/calls.jsonl gets the `call` and `ret` lines of lockstep for the first N64C_CALLS_FIRST (default
+ * 16) calls that each caller makes of each census function, each call also naming its caller (the logical parent
+ * frame's symbol `caller`), its ordinal `o` among that caller's calls of the function (all calls are counted, recorded
+ * or not) and the poll `frame` it ran in, so a whole movie is aligned call by call with the oracle's by (function,
+ * caller, ordinal) whatever phase the two sides' polls are in. Off when lockstep is on. */
+NOINST static unsigned ca_ordinal(const void *caller, unsigned callee)
+{
+    const uint64_t key = ((uint64_t)(uintptr_t)caller << 32) | (callee + 1);
+    unsigned s = (unsigned)((key * 0x9E3779B97F4A7C15ull) >> 40) & (CA_SLOTS - 1);
+    for (unsigned probe = 0; probe < CA_PROBES; probe++, s = (s + 1) & (CA_SLOTS - 1)) {
+        uint64_t seen = __atomic_load_n(&ca_table[s].key, __ATOMIC_RELAXED);
+        if (!seen && __atomic_compare_exchange_n(&ca_table[s].key, &seen, key, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+            seen = key;
+        if (seen == key)
+            return __atomic_fetch_add(&ca_table[s].n, 1, __ATOMIC_RELAXED);
+    }
+    return UINT_MAX; /* table full around this key: the ordinal is unknown */
+}
+NOINST static void ca_init(void)
+{
+    const char *dir = getenv("N64C_CALLS"), *first = getenv("N64C_CALLS_FIRST");
+    if (!dir || !*dir || ls_on)
+        return;
+    char path[4096];
+    mkdir(dir, 0777);
+    snprintf(path, sizeof path, "%s/calls.jsonl", dir);
+    ls_log = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0666);
+    ls_calls = calloc(n64c_trace_count ? n64c_trace_count : 1, sizeof *ls_calls);
+    ca_table = calloc(CA_SLOTS, sizeof *ca_table);
+    if (ls_log < 0 || !ls_calls || !ca_table) {
+        fprintf(stderr, "boot-calls: off (cannot write its files)\n");
+        free(ls_calls);
+        free(ca_table);
+        ls_calls = NULL;
+        ca_table = NULL;
+        return;
+    }
+    ls_limit = first && *first ? (unsigned)strtoul(first, NULL, 10) : CA_FIRST;
+    dprintf(ls_log, "{\"k\":\"meta\",\"side\":\"port\",\"mode\":\"calls\",\"first\":%u,\"trace\":%u}\n", ls_limit,
+            n64c_trace_count);
+    ca_on = 1;
+    fprintf(stderr, "boot-calls: on, first %u calls of each function, file %s\n", ls_limit, path);
 }
 /* One point: called with the census lock held at the first hit of entry i. */
 NOINST static void ls_point(unsigned i)
@@ -373,12 +427,27 @@ NOINST static void ls_call(Slot *slot, void *call_site, const unsigned long *reg
         return;
     }
     const unsigned call = __atomic_fetch_add(&ls_calls[i], 1, __ATOMIC_RELAXED);
-    if (call >= LS_CALLS)
+    unsigned ordinal = 0;
+    const char *caller = "?";
+    if (ca_on) {
+        const void *parent = stack && stack->depth > 1 ? stack->frame[stack->depth - 2].fn : NULL;
+        ordinal = ca_ordinal(parent, i);
+        if (ordinal >= ls_limit)
+            return;
+        unsigned off;
+        if (parent && (caller = n64c_trace_symbol(parent, &off)) == NULL)
+            caller = "?";
+    } else if (call >= LS_CALLS)
         return;
     unsigned long *frame = (unsigned long *)regs[3];
-    char line[400];
-    int n = snprintf(line, sizeof line, "{\"k\":\"call\",\"order\":%u,\"i\":%u,\"thr\":%ld,\"sp\":\"%08lx\",\"a\":[",
+    char line[640];
+    int n = snprintf(line, sizeof line, "{\"k\":\"call\",\"order\":%u,\"i\":%u,\"thr\":%ld,\"sp\":\"%08lx\",",
                      n64c_trace_entries[i].order, call, ls_tid(), (unsigned long)frame);
+    if (ca_on)
+        n += snprintf(line + n, sizeof line - (size_t)n,
+                      "\"fn\":\"%s\",\"frame\":%ld,\"caller\":\"%.160s\",\"o\":%u,", entry_name(i), reach_poll, caller,
+                      ordinal);
+    n += snprintf(line + n, sizeof line - (size_t)n, "\"a\":[");
     for (int k = 0; k < 8; k++)
         n += snprintf(line + n, sizeof line - (size_t)n, "%s\"%08lx\"", k ? "," : "", frame[2 + k]);
     n += snprintf(line + n, sizeof line - (size_t)n, "]}\n");
@@ -409,7 +478,6 @@ static int reach_fd = -1;
 static socklen_t reach_addr_len;
 static struct sockaddr_un reach_addr;
 static unsigned long long reach_last_ms;
-static long reach_poll;
 /* Census-only: while the reach stream is live and nothing reads the logical call stacks (no run-on diagnostics, no
  * last-store watch), the entry hook only counts: it skips the frame record push_frame and the exit hook keep per call. */
 static int census_only;
@@ -556,9 +624,9 @@ out:
  * (the next full record heals the receiver). The first one is the full set so far. */
 NOINST void n64c_trace_reach_tick(long poll)
 {
+    reach_poll = poll;
     if (reach_fd < 0)
         return;
-    reach_poll = poll;
     const unsigned long long now = now_ms();
     if (reach.started && now - reach_last_ms < 33)
         return;
@@ -670,9 +738,10 @@ NOINST void n64c_trace_init(void)
             eligible, total, shim_bound, unresolved);
     fflush(stderr);
     ls_init();
+    ca_init();
     reach_init();
     const char *run_on = getenv("N64C_RUN_ON");
-    census_only = row_slots && !ls_on && !ls_watch && !(run_on && !strcmp(run_on, "1"));
+    census_only = row_slots && !ls_on && !ca_on && !ls_watch && !(run_on && !strcmp(run_on, "1"));
     if (!hooks_build())
         return;
     __atomic_store_n(&armed, 1, __ATOMIC_RELEASE);
@@ -759,7 +828,7 @@ NOINST RAWSTACK static void trace_enter(void *fn, void *call_site, const unsigne
         const unsigned i = h->census->index - 1;
         if (!__atomic_load_n(&hit[i], __ATOMIC_RELAXED))
             first_hit(i);
-        if (ls_on)
+        if (ls_on || ca_on)
             ls_call(h->census, call_site, regs);
     }
 }
