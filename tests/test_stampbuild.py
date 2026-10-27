@@ -485,8 +485,8 @@ def test_a_stamp_build_holds_its_jobs_in_the_slot_pool_behind_the_train(tmp_path
     held = []
 
     class Hold:
-        def __init__(self, klass, weight=1, label=""):
-            held.append((klass, weight, label))
+        def __init__(self, klass, weight=1, label="", mem_gib=None):
+            held.append((klass, weight, label, mem_gib))
 
         def __enter__(self):
             return None
@@ -496,11 +496,13 @@ def test_a_stamp_build_holds_its_jobs_in_the_slot_pool_behind_the_train(tmp_path
 
     monkeypatch.setattr(slots, "hold", Hold)
     monkeypatch.setattr(slots, "capacity", lambda: 14)
+    monkeypatch.setattr(slots, "STAMP_GIB", 5.0)
+    monkeypatch.setattr(slots, "STAMP_JOBS", 0)
     ran = []
     run = lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")  # noqa: E731
     cfg = replace(CFG, make=("make",), jobs=())
     trial.Builder(cfg, tmp_path, run=run).build("us", "u")
-    assert held == [("batch", 1, "stamp build")] and ran[0][:3] == ["nice", "-n", "10"]
+    assert held == [("batch", 1, "stamp build", 5.0)] and ran[0][:3] == ["nice", "-n", "10"]
 
 
 def test_a_failed_link_keeps_its_log_and_names_the_missing_objects(tmp_path):

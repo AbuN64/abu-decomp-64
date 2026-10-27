@@ -56,8 +56,8 @@ class Builder:
     def run_held(self, argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
         """The build, holding its jobs' share of the host slot pool (class batch) while it runs: builds queue behind
         each other instead of thrashing. Re-entrant when the caller already holds slots."""
-        want = max(1, min(int(self.jobs()), slots.capacity()))
-        with slots.hold("batch", weight=want, label="stamp build"):
+        want = max(1, min(int(self.jobs()), slots.stamp_weight()))
+        with slots.hold("batch", weight=want, label="stamp build", mem_gib=slots.STAMP_GIB or None):
             return self.run(argv, **kw)
 
     def jobs(self) -> str:

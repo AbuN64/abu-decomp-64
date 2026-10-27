@@ -6,6 +6,7 @@ The two exceptions are help (plain text) and `decomp mcp`, whose stdout is the M
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import signal
@@ -18,8 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, priority, runslice
-from abu_decomp.config import Profile, default_profile_path, load_profile
+from abu_decomp import DecompError, priority, runslice, slots
+from abu_decomp.config import ConfigError, Profile, default_profile_path, load_profile
 
 
 class _Parser(argparse.ArgumentParser):
@@ -42,7 +43,10 @@ def _profile(path: Path | None) -> Profile:
             "pass --profile PATH before the command, set DECOMP_PROFILE, or link the seat profile at "
             "~/.config/abu-decomp/profile.json",
         )
-    return load_profile(path)
+    profile = load_profile(path)
+    with contextlib.suppress(ConfigError):  # a seat without a land section has no pool figures to apply
+        slots.configure(profile.section("land").get("slots"))
+    return profile
 
 
 def _none(parser: argparse.ArgumentParser) -> None:
@@ -833,8 +837,9 @@ def _run_ship(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[
 def _worktree_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "verb",
-        choices=["new", "prune"],
-        help="new: a lane's own work tree, warm from the shared tree; prune: remove ended lanes'",
+        choices=["new", "prune", "reap", "enable", "disable"],
+        help="new: a lane's own work tree, warm from the shared tree; prune: remove ended lanes'; reap: remove idle "
+        "chromium trees and stale worktrees; enable/disable: the scheduled reap",
     )
     parser.add_argument(
         "lane", nargs="*", help="new: the lane name (tree <shared>/../wt/LANE); prune: ended lane names"
@@ -842,11 +847,18 @@ def _worktree_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--results", type=Path, help="prune: also every lane with a RESULT.md under this lanes dir")
     parser.add_argument("--tree", type=Path, required=True, help="the shared tree the lane's worktree is seeded from")
     parser.add_argument("--at", help="the commit (default: the branch tip, fetched)")
+    parser.add_argument("--dry-run", action="store_true", help="reap: report what would go, remove nothing")
 
 
 def _run_worktree(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    from abu_decomp import worktree
+    from abu_decomp import reap, worktree
 
+    if args.verb == "reap":
+        return reap.run(_profile(args.profile), args.tree, dry_run=args.dry_run)
+    if args.verb == "enable":
+        return reap.enable(_profile(args.profile), args.tree)
+    if args.verb == "disable":
+        return reap.disable()
     if args.verb == "prune":
         return worktree.prune(args.tree, args.lane, args.results)
     if len(args.lane) != 1:

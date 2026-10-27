@@ -17,7 +17,7 @@ PROOF_NICE = -5  # landing, full proof builds, setup of a tree: what the other j
 TRIAL_NICE = 5  # score, try, recipe, behave: many small jobs a lane repeats
 PROOF_COMMANDS = frozenset({"ship", "make"})
 PROOF_VERBS = frozenset({("unbake", "setup"), ("unbake", "land")})
-TRIAL_COMMANDS = frozenset({"unbake", "recipe", "taste", "behave", "probe"})
+TRIAL_COMMANDS = frozenset({"unbake", "recipe", "taste", "behave", "probe", "tas"})  # tas: the oracle waits for stamps
 _IOPRIO_SET = {"x86_64": 251, "aarch64": 30}
 _IOPRIO_WHO_PROCESS, _IOPRIO_CLASS_BE = 1, 2
 

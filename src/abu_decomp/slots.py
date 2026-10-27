@@ -35,9 +35,24 @@ RESERVE_CORES = float(os.environ.get("ABU_SLOT_RESERVE", "2"))  # cores left for
 MEM_FLOOR_GIB = float(os.environ.get("ABU_SLOT_MEM_FLOOR", "6"))  # never admit below this much free memory
 RSS_GIB = float(os.environ.get("ABU_SLOT_RSS_GIB", "0.75"))  # measured per-slot RSS (a port play ~0.25, a compile ~1)
 BACKFILL = float(os.environ.get("ABU_SLOT_BACKFILL", "60"))
+STAMP_GIB = 0.0  # measured memory one stamp needs (seat profile land.slots.stamp_gib); 0: no per-stamp figure
+STAMP_JOBS = 0  # cores one stamp holds at most (land.slots.stamp_jobs); 0: as many as its build asks
+RAMP = 90.0  # seconds a fresh holder's memory need still counts as promised: it has not grown into it yet
 WAKE_TIMEOUT = 5.0
 _local = threading.local()
 CANCEL = None  # a callable that raises when the caller was told to stop (tas sets it): checked on every wake
+
+
+def configure(section: dict | None) -> None:
+    """Apply the seat profile's `land.slots` (floor_gib, stamp_gib, stamp_jobs, reserve_cores): project facts live in
+    the profile, the pool only reads them. Absent keys keep the pool's own defaults."""
+    global RESERVE_CORES, MEM_FLOOR_GIB, STAMP_GIB, STAMP_JOBS
+    if not section:
+        return
+    RESERVE_CORES = float(section.get("reserve_cores", RESERVE_CORES))
+    MEM_FLOOR_GIB = float(section.get("floor_gib", MEM_FLOOR_GIB))
+    STAMP_GIB = float(section.get("stamp_gib", STAMP_GIB))
+    STAMP_JOBS = int(section.get("stamp_jobs", STAMP_JOBS))
 
 
 def pool_dir() -> Path:
@@ -61,6 +76,20 @@ def capacity() -> int:
     by_cpu = int(cores() - RESERVE_CORES)
     by_mem = int((_mem_gib("MemTotal") - MEM_FLOOR_GIB) / RSS_GIB)
     return max(1, min(by_cpu, by_mem))
+
+
+def stamp_slots() -> int:
+    """How many stamps run at once: the cores split by a stamp's jobs, and the memory above the floor split by one
+    stamp's measured need (the smaller; at least 1). Without a stamp figure, the pool's soft capacity."""
+    cap = capacity()
+    by_cpu = cap // STAMP_JOBS if STAMP_JOBS > 0 else cap
+    by_mem = int((_mem_gib("MemTotal") - MEM_FLOOR_GIB) / STAMP_GIB) if STAMP_GIB > 0 else cap
+    return max(1, min(by_cpu, by_mem))
+
+
+def stamp_weight() -> int:
+    """Slots one stamp holds, so exactly `stamp_slots()` stamps fit the pool at once and the next ones queue."""
+    return max(1, capacity() // stamp_slots())
 
 
 def _paths() -> tuple[Path, Path]:
@@ -185,10 +214,30 @@ def _take(root: Path, weight: int, limit: int) -> list[tuple[int, Path]] | None:
     return None
 
 
-def _can_run(weight: int, limit: int, rank: int, free: dict[int, int] | None = None) -> bool:
-    """Whether WEIGHT slots of the first LIMIT are free (and memory allows a non-owner). FREE: the counts one pass of
-    a waiter reads once, so every decision of that pass sees the same pool."""
-    if _mem_gib("MemAvailable") < MEM_FLOOR_GIB + RSS_GIB * weight and rank > 0:
+def _promised_gib(root: Path) -> float:
+    """Memory the holders admitted in the last RAMP seconds will still grow into, so a burst of waiters released
+    together is not all admitted against the same free memory."""
+    now = time.time()
+    seen: dict[tuple, float] = {}
+    for path in _slot_files(root):
+        if _held(path, False):
+            info = _read(path)
+            if info.get("mem_gib") and now - info.get("since", 0) < RAMP:
+                seen[(info.get("pid"), info.get("since"))] = float(info["mem_gib"])
+    return sum(seen.values())
+
+
+def _need_gib(weight: int, mem_gib: float | None) -> float:
+    return mem_gib if mem_gib else RSS_GIB * weight
+
+
+def _can_run(
+    weight: int, limit: int, rank: int, free: dict[int, int] | None = None, mem_gib: float | None = None
+) -> bool:
+    """Whether WEIGHT slots of the first LIMIT are free (and memory allows a non-owner: the floor plus the job's own
+    MEM_GIB, else its per-slot RSS, plus what fresh holders have yet to use). FREE: the counts one pass of a waiter
+    reads once, so every decision of that pass sees the same pool."""
+    if rank > 0 and _mem_gib("MemAvailable") < MEM_FLOOR_GIB + _need_gib(weight, mem_gib) + _promised_gib(_paths()[0]):
         return False
     if free is None:
         return free_count(limit) >= weight
@@ -197,7 +246,9 @@ def _can_run(weight: int, limit: int, rank: int, free: dict[int, int] | None = N
     return free[limit] >= weight
 
 
-def acquire(klass: str = "batch", weight: int = 1, label: str = "", timeout: float | None = None) -> Grant:
+def acquire(
+    klass: str = "batch", weight: int = 1, label: str = "", timeout: float | None = None, mem_gib: float | None = None
+) -> Grant:
     rank = CLASSES.index(klass)
     weight = max(1, min(int(weight), cores()))
     root, tickets = _paths()
@@ -213,6 +264,7 @@ def acquire(klass: str = "batch", weight: int = 1, label: str = "", timeout: flo
         "label": label,
         "pid": os.getpid(),
         "queued": began,
+        "mem_gib": mem_gib or 0,
         "cmd": " ".join(sys.argv[:4])[:120],
     }
     # Written and locked under a dot name the queue scan skips, then renamed into the queue: a scan between the create
@@ -233,11 +285,17 @@ def acquire(klass: str = "batch", weight: int = 1, label: str = "", timeout: flo
             for n, t in ahead:
                 # an earlier ticket blocks us unless it cannot run now and has not waited past BACKFILL
                 older = time.time() - t.get("queued", time.time())
-                fits = _can_run(int(t.get("weight", 1)), soft if not n.startswith("0-") else cores(), int(n[0]), free)
+                fits = _can_run(
+                    int(t.get("weight", 1)),
+                    soft if not n.startswith("0-") else cores(),
+                    int(n[0]),
+                    free,
+                    t.get("mem_gib") or None,
+                )
                 if fits or older > BACKFILL:
                     blocked = True
                     break
-            if not blocked and _can_run(weight, limit, rank, free):
+            if not blocked and _can_run(weight, limit, rank, free, mem_gib):
                 got = _take(root, weight, limit)
                 if got:
                     info.update(since=time.time(), waited=round(time.time() - began, 2))
@@ -265,13 +323,15 @@ def klass_from_env(default: str) -> str:
 
 
 @contextlib.contextmanager
-def hold(klass: str = "batch", weight: int = 1, label: str = "", timeout: float | None = None):
+def hold(
+    klass: str = "batch", weight: int = 1, label: str = "", timeout: float | None = None, mem_gib: float | None = None
+):
     """Hold `weight` slots while the block runs. Re-entrant per thread and per process tree (ABU_SLOT_HELD): a play
     that runs its coverage step inside the block does not queue a second time, so a full pool cannot deadlock itself."""
     if getattr(_local, "depth", 0) or os.environ.get("ABU_SLOT_HELD") or os.environ.get("ABU_SLOTS_OFF"):
         yield None
         return
-    grant = acquire(klass_from_env(klass), weight, label, timeout)
+    grant = acquire(klass_from_env(klass), weight, label, timeout, mem_gib)
     _local.depth = 1
     try:
         yield grant
@@ -312,6 +372,9 @@ def status() -> dict:
     return {
         "cores": cores(),
         "capacity": cap,
+        "stamp_slots": stamp_slots(),
+        "stamp_gib": STAMP_GIB,
+        "mem_floor_gib": MEM_FLOOR_GIB,
         "used": sum(len(r["slots"]) for r in held.values()),
         "mem_available_gib": round(_mem_gib("MemAvailable"), 1),
         "holders": sorted(held.values(), key=lambda r: r.get("since", 0)),

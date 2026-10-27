@@ -18,7 +18,7 @@ from typing import Any
 
 from unbake import treelock
 
-from abu_decomp import DecompError, land, tools
+from abu_decomp import DecompError, land, slots, tools
 from abu_decomp.config import Profile
 
 TAIL_LINES = 12
@@ -51,7 +51,13 @@ def run(
     print(f"decomp: make in {chosen.project}", file=sys.stderr)
     try:
         # make rewrites build/ and the extraction a ship's check reads: it holds the tree lock as the ship does
-        with treelock.hold(chosen.project, exclusive=True, who="make"):
+        # a stamp beyond the free slots or the measured memory queues in the host pool, before it takes the tree lock
+        with (
+            slots.hold("batch", slots.stamp_weight(), "decomp make", mem_gib=slots.STAMP_GIB or None) as grant,
+            treelock.hold(chosen.project, exclusive=True, who="make"),
+        ):
+            if grant and grant.waited > 1:
+                print(f"decomp: queued {grant.waited:.0f}s in the host pool for a stamp slot", file=sys.stderr)
             environment = dict(os.environ, UNBAKE_HOST=str(chosen.host))  # after the hold: it marks its children
             with subprocess.Popen(
                 argv,
