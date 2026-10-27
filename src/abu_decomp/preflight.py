@@ -55,12 +55,6 @@ RULES: tuple[tuple[str, str, str, str], ...] = (
         "hoist would clash with an include or a name: the S4 residue TSV",
     ),
     ("owners.units", r"^type not visible from <path>$", "defect", "S4: hoist the type with its extern"),
-    (
-        "owners.include",
-        r"^fault: ",
-        "defect",
-        "S4: owners --dir include crashes (a Path reaches deaddecls.header_files)",
-    ),
     ("name.auto", r"^strings (unverifiable|duplicate|banned)$", "residue", "string names a reader decides"),
     (
         "name.T",
