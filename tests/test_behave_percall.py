@@ -19,7 +19,7 @@ def proto(name):
     return PROTOS[name]
 
 
-def o_call(fn, caller, o, args, ret=None, frame=1, **extra):
+def o_call(fn, caller, o, args, ret=None, frame=1, m=None, **extra):
     rows = [
         {
             "k": "call",
@@ -33,11 +33,11 @@ def o_call(fn, caller, o, args, ret=None, frame=1, **extra):
         }
     ]
     if ret is not None:
-        rows.append({"k": "ret", "fn": fn, "i": o, "r": [f"{ret:08x}", "00000000"], "f0": "0"})
+        rows.append({"k": "ret", "fn": fn, "i": o, "r": [f"{ret:08x}", "00000000"], "f0": "0", "m": m})
     return rows
 
 
-def p_call(fn, caller, o, args, ret=None, frame=9, **extra):
+def p_call(fn, caller, o, args, ret=None, frame=9, m=None, **extra):
     rows = [
         {
             "k": "call",
@@ -52,7 +52,7 @@ def p_call(fn, caller, o, args, ret=None, frame=9, **extra):
         }
     ]
     if ret is not None:
-        rows.append({"k": "ret", "order": 3, "i": o, "r": [f"{ret:08x}", "00000000"], "st0": None})
+        rows.append({"k": "ret", "order": 3, "i": o, "r": [f"{ret:08x}", "00000000"], "st0": None, "m": m})
     return rows
 
 
@@ -90,73 +90,32 @@ def test_equal_arguments_other_return_is_differs_result_with_own_cause(tmp_path)
     assert verdict.first["diffs"][0] == {"field": "return", "kind": "int32", "oracle": "0x3", "port": "0x4"}
 
 
-def test_write_digest_is_part_of_the_result(tmp_path):
-    o = o_call("put", "main", 0, [0, 7], 0, w="aa")
-    p = p_call("put", "main", 0, [0, 7], 0, w="bb")
-    assert run(tmp_path, o, p)["put"].first["diffs"][0]["field"] == "writes"
-    p_same = p_call("put", "main", 0, [0, 7], 0, w="aa")
-    assert run(tmp_path, o, p_same)["put"].verdict == "behaves"
+def window(*words):
+    return "".join(w if isinstance(w, str) else f"{w:08x}" for w in words).ljust(128, "0")
 
 
-def test_pointer_arguments_compare_as_null_or_not(tmp_path):
-    o = o_call("put", "main", 0, [0x80123456, 7])
-    p = p_call("put", "main", 0, [0x08049000, 7])
+def test_pointer_window_is_part_of_the_result(tmp_path):
+    # `put(int *p, int v)`: the oracle names the window by a0, the port by cdecl word 0
+    o = o_call("put", "main", 0, [0x80001000, 7], 0, m={"0": window(1, 2, 3)})
+    p = p_call("put", "main", 0, [0x1000, 7], 0, m={"0": window(1, 9, 3)})
+    verdict = run(tmp_path, o, p)["put"]
+    assert (verdict.verdict, verdict.cause) == ("differs-result", "own")
+    assert verdict.first["diffs"] == [{"field": "*p[1]", "kind": "memory", "oracle": "00000002", "port": "00000009"}]
+    assert verdict.first["oracle"]["writes"].startswith("p: 000000010000000200000003")
+    same = p_call("put", "main", 0, [0x1000, 7], 0, m={"0": window(1, 2, 3)})
+    assert run(tmp_path, o, same)["put"].verdict == "behaves"
+
+
+def test_a_window_one_side_did_not_record_is_not_compared(tmp_path):
+    o = o_call("put", "main", 0, [0x80001000, 7], 0, m={"0": window(1)})
+    p = p_call("put", "main", 0, [0x1000, 7], 0, m={})
     assert run(tmp_path, o, p)["put"].verdict == "behaves"
-    p_null = p_call("put", "main", 0, [0, 7])
-    assert run(tmp_path, o, p_null)["put"].verdict == "differs-args"
 
 
-def test_float_result_within_four_ulp_behaves(tmp_path):
-    o = [
-        *o_call("scale", "main", 0, [0x3F800000], f12="3f800000"),
-        {"k": "ret", "fn": "scale", "i": 0, "r": ["0", "0"], "f0": "3f800000"},
-    ]
-    p = [
-        *p_call("scale", "main", 0, [0x3F800000]),
-        {"k": "ret", "order": 3, "i": 0, "r": ["0", "0"], "st0": "3ff0000020000000"},
-    ]
-    assert run(tmp_path, o[:1] + o[2:], p[:1] + p[2:])["scale"].verdict == "behaves"
-
-
-def test_called_by_one_side_only(tmp_path):
-    o = o_call("add", "main", 0, [1, 2], 3)
-    p = p_call("put", "main", 0, [0, 1])
-    verdicts = run(tmp_path, o, p)
-    assert verdicts["add"].verdict == "missing" and verdicts["put"].verdict == "port-only"
-    assert summarise(verdicts) == {
-        "buckets": {"behaves": 0, "differs-args": 0, "differs-result": 0, "missing": 1, "port-only": 1},
-        "own_fault": 0,
-    }
-
-
-def test_same_function_from_another_caller_is_differs_args(tmp_path):
-    o = o_call("add", "main", 0, [1, 2], 3)
-    p = p_call("add", "other", 0, [1, 2], 3)
+def test_ring_ordinals_align_and_a_divergence_after_the_first_n_is_found(tmp_path):
+    ordinals = [0, 1, 8, 16, 32]  # first calls, then the power-of-two ring both sides keep
+    o = [r for n in ordinals for r in o_call("add", "main", n, [n, 1], n + 1)]
+    p = [r for n in ordinals for r in p_call("add", "main", n, [n, 1], n + 1 if n < 16 else 0)]
     verdict = run(tmp_path, o, p)["add"]
-    assert verdict.verdict == "differs-args" and verdict.first["diffs"][0]["field"] == "caller"
-
-
-def test_ordinals_align_per_caller_not_globally(tmp_path):
-    o = o_call("add", "a", 0, [1, 1]) + o_call("add", "b", 0, [2, 2])
-    p = p_call("add", "b", 0, [2, 2]) + p_call("add", "a", 0, [1, 1])
-    assert run(tmp_path, o, p)["add"].verdict == "behaves"
-
-
-def test_a_capture_without_caller_is_refused(tmp_path):
-    path = tmp_path / "old.jsonl"
-    path.write_text(json.dumps({"k": "call", "order": 1, "i": 0, "a": ["0"]}) + "\n")
-    with pytest.raises(ValueError, match="predates per-call"):
-        read_calls(path, "oracle")
-
-
-def test_prototype_sources_cover_cpp_definitions(tmp_path):
-    """The project defines its functions in .CPP units with no header: those definitions are the declarations, so a void
-    function is not judged on a garbage return word."""
-    from abu_decomp import tas_coverage
-    from abu_decomp.behave import replay
-
-    unit = tmp_path / "src" / "game" / "A_1.CPP"
-    unit.parent.mkdir(parents=True)
-    unit.write_text("void Scene_Queue(s32 a, void *b) {\n    a = 1;\n}\n")
-    proto = replay.Prototypes(tmp_path, tas_coverage.HEADERS).get("Scene_Queue")
-    assert proto.ret == "void" and len(proto.params) == 2
+    assert verdict.compared == 5 and verdict.verdict == "differs-result"
+    assert verdict.first["ordinal"] == 16

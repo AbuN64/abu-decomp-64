@@ -4,8 +4,11 @@ Both sides write calls.jsonl (port: shim/boot/trace.c with N64C_CALLS=DIR; oracl
 line names the function `fn`, its `caller` (the logical parent frame's function), the call's ordinal `o` among that
 caller's calls of the function, the `frame` (poll) it ran in, its argument words `a` (oracle: a0-a3 with `f12`/`f14`;
 port: the first 8 words of the cdecl stack area) and, for a function returning, a `ret` line `r` ([v0, v1] on the
-oracle, [eax, edx] on the port; `f0` the oracle's float result, `st0` the port's) keyed by `i`. A call may carry `w`,
-a digest of the memory it wrote; when both sides' calls carry one it is part of the result.
+oracle, [eax, edx] on the port; `f0` the oracle's float result, `st0` the port's) keyed by `i`. A `ret` line carries
+`m`: for each pointer argument (key: the oracle's register number, the port's cdecl word number) the 16 words of RDRAM
+it names, read at the return as the original's code sees them (an address inside a window reads `pppppppp`); the
+windows of the same pointer parameter are part of the result. Only calls at the first N ordinals of a (caller,
+function) pair and at every power-of-two ordinal are recorded, the same on both sides.
 
 Calls are aligned by (function, caller, ordinal): the phase of the two sides' polls does not matter. A function's
 verdict follows its first diverging call (oracle chronology): `differs-args` when the same call got other arguments (or
@@ -42,7 +45,7 @@ class Call:
     f12: int = 0
     f14: int = 0
     ret: dict[str, Any] | None = None
-    writes: str | None = None
+    writes: dict[str, str] | None = None  # pointer-argument windows read at the return (`m`)
 
 
 def read_calls(path: Path, side: str, canon: Callable[[str], str] = lambda n: n) -> tuple[dict[Key, Call], int]:
@@ -72,7 +75,7 @@ def read_calls(path: Path, side: str, canon: Callable[[str], str] = lambda n: n)
                 int(row.get("f12", "0"), 16),
                 int(row.get("f14", "0"), 16),
                 None,
-                row.get("w"),
+                None,
             )
             calls.setdefault((call.fn, call.caller, call.ordinal), call)
             by_id[("fn", row["fn"], row["i"])] = call
@@ -83,7 +86,7 @@ def read_calls(path: Path, side: str, canon: Callable[[str], str] = lambda n: n)
             call = by_id.get(key)
             if call is not None and call.ret is None:
                 call.ret = row
-                call.writes = row.get("w", call.writes)
+                call.writes = row.get("m")
     return calls, first
 
 
@@ -168,6 +171,41 @@ def _oracle_result(kind: str, ret: dict[str, Any]) -> int:
     return v0 & MASKS.get(kind, 0xFFFFFFFF)
 
 
+def _window_keys(proto: Prototype) -> list[tuple[str, str, str]]:
+    """(parameter, oracle key, port key) of every pointer parameter whose window the oracle records (a0-a3)."""
+    out: list[tuple[str, str, str]] = []
+    word = 0
+    for slot in argument_slots(proto):
+        at = word
+        word += slot.param.words
+        where = slot.where[0]
+        if slot.param.kind == "pointer" and where[0] == "a" and where[1:].isdigit():
+            out.append((slot.param.name, where[1:], str(at)))
+    return out
+
+
+def _window_text(call: Call, proto: Prototype, side: int) -> str | None:
+    if not call.writes:
+        return None
+    parts = [f"{k[0]}: {call.writes[k[1 + side]]}" for k in _window_keys(proto) if k[1 + side] in call.writes]
+    return "; ".join(parts) or None
+
+
+def diff_windows(proto: Prototype, oracle: Call, port: Call) -> list[dict[str, str]]:
+    """The first differing word of each pointer parameter's window that both sides recorded: {field `*name[word]`,
+    kind `memory`, oracle, port}. A window one side did not record (a null or foreign pointer) is not compared."""
+    out: list[dict[str, str]] = []
+    for name, ok, pk in _window_keys(proto):
+        ow, pw = (oracle.writes or {}).get(ok), (port.writes or {}).get(pk)
+        if ow is None or pw is None or ow == pw:
+            continue
+        for at in range(0, min(len(ow), len(pw)), 8):
+            if ow[at : at + 8] != pw[at : at + 8]:
+                out.append({"field": f"*{name}[{at // 8}]", "kind": "memory", "oracle": ow[at : at + 8], "port": pw[at : at + 8]})
+                break
+    return out
+
+
 def diff_result(proto: Prototype, oracle: Call, port: Call, same: Same = default_same) -> list[dict[str, str]]:
     """The return value (when the prototype says it is meaningful) and the memory-write digest, when both calls
     returned and recorded one: {field, kind, oracle, port}."""
@@ -181,8 +219,7 @@ def diff_result(proto: Prototype, oracle: Call, port: Call, same: Same = default
             out.append({"field": "return", "kind": proto.ret, "oracle": _hex(ov), "port": "no st(0)"})
         elif not same(proto.ret, ov, pv):
             out.append({"field": "return", "kind": proto.ret, "oracle": _hex(ov), "port": _hex(pv)})
-    if oracle.writes is not None and port.writes is not None and oracle.writes != port.writes:
-        out.append({"field": "writes", "kind": "digest", "oracle": oracle.writes, "port": port.writes})
+    out.extend(diff_windows(proto, oracle, port))
     return out
 
 
@@ -207,7 +244,7 @@ class Verdict:
         }
 
 
-def _call_row(oracle: Call, port: Call, diffs: list[dict[str, str]], what: str) -> dict[str, Any]:
+def _call_row(proto: Prototype, oracle: Call, port: Call, diffs: list[dict[str, str]], what: str) -> dict[str, Any]:
     return {
         "what": what,
         "caller": oracle.caller,
@@ -217,9 +254,9 @@ def _call_row(oracle: Call, port: Call, diffs: list[dict[str, str]], what: str) 
         "oracle": {
             "args": [_hex(w) for w in oracle.words[:4]],
             "ret": oracle.ret and oracle.ret["r"],
-            "writes": oracle.writes,
+            "writes": _window_text(oracle, proto, 0),
         },
-        "port": {"args": [_hex(w) for w in port.words], "ret": port.ret and port.ret["r"], "writes": port.writes},
+        "port": {"args": [_hex(w) for w in port.words], "ret": port.ret and port.ret["r"], "writes": _window_text(port, proto, 1)},
     }
 
 
@@ -270,12 +307,12 @@ def align(
             args = diff_args(proto, oracle[key], port[key], same)
             if args:
                 verdict.verdict, verdict.cause = "differs-args", "input"
-                verdict.first = _call_row(oracle[key], port[key], args, "args")
+                verdict.first = _call_row(proto, oracle[key], port[key], args, "args")
                 break
             result = diff_result(proto, oracle[key], port[key], same)
             if result:
                 verdict.verdict, verdict.cause = "differs-result", "own"
-                verdict.first = _call_row(oracle[key], port[key], result, "result")
+                verdict.first = _call_row(proto, oracle[key], port[key], result, "result")
                 break
         out[name] = verdict
     return out

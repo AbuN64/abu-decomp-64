@@ -150,6 +150,7 @@ static unsigned ls_watch_lines;
 typedef struct {
     unsigned long frame, ret;
     unsigned entry, call;
+    unsigned long arg[8]; /* the call's argument words as entered (cdecl area), for the return-time memory windows */
 } LsReturn;
 static __thread LsReturn ls_shadow[LS_SHADOW];
 static __thread unsigned ls_depth;
@@ -274,6 +275,61 @@ NOINST static unsigned ca_ordinal(const void *caller, unsigned callee)
     }
     return UINT_MAX; /* table full around this key: the ordinal is unknown */
 }
+/* Memory a call leaves its results in (the port half of the original's `m`): at the return of a recorded call, every
+ * argument word that points into RDRAM or the executable's own segments names a CA_WINDOW-word window, read as the
+ * 32-bit values the original's code would see. A word of the window that is itself such a pointer reads `pppppppp`
+ * (native addresses are not the original's; whether it is a pointer is what both sides agree on). Stack out-parameters
+ * are not read: their neighbours are the port's own frame layout. dl_iterate_phdr names the readable segments once. */
+enum { CA_WINDOW = 16, CA_SEGMENTS = 12 };
+static unsigned long ca_seg_lo[CA_SEGMENTS], ca_seg_hi[CA_SEGMENTS], ca_ram_lo, ca_ram_hi;
+static unsigned ca_segments;
+NOINST static int ca_collect(struct dl_phdr_info *info, size_t size, void *data)
+{
+    (void)size;
+    (void)data;
+    for (unsigned k = 0; k < info->dlpi_phnum && ca_segments < CA_SEGMENTS; k++)
+        if (info->dlpi_phdr[k].p_type == PT_LOAD && (info->dlpi_phdr[k].p_flags & PF_R)) {
+            ca_seg_lo[ca_segments] = info->dlpi_addr + info->dlpi_phdr[k].p_vaddr;
+            ca_seg_hi[ca_segments++] = info->dlpi_addr + info->dlpi_phdr[k].p_vaddr + info->dlpi_phdr[k].p_memsz;
+        }
+    return 1; /* the first object is the executable */
+}
+NOINST static int ca_points_in(unsigned long p, unsigned long bytes)
+{
+    if (ca_ram_lo && p >= ca_ram_lo && p + bytes <= ca_ram_hi)
+        return 1;
+    for (unsigned k = 0; k < ca_segments; k++)
+        if (p >= ca_seg_lo[k] && p + bytes <= ca_seg_hi[k])
+            return 1;
+    return 0;
+}
+NOINST static int ca_windows(char *out, size_t cap, const unsigned long *args)
+{
+    int n = snprintf(out, cap, "\"m\":{");
+    const char *sep = "";
+    for (int k = 0; k < 8; k++) {
+        const unsigned long p = args[k];
+        if ((p & 3) || p < 0x1000 || !ca_points_in(p, CA_WINDOW * 4))
+            continue;
+        n += snprintf(out + n, cap - (size_t)n, "%s\"%d\":\"", sep, k);
+        sep = ",";
+        for (int j = 0; j < CA_WINDOW; j++) {
+            const unsigned long w = ((const volatile uint32_t *)p)[j];
+            if (w >= 0x1000 && ca_points_in(w, 1))
+                n += snprintf(out + n, cap - (size_t)n, "pppppppp");
+            else
+                n += snprintf(out + n, cap - (size_t)n, "%08lx", w);
+        }
+        n += snprintf(out + n, cap - (size_t)n, "\"");
+    }
+    return n + snprintf(out + n, cap - (size_t)n, "}");
+}
+/* The calls of one (caller, function) pair a recorded run keeps: the first `first`, then every power of two (a ring that
+ * both sides keep at the same ordinals, so the later calls of a long movie are aligned too). */
+NOINST static int ca_keeps(unsigned ordinal, unsigned first)
+{
+    return ordinal < first || (ordinal & (ordinal - 1)) == 0;
+}
 NOINST static void ca_init(void)
 {
     const char *dir = getenv("N64C_CALLS"), *first = getenv("N64C_CALLS_FIRST");
@@ -294,8 +350,16 @@ NOINST static void ca_init(void)
         return;
     }
     ls_limit = first && *first ? (unsigned)strtoul(first, NULL, 10) : CA_FIRST;
-    dprintf(ls_log, "{\"k\":\"meta\",\"side\":\"port\",\"mode\":\"calls\",\"first\":%u,\"trace\":%u}\n", ls_limit,
-            n64c_trace_count);
+    dl_iterate_phdr(ca_collect, NULL);
+    for (unsigned b = 0x800000u; b >= 0x400000u && !ca_ram_lo && n64c_memory_ram; b >>= 1) {
+        const unsigned char *ram = n64c_memory_ram(0, b);
+        if (ram) {
+            ca_ram_lo = (unsigned long)ram;
+            ca_ram_hi = ca_ram_lo + b;
+        }
+    }
+    dprintf(ls_log, "{\"k\":\"meta\",\"side\":\"port\",\"mode\":\"calls\",\"first\":%u,\"trace\":%u,"
+            "\"ring\":\"pow2\",\"window\":%d}\n", ls_limit, n64c_trace_count, CA_WINDOW);
     ca_on = 1;
     fprintf(stderr, "boot-calls: on, first %u calls of each function, file %s\n", ls_limit, path);
 }
@@ -366,12 +430,17 @@ NOINST __attribute__((used, force_align_arg_pointer)) unsigned long n64c_lockste
         _Exit(78);
     }
     const LsReturn r = ls_shadow[--ls_depth];
-    char line[256], st0[24] = "null";
+    char line[2048], st0[24] = "null";
     if (block[2])
         snprintf(st0, sizeof st0, "\"%08lx%08lx\"", block[1], block[0]);
-    ls_line_out(line, snprintf(line, sizeof line, "{\"k\":\"ret\",\"order\":%u,\"i\":%u,\"thr\":%ld,\"r\":[\"%08lx\","
-                               "\"%08lx\"],\"st0\":%s}\n", n64c_trace_entries[r.entry].order, r.call, ls_tid(),
-                               block[4], block[3], st0));
+    int n = snprintf(line, sizeof line, "{\"k\":\"ret\",\"order\":%u,\"i\":%u,\"thr\":%ld,\"r\":[\"%08lx\","
+                     "\"%08lx\"],\"st0\":%s", n64c_trace_entries[r.entry].order, r.call, ls_tid(), block[4], block[3], st0);
+    if (ca_on) {
+        line[n++] = ',';
+        n += ca_windows(line + n, sizeof line - (size_t)n, r.arg);
+    }
+    n += snprintf(line + n, sizeof line - (size_t)n, "}\n");
+    ls_line_out(line, n);
     return r.ret;
 }
 __asm__(".text\n"
@@ -432,7 +501,7 @@ NOINST static void ls_call(Slot *slot, void *call_site, const unsigned long *reg
     if (ca_on) {
         const void *parent = stack && stack->depth > 1 ? stack->frame[stack->depth - 2].fn : NULL;
         ordinal = ca_ordinal(parent, i);
-        if (ordinal >= ls_limit)
+        if (!ca_keeps(ordinal, ls_limit))
             return;
         unsigned off;
         if (parent && (caller = n64c_trace_symbol(parent, &off)) == NULL)
@@ -454,7 +523,10 @@ NOINST static void ls_call(Slot *slot, void *call_site, const unsigned long *reg
     ls_line_out(line, n);
 #if defined(__i386__)
     if (frame[1] == (unsigned long)call_site && ls_depth < LS_SHADOW) {
-        ls_shadow[ls_depth++] = (LsReturn){(unsigned long)frame, frame[1], i, call};
+        LsReturn *shadow = &ls_shadow[ls_depth++];
+        *shadow = (LsReturn){(unsigned long)frame, frame[1], i, call, {0}};
+        if (ca_on)
+            memcpy(shadow->arg, frame + 2, sizeof shadow->arg);
         frame[1] = (unsigned long)n64c_lockstep_return_i386;
     }
 #else

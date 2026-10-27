@@ -1296,7 +1296,7 @@ async function renderFn() {
   </div>`;
   wireFn();
 }
-// The first diverging call (fns.json `call`, tas_coverage.call_behaviour): the differing arguments, then the call's raw words, return and writes, port vs original.
+// The first diverging call (fns.json `call`, tas_coverage.call_behaviour): the differing arguments, then the call's raw words, return and the memory its pointer arguments name, port vs original.
 const CAUSE_TXT = { input: "input already differs: fix upstream", own: "same input, other output: fix here" };
 function divergence(c, line) {
   if (!c) return "";
@@ -1311,7 +1311,7 @@ function divergence(c, line) {
   return `<div class="hr">${esc(c.verdict)} · ${c.compared} calls compared${who}</div>
     <div class="dim mono">${esc(f.what || "")} · caller ${esc(f.caller)} · call #${f.ordinal} · ${esc(at)}</div>
     <table class="dv"><tr><th>differs</th><th>port</th><th>original</th></tr>${diffs}</table>
-    <table class="dv"><tr><th>whole call</th><th>port</th><th>original</th></tr>${raw}${row("return", p.ret, o.ret, bad.has("return"))}${row("memory writes", p.writes, o.writes, bad.has("writes"))}</table>`;
+    <table class="dv"><tr><th>whole call</th><th>port</th><th>original</th></tr>${raw}${row("return", p.ret, o.ret, bad.has("return"))}${row("memory (pointer windows)", p.writes, o.writes, (f.diffs || []).some(d => d.kind === "memory"))}</table>`;
 }
 // A behave case row is a string, or {text|call, port, oracle} with one tick or cross per side (decoded by the bake).
 function caseRow(c) {
