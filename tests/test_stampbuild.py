@@ -926,3 +926,24 @@ def test_idle_pool_trees_behind_the_shared_commit_are_rewarmed_in_the_background
     os.close(held)
     assert [r["tree"] for r in rows] == ["STAMP-S0"]  # S1 is at the commit, S2 has a process in it, S3 is leased
     assert warmed == released == ["STAMP-S0"] and classes == ["background"]
+
+
+def test_a_short_at_hash_is_resolved_to_the_full_commit_before_the_tree_is_made(tmp_path, monkeypatch):
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    full, ats, asked = "c0ffee" + "0" * 34, [], []
+    tree = tmp_path / "wt" / "STAMP-x"
+    monkeypatch.setattr(
+        worktree, "new", lambda p, s, lane, at: ats.append(at) or ({"worktree": str(tree), "rev": at}, 0, [])
+    )
+
+    def run(cmd, **k):
+        if "rev-parse" in cmd:
+            asked.append(cmd[-1])
+            return subprocess.CompletedProcess(cmd, 0, full + "\n", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    for at in ("c0ffee", full):
+        ats.clear()
+        stampbuild.build(CFG, None, tmp_path, diff, tmp_path / f"stamps-{at[:6]}-{len(at)}", at=at)
+        assert ats == [full] and f"{at}^{{commit}}" in asked

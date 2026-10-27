@@ -270,8 +270,12 @@ def restore(shared: Path, tree: Path, changed: list[str], before: dict[str, list
 
 
 def _tree(profile: Any, shared: Path, lane: str, rev: str | None):
-    """(made, code, findings) for the slot's tree at REV (None: the branch tip): reused when it is clean, else fresh."""
+    """(made, code, findings) for the slot's tree at REV (None: the branch tip): reused when it is clean, else fresh.
+    REV is resolved to its full hash first: the markers and every `== HEAD` comparison hold full hashes, so a short
+    `stamp --at` never matched the shared tree and every unit was scored without the clean reference tree (10-27, ~1 h)."""
     tree = worktree.base(shared) / lane
+    if rev and (full := _git(shared, "rev-parse", "--verify", f"{rev}^{{commit}}").stdout.strip()):
+        rev = full
     if rev and (made := reuse(profile, tree, rev)):
         return made, 0, []
     if rev and (made := rewarm(profile, shared, tree, rev)):
