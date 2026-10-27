@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError, remap, slots, tas_oracle, tas_symbolize
-from abu_decomp.behave import percall, prototype, replay
+from abu_decomp.behave import abi, percall, prototype, replay
 from abu_decomp.config import Profile, check_keys
 
 COVERAGE, GCOV, ORACLE_DIR, TABLE, HTML = "coverage.json", "gcov", "oracle-golden", "coverage-table.json", "coverage"
@@ -333,6 +333,45 @@ def call_behaviour(
     oracle, _ = percall.read_calls(oracle_file, "oracle", resolve)
     port, _ = percall.read_calls(port_file, "port", resolve)
     return {name: v.as_dict() for name, v in percall.align(oracle, port, protos).items()}
+
+
+BEHAVIOUR = "behaviour.json"  # RUN/: the run's per-call verdicts and the signature of what they were judged from
+
+
+def behaviour_signature(
+    version: str, symbols: dict[str, int], prototypes: replay.Prototypes | None, extra: tuple[Path, ...] = ()
+) -> str:
+    """What a run's cached verdicts depend on besides its own call files: the judging code, the ROM version, the source's
+    address tables (how names resolve) and its declarations (how arguments decode)."""
+    digest = hashlib.sha256(version.encode())
+    for module in (percall, prototype, abi):
+        digest.update(Path(module.__file__).read_bytes())
+    digest.update(json.dumps(sorted(symbols.items())).encode())
+    digest.update((prototypes.fingerprint() if prototypes else "inferred").encode())
+    return digest.hexdigest()
+
+
+def cached_behaviour(
+    run: Path, resolve: Callable[[str], str], protos: Callable[[str], Any], signature: str
+) -> dict[str, dict[str, Any]] | None:
+    """`call_behaviour(run)`, read from RUN/behaviour.json when it was judged from the same call files (size and mtime)
+    under the same signature, else judged and written there: a coverage union then re-judges only runs that changed."""
+    files = [run / PORT_CALLS, run / ORACLE_DIR / ORACLE_CALLS]
+    if not all(f.is_file() for f in files):
+        return None
+    stamp = [signature, *(f"{f.stat().st_size}:{f.stat().st_mtime_ns}" for f in files)]
+    cache = run / BEHAVIOUR
+    try:
+        kept = json.loads(cache.read_text())
+        if kept.get("stamp") == stamp:
+            return kept["behaviour"]
+    except (OSError, ValueError, KeyError):
+        pass
+    judged = call_behaviour(run, resolve, protos)
+    tmp = cache.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"stamp": stamp, "behaviour": judged}))
+    tmp.replace(cache)
+    return judged
 
 
 @slots.admitted("background")
@@ -790,7 +829,10 @@ def build(
         symbols = symbol_tables(cov)
         rows, totals = universe(cov, symbols)
         resolve = resolver(rows, cov["version"], symbols[0])
-    protos = replay.Prototypes(cov["source"], HEADERS).get if cov.get("source") else prototype.inferred
+    prototypes = replay.Prototypes(cov["source"], HEADERS) if cov.get("source") else None
+    protos = prototypes.get if prototypes else prototype.inferred
+    with stage("signature"):
+        signature = behaviour_signature(cov["version"], symbols[0], prototypes)
 
     deadline = None if oracle_seconds is None else time.monotonic() + oracle_seconds
 
@@ -810,7 +852,7 @@ def build(
         with stage("read-gcovr"):
             port = fold(read_gcovr(run / COVERAGE) or {}, resolve, _add)
         with stage("call-behaviour"):
-            behaviour = call_behaviour(run, resolve, protos)
+            behaviour = cached_behaviour(run, resolve, protos, signature)
         return {
             "movie": name,
             "run": run.name,

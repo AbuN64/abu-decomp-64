@@ -242,7 +242,7 @@ class RunReportTests(unittest.TestCase):
             mock.patch.object(cov, "resolver", return_value=lambda name: name),
             mock.patch.object(cov, "union", side_effect=lambda *a, **k: {"covered": [[]], "summary": {}}) as union,
             mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
-            mock.patch.object(cov, "call_behaviour") as judged,
+            mock.patch.object(cov, "cached_behaviour") as judged,
             mock.patch.object(cov, "read_oracle", return_value=None),
             mock.patch("abu_decomp.tas.read_record", return_value={}),
         ):
@@ -374,7 +374,7 @@ class RunReportTests(unittest.TestCase):
             mock.patch.object(cov, "universe", return_value=([], {})),
             mock.patch.object(cov, "union", side_effect=lambda *a, **k: {"covered": [[]], "summary": {}}),
             mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
-            mock.patch.object(cov, "call_behaviour", return_value=None),
+            mock.patch.object(cov, "cached_behaviour", return_value=None),
             mock.patch.object(cov, "read_oracle", return_value=None),
             mock.patch("abu_decomp.tas.read_record", return_value={}),
         ):
@@ -399,7 +399,7 @@ class RunReportTests(unittest.TestCase):
             mock.patch.object(cov, "universe", return_value=([], {})),
             mock.patch.object(cov, "union", side_effect=lambda *a, **k: {"covered": [[]], "summary": {}}),
             mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
-            mock.patch.object(cov, "call_behaviour", return_value=None),
+            mock.patch.object(cov, "cached_behaviour", return_value=None),
             mock.patch.object(cov, "read_oracle", return_value=None),
             mock.patch.object(cov, "run_oracle", replay),
             mock.patch("abu_decomp.tas.read_record", return_value={}),
@@ -531,7 +531,7 @@ class RunReportTests(unittest.TestCase):
             mock.patch.object(cov, "universe", return_value=([], {})),
             mock.patch.object(cov, "union", return_value={"covered": [[]], "summary": {}}),
             mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
-            mock.patch.object(cov, "call_behaviour", return_value=None),
+            mock.patch.object(cov, "cached_behaviour", return_value=None),
             mock.patch.object(cov, "read_oracle", return_value=None),
             mock.patch("abu_decomp.tas.read_record", return_value={}),
         ):
@@ -556,7 +556,7 @@ class RunReportTests(unittest.TestCase):
             mock.patch.object(cov, "universe", return_value=([], {})),
             mock.patch.object(cov, "union", return_value={"covered": [[]], "summary": {}}),
             mock.patch.object(cov.tas_symbolize, "symbols", return_value=(None, [])),
-            mock.patch.object(cov, "call_behaviour", return_value=None),
+            mock.patch.object(cov, "cached_behaviour", return_value=None),
             mock.patch.object(cov, "read_oracle", return_value=None),
             mock.patch("abu_decomp.tas.read_record", return_value={}),
         ):
@@ -800,3 +800,30 @@ def test_a_published_page_port_finds_its_build_tree_through_the_build_units(tmp_
     assert cov.build_dir(cfg) == build
     assert cov.build_dir({"port": build / "ragewars", "build": {"units": build / "decomp/src"}}) == build
     assert cov.build_dir({"port": tmp_path / "live/port/ragewars"}) == tmp_path / "live/port"
+
+
+def test_a_runs_verdicts_are_judged_once_and_rejudged_when_the_calls_or_the_signature_change(tmp_path):
+    """tas coverage re-read every run's calls.jsonl (1-4 s each, 732 movies): RUN/behaviour.json keeps the verdicts."""
+    run = tmp_path / "run"
+    (run / cov.ORACLE_DIR).mkdir(parents=True)
+    port, oracle = run / cov.PORT_CALLS, run / cov.ORACLE_DIR / cov.ORACLE_CALLS
+    port.write_text("p\n")
+    oracle.write_text("o\n")
+    with mock.patch.object(cov, "call_behaviour", return_value={"f": {"verdict": "behaves"}}) as judged:
+        for _ in range(3):
+            assert cov.cached_behaviour(run, str, str, "sig") == {"f": {"verdict": "behaves"}}
+        assert judged.call_count == 1
+        cov.cached_behaviour(run, str, str, "other")
+        assert judged.call_count == 2
+        port.write_text("changed\n")
+        cov.cached_behaviour(run, str, str, "other")
+        assert judged.call_count == 3
+        (run / cov.BEHAVIOUR).write_text("{torn")
+        cov.cached_behaviour(run, str, str, "other")
+        assert judged.call_count == 4
+
+
+def test_a_run_without_both_sides_calls_has_no_verdicts(tmp_path):
+    (tmp_path / cov.PORT_CALLS).write_text("p\n")
+    assert cov.cached_behaviour(tmp_path, str, str, "sig") is None
+    assert not (tmp_path / cov.BEHAVIOUR).exists()

@@ -273,6 +273,14 @@ class Prototypes:
         self.aliases = prototype.scan_aliases(list(self.texts.values()))
         self.cache: dict[str, prototype.Prototype] = {}
 
+    def fingerprint(self) -> str:
+        """Identity of the declarations read: changes when any source text does."""
+        digest = hashlib.sha256()
+        for path, text in self.texts.items():
+            digest.update(f"{path}\0{len(text)}\0".encode())
+            digest.update(text.encode(errors="replace"))
+        return digest.hexdigest()
+
     def get(self, name: str) -> prototype.Prototype:
         """The declaration with the most parameters: an old-style `T f();` elsewhere in the sources says nothing."""
         if name not in self.cache:

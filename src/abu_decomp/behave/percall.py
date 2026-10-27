@@ -54,6 +54,13 @@ def read_calls(path: Path, side: str, canon: Callable[[str], str] = lambda n: n)
     calls: dict[Key, Call] = {}
     by_id: dict[tuple[Any, ...], Call] = {}
     first = 0
+    names: dict[str, str] = {}  # the same few thousand names repeat on every line: resolve each once
+
+    def name_of(raw: str) -> str:
+        if raw not in names:
+            names[raw] = canon(raw)
+        return names[raw]
+
     for number, text in enumerate(path.read_text().splitlines(), 1):
         try:
             row = json.loads(text)
@@ -66,8 +73,8 @@ def read_calls(path: Path, side: str, canon: Callable[[str], str] = lambda n: n)
             if "caller" not in row or "o" not in row or "fn" not in row:
                 raise ValueError(f"{path}:{number}: {side} call line has no fn/caller/o (capture predates per-call)")
             call = Call(
-                canon(row["fn"]),
-                canon(row["caller"]),
+                name_of(row["fn"]),
+                name_of(row["caller"]),
                 int(row["o"]),
                 int(row.get("frame", 0)),
                 number,
