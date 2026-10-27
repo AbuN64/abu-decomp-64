@@ -18,6 +18,43 @@ def done(out="", code=0):
     return subprocess.CompletedProcess([], code, out, "")
 
 
+def elf(*names, order=">"):
+    """A minimal ELF32 object whose symbol table defines NAMES (and an undefined `ext`, a file and a section symbol)."""
+    import struct
+
+    strtab = b"\0" + b"".join(n.encode() + b"\0" for n in (*names, "ext"))
+    at, rows = 1, [(0, 0, 0, 0, 0)]
+    for n in (*names, "ext"):
+        rows.append((at, 0, 4, 0x12, 1 if n != "ext" else 0))
+        at += len(n) + 1
+    rows += [(0, 0, 0, 0x04, 1), (0, 0, 0, 0x03, 1)]
+    sym = b"".join(struct.pack(order + "IIIBBH", a, v, sz, i, 0, sh) for a, v, sz, i, sh in rows)
+    head = 0x34
+    sh_off = head + len(sym) + len(strtab)
+    header = b"\x7fELF" + bytes([1, 2 if order == ">" else 1, 1]) + bytes(9)
+    header += struct.pack(order + "HHIIIIIHHHHHH", 1, 8, 1, 0, 0, sh_off, 0, head, 0, 0, 40, 3, 0)
+    sections = [bytes(40)]
+    sections.append(struct.pack(order + "10I", 0, 2, 0, 0, head, len(sym), 2, 0, 4, 16))
+    sections.append(struct.pack(order + "10I", 0, 3, 0, 0, head + len(sym), len(strtab), 0, 0, 1, 0))
+    return header + sym + strtab + b"".join(sections)
+
+
+def test_objsyms_reads_the_defined_symbols_of_either_byte_order_and_nothing_of_a_non_elf(tmp_path):
+    from abu_decomp.data import objsyms
+
+    (tmp_path / "be.o").write_bytes(elf("f1", "f2"))
+    (tmp_path / "le.o").write_bytes(elf("g1", order="<"))
+    (tmp_path / "junk.o").write_bytes(b"not an object")
+    assert objsyms.defined(tmp_path / "be.o") == {"f1", "f2"}  # undefined, file and section symbols are no definition
+    assert objsyms.defined(tmp_path / "le.o") == {"g1"}
+    assert objsyms.defined(tmp_path / "junk.o") == objsyms.defined(tmp_path / "gone.o") == set()
+    assert objsyms.index(tmp_path, {"u1": "be.o", "u2": "le.o", "u3": "gone.o"}) == {
+        "f1": ["u1"],
+        "f2": ["u1"],
+        "g1": ["u2"],
+    }
+
+
 def test_changed_symbols_come_from_the_changed_lines_only():
     diff = "+++ b/x.c\n-extern u8 D_800C0000;\n+extern Foo D_800C0000;\n context D_800C9999\n+int y = D_800C1234_de;\n"
     run = lambda *a, **k: done(diff)  # noqa: E731
@@ -204,7 +241,7 @@ def test_a_fn_that_moved_to_another_unit_is_scored_by_symbol(tmp_path):
         ("f2", "src/a/c_unit.CPP"): 5,
     }  # both became C in c_unit; asm_unit no longer holds them
     (tmp_path / "build/a/src/a").mkdir(parents=True)
-    (tmp_path / "build/a/src/a/c_unit.CPP.o").write_text("")
+    (tmp_path / "build/a/src/a/c_unit.CPP.o").write_bytes(elf("f1", "f2"))
     builder = SimpleNamespace(
         cfg=CFG,
         tree=tmp_path,
@@ -220,7 +257,9 @@ def test_the_no_object_fallback_is_one_batch_over_the_objects_that_exist_not_a_p
     process each (~340 s per function). One batch of the pairs whose object exists; none when no unit has one."""
     (tmp_path / "docs").mkdir()
     units = [f"src/a/u{i}.CPP" for i in range(50)]
-    (tmp_path / "docs/map-a.json").write_text(json.dumps({"fns": [["f1", 0, 0, 100, units[0]], ["f2", 0, 0, 100, units[1]]]}))
+    (tmp_path / "docs/map-a.json").write_text(
+        json.dumps({"fns": [["f1", 0, 0, 100, units[0]], ["f2", 0, 0, 100, units[1]]]})
+    )
     calls = {"batch": [], "single": 0}
 
     def scores(v, pairs):
@@ -235,15 +274,13 @@ def test_the_no_object_fallback_is_one_batch_over_the_objects_that_exist_not_a_p
     (tmp_path / "build/a/src/a").mkdir(parents=True)
     assert [x[1] for x in check.broken(builder, "a", units)] == ["f1", "f2"]  # nothing built: no fallback batch
     assert len(calls["batch"]) == 1 and calls["single"] == 0
-    for u in units[2:4]:
-        (tmp_path / f"build/a/{u}.o").write_text("")
+    for u in units[2:50]:  # 48 built units; only u2 and u3 define the lost functions
+        (tmp_path / f"build/a/{u}.o").write_bytes(elf(*({"f1": 1, "f2": 1}.keys() if u in units[2:4] else ["other"])))
     calls["batch"].clear()
     bad = check.broken(builder, "a", units)
     assert bad == [(units[1], "f2", "no-score")]  # f1 was found by symbol in u2
     assert len(calls["batch"]) == 2 and calls["single"] == 0  # the unit scores, then ONE fallback batch
-    assert sorted(calls["batch"][1]) == sorted(
-        [("f1", u) for u in (*units[2:4],)] + [("f2", u) for u in units[2:4]]
-    )
+    assert sorted(calls["batch"][1]) == sorted([(fn, u) for fn in ("f1", "f2") for u in units[2:4]])  # not 48 units
 
 
 def test_a_tree_whose_asm_marks_differ_from_its_configs_is_stale_per_version(tmp_path):
@@ -255,14 +292,18 @@ def test_a_tree_whose_asm_marks_differ_from_its_configs_is_stale_per_version(tmp
         (tmp_path / f"asm/{v}").mkdir(parents=True)
         (tmp_path / f"versions/{v}/splat.yaml").write_text(text)
         (tmp_path / f"versions/{v}/symbol_addrs.txt").write_text("rows")
-        (tmp_path / f"asm/{v}/.extracted").write_text(hashlib.sha1(f"{text}rows".encode()).hexdigest() + "\n")
+        (tmp_path / f"asm/{v}/.extracted").write_text(
+            hashlib.sha1(f"rows{text}".encode()).hexdigest() + "\n"
+        )  # make: sha1 of symbol_addrs.txt then splat.yaml
     assert check.stale_extractions(cfg, tmp_path) == []
     (tmp_path / "versions/b/symbol_addrs.txt").write_text("renamed")  # a sync moved the tree
     (tmp_path / "asm/c/.extracted").write_text("")  # an empty mark is not checked, as the build does not
     assert check.stale_extractions(cfg, tmp_path) == ["b"]
 
 
-def test_refresh_re_extracts_a_stale_tree_once_whatever_the_diff_and_refuses_when_the_marks_stay_stale(tmp_path, monkeypatch):
+def test_refresh_re_extracts_a_stale_tree_once_whatever_the_diff_and_refuses_when_the_marks_stay_stale(
+    tmp_path, monkeypatch
+):
     from abu_decomp import tools
 
     cfg = dataclasses.replace(CFG, versions=("a",))
@@ -288,11 +329,16 @@ def test_refresh_re_extracts_a_stale_tree_once_whatever_the_diff_and_refuses_whe
     (tmp_path / "asm/a/.extracted").write_text("old")
     fresh["on"] = False
     why = check.refresh_extractions(cfg, None, tmp_path, run)
-    assert why and "still names other" in why and len(calls) == 2  # force: the record of the last setup does not skip it
+    assert (
+        why and "still names other" in why and len(calls) == 2
+    )  # force: the record of the last setup does not skip it
 
 
 def test_a_facts_check_refusal_is_a_build_failure_with_the_unit_count_and_no_scoring(tmp_path):
-    log = "asm/de was extracted from other symbol_addrs.txt/splat.yaml than this tree holds (1629f8fd, now 2f43cf53): run make extract-de\n" * 3
+    log = (
+        "asm/de was extracted from other symbol_addrs.txt/splat.yaml than this tree holds (1629f8fd, now 2f43cf53): run make extract-de\n"
+        * 3
+    )
     scored = []
     builder = SimpleNamespace(
         cfg=CFG, tree=tmp_path, run=lambda *a, **k: done(), objects=lambda v, u, keep_going: (2, log),

@@ -80,8 +80,10 @@ class DataConfig:
     rom_image: str = ""
     rom_base: str = ""
     object: str = "build/{v}/{unit}.o"
-    extract_mark: str = "asm/{v}/.extracted"  # holds the sha1 of extract_facts, in order, the version's asm was split from
-    extract_facts: tuple[str, ...] = ("versions/{v}/splat.yaml", "versions/{v}/symbol_addrs.txt")
+    extract_mark: str = (
+        "asm/{v}/.extracted"  # holds the sha1 of extract_facts, in order, the version's asm was split from
+    )
+    extract_facts: tuple[str, ...] = ("versions/{v}/symbol_addrs.txt", "versions/{v}/splat.yaml")
     fncmp: tuple[str, ...] = ()
     fncmp_score: str = r"edit=(\d+)"
     fncmp_batch: tuple[

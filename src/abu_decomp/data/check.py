@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from abu_decomp import meter
-from abu_decomp.data import source
+from abu_decomp.data import objsyms, source
 from abu_decomp.data.config import DataConfig
 from abu_decomp.data.trial import Builder, fn_unit  # noqa: F401  re-export for callers
 
@@ -375,16 +375,20 @@ def broken(
     scores = getattr(b, "scores", None)
     known = scores(version, wanted) if scores is not None and getattr(b.cfg, "fncmp_batch", None) else {}
     got = {(fn, unit): known[(fn, unit)] if (fn, unit) in known else b.score(version, fn, unit) for fn, unit in wanted}
-    # the map still files FN under the unit it had (a split-asm unit) while the diff made it C in another one: match by
-    # symbol, in the other units this check built (10-24 Render_GetSpatialEffectLevel, US). ONE batch over the objects
-    # that exist, never a process per unit (10-27: 2756 forks, ~340 s per function on a tree whose units had no object)
+    # the map still files FN under the unit it had (a split-asm unit) while the diff made it C in another one, or the name
+    # moved with a rename: look FN up in the symbol tables of the objects this check built (10-24
+    # Render_GetSpatialEffectLevel, US) and score it only there, in ONE batch. Never every object (10-27: 2756 forks, ~340 s
+    # per function on a tree whose units had no object, and the same scan on a current one)
     lost = [key for key, sc in got.items() if sc is None]
     if lost:
-        built = [u for u in units if (b.tree / b.cfg.object.format(v=version, unit=u)).is_file()]
-        pairs = [(fn, u2) for fn, unit in lost for u2 in built if u2 != unit]
+        built = {u: b.cfg.object.format(v=version, unit=u) for u in units}
+        where = objsyms.index(b.tree, {u: o for u, o in built.items() if (b.tree / o).is_file()})
+        pairs = [(fn, u2) for fn, unit in lost for u2 in where.get(fn, []) if u2 != unit]
         other = _scores_of(b, version, pairs)
         for fn, unit in lost:
-            got[(fn, unit)] = next((s2 for u2 in built if u2 != unit and (s2 := other[(fn, u2)]) is not None), None)
+            got[(fn, unit)] = next(
+                (s2 for u2 in where.get(fn, []) if u2 != unit and (s2 := other[(fn, u2)]) is not None), None
+            )
     for (fn, unit), sc in got.items():
         if sc != 0:
             bad.append((unit, fn, "edit=%s" % sc if sc is not None else "no-score"))
