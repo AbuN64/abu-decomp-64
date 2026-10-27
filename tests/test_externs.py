@@ -178,3 +178,40 @@ def test_a_blind_unit_whose_text_differs_from_the_header_declaration_is_refused(
     _, found = moved(tmp_path, extra)
     refusal = next(r for r in found["refused"] if r["id"] == "gMajor")
     assert refusal["reason"] == "declarations conflict" and refusal["protos"] == ["int gMajor", "s32 gMajor"]
+
+
+def test_a_declaration_with_another_parameter_count_than_the_definition_is_refused(tmp_path: Path) -> None:
+    extra = {"src/b/b.c": FILES["src/b/b.c"].replace("extern int Helper(int x);", "extern int Helper(int, int);")}
+    _, found = moved(tmp_path, extra)
+    refusal = next(r for r in found["refused"] if r["id"] == "Helper")
+    assert refusal["reason"] == "declaration parameter count differs from the definition"
+    assert "int Helper(int, int)" in refusal["protos"] and "int Helper(int x)" in refusal["protos"]
+    assert "Helper" not in table(tmp_path / "out")
+
+
+@pytest.mark.parametrize(
+    "proto,count",
+    [("int f(void)", 0), ("int f()", None), ("int f(int, char *)", 2), ("void (*f)(int, int)", 2), ("int g", None)],
+)
+def test_the_parameter_count_of_a_prototype(proto: str, count: int | None) -> None:
+    assert externs.arity(proto) == count
+
+
+def test_a_new_include_goes_before_the_first_use_not_after_a_later_conditional_include(tmp_path: Path) -> None:
+    body = '#include "B/B.H"\nextern int gScore;\nint useb(void) { return gScore; }\n#if 1\n#include "Z.H"\n#endif\n'
+    root, _ = moved(tmp_path, {"src/b/b.c": body, "include/Z.H": GUARD.format("Z_H")})
+    subprocess.run(["git", "-C", str(root), "apply", str(tmp_path / "out" / "externs-batch-01.diff")], check=True)
+    lines = (root / "src/b/b.c").read_text().splitlines()
+    assert lines.index('#include "A/A.H"') < lines.index("int useb(void) { return gScore; }")
+
+
+def test_a_unit_gaining_the_destination_header_is_refused_when_it_spells_a_name_the_closure_declares(
+    tmp_path: Path,
+) -> None:
+    extra = {
+        "include/A/A.H": "#ifndef A_H\n#define A_H\nextern int gOther;\n#endif\n",
+        "src/b/b.c": FILES["src/b/b.c"] + "extern long gOther;\n",
+    }
+    _, found = moved(tmp_path, extra)
+    refusal = next(r for r in found["refused"] if r["id"] == "gScore")
+    assert refusal["reason"].startswith("include clashes in include/A/A.H:gOther")

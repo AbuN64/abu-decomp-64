@@ -60,6 +60,7 @@ class Scan:
     in_headers: dict[str, dict[str, set[str]]] = field(default_factory=lambda: defaultdict(dict))  # id -> hdr -> protos
     definitions: dict[str, list[tuple[str, str]]] = field(default_factory=lambda: defaultdict(list))  # (unit, proto)
     compound: set[str] = field(default_factory=set)  # ids declared together with others: not movable line-wise
+    compound_in: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # file -> its compound ids
     local_names: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # file -> names it spells itself
     includes: dict[str, list[str]] = field(default_factory=dict)  # file -> raw include targets
     texts: dict[str, str] = field(default_factory=dict)
@@ -111,6 +112,7 @@ def scan(root: Path, files: list[str]) -> Scan:
             if re.match(r"extern\b", body) and "{" not in body:
                 if len(c.defs) != 1:
                     found.compound |= c.defs
+                    found.compound_in[name] |= c.defs
                     continue
                 (ident,) = c.defs
                 if is_header:
@@ -200,6 +202,25 @@ def majority(units: list[str], unit_module: dict[str, str]) -> str:
     return sorted(count.items(), key=lambda kv: (-kv[1], kv[0]))[0][0] if count else ""
 
 
+def newly_seen_clash(
+    found: Scan, sees: dict[str, set[str]], unit: str, dest: str, header_ids: dict[str, dict[str, set[str]]]
+) -> list[str]:
+    """The names a unit would meet when it gets `#include dest`: every header of dest's closure the unit does not see
+    yet comes with its declarations, and the unit's own spelling of such a name (a compound extern, a static, a type, an
+    extern with another prototype) no longer compiles beside them. Returns `header:name` for each."""
+    gained = ({dest} | sees.get(dest, set())) - sees.get(unit, set()) - {unit}
+    mine: dict[str, set[str]] = defaultdict(set)  # name -> the unit's extern prototypes ({} = not an extern)
+    for ident in found.externs.keys() & {n for h in gained for n in header_ids.get(h, {})}:
+        mine[ident] |= {d.proto for d in found.externs[ident] if d.unit == unit}
+    own = found.local_names.get(unit, set()) | found.compound_in.get(unit, set())
+    out = []
+    for h in sorted(gained):
+        for ident, protos in header_ids.get(h, {}).items():
+            if ident in own or (mine.get(ident) and mine[ident] - protos):
+                out.append(f"{h}:{ident}")
+    return out
+
+
 def plan(
     root: Path,
     map_path: Path | None = None,
@@ -218,6 +239,15 @@ def plan(
     for n, hs in sees.items():
         for h in hs:
             includers[h].add(n)
+    header_ids: dict[str, dict[str, set[str]]] = defaultdict(dict)  # header -> the names it declares -> prototypes
+    for ident, held in found.in_headers.items():
+        for h, protos in held.items():
+            header_ids[h][ident] = protos
+    for h, names in list(found.local_names.items()) + list(found.compound_in.items()):
+        if h.lower().endswith(HEADER_SUFFIXES):
+            for ident in names:
+                header_ids[h].setdefault(ident, set())
+    reach: dict[tuple[str, str], list[str]] = {}
     spelled: dict[str, set[str]] = defaultdict(set)  # id -> files that spell it as something other than an extern
     for n, names in found.local_names.items():
         for ident in names & found.externs.keys():
@@ -238,6 +268,12 @@ def plan(
             protos = sorted({p for u, p in defined if unit_module.get(u) == owner} or {defined[0][1]})
             if len(protos) > 1:
                 refused.append({"id": ident, "reason": "definitions differ", "protos": protos})
+                continue
+            stated = arity(protos[0])
+            odd = sorted({d.proto for d in decls if stated is not None and arity(d.proto) not in (None, stated)})
+            if odd:  # a caller written against that declaration passes another number of arguments than the definition takes
+                why = "declaration parameter count differs from the definition"
+                refused.append({"id": ident, "reason": why, "protos": [*protos, *odd]})
                 continue
         else:
             at = range_owner(ident, ranges)
@@ -279,6 +315,14 @@ def plan(
         )
         if clash:
             refused.append({"id": ident, "reason": "name clashes in " + ", ".join(clash[:4]), "protos": protos})
+            continue
+        for u in users:
+            if dest not in sees.get(u, set()):
+                if (u, dest) not in reach:
+                    reach[u, dest] = newly_seen_clash(found, sees, u, dest, header_ids)
+                clash += reach[u, dest]
+        if clash:
+            refused.append({"id": ident, "reason": "include clashes in " + ", ".join(clash[:3]), "protos": protos})
             continue
         moves.append(
             {
@@ -405,6 +449,46 @@ def locate(current: list[str], wanted: list[str], hint: int) -> int:
     return min(spots, key=lambda i: abs(i - hint)) if spots else -1
 
 
+def include_anchor(lines: list[str], first: int) -> int:
+    """The line a new include goes after: the last unconditional `#include` before the first removed declaration, so
+    every use of the hoisted names still follows it (-1: none, the include goes first)."""
+    depth, anchor = 0, -1
+    for i, ln in enumerate(lines[:first]):
+        word = re.match(r"\s*#\s*(\w+)", ln)
+        if not word:
+            continue
+        if word.group(1).startswith("if"):
+            depth += 1
+        elif word.group(1) == "endif":
+            depth = max(depth - 1, 0)
+        elif word.group(1) == "include" and depth == 0:
+            anchor = i
+    return anchor
+
+
+def arity(proto: str) -> int | None:
+    """The parameter count a function prototype states (None: not a function, `()` or variadic, which state none)."""
+    if not proto.endswith(")"):
+        return None
+    depth, start = 0, len(proto)
+    for i in range(len(proto) - 1, -1, -1):
+        depth += (proto[i] == ")") - (proto[i] == "(")
+        if depth == 0:
+            start = i
+            break
+    inner, parts, level, cut = proto[start + 1 : -1], [], 0, 0
+    for i, ch in enumerate(inner):
+        level += (ch in "([") - (ch in ")]")
+        if ch == "," and level == 0:
+            parts.append(inner[cut:i])
+            cut = i + 1
+    parts.append(inner[cut:])
+    parts = [p.strip() for p in parts]
+    if parts == [""] or "..." in parts:
+        return None
+    return 0 if parts == ["void"] else len(parts)
+
+
 def write_batches(
     found: Scan, batches: list[list[dict[str, object]]], packs: Path | None, sees: dict[str, set[str]], unit_cpu: float
 ) -> tuple[list[dict[str, object]], list[str]]:
@@ -438,7 +522,7 @@ def write_batches(
         for n, spans in removals.items():
             cur = texts[n]
             drop = {i for a, b in spans for i in range(a, b)}
-            last_inc = max((i for i, ln in enumerate(cur) if re.match(r"\s*#\s*include\b", ln)), default=-1)
+            last_inc = include_anchor(cur, min(a for a, _ in spans))
             out: list[str] = []
             for i, ln in enumerate(cur):
                 if i not in drop:
