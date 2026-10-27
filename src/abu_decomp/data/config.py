@@ -31,6 +31,7 @@ carries no game fact except the symbol shape, so a project with another naming o
     fncmp = ["python3", "fncmp.py", "--aligned", "{v}", "{fn}", "{obj}"]
     fncmp_score = 'edit=(\\d+)'                # group 1: the edit count (0 = exact)
     fncmp_batch = ["python3", "fncmp.py", "--aligned", "--batch", "{v}"]  # optional: reads "FN OBJ" lines, prints "FN <result line>"
+    stamp_trees = 4                           # warm trees of the stamp pool (a stamp leases one; each ~6.6 GB)
     census = "~/census.json"                  # optional: the gate's census; stamp/check refuse a gate violation before building
 """
 
@@ -88,6 +89,7 @@ class DataConfig:
         ""  # census.json the gate reads: stamp --build and check --diff refuse what the gate would, before any build
     )
     evidence_tree: str = ""  # a tree whose asm/<v>/ the gate reads to tell a separate global from a struct member
+    stamp_trees: int = 4  # warm trees of the stamp pool: stamps running at once (4 on a 12-core rig, ~6.6 GB each)
 
     def define(self, version: str) -> str:
         return "-D" + self.version_define.format(V=version.upper().replace("-", "_"))
@@ -122,6 +124,8 @@ def parse(table: dict[str, Any], source: str = "config") -> DataConfig:
         )
     values = {k: (tuple(v) if k in _TUPLES else v) for k, v in table.items() if k in _KEYS}
     cfg = DataConfig(**values)
+    if not isinstance(cfg.stamp_trees, int) or isinstance(cfg.stamp_trees, bool) or cfg.stamp_trees < 1:
+        raise DecompError("data.config", f"{source}: stamp_trees must be a whole number of at least 1")
     if cfg.reference not in cfg.versions and cfg.versions != ("ref",):
         raise DecompError("data.config", f"{source}: reference {cfg.reference!r} is not in versions")
     return cfg

@@ -133,3 +133,38 @@ def test_a_clean_rebase_keeps_the_stamp_and_an_edited_line_does_not(tmp_path):
     assert not stamp.stamped(tmp_path, after.replace("a/a.c b/a.c", "a/b.c b/b.c"))
     two_hunks = after + "@@ -90,2 +90,2 @@\n-x\n+y\n"
     assert not stamp.stamped(tmp_path, two_hunks)  # a second hunk is a second change
+
+
+DIFF_A = "diff --git a/a.c b/a.c\n--- a/a.c\n+++ b/a.c\n@@ -1 +1 @@\n-x\n+y\n"
+
+
+def test_a_stamp_keeps_what_its_build_measured_and_a_plain_one_has_none(tmp_path):
+    from abu_decomp.data import stamp
+
+    stamp.write(tmp_path, DIFF_A)
+    assert stamp.stamped(tmp_path, DIFF_A) and stamp.measured(tmp_path, DIFF_A) is None
+    record = {"cpu": 118.5, "wall": 140.0, "tree": "STAMP-S1", "rev": "a" * 40, "units": {"us": 3}}
+    stamp.write(tmp_path, DIFF_A, measured=record)
+    assert stamp.measured(tmp_path, DIFF_A) == record and stamp.stamped(tmp_path, DIFF_A)
+
+
+def test_a_stamp_in_the_old_line_format_or_missing_has_no_measure(tmp_path):
+    from abu_decomp.data import stamp
+
+    assert stamp.measured(tmp_path, DIFF_A) is None
+    stamp.path_of(tmp_path, DIFF_A).write_text("a.c\n")
+    assert stamp.stamped(tmp_path, DIFF_A) and stamp.measured(tmp_path, DIFF_A) is None
+    stamp.path_of(tmp_path, DIFF_A).write_text("3\n")
+    assert stamp.measured(tmp_path, DIFF_A) is None
+
+
+def test_the_pool_size_is_project_config_defaulting_to_four_and_refuses_less_than_one():
+    import pytest
+
+    from abu_decomp import DecompError
+    from abu_decomp.data import config
+
+    assert config.parse({}).stamp_trees == 4 and config.parse({"stamp_trees": 6}).stamp_trees == 6
+    for bad in (0, -1, "4", True):
+        with pytest.raises(DecompError):
+            config.parse({"stamp_trees": bad})

@@ -5,17 +5,21 @@ all of them changed (8 min wall, 1404 CPU-s with one header in it, 10-24). Here 
 tree (extraction, objects and times seeded from SHARED, so make rebuilds only what the diff reaches), `data check` judges
 every version, a clean pass writes the stamp. The result carries wall and CPU seconds.
 
-The tree is a SLOT (STAMP-S0.., `ABU_STAMP_TREES`, default 2; each ~6.6 GB under the shared tree's own folder, never
-`wt/wt/`): a flock'd slot whose tree was left clean at SHARED's commit is reused (reset, diff applied, built incrementally,
-reverted), so a stamp pays no new 6.6 GB seed copy and concurrent stamps are bounded by the slot count, not one tree per
-stamp left behind by a killed run (10-24). A slot at another commit, or whose last run did not finish (marker still
-"busy"), is rebuilt from the shared tree's warm extraction."""
+The trees are a POOL of K warm trees (STAMP-S0.., `stamp_trees` of the data config, default 4 on 12 cores; each ~6.6 GB
+under the shared tree's own folder, never `wt/wt/`). A stamp LEASES one (a flock): a tree left clean at SHARED's commit
+is reused (reset, diff applied, built incrementally, reverted), so a stamp pays no new 6.6 GB seed copy and concurrent
+stamps are bounded by K, not one tree per stamp left behind by a killed run (10-24). A tree at another commit, or whose
+last run did not finish (marker still "busy"), is RE-WARMED in place by one sync step from SHARED (`rewarm`: the
+commit, the changed outputs and facts, `unbake setup --no-make`), never rebuilt cold.
+
+A pack whose stamp is already held (content-keyed) re-reports what its build measured, so it can be re-proved."""
 
 from __future__ import annotations
 
 import contextlib
 import fcntl
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Iterator
@@ -32,10 +36,6 @@ from abu_decomp.data.config import DataConfig
 
 CPU_CAP = 300.0
 STATE = ".stamp-state"  # in the tree: the commit it was left clean at, or "busy" while a stamp build owns it
-
-
-def trees() -> int:
-    return max(1, int(os.environ.get("ABU_STAMP_TREES") or 2))
 
 
 def busy_in(tree: Path, proc: Path = Path("/proc")) -> list[int]:
@@ -105,11 +105,13 @@ def take(path: Path) -> int | None:
 
 
 @contextmanager
-def slot(folder: Path, count: int, wait: float = 900.0) -> Iterator[str]:
-    """The lane name of a stamp slot nobody else holds (a flock the kernel drops with the process, a dead holder's lock
-    broken by `take`) and no process still works in (busy_in); waits for one, then refuses naming the holders."""
+def lease(folder: Path, count: int, wait: float = 900.0) -> Iterator[str]:
+    """The lane name of a pool tree nobody else holds (a flock the kernel drops with the process, a dead holder's lock
+    broken by `take`) and no process still works in (busy_in), leased for the stamp; waits for one, then refuses
+    naming the holders. One log line names the tree and the wait."""
     folder.mkdir(parents=True, exist_ok=True)
-    end = time.monotonic() + wait
+    start = time.monotonic()
+    end = start + wait
     while True:
         for i in range(count):
             fd = take(folder / f".stamp-{i}.lock")
@@ -118,15 +120,18 @@ def slot(folder: Path, count: int, wait: float = 900.0) -> Iterator[str]:
             if busy_in(folder / f"STAMP-S{i}"):
                 os.close(fd)
                 continue
+            print(f"stamp pool: leased STAMP-S{i} of {count} (waited {time.monotonic() - start:.0f}s)", flush=True)
             try:
                 yield f"STAMP-S{i}"
             finally:
                 os.close(fd)
+                print(f"stamp pool: released STAMP-S{i}", flush=True)
             return
         if time.monotonic() > end:
             who = "; ".join(f"STAMP-S{i}: {describe(folder / f'.stamp-{i}.lock')}" for i in range(count))
             raise DecompError(
-                "data.stamp", f"all {count} stamp trees are busy after {wait:.0f}s (ABU_STAMP_TREES): {who}"
+                "data.stamp",
+                f"all {count} pool trees are leased after {wait:.0f}s (stamp_trees in the data config): {who}",
             )
         time.sleep(2)
 
@@ -167,6 +172,48 @@ def reuse(profile: Any, tree: Path, rev: str) -> dict[str, Any] | None:
     return {"worktree": str(tree), "rev": rev, "reused": True}
 
 
+def rewarm(profile: Any, shared: Path, tree: Path, rev: str) -> dict[str, Any] | None:
+    """The pool tree at REV again after ONE sync step from SHARED, for a tree left at another commit or busy (killed or
+    failed run): the commit is checked out in place, the shared tree's outputs and facts are synced over it (rsync copies
+    only what differs, so the 6.6 GB are not copied again), `unbake setup --no-make` and the pool marker follow, as for a
+    new tree. None when it cannot (no tree, no rsync, a refusal): the caller then builds a fresh tree."""
+    from unbake import treelock
+
+    if not (tree / ".git").exists() or not shutil.which("rsync"):
+        return None
+    started, was = time.monotonic(), (tree / STATE).read_text().strip() if (tree / STATE).is_file() else "unknown"
+    if any(
+        _git(tree, *a).returncode
+        for a in (("reset", "-q", "--hard"), ("clean", "-fdq"), ("checkout", "-q", "--detach", "-f", rev))
+    ):
+        return None
+    names = [*worktree.COPIED, *(f".unbake/{f}" for f in worktree.FACTS)]
+    with setup_lock(shared), treelock.hold(shared, who=f"decomp data stamp rewarm {tree.name}"):
+        for name in names:
+            src, dst = shared / name, tree / name
+            if not src.exists():
+                continue
+            args = (
+                ["rsync", "-a", "--delete", f"{src}/", f"{dst}/"]
+                if src.is_dir()
+                else ["rsync", "-a", str(src), str(dst)]
+            )
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if subprocess.run(args, capture_output=True).returncode:
+                return None
+        aligned = worktree.align_times(shared, tree)
+        from abu_decomp import tools
+
+        if not tools.invoke("unbake", profile, ["setup", "--no-make"], project=tree).ok:
+            return None
+        worktree.mark(shared, tree, rev)
+    print(
+        f"stamp pool: re-warmed {tree.name} {was[:9]} -> {rev[:9]} by one sync in {time.monotonic() - started:.0f}s",
+        flush=True,
+    )
+    return {"worktree": str(tree), "rev": rev, "reused": False, "rewarmed": True, "aligned": aligned}
+
+
 def release(shared: Path, tree: Path, before: dict[str, list] | None = None) -> None:
     """Back to a clean tree and its marker: the diff and its build leave nothing but objects that make sees stale.
     BEFORE: the tree's stamp records from before the diff was applied (`restore`)."""
@@ -197,6 +244,8 @@ def _tree(profile: Any, shared: Path, lane: str, rev: str | None):
     """(made, code, findings) for the slot's tree at REV (None: the branch tip): reused when it is clean, else fresh."""
     tree = worktree.base(shared) / lane
     if rev and (made := reuse(profile, tree, rev)):
+        return made, 0, []
+    if rev and (made := rewarm(profile, shared, tree, rev)):
         return made, 0, []
     worktree.prune(shared, [lane])  # a leftover of an interrupted run, or a tree that could not be made current
     with setup_lock(shared):
@@ -236,6 +285,13 @@ def build(
     text = diff.read_text(errors="replace")
     if not stamp_mod.touches_data(cfg, text):
         return {"stamp": "not needed: the diff touches no declaration or data"}, 0, []
+    if held := stamp_mod.measured(stamps, text):
+        print(
+            f"stamp build: cpu={held['cpu']:.0f}s wall={held['wall']:.0f}s tree={held['tree']} held "
+            f"(stamp {stamp_mod.path_of(stamps, text).name} measured at {str(held['rev'])[:9]}, not built again)",
+            flush=True,
+        )
+        return {"stamp": str(stamp_mod.path_of(stamps, text)), "held": True, "measured": held}, 0, []
     if bad := gate_mod.precheck(
         cfg, text
     ):  # the gate refuses these at queue time: cheaper to say so before a 70 s build
@@ -269,7 +325,7 @@ def build(
             1,
             [{"key": "data.stamp", "blocking": True, "message": msg}],
         )
-    with slot(worktree.base(shared), trees()) as lane:
+    with lease(worktree.base(shared), cfg.stamp_trees) as lane:
         return _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract)
 
 
@@ -296,6 +352,20 @@ def _renamed(profile: Any, shared: Path, diff: Path) -> bool:
 def header_files(files: list[str]) -> list[str]:
     """The headers among a diff's files (what `expand_units` counts as one), for the ROM link to treat as old."""
     return sorted(f for f in files if f.startswith("include/") or f.lower().endswith(".h"))
+
+
+def closure_line(r: dict[str, Any]) -> str:
+    """The rebuild of one version for a header diff, measured: the units that include a changed header (`closure`), the
+    ones the narrowing proved the edit cannot reach (`skipped`, signed not rebuilt) and the units the check rebuilt, which
+    are the closure less those plus the diff's own units. Empty for a diff with no header."""
+    note = r.get("narrowed") or {}
+    if not note.get("headers"):
+        return ""
+    closure, skipped, rebuilt = int(note["includers"]), int(note["skipped"]), int(r["units"])
+    return (
+        f"stamp closure: {r['version']} headers={note['headers']} closure={closure} skipped={skipped} rebuilt={rebuilt} "
+        f"own={rebuilt - (closure - skipped)}"
+    )
 
 
 def _phase(name: str, since: list[float], cap: bool = True) -> None:
@@ -342,6 +412,9 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
     made, code, findings = _tree(profile, shared, lane, at or head or None)
     tree = Path(made["worktree"])
     extracted = kept = False
+    wrote: dict[str, int] | None = (
+        None  # the units per version of a stamp written: its measured record is completed below
+    )
     from unbake import hdrnarrow
 
     before = {} if code else dict(hdrnarrow.records(tree))  # the stamp records the clean slot holds, for `restore`
@@ -409,6 +482,8 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         check_mod.prepare(builder, list(cfg.versions))
         results = [check_mod.check(builder, v) for v in cfg.versions]
         _phase("check", mark)
+        for line in filter(None, map(closure_line, results)):
+            print(line, flush=True)
         if os.environ.get("ABU_STAMP_ROM_SKIP", "1") == "1":
             builder.skip_headers = header_files(files)  # the check judged their includers; the link does not redo them
         if (
@@ -460,6 +535,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
         }
         if not findings and all(r["built"] for r in results):
             result["stamp"] = str(stamp_mod.write(stamps, text))
+            wrote = {r["version"]: r.get("units", 0) for r in results}
         else:
             result["stamp"] = "not stamped: the check failed"
         return result, 1 if findings else 0, findings
@@ -471,6 +547,9 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
             worktree.prune(shared, [tree.name])
         elif (tree / ".git").exists():
             release(shared, tree, before)
+        if wrote is not None:  # the cost the line below shows: a held pack re-reports it (`measured`)
+            record = {"cpu": round(used, 1), "wall": round(wall, 1), "tree": lane, "rev": made["rev"], "units": wrote}
+            stamp_mod.write(stamps, text, measured=record)
         print(
             f"stamp build: wall={wall:.0f}s cpu={used:.0f}s tree={lane} {'reused' if made.get('reused') else 'fresh'}"
             + ("  FLAG CPU-OVER-5min" if used > CPU_CAP else ""),

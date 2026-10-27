@@ -1,5 +1,6 @@
 """`data stamp --build`: a diff is built alone on a fresh warm tree and stamped only on a clean all-version pass."""
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -121,11 +122,11 @@ def test_slots_are_exclusive_and_a_full_pool_times_out(tmp_path):
 
     from abu_decomp import DecompError
 
-    with stampbuild.slot(tmp_path, 2, 0) as one, stampbuild.slot(tmp_path, 2, 0) as two:
+    with stampbuild.lease(tmp_path, 2, 0) as one, stampbuild.lease(tmp_path, 2, 0) as two:
         assert {one, two} == {"STAMP-S0", "STAMP-S1"}
-        with pytest.raises(DecompError), stampbuild.slot(tmp_path, 2, 0):
+        with pytest.raises(DecompError), stampbuild.lease(tmp_path, 2, 0):
             pass
-    with stampbuild.slot(tmp_path, 2, 0) as again:
+    with stampbuild.lease(tmp_path, 2, 0) as again:
         assert again == "STAMP-S0"
 
 
@@ -136,12 +137,12 @@ def test_a_slot_whose_tree_still_has_a_working_process_is_skipped(tmp_path):
     try:
         assert stampbuild.busy_in(tmp_path / "STAMP-S0") == [child.pid]
         assert stampbuild.busy_in(tmp_path / "STAMP-S1") == []
-        with stampbuild.slot(tmp_path, 2, 0) as lane:
+        with stampbuild.lease(tmp_path, 2, 0) as lane:
             assert lane == "STAMP-S1"
     finally:
         child.kill()
         child.wait()
-    with stampbuild.slot(tmp_path, 2, 0) as lane:
+    with stampbuild.lease(tmp_path, 2, 0) as lane:
         assert lane == "STAMP-S0"
 
 
@@ -376,7 +377,7 @@ def test_a_lock_whose_named_holder_is_gone_is_broken(tmp_path):
     orphan = os.open(lock, os.O_CREAT | os.O_RDWR)  # an orphan child kept the flock after its stamp died
     fcntl.flock(orphan, fcntl.LOCK_EX)
     lock.write_text("999999999\n")
-    with stampbuild.slot(tmp_path, 1, 0) as one:
+    with stampbuild.lease(tmp_path, 1, 0) as one:
         assert one == "STAMP-S0"
         assert stampbuild.holder_of(lock) == os.getpid()
     os.close(orphan)
@@ -388,9 +389,9 @@ def test_a_busy_pool_names_the_live_holder(tmp_path):
     from abu_decomp import DecompError
 
     with (
-        stampbuild.slot(tmp_path, 1, 0),
+        stampbuild.lease(tmp_path, 1, 0),
         pytest.raises(DecompError, match=r"STAMP-S0: pid \d+ \(live"),
-        stampbuild.slot(tmp_path, 1, 0),
+        stampbuild.lease(tmp_path, 1, 0),
     ):
         pass
 
@@ -458,7 +459,7 @@ def test_a_diff_the_gate_would_refuse_is_refused_before_any_build(tmp_path, monk
         "+extern long D_2;\n"
     )
     built = []
-    monkeypatch.setattr(stampbuild, "slot", lambda *a, **k: built.append(1) or (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(stampbuild, "lease", lambda *a, **k: built.append(1) or (_ for _ in ()).throw(AssertionError))
     config = replace(CFG, census=str(census), symbol_token=r"D_\w+")
     _result, code, findings = stampbuild.build(config, None, tmp_path, diff, tmp_path / "stamps")
     assert code == 1 and not built and findings[0]["key"] == "data.gate" and "LITERAL D_1" in findings[0]["message"]
@@ -471,7 +472,7 @@ def test_a_diff_renameproof_proves_is_stamped_without_a_build(tmp_path, monkeypa
 
     monkeypatch.setattr(tools, "invoke", lambda *a, **k: type("R", (), {"ok": True})())
     monkeypatch.setattr(subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "c0ffee\n", ""))
-    monkeypatch.setattr(stampbuild, "slot", lambda *a, **k: (_ for _ in ()).throw(AssertionError("built")))
+    monkeypatch.setattr(stampbuild, "lease", lambda *a, **k: (_ for _ in ()).throw(AssertionError("built")))
     result, code, _f = stampbuild.build(CFG, object(), tmp_path, diff, tmp_path / "stamps")
     assert code == 0 and result["proof"] == "renameproof" and stamp_mod.stamped(tmp_path / "stamps", diff.read_text())
 
@@ -581,18 +582,110 @@ def test_release_gives_the_reverted_files_their_shared_date_and_signs_the_header
     assert asked == [(tree, ["x.h"], {"build/a/x.i.ok": [1, "k"]})]
 
 
-def test_a_held_stamp_is_built_and_measured_again_not_answered_present(tmp_path, monkeypatch, capsys):
+def test_a_held_content_keyed_stamp_re_reports_the_cpu_its_build_measured_not_the_lookup(tmp_path, monkeypatch, capsys):
+    from abu_decomp import meter
+    from abu_decomp.data import check as check_mod
+
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    calls, now = [], [0.0]
+    monkeypatch.setattr(meter, "cpu", lambda: now[0])
+    monkeypatch.setattr(
+        check_mod,
+        "check",
+        lambda b, v: (
+            calls.append(v) or now.__setitem__(0, now[0] + 40.0) or {"version": v, "built": True, "broken": []}
+        ),
+    )
+    stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert stamp_mod.measured(tmp_path / "stamps", DIFF)["cpu"] == 80.0 and calls == ["a", "b"]
+    capsys.readouterr()
+    result, code, _f = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    out = capsys.readouterr().out
+    assert code == 0 and calls == ["a", "b"] and result["held"] and result["stamp"].endswith(".ok")
+    assert "stamp build: cpu=80s" in out and "held" in out and "stamp phase" not in out
+
+
+def test_a_stamp_a_check_wrote_has_no_measure_so_a_build_proves_and_measures_it(tmp_path, monkeypatch, capsys):
     from abu_decomp.data import check as check_mod
 
     diff, _pruned = setup(tmp_path, monkeypatch, False)
     calls = []
     monkeypatch.setattr(check_mod, "check", lambda b, v: calls.append(v) or {"version": v, "built": True, "broken": []})
+    stamp_mod.write(tmp_path / "stamps", DIFF)
+    assert stamp_mod.stamped(tmp_path / "stamps", DIFF) and stamp_mod.measured(tmp_path / "stamps", DIFF) is None
     stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
-    assert stamp_mod.stamped(tmp_path / "stamps", DIFF) and calls == ["a", "b"]
-    result, code, _f = stampbuild.build(CFG, None, tmp_path, diff, tmp_path / "stamps")
+    assert calls == ["a", "b"] and stamp_mod.measured(tmp_path / "stamps", DIFF)["units"] == {"a": 0, "b": 0}
+    assert "stamp build: wall=" in capsys.readouterr().out
+
+
+def test_a_lease_logs_the_tree_it_took_and_gives_back(tmp_path, capsys):
+    with stampbuild.lease(tmp_path, 4, 0) as lane:
+        assert lane == "STAMP-S0"
+        with stampbuild.lease(tmp_path, 4, 0) as other:
+            assert other == "STAMP-S1"
     out = capsys.readouterr().out
-    assert code == 0 and calls == ["a", "b", "a", "b"] and result["stamp"].endswith(".ok")
-    assert out.count("stamp phase check:") == 2 and out.count("stamp build:") == 2
+    assert "stamp pool: leased STAMP-S0 of 4" in out and "stamp pool: released STAMP-S1" in out
+
+
+def test_a_build_leases_as_many_trees_as_the_config_says(tmp_path, monkeypatch):
+    diff, _pruned = setup(tmp_path, monkeypatch, False)
+    counts = []
+
+    def lease(folder, count, wait=0):
+        counts.append(count)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(stampbuild, "lease", lease)
+    for cfg in (CFG, replace(CFG, stamp_trees=6)):
+        with contextlib.suppress(RuntimeError):
+            stampbuild.build(cfg, None, tmp_path, diff, tmp_path / "stamps")
+    assert counts == [4, 6] and not hasattr(stampbuild, "trees")
+
+
+def test_a_pool_tree_at_another_commit_is_re_warmed_by_one_sync_not_built_cold(tmp_path, monkeypatch, capsys):
+    from unbake import treelock
+
+    from abu_decomp import tools
+
+    shared, tree = tmp_path / "shared", tmp_path / "wt" / "STAMP-S0"
+    (shared / "build").mkdir(parents=True)
+    (tree / ".git").mkdir(parents=True)
+    (tree / stampbuild.STATE).write_text("busy\n")
+    ran, cold = [], []
+    monkeypatch.setattr(stampbuild.shutil, "which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")
+    )
+    monkeypatch.setattr(treelock, "hold", lambda *a, **k: contextlib.nullcontext())
+    monkeypatch.setattr(worktree, "align_times", lambda s, t, names=None: 3)
+    monkeypatch.setattr(worktree, "mark", lambda s, t, rev: (t / stampbuild.STATE).write_text(rev + "\n") or rev)
+    monkeypatch.setattr(worktree, "new", lambda *a, **k: cold.append(1))
+    ok = type("R", (), {"ok": True})()
+    monkeypatch.setattr(tools, "invoke", lambda tool, p, args, project=None: ran.append(args) or ok)
+    made, code, _f = stampbuild._tree(object(), shared, "STAMP-S0", "c" * 40)
+    assert code == 0 and made["rewarmed"] and not cold
+    assert (tree / stampbuild.STATE).read_text().strip() == "c" * 40
+    assert any("--detach" in c for c in ran if c[0] == "git" or "git" in c[:1]) or any("--detach" in c for c in ran)
+    assert ["setup", "--no-make"] in ran and any(c[0] == "rsync" for c in ran)
+    assert "stamp pool: re-warmed STAMP-S0 busy -> ccccccccc by one sync" in capsys.readouterr().out
+
+
+def test_a_pool_tree_that_cannot_be_re_warmed_falls_back_to_a_new_tree(tmp_path, monkeypatch):
+    shared, cold = tmp_path / "shared", []
+    monkeypatch.setattr(stampbuild.shutil, "which", lambda n: None)
+    monkeypatch.setattr(worktree, "prune", lambda s, lanes, *a: ({}, 0, []))
+    monkeypatch.setattr(worktree, "new", lambda p, s, lane, at: cold.append(lane) or ({"worktree": "x"}, 0, []))
+    (tmp_path / "wt" / "STAMP-S0" / ".git").mkdir(parents=True)
+    stampbuild._tree(object(), shared, "STAMP-S0", "c" * 40)
+    assert cold == ["STAMP-S0"]
+
+
+def test_a_header_diff_reports_the_closure_it_rebuilt():
+    note = {"headers": 1, "includers": 120, "skipped": 100, "why": ""}
+    line = stampbuild.closure_line({"version": "us", "units": 22, "narrowed": note})
+    assert line == "stamp closure: us headers=1 closure=120 skipped=100 rebuilt=22 own=2"
+    assert stampbuild.closure_line({"version": "us", "units": 3}) == ""
+    assert stampbuild.closure_line({"version": "us", "units": 3, "narrowed": {"headers": 0}}) == ""
 
 
 def clock(monkeypatch, links):

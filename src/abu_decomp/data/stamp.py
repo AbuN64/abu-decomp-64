@@ -7,6 +7,7 @@ without one. A diff that touches no declaration and names no data symbol needs n
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -156,11 +157,27 @@ def stamped(directory: Path, text: str) -> bool:
     return (directory / f"{digest(change(text))}.ok").is_file()
 
 
-def write(directory: Path, text: str) -> Path:
+def path_of(directory: Path, text: str) -> Path:
+    return directory / f"{digest(change(text))}.ok"
+
+
+def write(directory: Path, text: str, measured: dict | None = None) -> Path:
+    """The stamp of TEXT: its files and, when a build proved it, what that build measured (cpu, wall, tree, rev, units per
+    version), so a re-proof of a held pack reports the original cost instead of the cost of looking it up."""
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{digest(change(text))}.ok"
-    path.write_text("\n".join(files_of(text)) + "\n")
+    path = path_of(directory, text)
+    path.write_text(json.dumps({"files": files_of(text), "measured": measured}, sort_keys=True) + "\n")
     return path
+
+
+def measured(directory: Path, text: str) -> dict | None:
+    """What the build that wrote the stamp of TEXT measured; None when no stamp is held or none was measured (a stamp a
+    check or an older tool wrote: the one `--build` then proves and measures again)."""
+    try:
+        got = json.loads(path_of(directory, text).read_text()).get("measured")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return got if isinstance(got, dict) and "cpu" in got else None
 
 
 def missing(cfg: DataConfig, directory: Path, text: str, diff: Path) -> list[str]:
