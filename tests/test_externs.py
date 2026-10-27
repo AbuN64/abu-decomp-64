@@ -524,3 +524,15 @@ def test_b_a_user_whose_own_definition_differs_from_a_header_declaration_the_new
     refusal = next(r for r in found["refused"] if r["id"] == "gScore")
     assert refusal["reason"].startswith("include clashes in ")
     assert "Z/Z.H:Scale" in refusal["reason"]
+
+
+def test_a_block_scope_extern_of_another_type_than_the_gained_header_declares_refuses_the_include(
+    tmp_path: Path,
+) -> None:
+    extra = {
+        "include/A/A.H": "#ifndef A_H\n#define A_H\nextern int gOther;\n#endif\n",
+        "src/b/b.c": FILES["src/b/b.c"] + "void fb(void) {\n    extern void gOther(int ch);\n    gOther(1);\n}\n",
+    }
+    _, found = moved(tmp_path, extra)
+    refusal = next(r for r in found["refused"] if r["id"] == "gScore")
+    assert refusal["reason"].startswith("include clashes in include/A/A.H:gOther")

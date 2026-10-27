@@ -77,6 +77,7 @@ class Scan:
     tags: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # struct/union/enum tag -> files
     aliases: dict[str, str] = field(default_factory=dict)  # `typedef <words> NAME;` -> the words (unambiguous ones)
     originals: dict[str, str] = field(default_factory=dict)  # unit -> its text before the multi-declarator split
+    spelled: dict[str, dict[str, list[str]]] = field(default_factory=dict)  # file -> spelled_statements, read once
     created: set[str] = field(default_factory=set)  # headers the plan creates (their text is in `texts`)
     needs: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # created header -> includes it needs
 
@@ -401,6 +402,11 @@ def newly_seen_clash(
     for ident in (found.externs.keys() | found.definitions.keys()) & {n for h in gained for n in header_ids.get(h, {})}:
         mine[ident] |= {d.proto for d in found.externs.get(ident, ()) if d.unit == unit}
         mine[ident] |= {p for u, p in found.definitions.get(ident, ()) if u == unit}  # its own definition, too
+    if unit in found.texts and not unit.lower().endswith(HEADER_SUFFIXES):  # a block-scope extern, too
+        if unit not in found.spelled:
+            found.spelled[unit] = spelled_statements(found.texts[unit])
+        for ident in found.spelled[unit].keys() & {n for h in gained for n in header_ids.get(h, {})}:
+            mine[ident] |= set(found.spelled[unit][ident])
     own = found.local_names.get(unit, set()) | found.compound_in.get(unit, set())
     out = []
     for h in sorted(gained):
