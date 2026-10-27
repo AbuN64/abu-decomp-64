@@ -163,11 +163,12 @@ def _declarator(segment: str) -> str | None:
     """The name one declarator introduces: `(*cb)` a function pointer, the word before `(` a function, else the last
     word before `[` or an initializer."""
     segment = segment.split("=", 1)[0]
-    pointer = re.search(r"\(\s*\*+\s*(\w+)", segment)
-    if pointer:
-        return pointer.group(1)
     if "(" in segment:
-        segment = segment.split("(", 1)[0]
+        head, rest = segment.split("(", 1)
+        pointer = re.match(r"\s*\*+\s*(\w+)", rest)  # only the first parenthesis can be the declarator's own
+        if pointer:
+            return pointer.group(1)
+        segment = head
     segment = segment.split("[", 1)[0]
     words = IDENT.findall(segment)
     words = [w for w in words if w not in KEYWORDS]

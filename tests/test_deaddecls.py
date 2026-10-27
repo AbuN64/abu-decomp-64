@@ -173,3 +173,17 @@ def test_a_run_that_finds_nothing_still_writes_the_empty_summary(tmp_path: Path)
     packs = tmp_path / "again"
     found = deaddecls.run(root, "include/COMMON", packs=packs)
     assert found["dead"] == 0 and json.loads((packs / "dead-decls.json").read_text()) == {"batches": []}
+
+
+def test_a_prototype_with_function_pointer_parameters_is_declared_by_its_own_name(tmp_path: Path) -> None:
+    root = tmp_path
+    (root / "src").mkdir()
+    (root / "src/unit.c").write_text(
+        "extern void Set(void *a, void (*cb)(void), void (*cb2)(void));\n"
+        "extern void (*gHook)(int);\n"
+        "void Run(void) { Set(0, 0, 0); }\n"
+    )
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    found = deaddecls.run(root, "src")
+    assert names(found, "source") == {"gHook"}
