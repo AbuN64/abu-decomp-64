@@ -34,6 +34,13 @@ from abu_decomp.data import config as data_config
 from abu_decomp.data import gate as data_gate
 
 HEADER_SUFFIXES = (".h", ".hpp", ".hh")
+# a source file may macro a keyword (`#define char x` in a shim): the language owns these, no header provides them
+C_KEYWORDS = frozenset(
+    {
+        *("char", "short", "int", "long", "float", "double", "signed", "unsigned", "void", "const", "volatile"),
+        *("register", "static", "extern", "_Bool", "bool"),
+    }
+)
 INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.M)
 ADDRESS = re.compile(r"(?:^|_)([0-9A-Fa-f]{6,8})$")
 TYPEDEF = re.compile(r"\btypedef\b[^;{}]*?(?:\(\s*\*\s*(\w+)\s*\)[^;{}]*|\b(\w+)\s*(?:\[[^\]]*\])*\s*);|\}\s*(\w+)\s*;")
@@ -175,6 +182,17 @@ def top_commas(text: str) -> list[str]:
     return [*parts, text[cut:]]
 
 
+# a declarator is a name with its array dimensions or its parameter list (no nesting: a function pointer is not one)
+DECLARED_SUFFIX = r"((?:\[[^\]]*\]\s*)*|\([^()]*\))"
+DECLARED_FIRST = r"^(.*?[\s*])([A-Za-z_]\w*)\s*" + DECLARED_SUFFIX + "$"
+DECLARED_NEXT = r"^(\*[\s*]*)?([A-Za-z_]\w*)\s*" + DECLARED_SUFFIX + "$"
+
+
+def tight(suffix: str) -> str:
+    """Array dimensions lose their spaces; a parameter list keeps the text as written."""
+    return suffix if suffix.startswith("(") else suffix.replace(" ", "")
+
+
 def split_declaration(body: str) -> list[str] | None:
     """`extern char *a, b[2];` as one declaration per name (`extern char *a;`, `extern char b[2];`); None when the text
     is not a plain list of declarators (an initialiser, a function or function-pointer declarator, a body)."""
@@ -182,19 +200,19 @@ def split_declaration(body: str) -> list[str] | None:
     if not flat.startswith("extern ") or re.search(r"[={}#]|/[*/]", flat):
         return None
     parts = [p.strip() for p in top_commas(flat)]
-    if len(parts) < 2 or "(" in flat:
+    if len(parts) < 2:
         return None
-    first = re.match(r"^(.*?[\s*])([A-Za-z_]\w*)\s*((?:\[[^\]]*\]\s*)*)$", parts[0])
+    first = re.match(DECLARED_FIRST, parts[0])
     if not first or first.group(1).strip() == "extern":
         return None
     head = first.group(1).rstrip("* ")
     stars = first.group(1)[len(head) :].replace(" ", "")
-    out = [f"{head} {stars}{first.group(2)}{first.group(3).replace(' ', '')};"]
+    out = [f"{head} {stars}{first.group(2)}{tight(first.group(3))};"]
     for part in parts[1:]:
-        m = re.match(r"^(\*[\s*]*)?([A-Za-z_]\w*)\s*((?:\[[^\]]*\]\s*)*)$", part)
+        m = re.match(DECLARED_NEXT, part)
         if not m:
             return None
-        out.append(f"{head} {(m.group(1) or '').replace(' ', '')}{m.group(2)}{m.group(3).replace(' ', '')};")
+        out.append(f"{head} {(m.group(1) or '').replace(' ', '')}{m.group(2)}{tight(m.group(3))};")
     return out
 
 
@@ -291,7 +309,7 @@ def unseen_types(found: Scan, ident: str, proto: str, visible: set[str]) -> list
     declaration hoisted there would not parse in the units that include it (the unit it came from saw them)."""
     tagged = set(USED_TAG.findall(proto))
     missing = [t for t in tagged if found.tags.get(t) and not found.tags[t] & visible]
-    bare = set(WORD.findall(USED_TAG.sub("", proto))) - {ident}
+    bare = set(WORD.findall(USED_TAG.sub("", proto))) - {ident} - C_KEYWORDS
     missing += [t for t in bare if found.types.get(t) and not found.types[t] & visible]
     return sorted(missing)
 
@@ -390,6 +408,8 @@ def plan(
     unit_module, module_header = owners.read_map(map_path)
     ranges = address_ranges(map_path)
     files = tracked(root)
+    for module in set(unit_module.values()):  # a module's own source file (the merged unit) belongs to that module
+        unit_module.setdefault(module, module)
     split = split_compound(root, files)
     found = scan(root, files, split)
     found.originals = {n: (root / n).read_bytes().decode("latin-1") for n in split}

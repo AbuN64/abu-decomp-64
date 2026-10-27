@@ -282,7 +282,35 @@ def test_c_a_declarator_the_split_cannot_state_stays_refused(tmp_path: Path) -> 
     assert found["split_units"] == 0
     assert externs.split_declaration("extern int gP, (*gFn)(int);") is None
     assert externs.split_declaration("extern int x = 1, y;") is None
+    assert externs.split_declaration("extern void f(), g(unsigned int, char*), *h(void);") == [
+        "extern void f();",
+        "extern void g(unsigned int, char*);",
+        "extern void *h(void);",
+    ]
+    assert externs.split_declaration("extern int a, (*fp)(int);") is None
     assert externs.split_declaration("extern char *a, b[2];") == ["extern char *a;", "extern char b[2];"]
+
+
+def test_a_module_file_that_is_itself_a_unit_belongs_to_its_module(tmp_path: Path) -> None:
+    extra = {
+        "docs/MODULES.tsv": MAP2
+        + "src/m/m1.c\tsrc/m/m.c\tM\tM\tinclude/m/m.H\t-\t-\nsrc/n/n1.c\tsrc/n/n.c\tN\tN\t-\t-\t-\n",
+        "src/n/n.c": "int gMerged = 3;\n",
+        "src/b/b.c": FILES["src/b/b.c"] + "extern int gMerged;\n",
+    }
+    moved(tmp_path, extra)
+    assert table(tmp_path / "out")["gMerged"][1:3] == ["src/n/n.c", "include/n/n.H"]
+
+
+def test_a_keyword_a_source_file_macros_is_not_a_type_the_header_must_see(tmp_path: Path) -> None:
+    extra = {
+        "docs/MODULES.tsv": MAP2 + "src/n/n.c\tmod/N\tN\tN\t-\t-\t-\n",
+        "src/n/n.c": "unsigned char gBytes[4] = {1};\n",
+        "src/shim/shim.c": "#define char bogus_type\n",
+        "src/b/b.c": FILES["src/b/b.c"] + "extern unsigned char gBytes[4];\n",
+    }
+    _, found = moved(tmp_path, extra)
+    assert table(tmp_path / "out")["gBytes"][2] == "include/N.H" and found["created_headers"] == ["include/N.H"]
 
 
 def test_a_the_planner_creates_the_missing_module_header_and_includes_it_in_definer_and_users(tmp_path: Path) -> None:
