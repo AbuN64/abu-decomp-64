@@ -175,7 +175,7 @@ void n64c_boot_frame_unlock(int on)
 static int unlock_request=-1; /* the options screen's choice, applied between two game frames (n64c_boot_frame_live) */
 /* The options screen (n64c_menu.h): applies what it changed since the last retrace and hands the renderer its text. */
 /* Evidence without a keyboard: N64C_OPTIONS_SHOT=PREFIX writes PREFIX-closed.ppm when a game menu comes up, then opens the screen
- * as the hotkey would, steps to the frame-rate row, switches it on and writes PREFIX-open.ppm. */
+ * as the hotkey would, steps to the frame-rate row, switches it on and writes PREFIX-open.ppm; with N64C_OPTIONS_SHOT_QUIT set it then steps to Quit game and confirms. */
 static void menu_script(unsigned context)
 {
     static const char *prefix;
@@ -191,10 +191,12 @@ static void menu_script(unsigned context)
         snprintf(path,sizeof path,"%s-%s.ppm",prefix,step ? "open" : "closed");
         n64c_f3d_window_shot(frame.f3d,path);
     } else {
-        OSContPad pad={.button=(u16)keys[step]};
+        static const unsigned quit_keys[]={0x0400,0,0x0400,0,0x8000,0,0x8000,0}; /* steps 12..19: 2x down to quit, A, A */
+        const int quitting=step>11;
+        OSContPad pad={.button=(u16)(quitting ? quit_keys[step-12] : keys[step])};
         n64c_menu_filter(&pad,step==1);
     }
-    step=step<11 ? step+1 : 99;
+    step=step<11 || (step<19 && getenv("N64C_OPTIONS_SHOT_QUIT")) ? step+1 : 99;
 }
 static void menu_update(void)
 {
@@ -304,6 +306,8 @@ void n64c_boot_frame_options(const N64cOptions *now,const char *save_path)
     const int mobile=0;
     const size_t count=n64c_f3d_display_sizes(frame.f3d,sizes,64);
 #endif
+    static const char *const modes[]={"windowed","borderless","fullscreen"};
+    fprintf(stderr,"boot-options: start window=%s %ux%u unlock=%d scale=%d%%\n",modes[now->window_mode%3],now->width,now->height,now->fps_unlock,now->render_scale);
     n64c_menu_configure(now,save_path,(const u32 (*)[2])sizes,count,mobile);
     if (now->render_scale!=100) n64c_f3d_render_scale(frame.f3d,now->render_scale);
     if (!mobile && now->window_mode!=N64C_WIN_WINDOWED) n64c_f3d_window_mode(frame.f3d,now->window_mode,now->width,now->height);
