@@ -119,3 +119,16 @@ def test_a_capture_without_caller_is_refused(tmp_path):
     path.write_text(json.dumps({"k": "call", "order": 1, "i": 0, "a": ["0"]}) + "\n")
     with pytest.raises(ValueError, match="predates per-call"):
         read_calls(path, "oracle")
+
+
+def test_prototype_sources_cover_cpp_definitions(tmp_path):
+    """The project defines its functions in .CPP units with no header: those definitions are the declarations, so a void
+    function is not judged on a garbage return word."""
+    from abu_decomp import tas_coverage
+    from abu_decomp.behave import replay
+
+    unit = tmp_path / "src" / "game" / "A_1.CPP"
+    unit.parent.mkdir(parents=True)
+    unit.write_text("void Scene_Queue(s32 a, void *b) {\n    a = 1;\n}\n")
+    proto = replay.Prototypes(tmp_path, tas_coverage.HEADERS).get("Scene_Queue")
+    assert proto.ret == "void" and len(proto.params) == 2

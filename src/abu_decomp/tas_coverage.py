@@ -278,7 +278,7 @@ def read_oracle(run: Path) -> tuple[dict[str, tuple[int, int]], int] | None:
     return hits, len(vis)
 
 
-HEADERS = ("include/**/*.h", "include/**/*.H", "src/**/*.c", "src/**/*.C")  # where the prototypes are read from
+HEADERS = ("include/**/*.h", "include/**/*.H", "src/**/*.c", "src/**/*.C", "src/**/*.CPP", "src/**/*.cpp")  # where the prototypes are read from: the project's functions are defined (and so declared) in its .CPP units
 PORT_CALLS, ORACLE_CALLS = "calls.jsonl", "lockstep.jsonl"  # RUN/ and RUN/oracle-golden/: one call line per recorded call
 SEVERITY = ("differs-args", "differs-result", "missing", "port-only", "behaves")  # a function's verdict: the worst run's
 
