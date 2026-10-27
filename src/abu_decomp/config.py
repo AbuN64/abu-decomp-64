@@ -27,6 +27,7 @@ SECTIONS = frozenset(
         "behave",
         "tas",
         "phase",
+        "cleanup",
     }
 )
 _REQUIRED = frozenset({"schema_version", "name"})

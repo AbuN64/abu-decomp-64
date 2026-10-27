@@ -10,6 +10,7 @@ import contextlib
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -1169,6 +1170,9 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rev", help="count: the sources of this commit, read from git (no checkout)")
     parser.add_argument("--distinct", action="store_true", help="count: also the number of different names per class")
     parser.add_argument("--hours", type=float, default=1.0, help="ledger: the window the per-lane rates cover")
+    parser.add_argument(
+        "--day", help="ledger: the day (YYYY-MM-DD) the hourly rows and train rounds cover (default 24 h)"
+    )
     parser.add_argument("--book", type=Path, help="ledger: the name book directory (default ~/rig-state/names)")
     parser.add_argument("--top", type=int, default=15, help="folders listed, most placeholders first (0 = every one)")
     parser.add_argument(
@@ -1226,7 +1230,7 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
 
     if args.verb == "ledger":
         book = args.book or Path("~/rig-state/names").expanduser()
-        found = cleanup.ledger(book, args.hours)
+        found = cleanup.ledger(book, args.hours, day=args.day)
         rows = found["rows"]
         print(
             f"ledger rows queued {rows['queued']} inflight {rows['inflight']} landed {rows['landed']} returned"
@@ -1239,6 +1243,19 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
                 f" {got['by_rule']}",
                 file=sys.stderr,
             )
+        for lane, by_hour in sorted(found["hourly"].items()):
+            for hour, got in sorted(by_hour.items()):
+                print(
+                    f"  {hour} {lane}: landed {got['landed']} returned {got['returned']} refused {got['refused']}",
+                    file=sys.stderr,
+                )
+        train = found["train"]
+        print(
+            f"train rounds {train['rounds']} {train['status']} inputs/round median"
+            f" {train['inputs_per_round']['median']} max {train['inputs_per_round']['max']} gap minutes"
+            f" {train['gap_minutes']} rounds/hour {train['rounds_per_hour']}",
+            file=sys.stderr,
+        )
         for lane, got in sorted(found["slices"].items()):
             print(
                 f"  slice {got['slice']} ({lane}): {got['named_fns']}/{got['owned_fns']} fns have a row",
@@ -1348,6 +1365,23 @@ def _run_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
         )
         return found, 0, []
     rev = getattr(args, "rev", None)  # a hand-made Namespace (tests, other verbs) has none
+    if rev and not args.dir and args.verb == "count":
+        profile = _profile(args.profile)
+        with contextlib.suppress(ConfigError):  # a seat that names no gates keeps the placeholder table below
+            from abu_decomp import gates
+
+            section = profile.section("cleanup")
+            try:
+                done = gates.run(root, rev, section)
+            except subprocess.CalledProcessError as e:
+                raise DecompError("cleanup.rev", f"{rev} cannot be unpacked: {e}") from None
+            for g in done["gates"]:
+                got = g.get("value", "ERROR " + g.get("error", ""))
+                print(f"  {g['phase']:<3} {got!s:>8}  {g['name']}  {g.get('detail', '')}", file=sys.stderr)
+            print(
+                f"gates {len(done['gates'])} failed {done['failed']} in {done['seconds']} s at {rev}", file=sys.stderr
+            )
+            return done, 1 if done["failed"] else 0, []
     if rev and args.evidence:
         raise DecompError("cleanup.rev", "--evidence reads a built work tree: count --rev without it")
     try:

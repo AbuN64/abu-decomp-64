@@ -227,7 +227,64 @@ def show_slice(names: Path, lane: str) -> dict[str, Any]:
     }
 
 
-def ledger(names: Path, hours: float = 1.0, now: float | None = None) -> dict[str, Any]:
+def hourly(names: Path, day: str | None, now: float) -> dict[str, dict[str, dict[str, int]]]:
+    """{lane: {hour: {landed, returned, refused}}} for the hours of `day` (YYYY-MM-DD) or the last 24 hours: rows of
+    a landed or returned batch (the lane of each row from the ledger) and rows a submit refused."""
+    lane_of = {r["seq"]: r["lane"] for r in _lines(names / "ledger.jsonl")}
+    since = now - 24 * 3600
+
+    def hour(ts: str) -> str | None:
+        return ts[:13] if (ts.startswith(day) if day else _stamp(ts) >= since) else None
+
+    table: dict[str, dict[str, dict[str, int]]] = {}
+
+    def add(lane: str, ts: str, field: str, n: int) -> None:
+        if n and (h := hour(ts)):
+            table.setdefault(lane, {}).setdefault(h, {"landed": 0, "returned": 0, "refused": 0})[field] += n
+
+    for e in _lines(names / "events.jsonl"):
+        if e.get("event") in ("landed", "returned") and e.get("ts"):
+            for seq in e.get("seqs", ()):
+                add(lane_of.get(seq, "?"), e["ts"], e["event"], 1)
+    for sub in _lines(names / "submits.jsonl"):
+        add(sub["lane"], sub["ts"], "refused", sub["refused"])
+    return table
+
+
+def train_rounds(history: Path, day: str | None, now: float) -> dict[str, Any]:
+    """The train's rounds (`train/history.jsonl`, dry runs left out) of `day` (YYYY-MM-DD) or the last 24 hours:
+    inputs per round, landed and dropped, the gap between rounds in minutes, and rounds per hour. N is tuned from
+    inputs per round."""
+    import statistics
+
+    def when(ts: str) -> float:
+        import time
+
+        return time.mktime(time.strptime(ts, "%Y%m%d-%H%M%S"))
+
+    rounds = [
+        r
+        for r in _lines(history)
+        if not r.get("dry") and (r["ts"].startswith(day.replace("-", "")) if day else when(r["ts"]) >= now - 24 * 3600)
+    ]
+    per = [len(r["results"]) for r in rounds]
+    status = Counter(x["status"] for r in rounds for x in r["results"])
+    gaps = sorted((when(b["ts"]) - when(a["ts"])) / 60 for a, b in itertools.pairwise(rounds))
+    hours = Counter(f"{r['ts'][:4]}-{r['ts'][4:6]}-{r['ts'][6:8]}T{r['ts'][9:11]}" for r in rounds)
+    return {
+        "rounds": len(rounds),
+        "status": dict(status),
+        "inputs_per_round": {"median": statistics.median(per) if per else 0, "max": max(per, default=0)},
+        "gap_minutes": {"median": round(statistics.median(gaps), 1), "p90": round(gaps[int(len(gaps) * 0.9)], 1)}
+        if gaps
+        else {},
+        "rounds_per_hour": dict(sorted(hours.items())),
+    }
+
+
+def ledger(
+    names: Path, hours: float = 1.0, now: float | None = None, day: str | None = None, history: Path | None = None
+) -> dict[str, Any]:
     """WATCH's view of the name ledger (`names` = ~/rig-state/names): queue and batch counts, per lane the rows
     submitted, accepted and refused in the last `hours` (with the refusing rules), rows accepted per hour, and per slice
     how many of its functions have an accepted row. Read from the ledger, submits, events and slices files; nothing
@@ -277,4 +334,6 @@ def ledger(names: Path, hours: float = 1.0, now: float | None = None) -> dict[st
         },
         "lanes": window,
         "slices": slices,
+        "hourly": hourly(names, day, now),
+        "train": train_rounds(history or names.parent / "train" / "history.jsonl", day, now),
     }
