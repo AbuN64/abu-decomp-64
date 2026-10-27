@@ -547,7 +547,7 @@ def plan(
     unattributed: list[str] = []
     while True:
         sees_dest = {m["to"]: includers[str(m["to"])] for m in moves}
-        batches = fill(moves, sees_dest, batch_cpu, unit_cpu)
+        batches = fill(moves, sees_dest, batch_cpu, unit_cpu, frozenset(found.created))
         refusing = refused_by_gate(found, batches, sees, unit_cpu, gate, unattributed) if gate else {}
         if not refusing:
             break
@@ -618,18 +618,40 @@ def refused_by_gate(
 
 
 def fill(
-    moves: list[dict[str, object]], sees_dest: dict[object, set[str]], batch_cpu: float, unit_cpu: float
+    moves: list[dict[str, object]],
+    sees_dest: dict[object, set[str]],
+    batch_cpu: float,
+    unit_cpu: float,
+    created: frozenset[str] = frozenset(),
 ) -> list[list[dict[str, object]]]:
-    """Group the moves by destination header, then pack groups (biggest first) while the estimated cost of the batch
-    (units recompiled: those that see a changed header plus the units edited) stays under `batch_cpu`. A header whose
-    includers alone exceed it gets a batch of its own, and says so."""
+    """Group the moves that edit a common file (destination header, unit, definer of a created header), then pack the
+    groups (biggest first) while the estimated cost of the batch (units recompiled: those that see a changed header
+    plus the units edited) stays under `batch_cpu`. The batches share no file, so the train takes them in one round and
+    each diff applies to main by itself. A group whose cost alone exceeds the cap gets a batch of its own."""
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for m in moves:
+        dest = str(m["to"])
+        files = {dest, *(d.unit for d in m["decls"])}  # type: ignore[attr-defined]
+        if dest in created:
+            files |= set(m["definers"])  # type: ignore[arg-type]
+        for f in files:
+            parent[find(f)] = find(dest)
     groups: dict[str, list[dict[str, object]]] = defaultdict(list)
     for m in moves:
-        groups[str(m["to"])].append(m)
+        groups[find(str(m["to"]))].append(m)
+    dests = {key: {str(m["to"]) for m in group} for key, group in groups.items()}
     batches: list[list[dict[str, object]]] = []
     recompiled: list[set[str]] = []
     for dest, group in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-        units = set(sees_dest[dest]) | {u for m in group for u in m["units"]}  # type: ignore[attr-defined]
+        units = {u for d in dests[dest] for u in sees_dest[d]} | {u for m in group for u in m["units"]}  # type: ignore[attr-defined]
         for i, used in enumerate(recompiled):
             if len(used | units) * unit_cpu <= batch_cpu:
                 batches[i] += group
@@ -721,7 +743,7 @@ def git_diff(name: str, old: list[str], new: list[str]) -> str:
 def write_batches(
     found: Scan, batches: list[list[dict[str, object]]], packs: Path | None, sees: dict[str, set[str]], unit_cpu: float
 ) -> tuple[list[dict[str, object]], list[str]]:
-    """One diff per batch over the tree the earlier ones leave: declarations leave their units, one extern per id joins
+    """One diff per batch over main (the batches share no file): declarations leave their units, one extern per id joins
     the destination header before its closing `#endif`, a unit that no longer sees the destination
     includes it. Returns the batch records and the diff texts; the files are written only when `packs` is given."""
     texts = {n: rows(t) for n, t in found.texts.items()}
@@ -729,25 +751,7 @@ def write_batches(
     written: list[dict[str, object]] = []
     diffs: list[str] = []
     fresh = set(found.created)
-    if found.originals:  # batch 0: the multi-declarator lines become one declaration per name, nothing else
-        split = [
-            f"# MSG: Split multi-declarator unit externs into one declaration per name ({len(found.originals)} units)\n"
-        ]
-        split += [git_diff(n, rows(t), rows(found.texts[n])) for n, t in sorted(found.originals.items())]
-        diffs.append("".join(split))
-        if packs is not None:
-            (packs / "externs-batch-00-split.diff").write_text(diffs[-1], encoding="latin-1")
-        written.append(
-            {
-                "batch": "externs-batch-00-split.diff",
-                "ids": 0,
-                "files": len(found.originals),
-                "destinations": [],
-                "lines_removed": 0,
-                "recompiled_units": len(found.originals),
-                "estimated_cpu": round(len(found.originals) * unit_cpu, 1),
-            }
-        )
+    touched: set[str] = set()
     for number, batch in enumerate(batches, 1):
         before: dict[str, list[str]] = {}
         removals: dict[str, list[tuple[int, int]]] = defaultdict(list)
@@ -770,8 +774,9 @@ def write_batches(
                     if dest not in seen[u]:
                         wants[u].add(dest)
         edited = set(removals) | set(adds) | {n for n, w in wants.items() if w}
+        touched |= edited
         for n in edited:
-            before[n] = [] if n in fresh else list(texts[n])
+            before[n] = [] if n in fresh else rows(found.originals[n]) if n in found.originals else list(texts[n])
         for n in sorted(set(removals) | {n for n, w in wants.items() if w}):
             cur, spans = texts[n], removals.get(n, [])
             drop = {i for a, b in spans for i in range(a, b)}
@@ -820,5 +825,24 @@ def write_batches(
                 "recompiled_units": units,
                 "estimated_cpu": round(float(units) * unit_cpu, 1) if isinstance(units, int) else 0.0,
             }
+        )
+    lone = {n: t for n, t in found.originals.items() if n not in touched}
+    if lone:  # batch 0: the units whose multi-declarator lines no move batch edits are split on their own
+        split = [f"# MSG: Split multi-declarator unit externs into one declaration per name ({len(lone)} units)\n"]
+        split += [git_diff(n, rows(t), rows(found.texts[n])) for n, t in sorted(lone.items())]
+        diffs.insert(0, "".join(split))
+        if packs is not None:
+            (packs / "externs-batch-00-split.diff").write_text(diffs[0], encoding="latin-1")
+        written.insert(
+            0,
+            {
+                "batch": "externs-batch-00-split.diff",
+                "ids": 0,
+                "files": len(lone),
+                "destinations": [],
+                "lines_removed": 0,
+                "recompiled_units": len(lone),
+                "estimated_cpu": round(len(lone) * unit_cpu, 1),
+            },
         )
     return written, diffs

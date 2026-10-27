@@ -1,6 +1,7 @@
 """`decomp cleanup owners` without `--dir`: unit-local externs hoisted into the owning header, as batches."""
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -117,13 +118,25 @@ def test_the_batch_deletes_every_redeclaration_and_the_header_holds_one_extern(t
     assert found["unit_extern_lines_after"] == 0 or found["refused_ids"] > 0
 
 
+ISLAND = {  # a second module pair that shares no file with the first: its ids can ride a batch of their own
+    "include/P/P.H": GUARD.format("P_H"),
+    "include/Q/Q.H": GUARD.format("Q_H"),
+    "docs/MODULES.tsv": MAP
+    + "src/p/p.c\tmod/P\tP\tP\tinclude/P/P.H\t-\t-\nsrc/q/q.c\tmod/Q\tQ\tQ\tinclude/Q/Q.H\t-\t-\n",
+    "src/p/p.c": '#include "P/P.H"\nint gIsle = 1;\n',
+    "src/q/q.c": '#include "Q/Q.H"\nextern int gIsle;\nint useq(void) { return gIsle; }\n',
+}
+
+
 @pytest.mark.parametrize("cap,batches", [(300.0, 1), (0.5, 2)])
 def test_batches_are_split_to_stay_under_the_estimated_cpu_cap(tmp_path: Path, cap: float, batches: int) -> None:
-    _, found = moved(tmp_path, None, batch_cpu=cap, unit_cpu=0.25)
+    _, found = moved(tmp_path, ISLAND, batch_cpu=cap, unit_cpu=0.25)
     assert len(found["batches"]) == batches
     manifest = json.loads((tmp_path / "out" / "externs.json").read_text())
-    shared = [b for b in manifest["batches"] if len(b["destinations"]) > 1]
-    assert all(b["estimated_cpu"] <= cap for b in shared)  # a header alone may exceed it, and says so
+    island = [b for b in manifest["batches"] if b["destinations"] == ["include/P/P.H"]]
+    assert bool(island) == (batches == 2) and all(
+        b["estimated_cpu"] <= cap for b in island
+    )  # a group alone may exceed it
     assert sum(b["ids"] for b in manifest["batches"]) == found["planned_ids"]
 
 
@@ -262,14 +275,15 @@ def test_c_multi_declarator_lines_are_split_and_then_planned(tmp_path: Path) -> 
         "src/a/a.c": FILES["src/a/a.c"] + "int gA;\nint *gB;\nint gC[3];\n",
         "src/b/b.c": FILES["src/b/b.c"] + "extern int gA, *gB, gC[3];\nint useb2(void) { return gA; }\n",
     }
-    root, found = moved(tmp_path, extra)
+    root, found = moved(tmp_path, {**extra, "src/c/c.c": FILES["src/c/c.c"].replace("extern int gScore;\n", "")})
     out = tmp_path / "out"
-    assert found["split_units"] == 1 and found["batches"][0]["batch"] == "externs-batch-00-split.diff"
+    assert found["split_units"] == 1
     assert all({"estimated_cpu", "recompiled_units", "lines_removed"} <= set(b) for b in found["batches"])
     rows = table(out)
     assert {i: rows[i][2] for i in ("gA", "gB", "gC")} == dict.fromkeys(("gA", "gB", "gC"), "include/A/A.H")
-    split = (out / "externs-batch-00-split.diff").read_text()
-    assert "+extern int gA;" in split and "+extern int *gB;" in split and "+extern int gC[3];" in split
+    batch = (out / "externs-batch-01.diff").read_text()  # the unit's split and its move are one diff from main
+    assert "-extern int gA, *gB, gC[3];" in batch and "+extern int gA," not in batch
+    assert not (out / "externs-batch-00-split.diff").exists()
     land(root, out, found)
     assert "gA," not in (root / "src/b/b.c").read_text()
     header = (root / "include/A/A.H").read_text()
@@ -368,3 +382,23 @@ def test_b_what_the_definition_cannot_settle_is_residue_with_both_prototypes(tmp
     _, found = moved(tmp_path, extra)
     refusal = next(r for r in found["refused"] if r["id"] == "D_80001600")
     assert refusal["protos"] == ["float D_80001600", "int D_80001600"]
+
+
+def test_a_split_unit_no_move_edits_gets_the_split_batch_alone(tmp_path: Path) -> None:
+    extra = {"src/z/z.c": "extern int gZ1, gZ2;\n"}  # in no module of the map: refused, still split
+    _, found = moved(tmp_path, extra)
+    assert {r["id"] for r in found["refused"]} >= {"gZ1", "gZ2"}
+    assert found["batches"][0]["batch"] == "externs-batch-00-split.diff" and found["split_units"] == 1
+    split = (tmp_path / "out" / "externs-batch-00-split.diff").read_text()
+    assert "+extern int gZ1;" in split and "+extern int gZ2;" in split
+
+
+def test_batches_share_no_file_and_each_applies_to_main_alone(tmp_path: Path) -> None:
+    root, found = moved(tmp_path, ISLAND, batch_cpu=0.5, unit_cpu=0.25)
+    out = tmp_path / "out"
+    names = [b["batch"] for b in found["batches"]]
+    assert len(names) == 2
+    files = [set(re.findall(r"^\+\+\+ b/(\S+)", (out / n).read_text(), re.M)) for n in names]
+    assert not files[0] & files[1]
+    for n in names:  # each one checks against main with the others unapplied
+        subprocess.run(["git", "-C", str(root), "apply", "--check", str(out / n)], check=True)
