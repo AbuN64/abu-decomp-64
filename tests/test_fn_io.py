@@ -165,9 +165,8 @@ class Pipeline(unittest.TestCase):
             with mock.patch.object(claims, "state_dir", return_value=root):
                 claims.record(None, "a" * 32, "behave", True, record, ["behave", "--function", "f"])
             inputs = SimpleNamespace(invocations=[str(root)], table={}, claims=None)
-            data = tas_bake.fn_files(
-                inputs, ["src/f.c"], [["f", 0, 12, "exact", 0, 1, False]], {"source": {}, "gutter": {}, "xref": {}}
-            )
+            files, functions = tas_bake.function_rows({"fns": [["f", 0, 12, "exact", 0, "src/f.c", False]]}, {})
+            data = tas_bake.fn_files(inputs, files, functions, {"source": {}, "gutter": {}, "xref": {}})
             rows = json.loads(data["f"])["behave"]
             self.assertEqual(len(rows), 3)
             self.assertEqual([r["count"] for r in rows], [2, 1, 1])
@@ -177,9 +176,7 @@ class Pipeline(unittest.TestCase):
             self.assertNotIn("cases", rows[0])  # hard cutover: no run envelopes for the caseRow renderer
             self.assertEqual(
                 data,
-                tas_bake.fn_files(
-                    inputs, ["src/f.c"], [["f", 0, 12, "exact", 0, 1, False]], {"source": {}, "gutter": {}, "xref": {}}
-                ),
+                tas_bake.fn_files(inputs, files, functions, {"source": {}, "gutter": {}, "xref": {}}),
             )
 
     def test_run_and_case_bounds_are_preserved(self):

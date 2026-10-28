@@ -838,7 +838,7 @@ def _bake(inputs: Inputs, what: set[str] | None, movie: str | None) -> dict[str,
             "version": body["version"],
             "ref": body["ref"],
             "files": files,
-            "cols": ["name", "rom", "size", "state", "file", "reach", "foundation"],
+            "cols": ["name", "rom", "size", "state", "file", "reach", "foundation", "behaviour"],
             "rows": rows,
         }
     )

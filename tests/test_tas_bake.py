@@ -254,6 +254,12 @@ class Bake(Fixture):
         fns = json.loads((site / manifest["fns"]).read_text())
         self.assertEqual([r[0] for r in fns["rows"]], names)
         self.assertEqual(fns["cols"][3:6], ["state", "file", "reach"])
+        self.assertEqual(fns["cols"], ["name", "rom", "size", "state", "file", "reach", "foundation", "behaviour"])
+        self.assertTrue(all(len(row) == len(fns["cols"]) for row in fns["rows"]))
+        indexed = {row[0]: dict(zip(fns["cols"], row, strict=True)) for row in fns["rows"]}
+        for function in TABLE["functions"]:
+            if function["name"] in indexed and function.get("in_version"):
+                self.assertEqual(indexed[function["name"]]["behaviour"], function.get("behaviour") or "")
         self.assertEqual(manifest["fn"]["count"], len(names))
         self.assertTrue(manifest["gutter"])
 

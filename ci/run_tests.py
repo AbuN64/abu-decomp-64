@@ -45,10 +45,13 @@ def hermetic_git():
 
 
 def hermetic_slots():
-    """The seats slot pool is the live rigs: a test that takes a slot waited behind real work and hit the timeout, so
-    every test run gets its own empty pool."""
+    """Keep all test scratch on the workspace disk, including isolated slot pools. A host's /tmp may be a small
+    tmpfs that cannot satisfy the production disk floor; the guard still checks the actual workspace capacity."""
+    scratch = tempfile.mkdtemp(prefix=".abu-tests-", dir=os.getcwd())
+    atexit.register(shutil.rmtree, scratch, ignore_errors=True)
+    tempfile.tempdir = scratch
+    os.environ["TMPDIR"] = scratch
     pool = tempfile.mkdtemp(prefix="abu-slots-")
-    atexit.register(shutil.rmtree, pool, ignore_errors=True)
     os.environ["ABU_SLOTS_DIR"] = pool
 
 

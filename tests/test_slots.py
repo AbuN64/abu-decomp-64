@@ -3,6 +3,7 @@
 import contextlib
 import os
 import select
+import signal
 import tempfile
 import threading
 import time
@@ -14,6 +15,27 @@ from abu_decomp import slots
 
 def select_ready(fd: int) -> bool:
     return bool(select.select([fd], [], [], 0)[0])
+
+
+def child_status(action) -> int:
+    """A forked test must exit on failure too, never fall through into the inherited suite and its cleanup."""
+    pid = os.fork()
+    if pid == 0:
+        code = 1
+        try:
+            action()
+            code = 0
+        finally:
+            os._exit(code)  # deliberately no release: verify the kernel drops the child's flocks
+    try:
+        _, status = os.waitpid(pid, 0)
+        return os.waitstatus_to_exitcode(status)
+    except BaseException:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(pid, 0)
+        raise
 
 
 class SlotsTest(unittest.TestCase):
@@ -109,13 +131,16 @@ class SlotsTest(unittest.TestCase):
         self.assertEqual(slots.status()["used"], 0)
 
     def test_dead_holder_releases_its_slot(self) -> None:
-        pid = os.fork()
-        if pid == 0:
-            slots.acquire("batch", 2, "doomed")
-            os._exit(0)  # no release: the kernel drops the flocks
-        os.waitpid(pid, 0)
+        self.assertEqual(child_status(lambda: slots.acquire("batch", 2, "doomed")), 0)
         self.assertEqual(slots.status()["used"], 0)
         slots.acquire("batch", 2, "after", timeout=2).release()
+
+    def test_refused_child_exits_without_running_the_inherited_suite(self) -> None:
+        # Real failing slice: a /tmp pool had 29.3 GiB against the unchanged 40 GiB floor.
+        with mock.patch.object(slots, "disk_free_gib", return_value=29.3):
+            self.assertEqual(child_status(lambda: slots.acquire("batch", 2, "refused")), 1)
+        self.assertEqual(slots.status()["used"], 0)
+        self.assertEqual(slots.status()["queue"], [])
 
     def test_a_wide_job_is_not_passed_by_narrower_later_ones(self) -> None:
         """Strict FIFO with reservation: a later weight-1 ticket leaves the free slot the older weight-2 waits for."""
