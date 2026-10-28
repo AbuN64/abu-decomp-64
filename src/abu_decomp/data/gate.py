@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
@@ -31,7 +32,10 @@ def load_census(path: Path) -> tuple[dict, dict, set]:
 
 def _load(path: Path) -> tuple[dict, dict, set, dict]:
     """load_census plus `labels`: member sym -> every symbol its cluster is told apart by (base, owner, the members)."""
-    d = json.loads(path.read_text())
+    return _load_document(json.loads(path.read_text()))
+
+
+def _load_document(d: dict) -> tuple[dict, dict, set, dict]:
     labels: dict[str, frozenset] = {}
     member: dict[str, tuple[str, str]] = {}
     acc: dict[str, set] = {}
@@ -148,12 +152,13 @@ def violations(
 
 
 def check_diff(cfg: DataConfig, census: Path, diff_text: str) -> list[str]:
-    member, acc, lit, labels = _load(census)
+    document = json.loads(census.read_text())
+    member, acc, lit, labels = _load_document(document)
     evidence = Evidence(cfg, labels)
     token = re.compile(r"\b" + cfg.symbol_token)
     exact = "-#ifdef NON_MATCHING" in diff_text
     removed: dict[str, set] = {}
-    dropped: set[str] = set()
+    dropped = _removed_tokens(cfg, diff_text)
     cur = None
     bad = []
     for line in diff_text.splitlines():
@@ -161,8 +166,6 @@ def check_diff(cfg: DataConfig, census: Path, diff_text: str) -> list[str]:
             cur = line[6:] if line.startswith("+++ b/") else line[4:]
         elif line.startswith("-") and not line.startswith("---") and cur:
             removed.setdefault(cur, set()).update(s for s, _ in _decls(line[1:], token))
-            if cur.lower().endswith((".c", ".cpp", ".h")):
-                dropped.update(m.group(0) for m in token.finditer(line[1:]))
     cur = None
     for line in diff_text.splitlines():
         if line.startswith("+++ "):
@@ -180,8 +183,51 @@ def check_diff(cfg: DataConfig, census: Path, diff_text: str) -> list[str]:
                 " MIXED" if sym in removed.get(cur, ()) else ""
             )  # a retyped existing decl: only KIND/LITERAL apply
             bad += [f"{cur}: {v}" for v in violations(sym, typ, member, acc, lit, text, exact, evidence.separate)]
-    unproved = literals.unlisted_interior(json.loads(census.read_text()))
+    unproved = literals.unlisted_interior(document)
     return bad + [f"INTERIOR {literals.interior_refusal(s, unproved[s])}" for s in sorted(dropped & unproved.keys())]
+
+
+def _removed_tokens(cfg: DataConfig, diff_text: str) -> set[str]:
+    """Code occurrences lost within a hunk, not symbols on any removed line.
+
+    A callee rename preserves its arguments. Count both sides so another unchanged
+    read cannot conceal a partial literal replacement. Comments and strings do not
+    supply reads. Hunk boundaries keep unrelated additions from cancelling a loss.
+    """
+    token = re.compile(
+        r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*.*?\*/|//[^\n]*|(?P<symbol>\b' + cfg.symbol_token + r")", re.S
+    )
+    before: list[str] = []
+    after: list[str] = []
+    dropped: set[str] = set()
+    old_path = path = ""
+
+    def finish() -> None:
+        counts = [
+            Counter(m["symbol"] for m in token.finditer("\n".join(side)) if m["symbol"]) for side in (before, after)
+        ]
+        dropped.update(counts[0] - counts[1])
+        before.clear()
+        after.clear()
+
+    for line in diff_text.splitlines():
+        if line.startswith(("diff --git ", "@@", "--- ", "+++ ")):
+            finish()
+            if line.startswith("--- "):
+                old_path = line[6:] if line.startswith("--- a/") else line[4:]
+            elif line.startswith("+++ "):
+                path = line[6:] if line.startswith("+++ b/") else line[4:]
+                if path == "/dev/null":
+                    path = old_path
+            continue
+        if not path.lower().endswith(cfg.source_suffixes):
+            continue
+        if line.startswith(("-", " ")):
+            before.append(line[1:])
+        if line.startswith(("+", " ")):
+            after.append(line[1:])
+    finish()
+    return dropped
 
 
 def _decls(line: str, token: re.Pattern[str]):

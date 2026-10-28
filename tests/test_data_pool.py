@@ -111,3 +111,47 @@ def test_check_diff_refuses_a_diff_dropping_the_unproved_record(tmp_path):
     bad = gate.check_diff(CFG, cen, diff)
     assert len(bad) == 1 and "D_800C53B4_de" in bad[0]
     assert gate.check_diff(CFG, cen, diff.replace("D_800C53B0_de", "D_800C53B8_de")) == []
+
+
+@pytest.mark.parametrize("suffix", ["c", "CPP", "h"])
+def test_callee_rename_preserves_unproved_pool_argument(tmp_path, suffix):
+    cen = tmp_path / "census.json"
+    cen.write_text(json.dumps(DIRECTION))
+    diff = (
+        f"--- a/src/a.{suffix}\n+++ b/src/a.{suffix}\n@@ -1 +1 @@\n"
+        "-y = Old_ApproachValue(a, b, D_800C53B0_de);\n"
+        "+y = Graphu64_ApproachValue(a, b, D_800C53B0_de);\n"
+    )
+    assert gate.check_diff(CFG, cen, diff) == []
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "y = D_800C53B0_de + 0.25f;",
+        "y = 0.25f; /* D_800C53B0_de D_800C53B0_de */",
+        'y = "D_800C53B0_de D_800C53B0_de";',
+    ],
+)
+def test_remaining_read_comment_or_string_cannot_hide_partial_removal(tmp_path, replacement):
+    cen = tmp_path / "census.json"
+    cen.write_text(json.dumps(DIRECTION))
+    diff = "--- a/src/a.c\n+++ b/src/a.c\n@@ -1 +1 @@\n-y = D_800C53B0_de + D_800C53B0_de;\n+" + replacement + "\n"
+    assert any("INTERIOR D_800C53B0_de" in s for s in gate.check_diff(CFG, cen, diff))
+
+
+def test_another_hunk_cannot_cancel_a_literal_replacement(tmp_path):
+    cen = tmp_path / "census.json"
+    cen.write_text(json.dumps(DIRECTION))
+    diff = (
+        "--- a/src/a.c\n+++ b/src/a.c\n@@ -1 +1 @@\n-y = D_800C53B0_de;\n+y = 0.25f;\n"
+        "@@ -20 +20 @@\n-z = 0;\n+z = D_800C53B0_de;\n"
+    )
+    assert any("INTERIOR D_800C53B0_de" in s for s in gate.check_diff(CFG, cen, diff))
+
+
+def test_deleted_source_keeps_literal_removal_gate(tmp_path):
+    cen = tmp_path / "census.json"
+    cen.write_text(json.dumps(DIRECTION))
+    diff = "--- a/src/a.c\n+++ /dev/null\n@@ -1 +0,0 @@\n-y = D_800C53B0_de;\n"
+    assert any("INTERIOR D_800C53B0_de" in s for s in gate.check_diff(CFG, cen, diff))
