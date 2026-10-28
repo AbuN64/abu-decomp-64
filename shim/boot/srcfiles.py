@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The one definition of a project's source and header files for the shim: suffixes match case-blind, so
-RageWars' `.CPP` units, its 87 `.c` units and `.H`/`.h` headers are all seen. Never hard-code `*.CPP`."""
+"""Case-blind source/header discovery shared by the boot tools and CMake.
+
+`python srcfiles.py --cmake-patterns` emits CMake glob patterns from the same source suffixes.
+"""
 SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx")
 HEADER_SUFFIXES = (".h", ".hh", ".hpp", ".hxx")
 
@@ -14,9 +16,26 @@ def is_header(path):
 
 
 def sources(source, folder="src"):
-    """Every source file under source/folder (libgcc excluded: the cmake glob does not build it), sorted."""
-    return sorted(p for p in (source / folder).rglob("*") if p.is_file() and is_source(p) and "/libgcc/" not in str(p))
+    """Every source file under source/folder, sorted; the host supplies libgcc."""
+    root = source / folder
+    return sorted((p for p in root.rglob("*") if p.is_file() and is_source(p)
+                   and "libgcc" not in p.relative_to(root).parts[:-1]), key=str)
 
 
 def headers(source, folder="include"):
     return sorted(p for p in (source / folder).rglob("*") if p.is_file() and is_header(p))
+
+
+def cmake_patterns():
+    return ["*" + "".join(f"[{c}{c.upper()}]" if c.isalpha() else c for c in suffix)
+            for suffix in SOURCE_SUFFIXES]
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cmake-patterns", action="store_true", required=True,
+                        help="emit semicolon-separated case-blind source globs")
+    parser.parse_args()
+    print(";".join(cmake_patterns()))

@@ -1,6 +1,7 @@
 import json
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,6 +56,21 @@ class PortTests(unittest.TestCase):
         path = self.root / "spec.json"
         path.write_text(json.dumps({**SPEC, **changes}))
         return load_spec(path)
+
+    def test_cmake_source_contract(self):
+        result = subprocess.run(
+            [sys.executable, "-I", str(CONTRACT.parents[3] / "shim/boot/test_srcfiles.py")],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_original_source_discovery_uses_shim_contract(self):
+        generate(self.spec(), self.root / "out")
+        cmake = (self.root / "out/cmake/decomp.cmake").read_text()
+        self.assertIn('include("${N64C_SHIM_DIR}/cmake/sources.cmake")', cmake)
+        self.assertIn('n64c_source_files(port_decomp_sources "${port_decomp_SOURCE_DIR}")', cmake)
+        self.assertLess(cmake.index("FetchContent_MakeAvailable(port_decomp)"), cmake.index("n64c_source_files("))
 
     def test_skeleton_is_complete_and_fully_rendered(self):
         result = generate(self.spec(), self.root / "out")
