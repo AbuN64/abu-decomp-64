@@ -1,8 +1,10 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from abu_decomp import deploy, tools
 from abu_decomp.config import load_profile
@@ -177,6 +179,53 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(os.path.realpath(self.root / "venv-a"), str(self.root / f"venv-a.{D1[:12]}-2"))
         self.assertEqual(result["venvs"][0]["swap"]["previous"], str(self.root / f"venv-a.{D1[:12]}"))
         self.assertTrue((self.root / f"venv-a.{D1[:12]}" / "bin" / "python").is_file())
+
+    def test_a_deploy_resyncs_every_work_tree_with_the_new_venv_and_skips_a_held_one(self):
+        trees = [self.root / name for name in ("lane-a", "lane-held", "lane-bad", "no-makefile")]
+        for tree in trees[:3]:
+            tree.mkdir()
+            (tree / "Makefile").write_text("")
+        trees[3].mkdir()
+        calls = []
+
+        def runner(argv, cwd=None):
+            if argv[:3] == ["git", "worktree", "list"]:
+                return 0, "".join(f"worktree {t}\nHEAD {'0' * 40}\n\n" for t in trees)
+            if "sync" in argv:
+                calls.append((argv, cwd))
+                return (1, "Refused: a literals_ fact names no function") if cwd == trees[2] else (0, "")
+            return self.runner(argv, cwd)
+
+        held = lambda tree: [4242] if tree == trees[1] else []  # noqa: E731
+        with mock.patch.object(deploy, "holders", held):
+            result, code, findings = deploy.deploy(
+                self.profile,
+                D1,
+                [self.root / "venv-a"],
+                {"unbake": None, "recipe": None, "taste": None},
+                fetch=self.fetch,
+                run=runner,
+            )
+        self.assertEqual((code, findings), (0, []))  # a refused or held tree never fails the deploy
+        live = self.root / "venv-a"  # the link, already swapped: the files name the live path, never a versioned one
+        self.assertEqual(
+            [(Path(argv[0]).parent.parent, argv[-2:], cwd) for argv, cwd in calls],
+            [(live, ["sync", "--makefile"], trees[0]), (live, ["sync", "--makefile"], trees[2])],
+        )
+        self.assertEqual(
+            [(Path(r["tree"]).name, r["outcome"]) for r in result["venvs"][0]["resync"]],
+            [("lane-a", "synced"), ("lane-held", "skipped"), ("lane-bad", "refused")],
+        )
+        self.assertEqual(result["venvs"][0]["resync"][1]["held_by"], [4242])
+        self.assertIn("literals_", result["venvs"][0]["resync"][2]["tail"])
+
+    def test_holders_names_the_processes_working_inside_a_tree(self):
+        tree = self.root / "busy"
+        (tree / "deep").mkdir(parents=True)
+        child = subprocess.Popen(["sleep", "30"], cwd=tree / "deep")
+        self.addCleanup(child.kill)
+        self.assertEqual(deploy.holders(tree), [child.pid])
+        self.assertEqual(deploy.holders(self.root / "nowhere"), [])
 
     def test_a_real_directory_is_refused_not_migrated(self):
         self.make_venv(self.root / "venv-c")

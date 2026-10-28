@@ -20,6 +20,12 @@ on the project) runs against the fresh venv, and only then is the symlink swappe
 through PATH's console scripts keep their versioned tree; superseded versions stay until purge removes them (policy
 `venv_versions`: not the live target, not the newest rollback, no process using it). A live path that is still a real
 directory is refused (a deploy only swaps symlinks), and the link is read back.
+
+The new tool's Makefile and local.mk are one contract with the trees that run them (a retired recipe variable or
+cc_cache.py mode in a tree's files fails every build there, 10-27), so a deploy ends by regenerating both in every
+work tree of the project (`git worktree list`) with the new venv's `unbake sync --makefile`. A tree some live process
+runs in is skipped and named; a tree whose own content refuses the sync is named with the refusal. Neither fails the
+deploy: `resync` in the result lists every tree with its outcome.
 """
 
 from __future__ import annotations
@@ -249,6 +255,46 @@ def align_checkouts(wanted: dict[str, tuple[Path, str]], run: Run) -> tuple[list
     return done, findings
 
 
+def worktrees(project: Path, run: Run) -> list[Path]:
+    """The project's work trees (its own checkout among them) that carry a Makefile."""
+    code, output = run(["git", "worktree", "list", "--porcelain"], project)
+    trees = (
+        [Path(line.split(" ", 1)[1]) for line in output.splitlines() if line.startswith("worktree ")]
+        if not code
+        else []
+    )
+    return [tree for tree in trees if (tree / "Makefile").is_file()]
+
+
+def holders(tree: Path) -> list[int]:
+    """The live processes whose working directory is inside `tree`."""
+    root, mine, found = os.path.realpath(tree), os.getpid(), []
+    for entry in os.scandir("/proc"):
+        if entry.name.isdigit() and int(entry.name) != mine:
+            try:
+                cwd = os.readlink(f"{entry.path}/cwd")
+            except OSError:
+                continue
+            if cwd == root or cwd.startswith(root + os.sep):
+                found.append(int(entry.name))
+    return found
+
+
+def resync(venv: Path, host: Path, project: Path, run: Run) -> list[dict[str, Any]]:
+    """`unbake sync --makefile` (Makefile and local.mk) of the new venv in every work tree of the project."""
+    rows = []
+    for tree in worktrees(project, run):
+        if pids := holders(tree):
+            rows.append({"tree": str(tree), "outcome": "skipped", "held_by": pids[:5]})
+            continue
+        argv = [str(venv / "bin" / "unbake"), "--host", str(host), "--project", str(tree), "sync", "--makefile"]
+        code, output = run(argv, tree)
+        rows.append(
+            {"tree": str(tree), "outcome": "refused" if code else "synced", "tail": output[-300:] if code else ""}
+        )
+    return rows
+
+
 def deploy(
     profile: Profile,
     decomp: str,
@@ -328,4 +374,6 @@ def deploy(
             findings.append(
                 {"key": "deploy.readback", "blocking": True, "message": f"{live} does not read back to {venv}"}
             )
+            continue
+        row["resync"] = resync(live, tools.host_file(profile), project, run)
     return result, int(bool(findings)), findings
