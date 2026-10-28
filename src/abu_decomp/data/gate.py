@@ -21,6 +21,7 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
+from abu_decomp import header_moves
 from abu_decomp.data import cdecl, literals
 from abu_decomp.data.config import DataConfig
 
@@ -152,6 +153,9 @@ def violations(
 
 
 def check_diff(cfg: DataConfig, census: Path, diff_text: str) -> list[str]:
+    # A uniquely paired whole header retains every declaration and activation.
+    # Reconcile that file identity before classifying added declarations or lost reads.
+    _, diff_text = header_moves.correspondence(diff_text)
     document = json.loads(census.read_text())
     member, acc, lit, labels = _load_document(document)
     evidence = Evidence(cfg, labels)

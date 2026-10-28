@@ -83,3 +83,5 @@ Cake Taste owns the only implementation of the event format and its flock append
 - Only a change to `mcp.py` itself (the protocol handling) needs the client to restart the server.
 
 Phase playbooks (generic, one per phase plus the names/real-C track): [docs/playbooks](docs/playbooks/README.md).
+
+Header identity: `header_moves.correspondence(diff)` pairs only complete, unique deleted/added guarded header bodies using the public unbake guard-content contract. Only the two whole-file guard tokens may differ; type, initializer, include, conditional, literal and comment bytes remain exact. Data gate reconciles these file pairs before classifying new declarations and removed data reads; stamp requirements and full-tree type validation remain unchanged. Port remap uses the same evidence when Git reports delete/add instead of a rename, with one additional diff for the whole unresolved header cohort. Partial, duplicate or changed bodies retain normal refusals.

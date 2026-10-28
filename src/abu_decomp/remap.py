@@ -23,7 +23,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError
+from abu_decomp import DecompError, header_moves
 
 Run = Callable[[Sequence[str], Path, "dict[str, str] | None", "float | None"], "tuple[int, str, str]"]
 FACT = re.compile(r"^\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)\s*;(.*)$")
@@ -214,7 +214,7 @@ def definitions(run: Run, source: Path, rev: str, names: Sequence[str]) -> dict[
 
 def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
     """Tracked source/header moves from git, plus deleted source units whose functions moved.
-    A deleted include path without a git rename has no inferred successor; declarations do not own definitions."""
+    Guard-only header moves require unique exact bodies; declarations do not own definitions."""
     code, out, err = run(  # the rename limit is raised past the files a long range moves: none is left as delete + add
         [
             *("git", "-C", str(source), "-c", "diff.renameLimit=20000", "diff", "--name-status", "-M", "-z"),
@@ -228,6 +228,7 @@ def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
         raise RemapError("remap.moves", f"git diff {old[:12]}..{new[:12]} failed in {source}: {err.strip()[-200:]}")
     words, found = out.split("\0"), {}
     index = 0
+    added_headers = False
     while index < len(words) and words[index]:
         status = words[index]
         if status.startswith("R"):
@@ -236,7 +237,36 @@ def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
             continue
         if status == "D":
             found[words[index + 1]] = None
+        elif status == "A" and Path(words[index + 1]).suffix.lower() in {".h", ".hh", ".hpp", ".hxx"}:
+            added_headers = True
         index += 2
+    if added_headers and any(
+        now is None and Path(path).suffix.lower() in {".h", ".hh", ".hpp", ".hxx"} for path, now in found.items()
+    ):
+        code, patch, err = run(
+            [
+                "git",
+                "-C",
+                str(source),
+                "diff",
+                "--no-ext-diff",
+                "--no-renames",
+                "--unified=0",
+                old,
+                new,
+                "--",
+                *FILE_DIRS,
+            ],
+            source,
+            None,
+            120,
+        )
+        if code:
+            raise RemapError("remap.moves", f"header correspondence diff failed: {err.strip()[-200:]}")
+        exact, _ = header_moves.correspondence(patch)
+        for path, now in exact.items():
+            if path in found and found[path] is None:
+                found[path] = now
     wanted: dict[str, list[str]] = {}
     for path, now in found.items():
         if now is not None or Path(path).parts[0] not in SOURCE_DIRS:
