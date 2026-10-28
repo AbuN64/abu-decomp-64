@@ -228,7 +228,7 @@ def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
         raise RemapError("remap.moves", f"git diff {old[:12]}..{new[:12]} failed in {source}: {err.strip()[-200:]}")
     words, found = out.split("\0"), {}
     index = 0
-    added_headers = False
+    changed_headers = False
     while index < len(words) and words[index]:
         status = words[index]
         if status.startswith("R"):
@@ -237,10 +237,10 @@ def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
             continue
         if status == "D":
             found[words[index + 1]] = None
-        elif status == "A" and Path(words[index + 1]).suffix.lower() in {".h", ".hh", ".hpp", ".hxx"}:
-            added_headers = True
+        elif status in {"A", "M"} and Path(words[index + 1]).suffix.lower() in {".h", ".hh", ".hpp", ".hxx"}:
+            changed_headers = True
         index += 2
-    if added_headers and any(
+    if changed_headers and any(
         now is None and Path(path).suffix.lower() in {".h", ".hh", ".hpp", ".hxx"} for path, now in found.items()
     ):
         code, patch, err = run(
@@ -251,7 +251,7 @@ def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
                 "diff",
                 "--no-ext-diff",
                 "--no-renames",
-                "--unified=0",
+                "--unified=3",
                 old,
                 new,
                 "--",

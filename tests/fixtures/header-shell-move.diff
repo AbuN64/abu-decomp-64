@@ -1,0 +1,35 @@
+diff --git a/include/MENU/EXTERNS.H b/include/MENU/EXTERNS.H
+index 86f644f86f..b8619ce7d6 100644
+--- a/include/MENU/EXTERNS.H
++++ b/include/MENU/EXTERNS.H
+@@ -1,3 +1,12 @@
+ #ifndef MENU_EXTERNS_H
+ #define MENU_EXTERNS_H
++#include "TYPES.H"
++
++extern s32 D_800E57DC;
++extern s32 D_800E57E0;
++extern Handler802A2B50 D_800E57E4;
++
++extern s32 D_800E4EC0;
++extern s32 D_800E4EC4;
++extern Handler802A2B50 D_800E4EC8;
+ #endif
+diff --git a/include/MENU_2/EXTERNS.H b/include/MENU_2/EXTERNS.H
+deleted file mode 100644
+index 0e8da6da21..0000000000
+--- a/include/MENU_2/EXTERNS.H
++++ /dev/null
+@@ -1,12 +0,0 @@
+-#ifndef MENU_2_EXTERNS_H
+-#define MENU_2_EXTERNS_H
+-#include "TYPES.H"
+-
+-extern s32 D_800E57DC;
+-extern s32 D_800E57E0;
+-extern Handler802A2B50 D_800E57E4;
+-
+-extern s32 D_800E4EC0;
+-extern s32 D_800E4EC4;
+-extern Handler802A2B50 D_800E4EC8;
+-#endif
