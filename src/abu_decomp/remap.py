@@ -176,6 +176,7 @@ def _drop_members(text: str, names: Sequence[str]) -> tuple[str, list[str]]:
 
 DEFINED = re.compile(r"^[A-Za-z_][\w \t\*]*?\b([A-Za-z_]\w*)\s*\([^;{]*\)\s*\{?\s*$", re.M)
 SOURCE_DIRS = ("src",)
+FILE_DIRS = (*SOURCE_DIRS, "include")
 
 
 DEFINITIONS_PER_GREP = 400
@@ -212,12 +213,12 @@ def definitions(run: Run, source: Path, rev: str, names: Sequence[str]) -> dict[
 
 
 def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
-    """Source files of `old` that `new` lacks: path -> the file that holds them now (a git rename, or for a deleted
-    unit the one file defining most of its functions at `new`), or None when nothing does."""
+    """Tracked source/header moves from git, plus deleted source units whose functions moved.
+    A deleted include path without a git rename has no inferred successor; declarations do not own definitions."""
     code, out, err = run(  # the rename limit is raised past the files a long range moves: none is left as delete + add
         [
             *("git", "-C", str(source), "-c", "diff.renameLimit=20000", "diff", "--name-status", "-M", "-z"),
-            *(old, new, "--", *SOURCE_DIRS),
+            *(old, new, "--", *FILE_DIRS),
         ],
         source,
         None,
@@ -238,7 +239,7 @@ def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
         index += 2
     wanted: dict[str, list[str]] = {}
     for path, now in found.items():
-        if now is not None:
+        if now is not None or Path(path).parts[0] not in SOURCE_DIRS:
             continue
         code, text, _err = run(["git", "-C", str(source), "show", f"{old}:{path}"], source, None, 120)
         wanted[path] = list(dict.fromkeys(m.group(1) for m in DEFINED.finditer(text or "")))[:8] if not code else []
@@ -261,12 +262,17 @@ def carry_moves(tree: Path, paths: Sequence[str], moved: dict[str, str | None], 
     deleted paths with no successor still named outside a JSON list}."""
     changed: dict[str, list[str]] = {}
     stale: dict[str, list[str]] = {}
+    # Discover referenced paths in one pass instead of scanning every file once per move.
+    references = re.compile(r"(?<![\w/.])(?:" + "|".join(map(re.escape, moved)) + r")(?![\w/.])") if moved else None
     for path in files_under(tree, paths):
         text = read_text(path)
         if text is None:
             continue
         out, done, left = text, [], []
+        present = set(references.findall(text)) if references else set()
         for was, now in moved.items():
+            if was not in present:
+                continue
             spelled = re.compile(rf"(?<![\w/.]){re.escape(was)}(?![\w/.])")
             if not spelled.search(out):
                 continue
@@ -284,6 +290,8 @@ def carry_moves(tree: Path, paths: Sequence[str], moved: dict[str, str | None], 
             else:
                 left.append(was)
                 continue
+            if now in moved:
+                present.add(now)  # preserve the existing ordered-map behavior for chained moves
             done.append(was)
         rel = str(path.relative_to(tree))
         if done and path.suffix == ".json":
@@ -328,7 +336,7 @@ def remap(
     ] + [
         {"key": "remap.stale", "blocking": True,
          "message": f"{rel} names {', '.join(files[:3])}: the source deleted {'it' if len(files) == 1 else 'them'} and "
-         "no file defines its functions now",
+         "no successor file is evidenced",
          "next": f"git -C {source} log --oneline --diff-filter=D {old[:12]}..{new[:12]} -- {files[0]}"}
         for rel, files in sorted(carried["stale"].items())
     ]  # fmt: skip

@@ -382,3 +382,72 @@ class LedgerMapTests(unittest.TestCase):
             remap.from_map(tmp, pin, [one, two])
             expected = '{"calls": ["Level_Open", "Keep_Me", "Level_Close"]}\n'
             self.assertEqual((tmp / "facts.json").read_text(), expected)
+
+
+class HeaderMoveTests(unittest.TestCase):
+    def test_exact_header_move_reaches_consumer_and_deleted_header_has_no_guessed_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            source, tree = Path(raw) / "source", Path(raw) / "port"
+            (source / "include/COMMON").mkdir(parents=True)
+            (source / "src").mkdir()
+            git(source, "init", "-q", "-b", "main")
+            old_path = "include/COMMON/EXTERNS_13.H"
+            new_path = "include/COMMON/PLAYER_GETPLAYERINDEX.H"
+            (source / old_path).write_text("int Player_GetPlayerIndex(void *player);\n")
+            (source / "include/lost.h").write_text("int Owned(void)\n{ return 1; }\n")
+            (source / "src/old.c").write_text("int Existing(void)\n{ return 2; }\n")
+            git(source, "add", ".")
+            git(source, "commit", "-qm", "before")
+            old = git(source, "rev-parse", "HEAD").strip()
+            git(source, "mv", old_path, new_path)
+            git(source, "rm", "-q", "include/lost.h")
+            git(source, "mv", "src/old.c", "src/new.c")
+            (source / "src/owner.c").write_text("int Owned(void) { return 2; }\n")
+            git(source, "add", ".")
+            git(source, "commit", "-qm", "after")
+            new = git(source, "rev-parse", "HEAD").strip()
+            calls = []
+
+            def counted(argv, cwd, env, timeout):
+                calls.append(list(argv))
+                return run_process(argv, cwd, env, timeout)
+
+            moved = remap.moves(counted, source, old, new)
+            self.assertEqual(moved, {old_path: new_path, "include/lost.h": None, "src/old.c": "src/new.c"})
+            self.assertEqual(len(calls), 1)  # no per-header source reads or definition guesses
+            (tree / "platform/port").mkdir(parents=True)
+            gate = tree / "platform/port/gates-baseline.tsv"
+            original = f"gate-lto-type\t{old_path}\tPlayer_GetPlayerIndex\n"
+            gate.write_text(original)
+            pin = {"source": source, "remap": {"facts": [], "paths": ["platform/port"]}}
+            result, findings = remap.remap(run_process, tree, pin, old, new, write=False)
+            self.assertFalse(findings)
+            self.assertEqual(result["moved_sources"], {"platform/port/gates-baseline.tsv": [old_path]})
+            self.assertEqual(gate.read_text(), original)
+            remap.remap(run_process, tree, pin, old, new)
+            self.assertEqual(gate.read_text(), original.replace(old_path, new_path))
+            result, findings = remap.remap(run_process, tree, pin, old, new)
+            self.assertFalse(result["moved_sources"])
+            self.assertFalse(findings)
+            gate.write_text(gate.read_text() + "gate\tinclude/lost.h\tOwned\n")
+            _, findings = remap.remap(run_process, tree, pin, old, new, write=False)
+            self.assertEqual([(f["key"], f["blocking"]) for f in findings], [("remap.stale", True)])
+            self.assertIn("include/lost.h", findings[0]["message"])
+            self.assertNotIn("include", remap.SOURCE_DIRS)
+
+    def test_large_header_map_preserves_boundaries_and_ordered_move_results(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tree = Path(raw)
+            moved = {f"include/m{n}/old.H": f"include/m{n}/new.H" for n in range(235)}
+            moved.update({"src/first.c": "src/next.c", "src/next.c": "src/final.c"})
+            facts = tree / "gates.tsv"
+            facts.write_text("gate\tinclude/m234/old.H\tMember\nkeep\tinclude/m234/old.H.backup\nchain\tsrc/first.c\n")
+            result = remap.carry_moves(tree, ["gates.tsv"], moved)
+            self.assertEqual(result["files"], {"gates.tsv": ["include/m234/old.H", "src/first.c", "src/next.c"]})
+            self.assertFalse(result["stale"])
+            self.assertEqual(
+                facts.read_text(),
+                "gate\tinclude/m234/new.H\tMember\nkeep\tinclude/m234/old.H.backup\nchain\tsrc/final.c\n",
+            )
+            self.assertEqual(remap.carry_moves(tree, ["gates.tsv"], moved)["files"], {})
+            self.assertEqual(remap.carry_moves(tree, ["gates.tsv"], {})["files"], {})
