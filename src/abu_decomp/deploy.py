@@ -195,7 +195,9 @@ def project_requirements(text: str, source: str) -> list[str]:
     return rows
 
 
-# Run by the new venv's python: import every top-level module of each declared distribution.
+# Run by the new venv's python: import the module each declared distribution is named for (splat64 -> splat; its
+# distribution may also ship stray top-level modules such as `dist`, which are not the package), or every top-level
+# module of a distribution whose name matches none.
 IMPORT_CHECK = """\
 import importlib
 import importlib.metadata as metadata
@@ -211,9 +213,10 @@ for spec in sys.argv[1:]:
     modules = sorted(mod for mod, names in owners.items() if dist in {normal(n) for n in names})
     if not modules:
         sys.exit(f"{spec}: installs no importable module")
-    for module in modules:
+    named = [mod for mod in modules if normal(mod) in (dist, dist.rstrip("0123456789"))]
+    for module in named or modules:
         importlib.import_module(module)
-    print(spec, "imports", *modules)
+    print(spec, "imports", *(named or modules))
 """
 
 

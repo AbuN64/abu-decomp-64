@@ -199,6 +199,26 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(bad.returncode, 1)
         self.assertIn("installs no importable module", bad.stderr)
 
+    def test_the_import_check_skips_the_stray_top_level_modules_of_a_distribution(self):
+        """splat64 installs `splat` and a `dist` that cannot be imported: the package is the module it is named for."""
+        site = self.root / "site"
+        (site / "fakepkg" / "__init__.py").parent.mkdir(parents=True)
+        (site / "fakepkg" / "__init__.py").write_text("")
+        (site / "dist").mkdir()
+        (site / "dist" / "__init__.py").write_text("raise ImportError('stray')")
+        info = site / "fakepkg64-1.0.dist-info"
+        info.mkdir()
+        (info / "METADATA").write_text("Metadata-Version: 2.1\nName: fakepkg64\nVersion: 1.0\n")
+        (info / "top_level.txt").write_text("fakepkg\ndist\n")
+        done = subprocess.run(
+            [sys.executable, "-c", deploy.IMPORT_CHECK, "fakepkg64==1.0"],
+            env={**os.environ, "PYTHONPATH": str(site)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "fakepkg64==1.0 imports fakepkg"), done.stderr)
+
     def test_a_stale_detached_tree_cannot_drop_the_projects_requirements(self):
         """The 10-29 defect: the tree sat detached at a commit without requirements.txt while main had it."""
         origin, tree = self.root / "origin", self.root / "tree"
