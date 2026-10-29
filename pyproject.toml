@@ -17,13 +17,13 @@ dependencies = [
   "pycparser==3.0",
   "gcovr==8.3",
   "pillow==13.0.0",  # shared capture decoder + bounded JPEG video for the TAS viewer
-  "unbake @ git+https://github.com/AbuN64/cake-unbake-64@3afcecfa3c22f0a425640c8ab464b8c8dba1c7de",
-  "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@6d6376b71176eaa641bc0e5cf7d7f6461e4a5e7f",
+  "unbake @ git+https://github.com/AbuN64/cake-unbake-64@98f37e0c50ff69696a0344180fc672accfd95dca",
+  "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@d14df05fc1c8fd74c896d57cb5cb4e99937d1e6a",
   "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@a9afb02e6e33c3761feb5363a16eef6dcc0be2f8",
 ]
 
 [project.optional-dependencies]
-dev = ["ruff==0.16.9", "pytest==9.1.1", "numpy==2.2.4"]  # numpy: the shim boot tests (shim/boot/fl0.py)
+dev = ["ruff==0.16.9", "pytest==9.1.1", "numpy==2.2.4", "mypy==2.3.1"]  # numpy: the shim boot tests (shim/boot/fl0.py)
 
 [project.scripts]
 decomp = "abu_decomp.cli:main"

@@ -101,7 +101,7 @@ class DeployTests(unittest.TestCase):
         installs = [c for c in self.commands if "install" in c]
         self.assertEqual(len(installs), 2)
         specs = installs[0][installs[0].index("install") + 1 :]
-        self.assertEqual(specs[0], f"abu-decomp-64 @ git+{deploy.DECOMP_URL}@{D1}")
+        self.assertEqual(specs[0], f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}")
         self.assertIn(f"unbake @ git+{URL['unbake']}@{U1}", specs)
         self.assertTrue(all("@ git+https://" in spec and ".whl" not in spec for spec in specs))
         self.assertEqual(
@@ -134,6 +134,23 @@ class DeployTests(unittest.TestCase):
         self.assertFalse([f for f, _ in moves if f.startswith(str(self.project))])  # a project is never a pin
         self.assertNotIn(("recipe-maker-64 pyproject.toml", "unbake"), moves)  # R2 already pins U2
         self.assertTrue(all(f["key"] == "deploy.pin_must_move" and f["blocking"] for f in findings))
+
+    def test_the_pinned_packages_of_the_project_are_installed_beside_the_tools(self):
+        """RageWars pins splat64 and spimdisasm in requirements.txt: a plain deploy ships them, no hand reinstall."""
+        (self.project / "requirements.txt").write_text(
+            "# make extract\nsplat64[mips]==0.50.0\nspimdisasm==1.42.4  # x\n"
+        )
+        result, code, findings = self.deploy(unbake=U1)
+        self.assertEqual((code, findings), (0, []))
+        self.assertEqual(result["packages"], ["splat64[mips]==0.50.0", "spimdisasm==1.42.4"])
+        install = next(c for c in self.commands if "install" in c)
+        self.assertEqual(install[-2:], ["splat64[mips]==0.50.0", "spimdisasm==1.42.4"])
+
+    def test_a_project_package_that_is_not_an_exact_pin_refuses_before_anything_is_installed(self):
+        (self.project / "requirements.txt").write_text("splat64>=0.50\n")
+        with self.assertRaises(deploy.DeployError) as caught:
+            self.deploy(unbake=U1)
+        self.assertEqual((caught.exception.key, self.commands), ("deploy.requirements", []))
 
     def test_a_project_file_naming_another_tool_version_never_blocks_a_deploy(self):
         """Game projects build standalone and pin none of our tools: a tool release never asks a project to move."""

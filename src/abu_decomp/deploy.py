@@ -7,7 +7,10 @@ installed the pins that must agree are compared and the ones that would have to 
   decomp's pyproject pins of unbake, Recipe Maker and Cake Taste (at DECOMP_SHA) against the commits asked for;
   Recipe Maker's own pin of unbake (at its commit) against the unbake commit.
 
-A game project pins none of our tools (it builds with its own make), so a deploy never asks a project to move.
+A game project pins none of our tools (it builds with its own make), so a deploy never asks a project to move. It
+declares the Python packages its make runs (splat, spimdisasm, ...) in `requirements.txt` at its root, each pinned
+`name==version`; the deploy installs them into every venv beside the decomp commit and its `dev` extra, so a plain
+deploy gives a working venv with no hand reinstall.
 
 Any mismatch refuses the deploy and names the file, the pin, what it says now and what it must say. When they agree,
 each checkout the seat names in `tools.checkouts` (a tool's code run from a git checkout) is brought to the pinned
@@ -45,6 +48,7 @@ from abu_decomp.config import Profile
 
 DECOMP_URL = "https://github.com/AbuN64/abu-decomp-64"
 SHA = re.compile(r"[0-9a-f]{40}")
+_EXACT = re.compile(r"^[A-Za-z0-9._-]+(\[[A-Za-z0-9._,-]+\])?==[A-Za-z0-9.!+_*-]+$")
 _PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)\s*@\s*git\+(?P<url>https://[^@\s]+)@(?P<commit>[0-9a-f]{40})$")
 
 
@@ -157,10 +161,32 @@ def point(live: Path, target: Path) -> dict[str, Any]:
     return row
 
 
-def install(venv: Path, base: Path, requirements: Sequence[dict[str, str]], run: Run) -> list[dict[str, Any]]:
-    """Create `venv` with the python of `base` (the venv it replaces), then pip install with the new venv's python."""
+def project_requirements(project: Path | None) -> list[str]:
+    """The exact pins of the project's `requirements.txt` (none when the project has no such file); a line that is not
+    `name==version` is refused, so a venv never holds a package the project did not pin."""
+    path = project / "requirements.txt" if project else None
+    if path is None or not path.is_file():
+        return []
+    rows = [row.split("#")[0].strip() for row in path.read_text().splitlines()]
+    rows = [row for row in rows if row]
+    for row in rows:
+        if not _EXACT.match(row):
+            raise DeployError("deploy.requirements", f"{path}: {row!r} is not an exact name==version pin")
+    return rows
+
+
+def install(
+    venv: Path, base: Path, requirements: Sequence[dict[str, str]], run: Run, packages: Sequence[str] = ()
+) -> list[dict[str, Any]]:
+    """Create `venv` with the python of `base` (the venv it replaces), then pip install with the new venv's python:
+    the tools by commit (decomp with its `dev` extra) and the project's pinned `packages`."""
     python = venv / "bin" / "python"
-    specs = [f"{r['name']} @ git+{r['url']}@{r['commit']}" for r in requirements]
+    specs = [
+        f"{r['name']}{'[dev]' if tools._normal(r['name']) == tools._normal(tools.DISTRIBUTION) else ''}"
+        f" @ git+{r['url']}@{r['commit']}"
+        for r in requirements
+    ]
+    specs += packages
     done: list[dict[str, Any]] = []
     for name, argv in (
         ("create", [str(base / "bin" / "python"), "-m", "venv", str(venv)]),
@@ -314,6 +340,7 @@ def deploy(
         if not venv.is_symlink():
             raise DeployError("deploy.venv", f"{venv} is a real directory, not a symlink")
     project = tools.project_dir(profile)
+    packages = project_requirements(project)
     requirements, moves = plan(decomp, wanted, fetch)
     findings = [
         {
@@ -327,6 +354,7 @@ def deploy(
     result: dict[str, Any] = {
         "decomp": decomp,
         "requirements": [f"{r['name']} @ git+{r['url']}@{r['commit']}" for r in requirements],
+        "packages": packages,
         "pins_to_move": moves,
         "venvs": [],
     }
@@ -340,7 +368,7 @@ def deploy(
         return result, 1, findings
     for live in venvs:
         venv = versioned_path(live, decomp)
-        steps = install(venv, live, requirements, run)
+        steps = install(venv, live, requirements, run, packages)
         row: dict[str, Any] = {"venv": str(live), "versioned": str(venv), "steps": steps}
         result["venvs"].append(row)
         if all(step["ok"] for step in steps):
