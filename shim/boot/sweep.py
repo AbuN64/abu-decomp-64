@@ -30,6 +30,7 @@ import sys
 import threading
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import portdir  # noqa: E402
+import srcfiles  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
@@ -105,7 +106,7 @@ def build_unit(rw, unit, work, python="python3"):
     """Port-compile one unit and return its graph record; every intermediate file is removed."""
     stem = work / unit.replace("/", "__")
     pp = ["-DNON_MATCHING", "-DVERSION_US_REV1", "-D_LANGUAGE_C", "-DF3DEX_GBI_2", "-include",
-          str(HERE / "native.h"), f"-I{rw}/include", f"-I{rw}/src/sdk/libgcc"]
+          str(HERE / "native.h"), *srcfiles.include_flags(rw)]
     files = {s: str(stem) + s for s in (".i", ".stubs.c", ".json", ".d", ".o")}
     rec = {"unit": unit, "ok": False}
     try:
@@ -187,9 +188,10 @@ class Router:
         if self.refs is None:
             self.refs = set()
             texts = (t for u, t in self.facts.text.items() if not self.facts.sdk_unit(u))
-            inc = self.facts.source / "include"
-            heads = (p.read_text(errors="replace") for p in sorted(inc.rglob("*"))
-                     if p.is_file() and "sdk" not in (q.lower() for q in p.relative_to(inc).parts))
+            src = self.facts.source
+            heads = (p.read_text(errors="replace") for h in srcfiles.layout(src)["header_roots"]
+                     for p in sorted((src / h).rglob("*"))
+                     if p.is_file() and "sdk" not in (q.lower() for q in p.relative_to(src).parts))
             for text in (*texts, *heads):
                 self.refs.update(IDENT.findall(DECLARATION.sub(" ", COMMENT.sub(" ", text))))
         return sym not in self.refs

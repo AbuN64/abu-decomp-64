@@ -73,6 +73,25 @@ class SourceFilesTest(unittest.TestCase):
         got = [str(p.relative_to(self.root)) for p in srcfiles.headers(self.root)]
         self.assertEqual(got, ["include/A.H", "include/b.h"])
 
+    def test_a_moved_layout_in_config_toml_is_followed(self):
+        self.assertEqual(srcfiles.library_folder(self.root, "libgcc"), "src/sdk/libgcc")
+        self.assertEqual(srcfiles.library_prefix(self.root), "src/sdk/")
+        self.assertEqual(srcfiles.include_flags(self.root),
+                         [f"-I{self.root / 'include'}", f"-I{self.root / 'src/sdk/libgcc'}"])
+        (self.root / "config.toml").write_text(
+            '[layout]\nsource_roots = ["src", "sdk"]\nheader_roots = ["include", "sdk/include"]\n'
+            'library_source = "sdk/{library}"\n')
+        for name in ("sdk/libultra/os.c", "sdk/include/os.h"):
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_text("")
+        got = [str(p.relative_to(self.root)) for p in srcfiles.sources(self.root)]
+        self.assertEqual(got, ["sdk/libultra/os.c", "src/A/a.CPP", "src/B/b.c", "src/B/c.cpp"])
+        self.assertEqual([str(p.relative_to(self.root)) for p in srcfiles.headers(self.root)],
+                         ["include/A.H", "include/b.h", "sdk/include/os.h"])
+        self.assertEqual(srcfiles.library_prefix(self.root), "sdk/")
+        self.assertEqual(srcfiles.include_flags(self.root), [f"-I{self.root / 'include'}",
+                         f"-I{self.root / 'sdk/include'}", f"-I{self.root / 'sdk/libgcc'}"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -219,6 +219,22 @@ class SpecTests(unittest.TestCase):
         self.assertEqual(sd.area_of(Path("sdk/libultra/os/x.o")), "sdk/libultra")
         self.assertIsNone(sd.area_of(Path("x.o")))
 
+    def test_area_follows_the_pinned_sources_layout(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        self.assertEqual(sd.areas(None), sd.DEFAULT_AREAS)
+        self.assertEqual(sd.areas(root), sd.DEFAULT_AREAS)  # no config.toml: the packaged layout
+        (root / "config.toml").write_text(
+            '[layout]\nsource_roots = ["src", "sdk"]\nsubsystem_source = "src/{subsystem}"\n'
+            'library_source = "sdk/{library}"\n'
+        )
+        moved = sd.areas(root)
+        self.assertEqual(moved, ((), ("sdk",)))
+        self.assertEqual(sd.area_of(Path("ACTORS/x.CPP.o"), moved), "ACTORS")
+        self.assertEqual(sd.area_of(Path("DATA/AMMO/x.CPP.o"), moved), "DATA/AMMO")
+        self.assertEqual(sd.area_of(Path("sdk/libultra/os/x.o"), moved), "sdk/libultra")
+        self.assertIsNone(sd.area_of(Path("x.o"), moved))
+
 
 TABLE = {
     "regions": {

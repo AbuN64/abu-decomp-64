@@ -101,3 +101,13 @@ def test_move_packs_move_the_owned_declarations_and_keep_the_include_order(tmp_p
     assert common.index('#include "MENU/A.H"') < common.index(
         "extern int gNobody;"
     )  # the include stands where the first moved one was
+
+
+def test_the_units_are_those_under_the_layouts_source_roots(tmp_path: Path) -> None:
+    root = project(tmp_path)
+    before = owners.sources(root)
+    (root / "sdk").mkdir()
+    (root / "sdk" / "os.c").write_text("int os(void) { return 0; }\n")
+    (root / "config.toml").write_text('[layout]\nsource_roots = ["src", "sdk"]\n')
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    assert owners.sources(root) == sorted([*before, "sdk/os.c"])

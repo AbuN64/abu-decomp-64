@@ -18,8 +18,9 @@ judges each function by the port's gcov count against the original's counts arou
 table says "executed and behaves like the original", not only "executed" (granularity: TAS-CORPUS-OPUS-1 DESIGN.md).
 
 The universe for percentages by bytes is every function of the version's ELF (`readelf -sW`, MIPS sizes), keyed by
-name with the versions that define it. A row is scope `sdk` when its file is under `src/sdk/` (the port replaces
-those with its shim), other when no source defines it (compiler runtime, asm-only), else game.
+name with the versions that define it. A row is scope `sdk` when its file is under the source's library folder
+(its layout library_source, `src/sdk/` unless its config.toml [layout] says; the port replaces those with its shim),
+other when no source defines it (compiler runtime, asm-only), else game.
 Section `tas.coverage`: {"elf": ".../build/{version}/RageWars.elf", "version":
 "us-rev1", "versions": [...], "source": folder with src/ (default: tas.serve.pin), "symbols": [address tables in
 source, first file names win; e.g. "versions/us-rev1/symbol_addrs.txt", ".../aliases.txt"], "since": epoch seconds
@@ -48,6 +49,8 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
+
+from unbake import api
 
 from abu_decomp import DecompError, remap, slots, tas_oracle, tas_symbolize
 from abu_decomp.behave import abi, percall, prototype, replay
@@ -430,11 +433,13 @@ def elf_functions(elf: Path) -> dict[str, tuple[int, int]]:
 
 
 def source_files(source: Path | None, names: set[str]) -> dict[str, str]:
-    """name -> `src/...` file defining it (a C body, or the INCLUDE_ASM that stands in for it); the first wins."""
+    """name -> file under the source roots (layout source_roots: `src/` unless its config.toml says) defining it (a C
+    body, or the INCLUDE_ASM that stands in for it); the first wins."""
     where: dict[str, str] = {}
-    if source is None or not (source / "src").is_dir():
+    if source is None:
         return where
-    for path in sorted((source / "src").rglob("*")):
+    roots = [source / top for top in api.layout(source)["source_roots"]]
+    for path in (p for root in roots if root.is_dir() for p in sorted(root.rglob("*"))):
         if path.suffix.lower() not in _SOURCE_SUFFIXES or not path.is_file():
             continue
         rel = str(path.relative_to(source))
@@ -526,9 +531,10 @@ def universe(
             if version == cov["version"] and key != name:
                 row["elf_name"] = name
     files = source_files(cov["source"], set(rows))
+    library = api.layout(cov["source"])["library_source"].partition("{")[0] if files else ""
     for name, row in rows.items():
         row["file"] = files.get(name, "")
-        row["scope"] = "sdk" if row["file"].startswith("src/sdk/") else "game" if row["file"] else "other"
+        row["scope"] = "sdk" if row["file"] and row["file"].startswith(library) else "game" if row["file"] else "other"
     return sorted(rows.values(), key=lambda r: r["address"]), totals
 
 

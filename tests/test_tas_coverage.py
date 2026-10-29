@@ -123,6 +123,29 @@ class ReadTests(unittest.TestCase):
         found = cov.source_files(self.root, {"func_1_de", "func_2_de", "other"})
         self.assertEqual(found, {"func_1_de": "src/game/A.CPP", "func_2_de": "src/game/A.CPP"})
 
+    def test_the_scope_follows_the_layouts_library_folder_and_roots(self):
+        for rel in ("src/AI/A.CPP", "src/sdk/libultra/os.c", "sdk/libultra/os.c"):
+            (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / "src/AI/A.CPP").write_text("int game_fn(int a)\n{\n}\n")
+        (self.root / "src/sdk/libultra/os.c").write_text("int old_sdk_fn(int a)\n{\n}\n")
+        (self.root / "sdk/libultra/os.c").write_text("int new_sdk_fn(int a)\n{\n}\n")
+        names = {"game_fn", "old_sdk_fn", "new_sdk_fn"}
+        self.assertEqual(
+            cov.source_files(self.root, names), {"game_fn": "src/AI/A.CPP", "old_sdk_fn": "src/sdk/libultra/os.c"}
+        )
+        (self.root / "config.toml").write_text(
+            '[layout]\nsource_roots = ["src", "sdk"]\nlibrary_source = "sdk/{library}"\n'
+        )
+        found = cov.source_files(self.root, names)
+        self.assertEqual(found["new_sdk_fn"], "sdk/libultra/os.c")
+        cfg = {"elf": "e", "version": "us-rev1", "versions": ["us-rev1"], "source": self.root, "symbols": []}
+        elf = {n: (0x80200400 + 16 * i, 16) for i, n in enumerate(sorted(names))}
+        with mock.patch.object(cov, "elf_functions", return_value=elf):
+            rows, _ = cov.universe(cfg, ({}, {}))
+        self.assertEqual(
+            {r["name"]: r["scope"] for r in rows}, {"game_fn": "game", "new_sdk_fn": "sdk", "old_sdk_fn": "game"}
+        )
+
     def test_settings_carry_the_epoch(self):
         profile = mock.Mock()
         profile.source_file = "p.json"

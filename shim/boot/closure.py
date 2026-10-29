@@ -114,7 +114,8 @@ class Facts:
 
     def sdk_unit(self, unit):
         if unit not in self.sdk_units:
-            self.sdk_units[unit] = policy.sdk_unit(unit, self.text[unit], self.numeric, self.game)
+            self.sdk_units[unit] = policy.sdk_unit(unit, self.text[unit], self.numeric, self.game,
+                                                 srcfiles.library_prefix(self.source))
         return self.sdk_units[unit]
 
     def shim_name(self, sym):
@@ -130,7 +131,7 @@ def drop_moved(d, facts):
     stale = []
     for sym, why in d["stops"].items():
         unit = needsfeed.unit_of(why)
-        if unit and unit not in facts.text and not unit.startswith("src/sdk/libgcc/"):
+        if unit and unit not in facts.text and not unit.startswith(srcfiles.library_folder(facts.source, "libgcc") + "/"):
             stale.append(sym)
     for sym in stale:
         del d["stops"][sym]

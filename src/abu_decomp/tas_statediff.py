@@ -3,7 +3,8 @@ divergence.
 
 Both sides read the same typed elements of the game's global variables (module statetypes lays the declared C types
 out for the port's i386 and for the original's MIPS), as logical values, so the port's little-endian words and the
-original's big-endian ones agree when the game state agrees. A *region* is the source area (`src/game/<AREA>`,
+original's big-endian ones agree when the game state agrees. A *region* is the source area (`src/game/<AREA>`, or
+`src/<AREA>` when the pinned source's layout subsystem_source has no game folder,
 `DATA/<sub>` for the data units) of the units that use a variable most: nothing is listed by hand. Per poll each side
 writes the 32-bit hash of every symbol that changed since the previous poll (shim `N64C_TAS_STATE*`, oracle host
 `N64R_TAS_STATE*`, both from `tas_state.h`); this module replays the two traces side by side, so one pass gives every
@@ -55,6 +56,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from unbake import api
 
 from abu_decomp import DecompError, procguard, statetypes, tas_findings, tas_oracle
 from abu_decomp.config import Profile
@@ -109,6 +112,12 @@ def available(profile: Profile) -> str | None:
     return None
 
 
+def _pinned(profile: Profile) -> Path | None:
+    """The source folder `tas.serve.pin` names (the layout the units mirror), if the profile has one."""
+    pin = profile.section("tas").get("serve", {}).get("pin")
+    return profile.path("tas.serve.pin", pin) if pin else None
+
+
 def _units(profile: Profile) -> Path | None:
     build = profile.section("tas").get("build") or {}
     return profile.path("tas.build.units", build["units"]) if "units" in build else None
@@ -126,17 +135,39 @@ def port_symbols(exe: Path) -> dict[str, int]:
     return found
 
 
-def area_of(relative: Path) -> str | None:
+Areas = tuple[tuple[str, ...], tuple[str, ...]]  # (folders the subsystems nest in, library folders), below the units
+DEFAULT_AREAS: Areas = (("game",), ("sdk",))  # the packaged layout: src/game/<AREA>, src/sdk/<library>
+
+
+def areas(source: Path | None) -> Areas:
+    """The unit folders of the pinned source's layout, below its first source root (the units mirror the source tree
+    without it): where subsystems nest (subsystem_source: `game` for src/game/{subsystem}, none for src/{subsystem})
+    and the libraries sit (library_source: `sdk`). DEFAULT_AREAS without a source."""
+    if source is None:
+        return DEFAULT_AREAS
+    layout = api.layout(source)
+    top = layout["source_roots"][0]
+
+    def below(template: str) -> tuple[str, ...]:
+        parts = [p for p in template.partition("{")[0].strip("/").split("/") if p]
+        return tuple(parts[1:] if parts[:1] == [top] else parts)
+
+    return below(layout["subsystem_source"]), below(layout["library_source"])[:1]
+
+
+def area_of(relative: Path, where: Areas = DEFAULT_AREAS) -> str | None:
     """The source area of a unit by its place in the layout: game/ACTORS/x -> ACTORS, game/DATA/AMMO/x -> DATA/AMMO."""
     parts = relative.parts
-    if len(parts) < 3:
-        return None
-    if parts[0] == "game":
-        return "/".join(parts[1:3]) if parts[1] == "DATA" and len(parts) > 3 else parts[1]
-    return "/".join(parts[:2])
+    nested, libraries = where
+    if parts and parts[0] in libraries:
+        return "/".join(parts[:2]) if len(parts) > 2 else None
+    if parts[: len(nested)] == nested and len(parts) >= len(nested) + 2:
+        rest = parts[len(nested) :]
+        return "/".join(rest[:2]) if rest[0] == "DATA" and len(rest) > 2 else rest[0]
+    return "/".join(parts[:2]) if len(parts) > 2 else None
 
 
-def owners(units: Path) -> dict[str, str]:
+def owners(units: Path, where: Areas = DEFAULT_AREAS) -> dict[str, str]:
     """Variable name -> the area whose compiled units reference it most (code areas outrank the data units)."""
     objects = [p for p in sorted(units.rglob("*.o")) if not p.name.endswith(".stubs.o")]
     uses: dict[str, Counter[str]] = {}
@@ -150,7 +181,7 @@ def owners(units: Path) -> dict[str, str]:
         ).stdout
         for line in out.splitlines():
             m = _UNDEFINED.match(line)
-            area = area_of(Path(m[1]).relative_to(units)) if m and m[1].startswith(str(units)) else None
+            area = area_of(Path(m[1]).relative_to(units), where) if m and m[1].startswith(str(units)) else None
             if area:
                 uses.setdefault(m[2], Counter())[area] += 1
     chosen = {}
@@ -288,7 +319,7 @@ def build_spec(profile: Profile, cfg: dict[str, Any], exe: Path) -> Path:
         return folder
     began, cpu = time.monotonic(), time.process_time()
     symbols = port_symbols(exe)
-    regions, why = build_entries(read_types(units), symbols, owners(units), None)
+    regions, why = build_entries(read_types(units), symbols, owners(units, areas(_pinned(profile))), None)
     static_end = max(
         (e.address + sum(KIND_BYTES[k] * n for _o, k, n in e.port) for es in regions.values() for e in es),
         default=BASE,

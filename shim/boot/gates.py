@@ -102,8 +102,7 @@ def boot_units(source, manifest, adapter=HERE):
 def preprocess_flags(source, adapter=HERE):
     source = pathlib.Path(source)
     return ["-DNON_MATCHING", "-DVERSION_US_REV1", "-D_LANGUAGE_C", "-DF3DEX_GBI_2", "-include",
-            str(pathlib.Path(adapter) / "native.h"), "-I" + str(source / "include"),
-            "-I" + str(source / "src" / "sdk" / "libgcc")]
+            str(pathlib.Path(adapter) / "native.h"), *srcfiles.include_flags(source)]
 
 
 def run(command, timeout=TIMEOUT):
@@ -990,8 +989,9 @@ def sweep(args):
     policy = load_policy()
     addresses = {n: int(a, 16) for n, (a, _) in policy.pinned(source, version).items()}
     game = policy.game_code(project)
-    sdk = {u for u in units if "/sdk/" in u.lower() or policy.sdk_unit(
-        u, (source / u).read_text(errors="replace"), addresses, game)}
+    library = srcfiles.library_prefix(source)
+    sdk = {u for u in units if "/sdk/" in u.lower() or u.lower().startswith(library) or policy.sdk_unit(
+        u, (source / u).read_text(errors="replace"), addresses, game, library)}
     ctx = {"source": str(source), "work": str(work), "adapter": HERE, "boot": boot, "sdk": sdk,
            "build": args.build, "layout": not args.no_layout, "mips_gcc": args.mips_gcc, "partial": bool(args.units),
            "cache": None if args.fresh else str(out / "cache")}

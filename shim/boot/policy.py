@@ -63,11 +63,13 @@ def functions(text):
     return sorted(set(bodies + asm))
 
 
-def sdk_unit(unit, text, addresses, game=frozenset()):
+def sdk_unit(unit, text, addresses, game=frozenset(), library=""):
+    """`library`: the lower-case folder prefix of the libraries (srcfiles.library_prefix); a unit under it is libultra
+    like any whose path has an /sdk/ folder."""
     names = functions(text)
     if names and set(names) <= game:
         return False  # a unit holding only project-declared game code, wherever the decomp filed it
-    return "/sdk/" in unit.lower() or any(sdk_address(fn, addresses, game) for fn in names)
+    return "/sdk/" in unit.lower() or (bool(library) and unit.lower().startswith(library)) or any(sdk_address(fn, addresses, game) for fn in names)
 
 
 def sanitize(project, source, addresses, bindings, shim_text):

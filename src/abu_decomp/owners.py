@@ -22,6 +22,8 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
+from unbake import api
+
 from abu_decomp import deaddecls
 
 SOURCE_SUFFIXES = (".c", ".cpp", ".cc")
@@ -44,7 +46,8 @@ def read_map(path: Path) -> tuple[dict[str, str], dict[str, str]]:
 
 
 def sources(root: Path) -> list[str]:
-    listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", "src"], capture_output=True, check=True)
+    tops = api.layout(root)["source_roots"]  # `src` unless the project's config.toml [layout] says
+    listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", *tops], capture_output=True, check=True)
     return sorted(n for n in listed.stdout.decode().split("\0") if n.lower().endswith(SOURCE_SUFFIXES))
 
 
