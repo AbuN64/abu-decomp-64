@@ -10,7 +10,10 @@ installed the pins that must agree are compared and the ones that would have to 
 A game project pins none of our tools (it builds with its own make), so a deploy never asks a project to move. It
 declares the Python packages its make runs (splat, spimdisasm, ...) in `requirements.txt` at its root, each pinned
 `name==version`; the deploy installs them into every venv beside the decomp commit and its `dev` extra, so a plain
-deploy gives a working venv with no hand reinstall.
+deploy gives a working venv with no hand reinstall. The file is read from the project repository at one revision,
+never from a work tree (a stale or detached tree cannot drop packages): `--project-sha`, else the project's main (the
+profile's `land.remote` / `land.branch`, default origin/main) fetched at deploy time. The smoke test imports every
+declared package from the new venv, so a venv that cannot import one is a failed deploy.
 
 Any mismatch refuses the deploy and names the file, the pin, what it says now and what it must say. When they agree,
 each checkout the seat names in `tools.checkouts` (a tool's code run from a git checkout) is brought to the pinned
@@ -44,7 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from abu_decomp import DecompError, tools
-from abu_decomp.config import Profile
+from abu_decomp.config import ConfigError, Profile
 
 DECOMP_URL = "https://github.com/AbuN64/abu-decomp-64"
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -53,6 +56,7 @@ _PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)\s*@\s*git\+(?P<url>https://[^@\s]
 
 
 Fetch = Callable[[str, str, str], str]
+Requirements = Callable[[Path, str, str, str | None], "tuple[str, str]"]
 Run = Callable[[Sequence[str], Path | None], "tuple[int, str]"]
 
 
@@ -73,6 +77,25 @@ def fetch_file(url: str, sha: str, path: str) -> str:
         if shown.returncode:
             raise DeployError("deploy.fetch", f"{url} at {sha} has no {path}")
         return shown.stdout
+
+
+def requirements_at(project: Path, remote: str, branch: str, sha: str | None) -> tuple[str, str]:
+    """(commit, text of `requirements.txt` there) from the project repository: `sha` when given, else the tip of
+    `remote`/`branch` fetched now. The text is empty when that commit has no such file."""
+
+    def git(*argv: str) -> str:
+        done = subprocess.run(["git", "-C", str(project), *argv], capture_output=True, text=True, check=False)
+        if done.returncode:
+            raise DeployError(
+                "deploy.requirements", f"{project}: git {' '.join(argv)} failed: {done.stderr.strip()[-300:]}"
+            )
+        return done.stdout
+
+    if sha is None:
+        git("fetch", "-q", remote, branch)
+    commit = git("rev-parse", "--verify", f"{sha or 'FETCH_HEAD'}^{{commit}}").strip()
+    listed = git("ls-tree", "--name-only", commit, "requirements.txt")
+    return commit, git("show", f"{commit}:requirements.txt") if listed.strip() else ""
 
 
 def run_command(argv: Sequence[str], cwd: Path | None = None) -> tuple[int, str]:
@@ -161,18 +184,37 @@ def point(live: Path, target: Path) -> dict[str, Any]:
     return row
 
 
-def project_requirements(project: Path | None) -> list[str]:
-    """The exact pins of the project's `requirements.txt` (none when the project has no such file); a line that is not
+def project_requirements(text: str, source: str) -> list[str]:
+    """The exact pins of the project's `requirements.txt` (`text`, read from `source`); a line that is not
     `name==version` is refused, so a venv never holds a package the project did not pin."""
-    path = project / "requirements.txt" if project else None
-    if path is None or not path.is_file():
-        return []
-    rows = [row.split("#")[0].strip() for row in path.read_text().splitlines()]
+    rows = [row.split("#")[0].strip() for row in text.splitlines()]
     rows = [row for row in rows if row]
     for row in rows:
         if not _EXACT.match(row):
-            raise DeployError("deploy.requirements", f"{path}: {row!r} is not an exact name==version pin")
+            raise DeployError("deploy.requirements", f"{source}: {row!r} is not an exact name==version pin")
     return rows
+
+
+# Run by the new venv's python: import every top-level module of each declared distribution.
+IMPORT_CHECK = """\
+import importlib
+import importlib.metadata as metadata
+import re
+import sys
+
+def normal(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+owners = metadata.packages_distributions()
+for spec in sys.argv[1:]:
+    dist = normal(re.split(r"[\\[=]", spec)[0])
+    modules = sorted(mod for mod, names in owners.items() if dist in {normal(n) for n in names})
+    if not modules:
+        sys.exit(f"{spec}: installs no importable module")
+    for module in modules:
+        importlib.import_module(module)
+    print(spec, "imports", *modules)
+"""
 
 
 def install(
@@ -199,12 +241,17 @@ def install(
     return done
 
 
-def smoke(venv: Path, project: Path | None, host: Path, run: Run) -> list[dict[str, Any]]:
-    """`decomp dependencies` (every installed tool at its pinned commit) and `unbake symbols --version V` on the
-    project, V being the first version directory of the project."""
+def smoke(venv: Path, project: Path | None, host: Path, run: Run, packages: Sequence[str] = ()) -> list[dict[str, Any]]:
+    """`decomp dependencies` (every installed tool at its pinned commit), an import of every declared project package,
+    and `unbake symbols --version V` on the project, V being the first version directory of the project."""
     results = []
     code, output = run([str(venv / "bin" / "decomp"), "dependencies"], None)
     results.append({"check": "decomp dependencies", "ok": code == 0, "tail": output[-300:] if code else ""})
+    if packages:
+        code, output = run([str(venv / "bin" / "python"), "-c", IMPORT_CHECK, *packages], None)
+        results.append(
+            {"check": "import " + " ".join(packages), "ok": code == 0, "tail": output[-300:] if code else ""}
+        )
     root = project / "versions" if project else None
     versions = sorted(p.name for p in root.iterdir() if p.is_dir()) if root and root.is_dir() else []
     if not project or not versions:
@@ -321,14 +368,24 @@ def resync(venv: Path, host: Path, project: Path, run: Run) -> list[dict[str, An
     return rows
 
 
+def _land_table(profile: Profile) -> dict[str, Any]:
+    """The profile's `land` section (where the project's main lives), empty when the seat has none."""
+    try:
+        return profile.section("land")
+    except ConfigError:
+        return {}
+
+
 def deploy(
     profile: Profile,
     decomp: str,
     venvs: Sequence[Path],
     commits: dict[str, str | None],
     *,
+    project_sha: str | None = None,
     fetch: Fetch = fetch_file,
     run: Run = run_command,
+    requirements_of: Requirements = requirements_at,
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     check_sha("--sha", decomp)
     wanted = {command: check_sha(f"--{command}", sha) for command, sha in commits.items() if sha}
@@ -340,7 +397,12 @@ def deploy(
         if not venv.is_symlink():
             raise DeployError("deploy.venv", f"{venv} is a real directory, not a symlink")
     project = tools.project_dir(profile)
-    packages = project_requirements(project)
+    if project_sha:
+        check_sha("--project-sha", project_sha)
+    land = _land_table(profile)
+    remote, branch = str(land.get("remote", "origin")), str(land.get("branch", "main"))
+    revision, text = requirements_of(project, remote, branch, project_sha)
+    packages = project_requirements(text, f"{project} requirements.txt at {revision[:12]}")
     requirements, moves = plan(decomp, wanted, fetch)
     findings = [
         {
@@ -354,6 +416,7 @@ def deploy(
     result: dict[str, Any] = {
         "decomp": decomp,
         "requirements": [f"{r['name']} @ git+{r['url']}@{r['commit']}" for r in requirements],
+        "project_revision": revision,
         "packages": packages,
         "pins_to_move": moves,
         "venvs": [],
@@ -372,7 +435,7 @@ def deploy(
         row: dict[str, Any] = {"venv": str(live), "versioned": str(venv), "steps": steps}
         result["venvs"].append(row)
         if all(step["ok"] for step in steps):
-            row["smoke"] = smoke(venv, project, tools.host_file(profile), run)
+            row["smoke"] = smoke(venv, project, tools.host_file(profile), run, packages)
             bad = [check for check in row["smoke"] if not check["ok"]]
             findings += [
                 {"key": "deploy.smoke", "blocking": True, "message": f"{venv}: {c['check']} failed: {c['tail']}"}
@@ -397,7 +460,7 @@ def deploy(
             findings.append({"key": error.key, "blocking": True, "message": str(error)})
             shutil.rmtree(venv, ignore_errors=True)  # built but never linked, so nothing uses it
             continue
-        row["swap"]["readback_smoke"] = smoke(live, project, tools.host_file(profile), run)
+        row["swap"]["readback_smoke"] = smoke(live, project, tools.host_file(profile), run, packages)
         if not row["swap"]["readback"] or not all(c["ok"] for c in row["swap"]["readback_smoke"]):
             findings.append(
                 {"key": "deploy.readback", "blocking": True, "message": f"{live} does not read back to {venv}"}

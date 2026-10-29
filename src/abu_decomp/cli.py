@@ -237,6 +237,10 @@ def _tools_arguments(parser: argparse.ArgumentParser) -> None:
     deploy.add_argument("--sha", required=True, help="the decomp commit (40 hex)")
     for tool in ("unbake", "recipe", "taste"):
         deploy.add_argument(f"--{tool}", help=f"the {tool} commit to deploy (default: the one decomp pins)")
+    deploy.add_argument(
+        "--project-sha",
+        help="the project commit whose requirements.txt is installed (default: the project's main, fetched now)",
+    )
     deploy.add_argument("--venv", type=Path, required=True, nargs="+", help="live venv paths (symlinks) to deploy to")
 
 
@@ -246,7 +250,7 @@ def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
     profile = _profile(args.profile)
     live = [Path(os.path.abspath(path)) for path in args.venv]  # never resolve: the live path is the symlink
     commits = {tool: getattr(args, tool) for tool in ("unbake", "recipe", "taste")}
-    return deploy.deploy(profile, args.sha, live, commits)
+    return deploy.deploy(profile, args.sha, live, commits, project_sha=args.project_sha)
 
 
 def _probe_arguments(parser: argparse.ArgumentParser) -> None:

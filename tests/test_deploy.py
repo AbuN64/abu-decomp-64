@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,6 +56,12 @@ class DeployTests(unittest.TestCase):
         }
         self.commands = []
         self.fail = None
+        self.requirements = ""  # requirements.txt of the project revision
+        self.asked = []
+
+    def requirements_of(self, project, remote, branch, sha):
+        self.asked.append((project, remote, branch, sha))
+        return sha or "c" * 40, self.requirements
 
     @staticmethod
     def make_venv(path):
@@ -92,6 +99,7 @@ class DeployTests(unittest.TestCase):
             {"unbake": None, "recipe": None, "taste": None, **commits},
             fetch=self.fetch,
             run=self.runner,
+            requirements_of=self.requirements_of,
             **extra,
         )
 
@@ -137,20 +145,89 @@ class DeployTests(unittest.TestCase):
 
     def test_the_pinned_packages_of_the_project_are_installed_beside_the_tools(self):
         """RageWars pins splat64 and spimdisasm in requirements.txt: a plain deploy ships them, no hand reinstall."""
-        (self.project / "requirements.txt").write_text(
-            "# make extract\nsplat64[mips]==0.50.0\nspimdisasm==1.42.4  # x\n"
-        )
+        self.requirements = "# make extract\nsplat64[mips]==0.50.0\nspimdisasm==1.42.4  # x\n"
         result, code, findings = self.deploy(unbake=U1)
         self.assertEqual((code, findings), (0, []))
         self.assertEqual(result["packages"], ["splat64[mips]==0.50.0", "spimdisasm==1.42.4"])
+        self.assertEqual(result["project_revision"], "c" * 40)
         install = next(c for c in self.commands if "install" in c)
         self.assertEqual(install[-2:], ["splat64[mips]==0.50.0", "spimdisasm==1.42.4"])
 
+    def test_the_requirements_come_from_the_project_main_or_the_named_revision_never_the_tree(self):
+        (self.project / "requirements.txt").write_text("stale-tree==1\n")  # a work tree file is never read
+        self.requirements = "splat64==0.50.0\n"
+        result, _, _ = self.deploy(unbake=U1)
+        self.assertEqual((result["packages"], self.asked[-1][1:]), (["splat64==0.50.0"], ("origin", "main", None)))
+        self.deploy(unbake=U1, extra={"project_sha": "9" * 40})
+        self.assertEqual(self.asked[-1][3], "9" * 40)
+        with self.assertRaises(deploy.DeployError) as caught:
+            self.deploy(unbake=U1, extra={"project_sha": "main"})
+        self.assertEqual(caught.exception.key, "deploy.sha")
+
+    def test_the_land_remote_and_branch_name_the_projects_main(self):
+        document = json.loads((self.root / "seat.json").read_text())
+        document["land"] = {"remote": "github", "branch": "trunk"}
+        (self.root / "seat.json").write_text(json.dumps(document))
+        self.profile = load_profile(self.root / "seat.json")
+        self.deploy(unbake=U1)
+        self.assertEqual(self.asked[-1][1:], ("github", "trunk", None))
+
     def test_a_project_package_that_is_not_an_exact_pin_refuses_before_anything_is_installed(self):
-        (self.project / "requirements.txt").write_text("splat64>=0.50\n")
+        self.requirements = "splat64>=0.50\n"
         with self.assertRaises(deploy.DeployError) as caught:
             self.deploy(unbake=U1)
         self.assertEqual((caught.exception.key, self.commands), ("deploy.requirements", []))
+
+    def test_a_venv_that_cannot_import_a_declared_package_is_a_failed_deploy(self):
+        self.requirements = "splat64==0.50.0\n"
+        self.fail = "-c"  # the import check is the one command run with python -c
+        result, code, findings = self.deploy(unbake=U1)
+        self.assertEqual(code, 1)
+        self.assertEqual([f["key"] for f in findings], ["deploy.smoke"])
+        self.assertIn("import splat64==0.50.0", findings[0]["message"])
+        self.assertNotIn("swap", result["venvs"][0])
+
+    def test_the_import_check_imports_each_declared_distribution_and_fails_on_a_missing_one(self):
+        def check(*specs):
+            return subprocess.run(
+                [sys.executable, "-I", "-c", deploy.IMPORT_CHECK, *specs], capture_output=True, text=True, check=False
+            )
+
+        ok = check("pip==1.0", "PIP[x]==1")
+        self.assertEqual((ok.returncode, ok.stdout.count("imports pip")), (0, 2), ok.stderr)
+        bad = check("no-such-distribution==1")
+        self.assertEqual(bad.returncode, 1)
+        self.assertIn("installs no importable module", bad.stderr)
+
+    def test_a_stale_detached_tree_cannot_drop_the_projects_requirements(self):
+        """The 10-29 defect: the tree sat detached at a commit without requirements.txt while main had it."""
+        origin, tree = self.root / "origin", self.root / "tree"
+        git = lambda *argv, cwd=origin: subprocess.run(  # noqa: E731
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *argv], cwd=cwd, check=True, capture_output=True
+        )
+        origin.mkdir()
+        git("init", "-q", "-b", "main")
+        (origin / "a").write_text("1")
+        git("add", "a")
+        git("commit", "-qm", "old")
+        git("clone", "-q", str(origin), str(tree), cwd=self.root)
+        git("checkout", "-q", "--detach", cwd=tree)
+        (origin / "requirements.txt").write_text("splat64==0.50.0\n")
+        git("add", "requirements.txt")
+        git("commit", "-qm", "new")
+        newest = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=origin, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        self.assertFalse((tree / "requirements.txt").exists())
+        self.assertEqual(deploy.requirements_at(tree, "origin", "main", None), (newest, "splat64==0.50.0\n"))
+        self.assertEqual(deploy.requirements_at(tree, "origin", "main", newest)[1], "splat64==0.50.0\n")
+        old = subprocess.run(
+            ["git", "rev-parse", "HEAD~1"], cwd=origin, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        self.assertEqual(deploy.requirements_at(tree, "origin", "main", old)[1], "")
+        with self.assertRaises(deploy.DeployError) as caught:
+            deploy.requirements_at(tree, "origin", "main", "f" * 40)
+        self.assertEqual(caught.exception.key, "deploy.requirements")
 
     def test_a_project_file_naming_another_tool_version_never_blocks_a_deploy(self):
         """Game projects build standalone and pin none of our tools: a tool release never asks a project to move."""
@@ -222,6 +299,7 @@ class DeployTests(unittest.TestCase):
                 {"unbake": None, "recipe": None, "taste": None},
                 fetch=self.fetch,
                 run=runner,
+                requirements_of=self.requirements_of,
             )
         self.assertEqual((code, findings), (0, []))  # a refused or held tree never fails the deploy
         live = self.root / "venv-a"  # the link, already swapped: the files name the live path, never a versioned one
