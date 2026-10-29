@@ -36,7 +36,7 @@ class StandaloneTests(unittest.TestCase):
         for text in ("#ifndef UNBAKE_TYPES_H", "-D__UNBAKE_STDARG_GCC", "pip install cake-unbake-64", "Recipe Maker",
                      "recipemaker", "cake_taste", "abu-decomp-64", "abu_decomp.land"):  # fmt: skip
             self.assertTrue(expr.search(text), text)
-        for text in ("One recipe per toolchain", "a matching decomp", "taste", "mas-n64 n64link", "Makefile"):
+        for text in ("One recipe per toolchain", "a matching decomp", "taste", "mas-n64 abumas", "Makefile"):
             self.assertFalse(expr.search(text), text)
 
     def test_a_clean_tree_has_no_mentions(self):
