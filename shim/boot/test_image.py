@@ -164,6 +164,11 @@ class ImageTests(unittest.TestCase):
         return output
 
     @unittest.skipUnless(shutil.which("i686-w64-mingw32-gcc"), "needs the mingw-w64 cross compiler")
+    def test_semantic_kuseg_record_classification(self):
+        import addrscan
+        targets = addrscan.Targets({"g_collisionSetupTableResource": (0x0044B4A0, "data")})
+        self.assertEqual(targets.classify(0x0044B4A0), ("tlb-data", "g_collisionSetupTableResource"))
+
     def test_windows_object_reads_like_elf(self):
         """A Windows/i386 object gives the image the same view as an ELF one: stripped names, sizes, relocations."""
         source = self.path / "w.c"

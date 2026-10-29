@@ -53,6 +53,21 @@ class PrepareTests(unittest.TestCase):
                        check=True, capture_output=True, text=True)
         return exe
 
+    def test_failed_header_records_dependencies_for_repair(self):
+        header = self.path / "shared.h"
+        header.write_text("struct Record { int team; int team; };\n")
+        source = self.path / "unit.c"
+        source.write_text('#include "shared.h"\nint actual(void) { return 7; }\n')
+        files = [self.path / name for name in ("unit.i", "unit.stubs.c", "unit.json", "unit.d")]
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = module.prepare(args.compiler, source, *files, [*self.flags, "-DNON_MATCHING"])
+        self.assertNotEqual(result, 0)
+        self.assertIn(str(header), files[-1].read_text())
+        self.assertFalse(files[0].exists())
+        header.write_text("struct Record { int characterId; int team; };\n")
+        self.assertEqual(module.prepare(args.compiler, source, *files, [*self.flags, "-DNON_MATCHING"]), 0)
+        self.assertIn("characterId", files[0].read_text())
+
     def test_uncompilable_nonmatching_fails_without_stops(self):
         src = self.path / "conflict.c"
         src.write_text("""
@@ -75,7 +90,8 @@ INCLUDE_ASM("text", fuzzy);
         self.assertIn("conflicting types", stderr.getvalue())
         self.assertIn("unit conflict.c", stderr.getvalue())
         self.assertIn(str(src), stderr.getvalue())
-        self.assertFalse(any(f.exists() for f in files))
+        self.assertFalse(any(f.exists() for f in files[:-1]))
+        self.assertIn(str(src), files[-1].read_text())
         self.assertEqual(list(cache.rglob("*")), [])
 
     def test_active_branches_and_nonmatching_body(self):

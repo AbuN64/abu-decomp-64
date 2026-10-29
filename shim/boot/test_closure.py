@@ -230,10 +230,20 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.d["data"]["D_auto_80104444"], "0x80104444")
         self.route("D_auto_80200000")  # a defined function sits at the named address
         self.assertEqual(self.d["bindings"]["D_auto_80200000"], "func_80200000_de")
+        self.facts.addrs["D_auto_00200100"] = ("0x00200100", "")
         self.route("D_auto_00200100")  # pre-KSEG0 alias of a function
         self.assertEqual(self.d["bindings"]["D_auto_00200100"], "func_80200100_de")
         self.route("D_80100000")  # pinned data binds at its us-rev1 address, not its name
         self.assertEqual(self.d["data"]["D_80100000"], "0x80104000")
+
+    def test_semantic_aliases_require_pinned_addresses(self):
+        self.facts.addrs["g_collisionSetupTableResource"] = ("0x0044B4A0", "")
+        self.route("g_collisionSetupTableResource")
+        self.assertEqual(self.d["data"].get("g_collisionSetupTableResource"), "0x0044B4A0")
+        self.facts.addrs["g_actorSetupCallbackAddress"] = ("0x00200000", "")
+        self.route("g_actorSetupCallbackAddress")
+        self.assertEqual(self.d["bindings"].get("g_actorSetupCallbackAddress"), "func_80200000_de")
+        self.assertIsNone(self.facts.function_alias("D_00201234"))
 
     def test_versioned_alias_of_a_function_binds_to_the_function_not_to_storage(self):
         # D_0024B52C_us_rev1 pins 0x0024B52C; a function sits at 0x8024B52C, and the game calls through the address.
@@ -247,6 +257,8 @@ class RouteTests(unittest.TestCase):
             "extern char D_00203B00[];\nextern char D_00203B20[];\nu32 tbl[] = {(u32)D_00203AD8, (u32)D_00203B00};\n"
         self.facts.addrs["Turret_Code_IDLE"] = ("0x80203AD8", " // type:func")
         self.facts.addrs["Turret_Gone"] = ("0x80203B00", " // type:func")  # pinned function nothing defines
+        self.facts.addrs["D_00203AD8"] = ("0x00203AD8", "")
+        self.facts.addrs["D_00203B00"] = ("0x00203B00", "")
         self.facts.addrs["D_00203B20"] = ("0x00203B20", "")  # a TLB data record: nothing pinned as a function there
         self.assertEqual(self.facts.function_alias("D_00203AD8"), "Turret_Code_IDLE")
         self.assertEqual(self.route("D_00203AD8")[0], "added")
@@ -254,6 +266,7 @@ class RouteTests(unittest.TestCase):
         self.assertEqual([(s, n) for s, _, n in self.facts.unbound_aliases()], [("D_00203B00", ["Turret_Gone"])])
     def test_alias_target_links_its_unit(self):
         # D_00XXXXXX takes a function's address; the function's unit is linked like a direct call would link it.
+        self.facts.addrs["D_00200000"] = ("0x00200000", "")
         kind, detail = self.route("D_00200000")
         self.assertEqual((kind, detail), ("added", "src/GAME/80200000.CPP"))
         self.assertEqual(self.d["bindings"]["D_00200000"], "func_80200000_de")
@@ -271,6 +284,7 @@ class RouteTests(unittest.TestCase):
         self.d["bindings"].clear()
         self.route("D_00200000", frontier=True)
         self.assertIn("(boot frontier)", self.d["stops"]["func_80200000_de"])
+        self.facts.addrs["D_002BFEB0"] = ("0x002BFEB0", "")
         self.route("D_002BFEB0")
         self.assertEqual(self.d["bindings"]["func_802BADC0_de"], "osGetTime")
         self.assertEqual(self.d["sources"], [])
@@ -297,6 +311,8 @@ class RouteTests(unittest.TestCase):
         # binds to the function and the walk goes on; the manifest gains the binding
         self.facts.addrs["D_00200000"] = ("0x00200000", "")
         root = pathlib.Path(self.tmp.name)
+        with (self.facts.source / "versions/us-rev1/symbol_addrs.txt").open("a") as facts:
+            facts.write("D_00200000 = 0x00200000; //\n")
         (root / "decomp-boot").mkdir()
         (root / "decomp-boot/image.json").write_text(json.dumps({"function_stops": ["D_00200000"]}))
         _, unchanged, _, closures = self.run_advance((78, "boot-missing: D_00200000"),
@@ -320,6 +336,7 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.route("__udivdi3"), ("skip", ""))
         self.assertNotIn("__udivdi3", self.d["stops"])
     def test_data_is_never_a_stop(self):
+        self.facts.text["src/GAME/unknown-data.CPP"] = "extern char D_80999999[];\nextern char D_80104444[];\n"
         kind, detail = self.route("D_80999999")
         self.assertEqual(kind, "need")
         self.assertIn("no C definition", detail)
@@ -633,7 +650,8 @@ class LinkAllTests(unittest.TestCase):
     def test_autogen_pulls_alias_targets_and_routes_their_own_undefined_names(self):
         effective, _ = self.autogen_tree(
             {"B.CPP": "void func_80200300_de(void) {\n}\n"},
-            "func_80200300_de = 0x80200300; // type:func\nfunc_80200400_de = 0x80200400; // type:func\n",
+            "func_80200300_de = 0x80200300; // type:func\nfunc_80200400_de = 0x80200400; // type:func\n"
+            "D_00200300 = 0x00200300; //\n",
             "extern int D_00200300; int n64c_entry(void){return D_00200300;}\n",
             {"b": "void func_80200400_de(void); void func_80200300_de(void){func_80200400_de();}\n"})
         self.assertEqual(effective["bindings"].get("D_00200300"), "func_80200300_de", "the alias binds to its function")

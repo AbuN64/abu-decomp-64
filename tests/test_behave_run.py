@@ -107,7 +107,18 @@ class RunTests(unittest.TestCase):
             mock.patch.object(run.build_candidate, "build", build or (lambda *a, **k: image)),
             contextlib.redirect_stdout(stdout),
         ):
-            code = main(["--profile", str(self.seat), "behave", "--function", "f", *args])
+            code = main(
+                [
+                    "--profile",
+                    str(self.seat),
+                    "behave",
+                    "--project",
+                    str(self.root / "project"),
+                    "--function",
+                    "f",
+                    *args,
+                ]
+            )
         return code, json.loads(stdout.getvalue())
 
     def test_missing_coverage_uses_fault_arguments_in_the_public_command(self):
@@ -201,7 +212,7 @@ class RunTests(unittest.TestCase):
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             contextlib.redirect_stdout(stdout),
         ):
-            main(["--profile", str(self.seat), "behave", "--function", "h"])
+            main(["--profile", str(self.seat), "behave", "--project", str(self.root / "project"), "--function", "h"])
         self.assertEqual(self.probes[0][0], "learn")
 
     def test_a_stub_whose_return_value_the_original_dereferenced_answers_with_a_region(self):
@@ -241,7 +252,19 @@ class RunTests(unittest.TestCase):
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             contextlib.redirect_stdout(stdout),
         ):
-            main(["--profile", str(self.seat), "behave", "--function", "h", "--cases", "6"])
+            main(
+                [
+                    "--profile",
+                    str(self.seat),
+                    "behave",
+                    "--project",
+                    str(self.root / "project"),
+                    "--function",
+                    "h",
+                    "--cases",
+                    "6",
+                ]
+            )
         names = [n for n, _ in self.probes]
         self.assertEqual(names[-1], "original")
         self.assertGreaterEqual(names.count("learn"), 2)  # the stub is named in the first round, tagged in the second
@@ -348,6 +371,8 @@ class RunTests(unittest.TestCase):
                     "--profile",
                     str(self.seat),
                     "behave",
+                    "--project",
+                    str(self.root / "project"),
                     "--function",
                     "f",
                     "--candidate",
@@ -391,7 +416,19 @@ class RunTests(unittest.TestCase):
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             contextlib.redirect_stdout(stdout),
         ):
-            main(["--profile", str(self.seat), "behave", "--function", "f", "--candidate", str(self.candidate)])
+            main(
+                [
+                    "--profile",
+                    str(self.seat),
+                    "behave",
+                    "--project",
+                    str(self.root / "project"),
+                    "--function",
+                    "f",
+                    "--candidate",
+                    str(self.candidate),
+                ]
+            )
         envelope = json.loads(stdout.getvalue())
         self.assertNotIn("behave.lenient", [f["key"] for f in envelope["findings"]])
         self.assertFalse(any(r.get("lenient") for _, r in self.probes))
@@ -409,6 +446,8 @@ class RunTests(unittest.TestCase):
                     "--profile",
                     str(self.seat),
                     "behave",
+                    "--project",
+                    str(self.root / "project"),
                     "--function",
                     "f",
                     "--cases",
@@ -443,7 +482,20 @@ class RunTests(unittest.TestCase):
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             contextlib.redirect_stdout(stdout),
         ):
-            main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6", "--no-capture"])
+            main(
+                [
+                    "--profile",
+                    str(self.seat),
+                    "behave",
+                    "--project",
+                    str(self.root / "project"),
+                    "--function",
+                    "f",
+                    "--cases",
+                    "6",
+                    "--no-capture",
+                ]
+            )
         self.assertEqual(called, [])
         self.assertNotIn("behave.lenient", [f["key"] for f in json.loads(stdout.getvalue())["findings"]])
 
@@ -463,7 +515,19 @@ class RunTests(unittest.TestCase):
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             contextlib.redirect_stdout(stdout),
         ):
-            main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6"])
+            main(
+                [
+                    "--profile",
+                    str(self.seat),
+                    "behave",
+                    "--project",
+                    str(self.root / "project"),
+                    "--function",
+                    "f",
+                    "--cases",
+                    "6",
+                ]
+            )
         self.assertEqual(asked[0][-1], own)
         seeded = [f for f in json.loads(stdout.getvalue())["findings"] if f["key"] == "behave.seed"]
         self.assertIn("movie walk poll 200", seeded[0]["message"])
@@ -510,7 +574,19 @@ class RunTests(unittest.TestCase):
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             contextlib.redirect_stdout(stdout),
         ):
-            main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6"])
+            main(
+                [
+                    "--profile",
+                    str(self.seat),
+                    "behave",
+                    "--project",
+                    str(self.root / "project"),
+                    "--function",
+                    "f",
+                    "--cases",
+                    "6",
+                ]
+            )
         result = json.loads(stdout.getvalue())["result"]
         self.assertEqual([p["hit"] for p in plans[0]][:3], [1, 2, 3])
         self.assertEqual(result["sources"]["real_entries"], 3)  # the first entry and the two more that exist
@@ -530,7 +606,19 @@ class RunTests(unittest.TestCase):
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             contextlib.redirect_stdout(stdout),
         ):
-            main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6"])
+            main(
+                [
+                    "--profile",
+                    str(self.seat),
+                    "behave",
+                    "--project",
+                    str(self.root / "project"),
+                    "--function",
+                    "f",
+                    "--cases",
+                    "6",
+                ]
+            )
         self.assertEqual(asked, [])  # the oracle's time limit is not spent on a function nothing reaches
         self.assertIn("behave.no_movie", [f["key"] for f in json.loads(stdout.getvalue())["findings"]])
 
@@ -553,7 +641,19 @@ class RunTests(unittest.TestCase):
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: SYMBOLS),
             contextlib.redirect_stdout(stdout),
         ):
-            main(["--profile", str(self.seat), "behave", "--function", "f", "--cases", "6"])
+            main(
+                [
+                    "--profile",
+                    str(self.seat),
+                    "behave",
+                    "--project",
+                    str(self.root / "project"),
+                    "--function",
+                    "f",
+                    "--cases",
+                    "6",
+                ]
+            )
         self.assertEqual(asked, [["g"]])  # asked once with the stubs of the probe, not again for the same set
 
     def test_a_function_whose_strict_cases_all_ran_is_still_seeded_with_the_entry_and_cases_around_it(self):
@@ -655,7 +755,19 @@ class RunTests(unittest.TestCase):
                 ),
                 contextlib.redirect_stdout(stdout),
             ):
-                main(["--profile", str(self.seat), "behave", "--function", "f", "--candidate", str(self.candidate)])
+                main(
+                    [
+                        "--profile",
+                        str(self.seat),
+                        "behave",
+                        "--project",
+                        str(self.root / "project"),
+                        "--function",
+                        "f",
+                        "--candidate",
+                        str(self.candidate),
+                    ]
+                )
         self.assertTrue(held and all(held))  # another process could not take it at any probe
         self.assertEqual(run._HELD, {})  # released at the end
 
@@ -665,7 +777,9 @@ class RunTests(unittest.TestCase):
             mock.patch.object(run.build_candidate, "symbol_table", lambda *a, **k: {}),
             contextlib.redirect_stdout(stdout),
         ):
-            code = main(["--profile", str(self.seat), "behave", "--function", "nope"])
+            code = main(
+                ["--profile", str(self.seat), "behave", "--project", str(self.root / "project"), "--function", "nope"]
+            )
         envelope = json.loads(stdout.getvalue())
         self.assertEqual((code, envelope["findings"][0]["key"]), (1, "behave.function"))
 

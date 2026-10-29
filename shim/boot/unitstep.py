@@ -129,6 +129,9 @@ class ObjectCache:
         except (OSError, ValueError):
             return False
         for entry in entries:
+            if not entry.get("deps") or any(path.endswith(".failed") and payload is not None
+                                            for path, payload in zip(self.opts["outs"], entry["files"])):
+                continue
             if not self.unchanged(entry):
                 continue
             if not current or not entry.get("sigs"):
@@ -185,11 +188,15 @@ class ObjectCache:
             pass  # a full or read-only cache only costs the speed
 
     def store(self):
+        if os.path.exists(self.opts["base"] + ".failed"):
+            return
         depfile = self.opts.get("depfile")
         if not depfile or not os.path.exists(depfile):
             return
         try:
             paths = dependencies(depfile)
+            if not paths:
+                return
             # signatures first: a file edited while it is hashed then fails the stat check instead of passing it
             sigs = [[stat.st_size, stat.st_mtime_ns] for stat in map(os.stat, paths)]
             deps = [[mapped(path, self.maps), self.digests.of(path)] for path in paths]

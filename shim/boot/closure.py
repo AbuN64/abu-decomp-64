@@ -36,11 +36,6 @@ import srcfiles  # noqa: E402
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import portdir  # noqa: E402
 NAMED = re.compile(r"D_auto_(8[0-9A-F]{7})")
-ALIAS = re.compile(r"D_(?:auto_)?00([0-9A-F]{6})")
-# The same name with a version suffix (D_0024B52C_us_rev1: ACTOR_TABLE_A, the entry the setup stores as a behaviour):
-# the pinned value is still a function address without its KSEG0 bit.
-FUNCTION_ALIAS = re.compile(r"D_(?:auto_)?00([0-9A-F]{6})(?:_[a-z][a-z0-9_]*)?")
-FUNCTION_ALIAS_REF = re.compile(r"\bD_(?:auto_)?00[0-9A-F]{6}(?:_[a-z][a-z0-9_]*)?\b")
 
 
 class Facts:
@@ -69,47 +64,49 @@ class Facts:
         for unit, text in self.text.items():
             for name in wanted.intersection(re.findall(r"\w+", text)):
                 self.pool[name].append(unit)
-    def definers(self, sym):
+    def definers(self, sym, functions_only=False):
         fn = re.compile(r"^[A-Za-z_][^;\n=]*\b" + re.escape(sym) + r"\s*\([^;{]*(?:\)\s*\{|$)", re.M)  # a one-line body counts
         asm = re.compile(r"INCLUDE_ASM\([^)]*\b" + re.escape(sym) + r"\s*\)")
         data = re.compile(r"^(?!extern)[A-Za-z_][^(\n]*\b" + re.escape(sym) + r"\b\s*(\[[^\]]*\])*\s*(=|;)", re.M)
         units = self.pool[sym] if sym in self.pool else self.text
         return [u for u in units if sym in self.text[u] and (fn.search(self.text[u]) or asm.search(self.text[u]) or
-                (sym.startswith("D_") and data.search(self.text[u])))]
+                (not functions_only and data.search(self.text[u])))]
+
+    def is_data(self, sym):
+        """A data fact or variable declaration establishes storage independently of spelling."""
+        if "type:data" in self.addrs.get(sym, ("", ""))[1]:
+            return True
+        declaration = re.compile(r"^[ \t]*(?:extern\s+)?[A-Za-z_][^(\n;]*\b" + re.escape(sym)
+                                 + r"\b\s*(?:\[[^\]]*\]\s*)*(?:=|;)", re.M)
+        units = self.pool[sym] if sym in self.pool else self.text
+        return any(declaration.search(self.text[u]) for u in units)
 
     def function_at(self, address):
         """The one defined function pinned at address, if any."""
         exact = [n for n, (a, c) in self.addrs.items()
-                 if (n.startswith("func_") or "type:func" in c) and int(a, 16) == address and self.definers(n)]
+                 if int(a, 16) == address and self.definers(n, functions_only=True)]
         return exact[0] if len(exact) == 1 else None  # a renamed function (Turret_Code_IDLE) is still the target
     def unbound_aliases(self):
-        """[(alias, function address, names)] of the D_00XXXXXX names the source references whose address a pinned
-        function holds and that function_alias cannot bind: they would route as zeroed data and the first call
-        through them (a callback or function table) would fault (addrscan.py lists them)."""
-        refs = sorted({m for t in self.text.values() for m in FUNCTION_ALIAS_REF.findall(t)})
+        """Referenced pinned KUSEG aliases whose function target cannot be bound."""
+        candidates = {n for n, (a, _) in self.addrs.items() if 0x10000 <= int(a, 16) < 0x08000000}
+        refs = sorted({n for text in self.text.values() for n in re.findall(r"\b[A-Za-z_]\w*\b", text)
+                       if n in candidates})
         out = []
         for sym in refs:
-            m = FUNCTION_ALIAS.fullmatch(sym)
-            target = int(self.addrs[sym][0], 16) | 0x80000000 if sym in self.addrs else int("80" + m.group(1), 16)
-            names = sorted(n for n, (a, c) in self.addrs.items()
-                           if (n.startswith("func_") or "type:func" in c) and int(a, 16) == target)
+            target = int(self.addrs[sym][0], 16) | 0x80000000
+            names = sorted(n for n, (a, c) in self.addrs.items() if int(a, 16) == target
+                           and ("type:func" in c or self.definers(n, functions_only=True)))
             if names and not self.function_alias(sym):
                 out.append((sym, target, names))
         return out
 
     def function_alias(self, sym):
-        """D_00XXXXXX / D_auto_00XXXXXX name a function's address without its KSEG0 bit
-        (D_002BD378 -> func_802BD378_de). The pinned us-rev1 value wins over the name."""
-        m = FUNCTION_ALIAS.fullmatch(sym)
-        if not m:
+        """A pinned KUSEG value binds to the defined function at its KSEG0 address."""
+        pinned = self.addrs.get(sym)
+        address = int(pinned[0], 16) if pinned else None
+        if address is None or not 0x10000 <= address < 0x08000000:
             return None
-        target = int(self.addrs[sym][0], 16) | 0x80000000 if sym in self.addrs else int("80" + m.group(1), 16)
-        if (fn := self.function_at(target)):
-            return fn
-        pat = re.compile(r"\bfunc_80" + m.group(1) + r"(?:_[a-z0-9_]+)?\b")
-        names = sorted({n for t in self.text.values() if "func_80" + m.group(1) in t for n in pat.findall(t)})
-        names = [n for n in names if self.definers(n)]
-        return names[0] if len(names) == 1 else None
+        return self.function_at(address | 0x80000000)
 
     def sdk(self, sym):
         """The libultra address of a function (pinned us-rev1, else the one its name states), if in range."""
@@ -179,9 +176,10 @@ def tidy(d, facts, deny=None, pin=None, frontier=False):
         print(f"   dropped stale stop {sym} (its unit is not refused at this pin)", flush=True)
     policy.sanitize(d, facts.source, facts.numeric, {n: v[0] for n, v in facts.shim.items()}, facts.shim_src)
     for sym in [k for k, v in d["data"].items() if int(v, 16) < 0x80000000
-                and not (ALIAS.fullmatch(k) and int(v, 16) >= 0x10000 and not facts.function_alias(k))]:
+                and not (0x10000 <= int(v, 16) < 0x08000000 and not facts.function_alias(k))]:
         del d["data"][sym]  # a pre-KSEG0 function alias bound as data (a TLB-mapped record stays data)
-    for sym in [k for k in d["stops"] if k.startswith("D_")]:
+    for sym in [k for k in d["stops"] if facts.is_data(k) or (k in facts.addrs
+                and 0x10000 <= int(facts.addrs[k][0], 16) < 0x08000000)]:
         del d["stops"][sym]  # data routed as a function stop
     for sym in [k for k, why in d["stops"].items() if k in facts.game and "(SDK: shim binding decision)" in why]:
         del d["stops"][sym]  # game code in the libultra range (policy.game_code) routes again as game code
@@ -246,7 +244,7 @@ def route(d, sym, facts, deny, pin, frontier, fresh):
         d["data"][sym] = addrs[sym[3:]][0]
         return "routed", "data (fz_ view of " + sym[3:] + ") " + addrs[sym[3:]][0]
     if any(facts.sdk_unit(h) for h in found):
-        if sym.startswith("D_"):
+        if facts.is_data(sym):
             return "need", f"{sym} | original SDK data needs a clean provider; refusing its code unit"
         if (osname := facts.shim_name(sym)):
             d["bindings"][sym] = osname
@@ -259,7 +257,7 @@ def route(d, sym, facts, deny, pin, frontier, fresh):
     # Data must have real storage before linking. Only functions can wait behind
     # an executable frontier stop; treating a data definition as one would bind
     # reads and writes to code bytes instead of the object's storage.
-    if hits and not any(h in d["sources"] for h in found) and (not frontier or sym.startswith("D_")):
+    if hits and not any(h in d["sources"] for h in found) and (not frontier or facts.is_data(sym)):
         d["sources"].append(hits[0])
         fresh.add(hits[0])
         return "added", hits[0]
@@ -281,8 +279,8 @@ def route(d, sym, facts, deny, pin, frontier, fresh):
             return "routed", "binding " + fn
         d["data"][sym] = "0x" + named.group(1)
         return "routed", "data (named) 0x" + named.group(1)
-    if ALIAS.fullmatch(sym) and sym in addrs and undefined_here and 0x10000 <= int(addrs[sym][0], 16) < 0x80000000:
-        # A D_00XXXXXX record the game reaches through its own TLB mapping (osMapTLB of loaded overlay data, e.g.
+    if sym in addrs and undefined_here and 0x10000 <= int(addrs[sym][0], 16) < 0x08000000:
+        # A pinned KUSEG record the game reaches through its TLB mapping (osMapTLB of loaded overlay data, e.g.
         # D_0044A850 at 0x0044B4A0): no function sits there, so it binds to its pinned virtual address, which the
         # shim maps for real when the game maps it (an access before that is the game's TLB miss).
         d["data"][sym] = addrs[sym][0]
@@ -293,7 +291,7 @@ def route(d, sym, facts, deny, pin, frontier, fresh):
         d["data"][sym] = addrs[sym][0]
         return "routed", "data " + addrs[sym][0]
     why = next((deny[h] for h in found if h in deny), None)
-    if sym.startswith("D_"):
+    if facts.is_data(sym):
         return "need", f"{sym} | data with no pinned address at {pin}" + (
             f"; defining unit refused: {why}" if why else f"; defined in {found[0]}" if found else "; no C definition")
     if not why and frontier and hits:

@@ -53,7 +53,6 @@ MAX_SKIP = 4  # instructions an entry alias may skip
 ALU_FUNCT = frozenset([0, 2, 3, 4, 6, 7, 16, 17, 18, 19, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
                        39, 42, 43, 44, 45, 46, 47, 56, 58, 59, 60, 62, 63])
 ALU_IMMEDIATE = frozenset([8, 9, 10, 11, 12, 13, 14, 15, 24, 25])  # addi..lui, daddi, daddiu
-TLB_RECORD = re.compile(r"D_(?:auto_)?00[0-9A-F]{6}")
 
 
 class Targets:
@@ -64,7 +63,7 @@ class Targets:
         for name, (address, kind) in sorted(table.items()):
             if kind == "func" and address >= KSEG0:
                 self.functions.setdefault(address, []).append(name)
-            elif kind == "data" and address < KUSEG_END and TLB_RECORD.fullmatch(name):
+            elif kind == "data" and 0x10000 <= address < KUSEG_END:
                 self.records.setdefault(address, name)
         self.preferred = set(preferred)
         for address, names in self.functions.items():

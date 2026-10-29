@@ -156,7 +156,8 @@ def prepare(compiler, source, output, stubs, inventory, depfile, flags, maps=(),
     # the diagnostics stay in the inventory. Any other unit fails, including via the cache.
     rejected = []
     if mode == "NON_MATCHING":
-        check = subprocess.run([compiler, *flags, "-x", "c", "-fsyntax-only", str(source)],
+        check = subprocess.run([compiler, *flags, "-x", "c", "-fsyntax-only", "-MD", "-MF", str(depfile),
+                                "-MT", str(output), str(source)],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if check.returncode:
             rejected = [line for line in check.stderr.splitlines() if "error:" in line]

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--compiler", required=True)
@@ -53,7 +54,10 @@ class BindingTests(unittest.TestCase):
                         "    ORIGINAL_LIBRARY_MUST_NOT_COMPILE;\n}\n"
                         "void original_internal(void) {\n    ORIGINAL_LIBRARY_MUST_NOT_COMPILE;\n}\n")
         self.project["sources"] = ["src/SDK/format.CPP"]
-        self.generate()
+        bindings = self.path / "fixture-bindings.txt"
+        bindings.write_text("func_802BD320_de n64c_sprintf fixture\n")
+        with mock.patch.object(module.policy.portdir, "fact", return_value=bindings):
+            self.generate()
         code = (self.path / "output/bindings.c").read_text()
         script = (self.path / "output/bindings.ld").read_text()
         self.assertIn("func_802BD320_de = n64c_sprintf;", script)
@@ -416,6 +420,18 @@ int main(void) { return n64c_boot_entry(); }
         bad["data"]["D_80900000"] = "0x80900000"  # past RDRAM, not a TLB record
         with self.assertRaises(ValueError):
             self.generate(bad)
+    def test_named_tlb_record_uses_pinned_value(self):
+        # Real renamed collision table: its label no longer encodes the KUSEG address.
+        with (self.path / "source/versions/test/symbol_addrs.txt").open("a") as facts:
+            facts.write("g_collisionSetupTableResource = 0x0044B4A0; //\n")
+        self.project["data"]["g_collisionSetupTableResource"] = "0x0044B4A0"
+        self.generate()
+        self.assertIn("g_collisionSetupTableResource = 0x0044b4a0;",
+                      (self.path / "output/bindings.ld").read_text())
+        self.project["data"]["g_collisionSetupTableResource"] = "0x0044B4A4"
+        with self.assertRaises(ValueError):
+            self.generate()
+
     def test_invalid_input_preserves_existing_outputs(self):
         self.generate()
         output = self.path / "output"

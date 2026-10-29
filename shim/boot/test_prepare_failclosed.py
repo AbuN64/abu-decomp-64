@@ -42,7 +42,9 @@ class FailClosedTests(unittest.TestCase):
                                    self.flags if flags is None else flags, cache=self.cache)
 
     def assert_no_outputs(self):
-        self.assertFalse(any(path.exists() for path in self.files))
+        self.assertFalse(any(path.exists() for path in self.files[:-1]))
+        if self.files[-1].exists():
+            self.assertIn(str(self.source), self.files[-1].read_text())
 
     def test_main_compile_failure_preserves_all_diagnostics_and_caches_nothing(self):
         diagnostic = "included from header.h:2\nsource:3: error: conflicting types for Texture\nsource:1: note: previous declaration\n"
