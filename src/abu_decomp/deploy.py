@@ -426,10 +426,10 @@ def deploy(
     }
     if moves:
         return result, 1, findings
-    wanted, refused = checkout_steps(profile, requirements)
+    checkouts, refused = checkout_steps(profile, requirements)
     if refused:
         return result, 1, refused
-    result["checkouts"], findings = align_checkouts(wanted, run)
+    result["checkouts"], findings = align_checkouts(checkouts, run)
     if findings:
         return result, 1, findings
     for live in venvs:
