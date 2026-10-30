@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -190,14 +191,19 @@ class ReadbackTests(unittest.TestCase):
 
 
 class DeployFileTests(unittest.TestCase):
-    def test_the_deploy_file_is_one_repository_relative_command_naming_the_script(self):
+    """ButlerMaster executes `.deploy` as one repository-relative executable path, not as a shell line."""
+
+    def test_the_deploy_file_names_one_existing_executable_script_with_no_spaces(self):
         root = Path(__file__).parent.parent
         lines = (root / ".deploy").read_text().splitlines()
         self.assertEqual(len(lines), 1)
-        words = lines[0].split()
-        self.assertEqual(words[0], "python3")
-        self.assertFalse(words[1].startswith("/"))
-        self.assertTrue((root / words[1]).is_file())
+        path = lines[0]
+        self.assertEqual(path, path.strip())
+        self.assertNotRegex(path, r"\s")
+        self.assertFalse(path.startswith("/"))
+        self.assertTrue((root / path).is_file())
+        self.assertTrue(os.access(root / path, os.X_OK))
+        self.assertEqual((root / path).read_text().splitlines()[0], "#!/usr/bin/env python3")
 
 
 if __name__ == "__main__":
