@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* PI DMA with typed endian fixup, controller input, EEPROM and Pak as files, and the SP task dispatch. */
 #include "../n64c_os.h"
+#include "../n64c_internal.h"
 #include "../n64c_pi.h"
 #include "../n64c_cont.h"
 #include <stdio.h>
@@ -73,10 +74,13 @@ int main(void)
     OSContPad pad[MAXCONTROLLERS];
     CHECK(osContInit(&mq, &bits, st) == 0 && bits == 1 && st[0].errno_ == 0 && st[1].errno_ == CONT_ERR_NO_CONTROLLER);
     CHECK(!(st[0].status & CONT_CARD_ON)); /* no Pak, like the oracle */
-    CHECK(osContStartReadData(&mq) == 0 && osRecvMesg(&mq, &m, OS_MESG_NOBLOCK) == 0);
+    while (osRecvMesg(&mq, &m, OS_MESG_NOBLOCK) == 0) {} /* the DMA completions above were not collected */
+    osSetEventMesg(OS_EVENT_SI, &mq, (OSMesg){.data32 = 1});
+    CHECK(osContStartReadData(&mq) == 0);
+    CHECK(osRecvMesg(&mq, &m, OS_MESG_NOBLOCK) == -1); /* the exchange is still on the bus: no answer yet */
+    n64c_clock_advance_to(n64c_clock_now() + 1000000);
+    CHECK(osRecvMesg(&mq, &m, OS_MESG_NOBLOCK) == 0 && m.data32 == 1); /* the SI interrupt is the answer */
     osContGetReadData(pad);
-    /* a controller reply wait with nothing started and no SI event pending is an idle-bus round trip, not a stop */
-    CHECK(osRecvMesg(&mq, &m, OS_MESG_BLOCK) == 0);
     CHECK(osContStartQuery(&mq) == 0 && osRecvMesg(&mq, &m, OS_MESG_BLOCK) == 0 && mq.validCount == 0);
     CHECK(pad[0].button == 0x8000 && pad[0].stick_x == -5 && pad[0].stick_y == 7 && pad[1].errno_ == CONT_ERR_NO_CONTROLLER);
     /* EEPROM as a file */

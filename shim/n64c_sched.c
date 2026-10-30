@@ -64,6 +64,9 @@ static OSTime compare_deadline;
 static OSTime ai_deadline; /* virtual time the audio FIFO's oldest buffer finishes playing */
 static int ai_armed;
 static void (*ai_due)(void);
+static OSTime si_deadline; /* virtual time the serial interface finishes the DMA it is running */
+static int si_armed;
+static void (*si_due)(void);
 static int compare_armed;
 /* A guest thread that keeps reading the clock without giving up the CPU is waiting on it (a delay or a fault
  * handler's watchdog loop). On the console Count runs on regardless; here it moves only when the host advances
@@ -230,7 +233,7 @@ s32 osJamMesg(OSMesgQueue *mq, OSMesg msg, s32 flag) { return send(mq, msg, flag
 __attribute__((weak)) OSMesgQueue *n64c_si_queue(void) { return NULL; } /* the controller adapter, when linked, names it */
 static int si_idle_wait(OSMesgQueue *mq) /* caller holds big */
 {
-    return mq == n64c_si_queue() && mq->validCount == 0 && !(pending_events & (1u << OS_EVENT_SI));
+    return mq == n64c_si_queue() && mq->validCount == 0 && !si_armed && !(pending_events & (1u << OS_EVENT_SI));
 }
 s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flag)
 {
@@ -561,18 +564,40 @@ void n64c_clock_arm_ai(OSTime t, void (*due)(void))
     ai_armed = 1;
     pthread_mutex_unlock(&big);
 }
+void n64c_clock_arm_si(OSTime t, void (*due)(void))
+{
+    pthread_mutex_lock(&big);
+    si_deadline = t;
+    si_due = due;
+    si_armed = 1;
+    pthread_mutex_unlock(&big);
+}
+int n64c_clock_si_armed(void)
+{
+    pthread_mutex_lock(&big);
+    int armed = si_armed;
+    pthread_mutex_unlock(&big);
+    return armed;
+}
 void n64c_clock_advance_to(OSTime t)
 {
     for (;;) {
         pthread_mutex_lock(&big);
         OSTimer *due = timers && timers->value <= t ? timers : NULL;
-        /* The audio FIFO's oldest buffer finished: the AI interrupt that tells the game to refill it. */
-        if (ai_armed && ai_deadline <= t && (!due || ai_deadline <= due->value) &&
-            (!compare_armed || ai_deadline <= compare_deadline)) {
-            ai_armed = 0;
-            if (ai_deadline > clock_now) clock_now = ai_deadline;
+        /* A device finished its transfer, earliest first: the audio FIFO's oldest buffer (the AI interrupt that tells
+         * the game to refill it) or the serial interface's DMA (the SI interrupt that tells the game its controller
+         * read is complete). The device event runs before any timer or Compare that falls due at the same time or
+         * later, so a completion reaches the game's queue ahead of the retrace it precedes. */
+        int ai_ready = ai_armed && ai_deadline <= t;
+        int si_ready = si_armed && si_deadline <= t;
+        int take_si = si_ready && (!ai_ready || si_deadline < ai_deadline);
+        OSTime at = take_si ? si_deadline : ai_deadline;
+        if ((ai_ready || si_ready) && (!due || at <= due->value) && (!compare_armed || at <= compare_deadline)) {
+            void (*fire)(void) = take_si ? si_due : ai_due;
+            if (take_si) si_armed = 0; else ai_armed = 0;
+            if (at > clock_now) clock_now = at;
             pthread_mutex_unlock(&big);
-            ai_due();
+            fire();
             if (!self()) n64c_sched_run_idle();
             continue;
         }
@@ -698,6 +723,7 @@ void n64c_sched_reset(void)
     compare_deadline = 0;
     compare_armed = 0;
     ai_armed = 0;
+    si_armed = 0;
     interrupt_mask = OS_IM_ALL;
     pending_events = 0;
     memset(events, 0, sizeof events);

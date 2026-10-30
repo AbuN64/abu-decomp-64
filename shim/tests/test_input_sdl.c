@@ -96,6 +96,15 @@ const char *SDL_GetScancodeName(SDL_Scancode c)
 SDL_Window *SDL_GetKeyboardFocus(void) { return focus; }
 const bool *SDL_GetKeyboardState(int *count) { ++pumps; *count = SDL_SCANCODE_COUNT; return keyboard; }
 void n64c_si_reset(void) {}
+/* The bus-time seams of a controller read: no clock here, so the exchange never stays armed. */
+void __osSiGetAccess(void) {}
+void __osSiRelAccess(void) {}
+s32 osRecvMesg(OSMesgQueue *mq, OSMesg *m, s32 flag) { (void)mq; (void)m; (void)flag; return 0; }
+OSTime n64c_clock_now(void) { return 0; }
+void n64c_clock_arm_si(OSTime t, void (*due)(void)) { (void)t; (void)due; }
+int n64c_clock_si_armed(void) { return 0; }
+void n64c_clock_advance_to(OSTime t) { (void)t; }
+int n64c_sched_on_guest(void) { return 0; }
 void n64c_event_post(u32 event) { (void)event; }
 s32 osSendMesg(OSMesgQueue *mq, OSMesg m, s32 flag)
 {

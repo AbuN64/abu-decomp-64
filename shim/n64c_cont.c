@@ -23,6 +23,7 @@ static OSContPad latched[MAXCONTROLLERS];
 static u8 serial_packet[64];
 static char eeprom_path[512], pak_path[512];
 static int eeprom_present, eeprom_16k;
+static int last_cmd_read; /* libultra's __osContLastCmd == read: the request is already in the PIF, only the answer is fetched */
 static u8 pak_ram[N64C_CPAK_BYTES];
 static int pak_loaded, pak_ok;
 /* The card in the slot is the file: a missing file is a new card (formatted and saved at once), an existing one
@@ -77,6 +78,7 @@ void n64c_cont_reset(const N64cConfig *cfg)
 #endif
     memset(latched, 0, sizeof latched);
     memset(serial_packet,0,sizeof serial_packet);
+    last_cmd_read = 0;
     eeprom_present = cfg && cfg->eeprom_path != NULL;
     eeprom_16k = cfg ? cfg->eeprom_16k : 0;
     eeprom_path[0] = pak_path[0] = 0;
@@ -147,12 +149,14 @@ s32 n64c_cont_rescan(OSMesgQueue *mq, OSContStatus *status)
 }
 s32 osContStartQuery(OSMesgQueue *mq)
 {
+    last_cmd_read = 0;
     query(last_status);
     done(mq);
     return 0;
 }
 void osContGetQuery(OSContStatus *status) { memcpy(status, last_status, sizeof last_status); }
-s32 osContStartReadData(OSMesgQueue *mq)
+/* The pad sample of one controller read: the live source or the recorded movie, one TAS poll. */
+static void sample_pads(void)
 {
     for (int i = 0; i < MAXCONTROLLERS; i++) {
         memset(&latched[i], 0, sizeof latched[i]);
@@ -164,7 +168,52 @@ s32 osContStartReadData(OSMesgQueue *mq)
     N64C_ZONE(zi,"input-poll");
     n64c_tas_poll(&latched[0]);
     N64C_ZONE_END(zi);
-    done(mq);
+}
+/* A packet exchange on the serial bus takes the console's time, and its end is the SI interrupt: the PIF takes the
+ * 64-byte request in 64 us (6000 cycles of the bus clock), then answers the read in 256 us plus 320 us for each
+ * controller that talks. The numbers are those of the oracle's SI adapter (CakeTaste64 hosts/n64recomp/si_adapter.cpp),
+ * so the interrupt lands at the same virtual time on both sides. */
+enum { SI_WRITE_NS = 64000, SI_READ_NS = 256000, SI_READ_PORT_NS = 320000 };
+static OSTime si_ticks(u32 ns) { return (OSTime)ns * OS_CPU_COUNTER / 1000000000u; }
+static OSTime si_deadline;
+static void si_complete(void) { n64c_event_post(OS_EVENT_SI); }
+static void si_start(u32 ns)
+{
+    si_deadline = n64c_clock_now() + si_ticks(ns);
+    n64c_clock_arm_si(si_deadline, si_complete);
+}
+/* libultra's osContStartReadData (RENDER controller poll: the game's SI queue is the one it passed to osSetEventMesg for
+ * OS_EVENT_SI). Unless the last exchange was already a read, the request is written first and the caller waits on the
+ * queue for the write's interrupt; then the read starts, the pads are sampled as the PIF answers (the oracle's TAS poll
+ * is at this same point), and the call returns with the exchange still running. Its SI interrupt, one read time later,
+ * is the message the game's next poll waits for. A host caller with no queue (the serial adapter, tools) gets the sample
+ * at once, with no bus time. */
+s32 osContStartReadData(OSMesgQueue *mq)
+{
+    if (!mq) {
+        sample_pads();
+        return 0;
+    }
+    if (n64c_clock_si_armed())
+        return -1; /* the SI is busy: libultra's raw DMA refuses */
+    si_mq = mq;
+    __osSiGetAccess();
+    if (!last_cmd_read) {
+        si_start(SI_WRITE_NS);
+        if (n64c_sched_on_guest()) {
+            osRecvMesg(mq, NULL, OS_MESG_BLOCK);
+        } else { /* no guest thread to block: the bus runs out its time here */
+            n64c_clock_advance_to(si_deadline);
+            osRecvMesg(mq, NULL, OS_MESG_NOBLOCK);
+        }
+    }
+    sample_pads();
+    int talking = 0;
+    for (int i = 0; i < MAXCONTROLLERS; i++)
+        talking += port_present(i) != 0;
+    si_start(SI_READ_NS + SI_READ_PORT_NS * (u32)talking);
+    last_cmd_read = 1;
+    __osSiRelAccess();
     return 0;
 }
 void osContGetReadData(OSContPad *pad) { memcpy(pad, latched, sizeof latched); }
