@@ -24,6 +24,8 @@ Files (all under `<tas.runs>`):
 - `oracle-state/<key>/`: the original's trace for one movie (`state-oracle.txt`, `oracle-trace.txt`, dumps
   `dump-<poll>.bin`), cached by movie, Expansion Pak, card, oracle host and spec, so the original runs once per movie.
 - `plays/<run>/state-diff.json`: `{schema:2, key, movie, polls_compared, first_compared, port_polls, oracle_polls,
+  coverage: {complete, port_first, port_last, oracle_first, oracle_last, only_port, only_oracle, port_only_ranges,
+  oracle_only_ranges, first_missing} (see `coverage`),
   symbols, regions: {name: {status: same|diverges|unreached, symbols, static_symbols, runtime_symbols,
   polls_differing, first: row|null, runtime: row|null}}, divergent, raw_divergent, reviewed_divergent,
   unreviewed_divergent, raw_symbols, reviewed_symbols, unreviewed_symbols, reviewed, notes, wall_seconds}`,
@@ -76,6 +78,7 @@ OPEN_ARRAY_CAP = 0x4000  # bytes taken for an `extern T x[]` whose size only the
 HEAP_GUARD = 0x1000
 FIELDS_SHOWN = 8
 SYMBOLS_NAMED = 4  # symbols whose differing fields a finding lists
+RANGES_SHOWN = 8  # one-sided poll ranges a coverage report lists
 _SYMBOL = re.compile(r"^([0-9a-f]{8}) A (\S+)$")
 _UNDEFINED = re.compile(r"^(.*?):\s+U\s+(\S+)$")
 KIND_BYTES = {"b": 1, "h": 2, "w": 4, "d": 8, "p": 4}
@@ -472,6 +475,50 @@ def diverged(
     }
 
 
+def _ranges(polls: list[int]) -> list[list[int]]:
+    """[first, last] of each run of consecutive polls in a sorted list."""
+    out: list[list[int]] = []
+    for poll in polls:
+        if out and out[-1][1] + 1 == poll:
+            out[-1][1] = poll
+        else:
+            out.append([poll, poll])
+    return out
+
+
+def coverage(port: dict[int, Any], original: dict[int, Any]) -> dict[str, Any]:
+    """What `diverged` compared against what the two traces hold: the first and last poll of each trace, the polls
+    only one side traced (counted, and as ranges: `port_only_ranges` are missing from the original's trace,
+    `oracle_only_ranges` from the port's), and `first_missing`, a sentence naming the earliest missing range. A
+    comparison is `complete` only when both traces are nonempty and hold the same polls."""
+    p, o = set(port), set(original)
+    port_only, oracle_only = _ranges(sorted(p - o)), _ranges(sorted(o - p))
+    gaps = [(r, "port", "the original's") for r in port_only] + [(r, "original", "the port's") for r in oracle_only]
+    first = min(gaps, default=None, key=lambda g: g[0][0])
+    missing = None
+    if first:
+        (a, b), side, absent = first
+        missing = (
+            f"polls {a}-{b} are only in the {side} trace, missing from {absent}"
+            if a != b
+            else (f"poll {a} is only in the {side} trace, missing from {absent}")
+        )
+    elif not p or not o:
+        missing = "the port's trace is empty" if not p else "the original's trace is empty"
+    return {
+        "complete": bool(p) and p == o,
+        "port_first": min(p, default=None),
+        "port_last": max(p, default=None),
+        "oracle_first": min(o, default=None),
+        "oracle_last": max(o, default=None),
+        "only_port": len(p - o),
+        "only_oracle": len(o - p),
+        "port_only_ranges": port_only[:RANGES_SHOWN],
+        "oracle_only_ranges": oracle_only[:RANGES_SHOWN],
+        "first_missing": missing,
+    }
+
+
 def compare_symbol(sym: Sym, a: bytes, b: bytes, limit: int = FIELDS_SHOWN) -> dict[str, Any]:
     """The elements of one symbol's canonical bytes (`a` the port's, `b` the original's) that differ:
     {differing, fields:[{symbol, field, kind, address, index, port, oracle}]} in element order."""
@@ -846,6 +893,7 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
         first_compared=found["first_compared"],
         port_polls=max(port) if port else 0,
         oracle_polls=max(original) if original else 0,
+        coverage=coverage(port, original),
     )
     raw_regions = _rows(syms, found) if found["compared"] else {}
     facts = session.cfg.get("env", {}).get("N64C_PORT_DIR", os.environ.get("N64C_PORT_DIR", "."))

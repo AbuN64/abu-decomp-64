@@ -422,13 +422,19 @@ def bmp(rgb: bytes) -> bytes:
 
 
 def verdict(record: dict[str, Any]) -> str:
-    """An oracle run passes only with successful outcomes and a nonempty, reviewed state comparison."""
+    """An oracle run passes only with successful outcomes, a state comparison that covered every poll of both traces
+    (equal poll sets, both reaching the movie's last poll) and no unreviewed divergence."""
     state = record.get("state_diff") or {}
+    covered = state.get("coverage") or {}
+    movie = int(record.get("polls") or 0)
     if (
         record.get("outcome") != "ok"
         or record.get("oracle", {}).get("outcome") != "ok"
         or state.get("error")
         or not state.get("polls_compared")
+        or not covered.get("complete")
+        or (covered.get("port_last") or 0) < movie
+        or (covered.get("oracle_last") or 0) < movie
         or state.get("divergent") != 0
     ):
         return "fail"

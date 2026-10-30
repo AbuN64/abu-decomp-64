@@ -279,6 +279,34 @@ class CompareTests(unittest.TestCase):
         out = sd.diverged({}, {1: [(0, 1)]}, [0])
         self.assertEqual((out["compared"], out["first_compared"]), (0, None))
 
+    def test_coverage_names_prefix_interior_and_tail_gaps(self):
+        # A slice of the pp-1p-match shape: the original traced polls 1-23368, the port 1-59874 (the tail), and here
+        # the port also lacks a prefix and an interior stretch while the original lacks polls 40-41 mid-run.
+        port = {n: [] for n in [*range(4, 20), *range(25, 60)]}
+        original = {n: [] for n in [*range(1, 40), *range(42, 51)]}
+        out = sd.coverage(port, original)
+        self.assertFalse(out["complete"])
+        self.assertEqual((out["port_first"], out["port_last"], out["oracle_first"], out["oracle_last"]), (4, 59, 1, 50))
+        self.assertEqual(out["oracle_only_ranges"], [[1, 3], [20, 24]])
+        self.assertEqual(out["port_only_ranges"], [[40, 41], [51, 59]])
+        self.assertEqual((out["only_port"], out["only_oracle"]), (11, 8))
+        self.assertEqual(out["first_missing"], "polls 1-3 are only in the original trace, missing from the port's")
+
+    def test_coverage_is_complete_only_for_equal_nonempty_traces(self):
+        same = {1: [], 2: [(0, 1)]}
+        self.assertTrue(sd.coverage(same, dict(same))["complete"])
+        self.assertIsNone(sd.coverage(same, dict(same))["first_missing"])
+        self.assertFalse(sd.coverage({}, {})["complete"])
+        self.assertEqual(sd.coverage({}, {})["first_missing"], "the port's trace is empty")
+        self.assertEqual(
+            sd.coverage({3: []}, {})["first_missing"], "poll 3 is only in the port trace, missing from the original's"
+        )
+
+    def test_coverage_lists_a_capped_number_of_ranges(self):
+        out = sd.coverage({n: [] for n in range(0, 100, 2)}, {})
+        self.assertEqual(len(out["port_only_ranges"]), sd.RANGES_SHOWN)
+        self.assertEqual(out["only_port"], 50)
+
     def test_trace_reader_drops_a_half_written_line_and_bad_indexes(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "t.txt"

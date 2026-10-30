@@ -35,6 +35,58 @@ def write_shot(folder: Path, poll: int, pixels: bytes) -> None:
     (folder / f"poll-{poll:06d}.ppm").write_bytes(tas_oracle.PPM_HEAD + pixels)
 
 
+class VerdictTests(unittest.TestCase):
+    """The verdict reads state-diff.json as `tas_statediff.finish` writes it."""
+
+    @staticmethod
+    def record(**coverage):
+        full = {
+            "complete": True,
+            "port_first": 1,
+            "port_last": 100,
+            "oracle_first": 1,
+            "oracle_last": 100,
+            "only_port": 0,
+            "only_oracle": 0,
+            "first_missing": None,
+        }
+        return {
+            "outcome": "ok",
+            "oracle": {"outcome": "ok"},
+            "polls": 100,
+            "state_diff": {"polls_compared": 100, "divergent": 0, "coverage": {**full, **coverage}},
+        }
+
+    def test_full_coverage_passes(self):
+        self.assertEqual(tas_oracle.verdict(self.record()), "ok")
+
+    def test_the_pp_1p_slice_with_a_one_sided_tail_fails(self):
+        # pp-1p-match: port_polls 59874, oracle_polls 23368, polls_compared 23368, divergent 0 passed before.
+        legacy = {
+            "outcome": "ok",
+            "oracle": {"outcome": "ok"},
+            "state_diff": {"polls_compared": 23368, "port_polls": 59874, "oracle_polls": 23368, "divergent": 0},
+        }
+        self.assertEqual(tas_oracle.verdict(legacy), "fail")  # a state-diff with no coverage never passes
+        tail = self.record(complete=False, port_last=59874, oracle_last=23368, only_port=36506)
+        self.assertEqual(tas_oracle.verdict(tail), "fail")
+
+    def test_prefix_and_interior_gaps_fail(self):
+        self.assertEqual(tas_oracle.verdict(self.record(complete=False, oracle_first=5, only_port=4)), "fail")
+        self.assertEqual(tas_oracle.verdict(self.record(complete=False, only_oracle=10)), "fail")
+
+    def test_equal_traces_that_stop_before_the_movie_end_fail(self):
+        self.assertEqual(tas_oracle.verdict(self.record(port_last=60, oracle_last=60)), "fail")
+
+    def test_divergence_and_bad_outcomes_still_fail(self):
+        record = self.record()
+        record["state_diff"]["divergent"] = 1
+        self.assertEqual(tas_oracle.verdict(record), "fail")
+        record = self.record()
+        record["oracle"]["outcome"] = "crash"
+        self.assertEqual(tas_oracle.verdict(record), "fail")
+
+
 class ScoreTests(unittest.TestCase):
     def test_diff_share_counts_visibly_different_pixels(self):
         black = picture()
