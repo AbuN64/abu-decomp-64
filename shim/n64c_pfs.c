@@ -38,13 +38,75 @@ static int note_used(const u8 *note)
     return first >= N64C_CPAK_FIRST_DATA_PAGE && first < N64C_CPAK_PAGES;
 }
 static u8 *card(const OSPfs *pfs) { return n64c_cont_pak_image(pfs->channel); }
-/* A handle that never reached PFS_INITIALIZED cannot name files; a card that left the slot answers NOPACK. */
+/* ---- Bus time ----
+ * libultra's pfs reaches the card one 32-byte block at a time, each block one accessory packet on the serial bus
+ * (__osContRamRead, __osContRamWrite). The port's pfs works on the card image directly, so each call charges the
+ * packets the ROM's pfs sends for it, in its shape: the id check reads block 1, a bank select writes block 0x400, a
+ * directory note is one block, an inode page read is 8 blocks then its 8-block backup written back, an inode page write
+ * is 8 blocks and 8 backups, and a page cleared (allocate) or summed (delete) is a bank select, 8 blocks and a bank
+ * select. A standard card has one bank. The packet time is the Joybus rule of n64c_cont.c. */
+enum { PK_ID = 1, PK_INODE = 16, PK_PAGE = 10 };
+static int packets(const OSPfs *pfs, unsigned n)
+{
+    while (n--)
+        if (!n64c_cont_accessory(pfs->queue, pfs->channel))
+            return 0;
+    return 1;
+}
+/* libultra names a note in use by a nonzero company and game code. */
+static int note_named(const u8 *note) { return get16(note + 4) != 0 && get32(note) != 0; }
+static int page_valid(unsigned page) { return page >= N64C_CPAK_FIRST_DATA_PAGE && page < N64C_CPAK_PAGES; }
+/* The link a file's chain ends on: N64C_CPAK_INDEX_END for a sound chain, anything else for a damaged one. */
+static unsigned chain_end(const u8 *image, unsigned page)
+{
+    for (unsigned steps = 0; page_valid(page) && steps <= N64C_CPAK_PAGES; steps++)
+        page = get16(INDEX(image) + page * 2);
+    return page;
+}
+/* osPfsChecker, run by osPfsInitPak: the id check; the inode page read for the cache; one pass over the notes, each
+ * named note walking its chain (an inode page read, plus the cache's first read once) and a damaged or half-named note
+ * cleared and written; a second pass over the notes; the inode page read and rewritten. */
+static unsigned checker_packets(const u8 *image)
+{
+    unsigned n = PK_ID + PK_INODE + N64C_CPAK_NOTES, walked = 0;
+    for (unsigned i = 0; i < N64C_CPAK_NOTES; i++) {
+        const u8 *note = NOTE(image, i);
+        unsigned first = get16(note + 6);
+        if (note_named(note)) {
+            if (page_valid(first)) {
+                n += PK_INODE;
+                walked = 1;
+            }
+            n += chain_end(image, first) != N64C_CPAK_INDEX_END;
+        } else {
+            n += get16(note + 4) != 0 || get32(note) != 0;
+        }
+    }
+    return n + walked * PK_INODE + N64C_CPAK_NOTES + 2 * PK_INODE;
+}
+/* osPfsFindFile: the id check, then the notes up to the match, all of them on a miss. A null name or extension
+ * matches any. */
+static unsigned find_packets(const u8 *image, u16 company, u32 game, const u8 *name, const u8 *ext)
+{
+    for (unsigned i = 0; i < N64C_CPAK_NOTES; i++) {
+        const u8 *note = NOTE(image, i);
+        if (get16(note + 4) == company && get32(note) == game && (!name || !memcmp(note + 0x10, name, 16)) &&
+            (!ext || !memcmp(note + 0xC, ext, 4)))
+            return PK_ID + i + 1;
+    }
+    return PK_ID + N64C_CPAK_NOTES;
+}
+/* A handle that never reached PFS_INITIALIZED cannot name files (no packet); a card that left the slot answers NOPACK
+ * to the id check. */
 static s32 usable(const OSPfs *pfs, u8 **image)
 {
     if (!(pfs->status & PFS_INITIALIZED))
         return PFS_ERR_INVALID;
     *image = card(pfs);
-    return *image ? 0 : PFS_ERR_NOPACK;
+    if (*image)
+        return 0;
+    packets(pfs, PK_ID);
+    return PFS_ERR_NOPACK;
 }
 /* Write the index tables and the changed range back to the file. */
 static s32 commit(u8 *image, u32 offset, u32 length)
@@ -84,6 +146,7 @@ s32 osPfsInitPak(OSMesgQueue *mq, OSPfs *pfs, int channel)
     image = card(pfs);
     if (!image)
         return PFS_ERR_NOPACK;
+    packets(pfs, 1 + PK_ID); /* bank 0 selected, the id block read */
     id = id_block(image);
     if (id < 0)
         return PFS_ERR_ID_FATAL;
@@ -94,6 +157,7 @@ s32 osPfsInitPak(OSMesgQueue *mq, OSPfs *pfs, int channel)
         if (commit(image, 0, 0) != 0)
             return PFS_ERR_CONTRFAIL;
     }
+    packets(pfs, 1 + checker_packets(image)); /* the label block, then osPfsChecker */
     memcpy(pfs->id, image + id, 32);
     memcpy(pfs->label, image + 0xE0, 32);
     pfs->version = image[id + 0x1B];
@@ -130,9 +194,13 @@ s32 osPfsFileState(OSPfs *pfs, int file_no, OSPfsState *state)
     s32 ret = usable(pfs, &image);
     if (ret)
         return ret;
-    if (file_no < 0 || file_no >= (int)N64C_CPAK_NOTES || !note_used(NOTE(image, file_no)))
+    if (file_no < 0 || file_no >= (int)N64C_CPAK_NOTES)
         return PFS_ERR_INVALID;
     const u8 *note = NOTE(image, file_no);
+    /* the id check and the note, then the inode page the chain is counted on */
+    packets(pfs, PK_ID + 1 + (note_named(note) && page_valid(get16(note + 6)) ? PK_INODE : 0));
+    if (!note_used(note))
+        return PFS_ERR_INVALID;
     state->file_size = chain_length(image, get16(note + 6)) * N64C_CPAK_PAGE;
     state->game_code = get32(note);
     state->company_code = get16(note + 4);
@@ -146,6 +214,7 @@ s32 osPfsFreeBlocks(OSPfs *pfs, s32 *bytes_not_used)
     s32 ret = usable(pfs, &image);
     if (ret)
         return ret;
+    packets(pfs, PK_ID + PK_INODE);
     *bytes_not_used = (s32)(count_free(image) * N64C_CPAK_PAGE);
     return 0;
 }
@@ -171,6 +240,7 @@ s32 osPfsFindFile(OSPfs *pfs, u16 company_code, u32 game_code, u8 *game_name, u8
     s32 ret = usable(pfs, &image);
     if (ret)
         return ret;
+    packets(pfs, find_packets(image, company_code, game_code, game_name, ext_name));
     int n = find_note(image, company_code, game_code, game_name, ext_name);
     if (n < 0)
         return PFS_ERR_INVALID;
@@ -193,6 +263,10 @@ s32 osPfsDeleteFile(OSPfs *pfs, u16 company_code, u32 game_code, u8 *game_name, 
     if (ret)
         return ret;
     int n = find_note(image, company_code, game_code, game_name, ext_name);
+    /* the id check and the search; on a hit the note, the inode page read, each page summed, the inode page
+     * rewritten and the note cleared */
+    packets(pfs, PK_ID + find_packets(image, company_code, game_code, game_name, ext_name) +
+                     (n < 0 ? 0 : 1 + 2 * PK_INODE + PK_PAGE * chain_length(image, get16(NOTE(image, n) + 6)) + 1));
     if (n < 0)
         return PFS_ERR_INVALID;
     free_chain(image, get16(NOTE(image, n) + 6));
@@ -208,11 +282,16 @@ s32 osPfsAllocateFile(OSPfs *pfs, u16 company_code, u32 game_code, u8 *game_name
         return ret;
     if (nbytes <= 0 || nbytes % 32)
         return PFS_ERR_INVALID;
+    /* the id check and the search for the name */
+    packets(pfs, PK_ID + find_packets(image, company_code, game_code, game_name, ext_name));
     if (find_note(image, company_code, game_code, game_name, ext_name) >= 0)
         return PFS_ERR_EXIST;
     unsigned pages = ((unsigned)nbytes + N64C_CPAK_PAGE - 1) / N64C_CPAK_PAGE;
+    packets(pfs, PK_ID + PK_INODE); /* osPfsFreeBlocks */
     if (pages > count_free(image))
         return PFS_ERR_DATA_FULL;
+    /* the search for a free note; then the inode page read, each page cleared, the inode page written and the note */
+    packets(pfs, find_packets(image, 0, 0, NULL, NULL) + 2 * PK_INODE + PK_PAGE * pages + 1);
     int slot = -1;
     for (unsigned i = 0; i < N64C_CPAK_NOTES && slot < 0; i++)
         if (!note_used(NOTE(image, i)))
@@ -262,6 +341,13 @@ s32 osPfsReadWriteFile(OSPfs *pfs, s32 file_no, u8 flag, int offset, int nbytes,
     unsigned first = get16(NOTE(image, file_no) + 6), size = chain_length(image, first) * N64C_CPAK_PAGE;
     if ((unsigned)offset + (unsigned)nbytes > size)
         return PFS_ERR_INVALID;
+    /* the id check and the note; the inode page read once the transfer leaves its first page; one packet per block;
+     * a first write marks the note written */
+    packets(pfs, PK_ID + 1 + ((unsigned)offset % N64C_CPAK_PAGE + (unsigned)nbytes > N64C_CPAK_PAGE ||
+                                       (unsigned)offset >= N64C_CPAK_PAGE
+                                   ? PK_INODE
+                                   : 0) +
+                     (unsigned)nbytes / 32 + (flag && !(NOTE(image, file_no)[8] & 2) ? 2 : 0));
     while (nbytes > 0) {
         unsigned skip = (unsigned)offset / N64C_CPAK_PAGE, page = first;
         while (skip--)
@@ -282,13 +368,16 @@ s32 osPfsReadWriteFile(OSPfs *pfs, s32 file_no, u8 flag, int offset, int nbytes,
 }
 s32 n64c_pfs_check_id(OSPfs *pfs)
 {
-    /* The id area is read through the slot: nothing to read from an empty slot. */
-    s32 ret = __osPfsGetStatus(pfs->queue, pfs->channel);
-    if (ret)
-        return ret;
+    /* libultra's osPfsRepairId: bank 0 selected unless it is, the id block read, then the label block. The id area is
+     * read through the slot: an empty slot answers NOPACK to the first packet. */
+    unsigned select = pfs->activebank != 0;
+    pfs->activebank = 0;
+    if (!packets(pfs, select + PK_ID))
+        return PFS_ERR_NOPACK;
     u8 *image = card(pfs);
     if (!image || id_block(image) < 0)
         return PFS_ERR_ID_FATAL;
+    packets(pfs, 1);
     return 0;
 }
 /* ---- Rumble Pak ---- */

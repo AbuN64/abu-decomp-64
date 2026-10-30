@@ -32,6 +32,33 @@ static void waiter(void *p)
     note('w');
     __osSiRelAccess();
 }
+/* libultra's pfs packets per call on a formatted one-bank card, one exchange each. The first three are the counts the
+ * oracle's SI log of the wl1 movie shows: osPfsInitPak 85 (status, bank select, id, label, osPfsChecker 81),
+ * osPfsFileState on an empty note 2, osPfsFreeBlocks 17. */
+static void pfs_packets(OSMesgQueue *mq)
+{
+    OSPfs pfs;
+    OSPfsState state;
+    u8 name[16] = "RAGEWARS", ext[4] = {0}, block[64] = {1};
+    s32 n = -1;
+#define COSTS(call, want, packets) do { OSTime t0 = osGetTime(); CHECK((call) == (want)); \
+        CHECK(osGetTime() - t0 == (OSTime)(packets) * TALKING); } while (0)
+    COSTS(osPfsInitPak(mq, &pfs, 0), 0, 85);
+    COSTS(osPfsFileState(&pfs, 3, &state), PFS_ERR_INVALID, 2);
+    COSTS(osPfsFreeBlocks(&pfs, &n), 0, 17);
+    /* id check, search 17, free blocks 17, free note 2, inode read 16, two pages cleared 20, inode write 16, note */
+    COSTS(osPfsAllocateFile(&pfs, 0x3031, 0x4E525745, name, ext, 512, &n), 0, 90);
+    COSTS(osPfsFindFile(&pfs, 0x3031, 0x4E525745, name, ext, &n), 0, 2);
+    COSTS(osPfsReadWriteFile(&pfs, n, 1, 0, 64, block), 0, 4);    /* id, note, two blocks */
+    COSTS(osPfsReadWriteFile(&pfs, n, 0, 224, 64, block), 0, 20); /* crosses a page: the inode read */
+    COSTS(osPfsFileState(&pfs, n, &state), 0, 18);
+    COSTS(osPfsInitPak(mq, &pfs, 0), 0, 117); /* a named note walks its chain: its inode read and the cache's */
+    COSTS(n64c_pfs_check_id(&pfs), 0, 2);
+    /* id check, search 2, note, inode read, two pages summed, inode write, note cleared */
+    COSTS(osPfsDeleteFile(&pfs, 0x3031, 0x4E525745, name, ext), 0, 57);
+    COSTS(osPfsDeleteFile(&pfs, 0x3031, 0x4E525745, name, ext), PFS_ERR_INVALID, 18);
+#undef COSTS
+}
 static void run_pak(const char *path)
 {
     N64cConfig cfg = {.pak_path = path};
@@ -58,6 +85,7 @@ static void run_pak(const char *path)
         CHECK(osPfsInitPak(&mq, &pfs, 0) == 0 && pfs.status == PFS_INITIALIZED && pfs.dir_size == 16);
         OSTime t = osGetTime();
         CHECK(osMotorInit(&mq, &pfs, 0) == PFS_ERR_DEVICE && osGetTime() - t == 4 * TALKING); /* the four probe packets */
+        pfs_packets(&mq);
     }
     /* a silent channel: one packet nobody answers; a channel out of range: no exchange */
     OSTime t = osGetTime();
