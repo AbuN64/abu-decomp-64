@@ -145,7 +145,10 @@ class Tally:
 
 tally = Tally()
 start = time.monotonic()
-code = int(pytest.main(["-q", "-p", "no:cacheprovider", "-rfE", "--tb=short", "tests"], plugins=[tally]))
+# rootdir and config pinned to the checkout: node ids stay checkout-relative wherever the checkout sits
+config = os.path.join(root, "pyproject.toml")
+args = ["-q", "-p", "no:cacheprovider", "-rfE", "--tb=short", "--rootdir", root, "-c", config]
+code = int(pytest.main(args + ["tests"], plugins=[tally]))
 seconds = time.monotonic() - start
 outside = [path for path in imported() if not inside(path)]
 if outside:

@@ -305,10 +305,13 @@ class SuiteScriptTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        base = Path(self.tmp.name)
+        # the deploy layout: the checkout sits under a directory that has a pyproject of its own (the outer repo's .tmp)
+        base = Path(self.tmp.name) / "outer"
         self.repo, self.home, self.dest = base / "repo", base / "home", base / "dest"
         for path in (self.repo / "src/abu_decomp", self.repo / "tests", self.home / "finish", self.dest):
             path.mkdir(parents=True)
+        (base / "pyproject.toml").write_text("[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n")
+        (self.repo / "pyproject.toml").write_text("[project]\nname = \"tiny\"\n")  # no pytest section
         (self.repo / "src/abu_decomp/__init__.py").write_text("VALUE = 1\n")
         self.write_test("assert abu_decomp.VALUE == 1")
         git("init", "-q", "-b", "main", cwd=self.repo)
