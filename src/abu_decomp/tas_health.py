@@ -9,8 +9,8 @@ build.ninja; `{port_dir}` is the port executable's folder], "rebuild": the comma
 A marker counts as a failure only when its unit is named in the sources listing or a graph file of the port being
 reported; every other marker is left over from a build without that unit: it is listed as `stale`, with its age.
 Nothing here blocks a play. Whether a shared port seat may run at all is tas_seat's rule (stamped repo, SHA and shim pin
-against the project's current main); `pins_stale` only reports a page port older than its tree: "pins" is the stamp
-the page-port build writes ({"rage_ports": sha}); "pins_repo" is the port tree it must match.
+against the project's current main); `pins_stale` only reports a port build older than its tree: "pins" is the stamp
+the build writes ({<pins_key>: sha}); "pins_repo" is the tree it must match.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from typing import Any
 
 from abu_decomp import DecompError, tas_triage
 
-BUILD_KEYS = frozenset({"units", "sources", "rebuild", "pins", "pins_repo", "lock", "graph"})
+BUILD_KEYS = frozenset({"units", "sources", "rebuild", "pins", "pins_key", "pins_repo", "lock", "graph"})
 
 
 def failed_units(units: Path) -> list[dict[str, Any]]:
@@ -86,7 +86,7 @@ def newest_source(listing: Path) -> tuple[float, str] | None:
 
 
 def building(lock: Any) -> bool:
-    """True while page-port.py ensure holds its lock (a rebuild is in progress; it publishes the new binary by an atomic
+    """True while the rebuild command holds its lock (a rebuild is in progress; it publishes the new binary by an atomic
     swap, so plays started meanwhile use the previous one instead of being refused)."""
     import fcntl
 
@@ -101,9 +101,9 @@ def building(lock: Any) -> bool:
     return False
 
 
-def pins_lag(build: dict[str, Any], key: str = "rage_ports", what: str = "page port", tree: str = "rage-ports") -> str:
+def pins_lag(build: dict[str, Any], key: str, what: str, tree: str) -> str:
     """Empty when the binary was built at its tree's HEAD (or no stamp is configured), else why not. The stamp holds
-    the built sha under `key`; the page port (rage-ports) and the page oracle (cake_taste) share this check."""
+    the built sha under `key`; the port build and the oracle host share this check."""
     if not (build.get("pins") and build.get("pins_repo")):
         return ""
     try:
@@ -142,7 +142,9 @@ def read(cfg: dict[str, Any], profile: Any = None, now: float | None = None) -> 
         newest = newest_source(Path(sources))
         if newest and newest[0] > port.stat().st_mtime:
             out["stale"], out["stale_by"] = True, newest[1]
-    out["pins_stale"] = pins_lag(build)
+    out["pins_stale"] = pins_lag(
+        build, build.get("pins_key", ""), "port build", Path(str(build.get("pins_repo", ""))).name
+    )
     parts = []
     if out["pins_stale"]:
         parts.append(out["pins_stale"])

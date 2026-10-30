@@ -51,8 +51,8 @@ class HealthTests(unittest.TestCase):
 
     def pinned(self, built):
         stamp = self.port.parent / "pins.json"
-        stamp.write_text(json.dumps({"rage_ports": built}))
-        self.cfg["build"].update(pins=stamp, pins_repo=self.port.parent / "ports")
+        stamp.write_text(json.dumps({"tree_sha": built}))
+        self.cfg["build"].update(pins=stamp, pins_key="tree_sha", pins_repo=self.port.parent / "ports")
         with mock.patch("abu_decomp.tas_health.subprocess.run") as run:
             run.return_value = SimpleNamespace(returncode=0, stdout="b" * 40 + "\n")
             return tas_health.read(self.cfg)
@@ -60,9 +60,9 @@ class HealthTests(unittest.TestCase):
     def test_port_built_at_older_pins_is_named(self):
         got = self.pinned("a" * 40)
         self.assertEqual(
-            got["pins_stale"], "page port older than pins: built at rage-ports aaaaaaaaa, pins are at bbbbbbbbb"
+            got["pins_stale"], "port build older than pins: built at ports aaaaaaaaa, pins are at bbbbbbbbb"
         )
-        self.assertIn("page port older than pins", got["summary"])
+        self.assertIn("port build older than pins", got["summary"])
         self.assertEqual(tas_health.header(got)["rebuild"], "make port")
 
     def test_port_built_at_the_pins_is_current(self):
@@ -72,7 +72,7 @@ class HealthTests(unittest.TestCase):
         self.cfg["build"].update(pins=self.port.parent / "none.json", pins_repo=self.port.parent)
         with mock.patch("abu_decomp.tas_health.subprocess.run") as run:
             run.return_value = SimpleNamespace(returncode=0, stdout="c" * 40)
-            self.assertIn("built at rage-ports unknown", tas_health.read(self.cfg)["pins_stale"])
+            self.assertRegex(tas_health.read(self.cfg)["pins_stale"], r"built at \S+ unknown, pins are at ccccccccc")
 
     def test_profile_build_section_carries_the_pins_keys(self):
         profile = mock.MagicMock()
