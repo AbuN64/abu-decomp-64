@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The Windows Fast3D archive must call GL 3 through its existing GLEW loader."""
+
 import subprocess
 import sys
 
