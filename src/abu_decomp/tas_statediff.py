@@ -25,7 +25,9 @@ Files (all under `<tas.runs>`):
   `dump-<poll>.bin`), cached by movie, Expansion Pak, card, oracle host and spec, so the original runs once per movie.
 - `plays/<run>/state-diff.json`: `{schema:2, key, movie, polls_compared, first_compared, port_polls, oracle_polls,
   symbols, regions: {name: {status: same|diverges|unreached, symbols, static_symbols, runtime_symbols,
-  polls_differing, first: row|null, runtime: row|null}}, divergent, notes, wall_seconds}`, where a row is `{poll,
+  polls_differing, first: row|null, runtime: row|null}}, divergent, raw_divergent, reviewed_divergent,
+  unreviewed_divergent, raw_symbols, reviewed_symbols, unreviewed_symbols, reviewed, notes, wall_seconds}`,
+  where a row is `{poll,
   phase, static, symbol, field, port, oracle, differing_symbols, fields:[{symbol, field, kind, address, index, port,
   oracle}...], vi:{port, oracle}, timing}`; `state-port.txt`, `port-trace.txt` (the port's symbol-hash and
   "poll vi" traces) and `state/` (the port's dumps).
@@ -59,7 +61,7 @@ from typing import Any
 
 from unbake import api
 
-from abu_decomp import DecompError, procguard, statetypes, tas_findings, tas_oracle
+from abu_decomp import DecompError, procguard, statetypes, tas_findings, tas_oracle, tas_reviews
 from abu_decomp.config import Profile
 
 SCHEMA = 2
@@ -845,7 +847,27 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
         port_polls=max(port) if port else 0,
         oracle_polls=max(original) if original else 0,
     )
-    per_region = _rows(syms, found) if found["compared"] else {}
+    raw_regions = _rows(syms, found) if found["compared"] else {}
+    facts = session.cfg.get("env", {}).get("N64C_PORT_DIR", os.environ.get("N64C_PORT_DIR", "."))
+    ledger_path = Path(facts) / "lockstep-ignore.tsv"
+    ledger = tas_reviews.read(ledger_path)
+    reviewed = []
+    remaining = list(found["first"])
+    for symbol in syms:
+        poll = remaining[symbol.index]
+        why = tas_reviews.cause(ledger, symbol.name, symbol.address, symbol.size)
+        if poll is not None and why is not None:
+            reviewed.append({"symbol": symbol.name, "region": symbol.region, "first_poll": poll, "cause": why})
+            remaining[symbol.index] = None
+    result.update(
+        ledger=str(ledger_path),
+        reviewed=reviewed,
+        raw_divergent=len(raw_regions),
+        raw_symbols=sum(p is not None for p in found["first"]),
+        reviewed_divergent=len({s["region"] for s in reviewed}),
+        reviewed_symbols=len(reviewed),
+    )
+    per_region = _rows(syms, {**found, "first": remaining}) if found["compared"] else {}
     wanted = sorted(
         {p for r in per_region.values() for p in ([r["first"][0]] + ([r["runtime"][0]] if r["runtime"] else []))}
     )
@@ -855,24 +877,15 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
             dumps = _dump_pass(session, wanted, profile)
         except (OSError, DecompError) as error:
             session.notes.append(f"dump pass failed: {error}")
-    # a static symbol that differs only in the order of its bytes is data loaded in the other word order, not a
-    # divergence of the run: it is listed apart and no longer stands as the region's first difference
+    # Byte-order diagnostics never authorize an exclusion: only the reviewed ledger does.
     byte_order: dict[str, list[str]] = {}
     if found["compared"] and found["first_compared"] in dumps:
         mine, theirs = dumps[found["first_compared"]]
-        for region, r in list(per_region.items()):
-            kept = []
+        for region, r in per_region.items():
             for i in r["static"]:
                 s = syms[i]
                 if byte_order_only(s, mine[s.offset : s.offset + s.size], theirs[s.offset : s.offset + s.size]):
                     byte_order.setdefault(region, []).append(s.name)
-                else:
-                    kept.append(i)
-            r["static"] = kept
-            if kept or r["later"]:
-                pick_rows(r, found["first_compared"])
-            else:
-                del per_region[region]
     result["byte_order_symbols"] = byte_order
 
     def row(region: str, poll: int, members: list[int], phase: str, static: bool) -> dict[str, Any]:
@@ -916,8 +929,6 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
             "byte_order_symbols": len(byte_order.get(name, ())),
         }
         r = per_region.get(name)
-        if name in byte_order and not r:
-            entry["polls_differing"] = 0  # the hashes differed only by byte order
         if r:
             entry["status"] = "diverges"
             entry["static_symbols"] = len(r["static"])
@@ -930,12 +941,27 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
                 rows.append((name, entry["runtime"]))
         result["regions"][name] = entry
     result["divergent"] = sum(1 for e in result["regions"].values() if e["status"] == "diverges")
+    result["unreviewed_divergent"] = result["divergent"]
+    result["unreviewed_symbols"] = sum(
+        len(r["static"]) + sum(len(v) for v in r["later"].values()) for r in per_region.values()
+    )
     result["wall_seconds"] = round(time.monotonic() - session.began, 1)
     (run / DIFF).write_text(json.dumps(result, indent=1))
     if found["compared"]:  # a run that compared nothing neither clears nor adds findings
         write_findings(session, movie, record, rows, result["regions"])
     return {
-        "divergent": result["divergent"],
+        **{
+            key: result[key]
+            for key in (
+                "divergent",
+                "raw_divergent",
+                "reviewed_divergent",
+                "unreviewed_divergent",
+                "raw_symbols",
+                "reviewed_symbols",
+                "unreviewed_symbols",
+            )
+        },
         "regions": len(names),
         "findings": len(rows),
         "polls_compared": found["compared"],

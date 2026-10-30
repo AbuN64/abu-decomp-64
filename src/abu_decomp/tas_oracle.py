@@ -419,3 +419,17 @@ def bmp(rgb: bytes) -> bytes:
         line[0::3], line[2::3] = line[2::3], line[0::3]  # RGB -> BGR
         body += line
     return bytes(head) + bytes(body)
+
+
+def verdict(record: dict[str, Any]) -> str:
+    """An oracle run passes only with successful outcomes and a nonempty, reviewed state comparison."""
+    state = record.get("state_diff") or {}
+    if (
+        record.get("outcome") != "ok"
+        or record.get("oracle", {}).get("outcome") != "ok"
+        or state.get("error")
+        or not state.get("polls_compared")
+        or state.get("divergent") != 0
+    ):
+        return "fail"
+    return "ok"

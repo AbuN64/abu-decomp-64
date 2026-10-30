@@ -659,9 +659,9 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         return result, code, []
     if args.twice:
         twice = tas.play_twice(profile, args.name, **options)
-        return twice, 0, []
+        return twice, int(twice.get("oracle", {}).get("verdict") == "fail"), []
     played = tas.play(profile, args.name, **options, **inspect)
-    return played, 0, []
+    return played, int(played.get("oracle", {}).get("verdict") == "fail"), []
 
 
 def _run_triage(profile: Any, args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:

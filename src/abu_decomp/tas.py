@@ -1688,6 +1688,8 @@ def play(
             if os.environ.get("N64C_TRACE_EVENTS"):
                 record["oracle"]["events"] = tas_oracle.split_events(run)  # the outcome above is gdb's then
             result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
+        if oracle_waiter:
+            record["oracle"]["verdict"] = result["oracle"]["verdict"] = tas_oracle.verdict(result)
         if first_pass and result["outcome"] != "ok":
             raise NeedsSupervisor(run)
         final = {
@@ -1760,11 +1762,16 @@ def play_twice(
 
 def compare(recorded: dict[str, Any] | None, now: dict[str, Any]) -> str:
     """better / same / worse / new: a clean end beats any stop, then more polls reached beats fewer."""
+    if now.get("oracle", {}).get("verdict") == "fail":
+        return "worse"
     if not recorded:
         return "new"
 
     def standing(row: dict[str, Any]) -> tuple[int, int]:
-        return (int(row.get("outcome") == "ok"), int(row.get("polls_reached") or 0))
+        return (
+            int(row.get("outcome") == "ok" and row.get("oracle", {}).get("verdict") != "fail"),
+            int(row.get("polls_reached") or 0),
+        )
 
     before, after = standing(recorded), standing(now)
     return "worse" if after < before else "better" if after > before else "same"

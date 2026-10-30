@@ -344,6 +344,41 @@ class FinishTests(unittest.TestCase):
             self.assertEqual((rows[0]["kind"], rows[0]["clears"]), ("clear", ["state-diverge"]))
         return [r for r in rows if r["kind"] != "clear"]
 
+    def ledger(self, text):
+        (self.tmp / "lockstep-ignore.tsv").write_text(text)
+        self.session.cfg["env"] = {"N64C_PORT_DIR": str(self.tmp)}
+
+    def test_reviewed_symbol_is_excluded_with_its_cause(self):
+        self.ledger("gPos\tNative render phase; measured first poll 1.\n")
+        self.traces("1 0:1 1:2 2:3\n", "1 0:1 1:2 2:4\n")
+        with mock.patch.object(sd, "_dump_pass") as dump:
+            summary = sd.finish(self.session, None, "movie-a", {})
+        dump.assert_not_called()
+        self.assertEqual(
+            (summary["raw_symbols"], summary["reviewed_symbols"], summary["unreviewed_symbols"]), (1, 1, 0)
+        )
+        self.assertEqual((summary["divergent"], summary["reviewed_divergent"]), (0, 1))
+        report = json.loads((self.run / sd.DIFF).read_text())
+        self.assertEqual(report["reviewed"][0]["cause"], "Native render phase; measured first poll 1.")
+        self.assertEqual(self.findings(), [])
+
+    def test_unknown_symbol_still_diverges_in_a_reviewed_region(self):
+        self.ledger("gFlag\tReviewed neighboring object.\n")
+        self.traces("1 0:1 1:2 2:3\n", "1 0:4 1:5 2:3\n")
+        with mock.patch.object(sd, "_dump_pass", return_value={}):
+            summary = sd.finish(self.session, None, "movie-a", {})
+        self.assertEqual(
+            (summary["raw_symbols"], summary["reviewed_symbols"], summary["unreviewed_symbols"]), (2, 1, 1)
+        )
+        self.assertEqual(summary["divergent"], 1)
+        self.assertEqual(self.findings()[0]["symbol"], "gItems")
+
+    def test_malformed_ledger_cannot_accept_a_difference(self):
+        self.ledger("gPos\t\n")
+        self.traces("1 0:1 1:2 2:3\n", "1 0:1 1:2 2:4\n")
+        with self.assertRaisesRegex(ValueError, "lockstep-ignore.tsv:1"):
+            sd.finish(self.session, None, "movie-a", {})
+
     def test_one_run_reports_every_divergent_region_and_keeps_going(self):
         self.traces("1 0:1 1:2 2:3\n2 2:9\n3 0:5\n", "1 0:1 1:2 2:3\n2\n3\n")
         fake = self.dumps({2: {18: (1).to_bytes(8, "big")}, 3: {8: (9).to_bytes(2, "big")}})
@@ -374,8 +409,8 @@ class FinishTests(unittest.TestCase):
         self.assertEqual(row["evidence"]["phase"], "first")
         self.assertFalse(next(r for r in rows if r["region"] == "CAMERA")["evidence"]["timing"])
 
-    def test_a_static_double_in_the_other_word_order_is_no_divergence(self):
-        # gPos (a double) differs from the first poll only by its two words' order: data, not a divergence
+    def test_unreviewed_byte_order_difference_still_diverges(self):
+        # Word-order diagnostics do not authorize unreviewed exclusions.
         self.traces("1 2:1\n", "1 2:2\n")
 
         def swapped(session, polls, profile):
@@ -386,12 +421,14 @@ class FinishTests(unittest.TestCase):
 
         with mock.patch.object(sd, "_dump_pass", side_effect=swapped):
             summary = sd.finish(self.session, None, "movie-a", {})
-        self.assertEqual((summary["divergent"], summary["findings"]), (0, 0))
+        self.assertEqual((summary["divergent"], summary["findings"]), (1, 1))
         report = json.loads((self.run / sd.DIFF).read_text())
         camera = report["regions"]["CAMERA"]
-        self.assertEqual((camera["status"], camera["byte_order_symbols"], camera["polls_differing"]), ("same", 1, 0))
+        self.assertEqual(
+            (camera["status"], camera["byte_order_symbols"], camera["polls_differing"]), ("diverges", 1, 1)
+        )
         self.assertEqual(report["byte_order_symbols"], {"CAMERA": ["gPos"]})
-        self.assertEqual(self.findings(), [])
+        self.assertEqual(len(self.findings()), 1)
 
     def test_a_byte_order_symbol_does_not_hide_a_real_static_difference(self):
         # gFlag (a word) really differs and gPos only in word order: the region's first difference is gFlag
@@ -408,7 +445,7 @@ class FinishTests(unittest.TestCase):
             sd.finish(self.session, None, "movie-a", {})
         report = json.loads((self.run / sd.DIFF).read_text())
         self.assertEqual(report["byte_order_symbols"], {"CAMERA": ["gPos"]})
-        self.assertEqual(report["regions"]["CAMERA"]["status"], "same")
+        self.assertEqual(report["regions"]["CAMERA"]["status"], "diverges")
         actors = report["regions"]["ACTORS"]
         self.assertEqual((actors["status"], actors["first"]["symbol"]), ("diverges", "gFlag"))
 
