@@ -167,9 +167,10 @@ def collect_units(tree: Path, touched: set[str]) -> dict[str, dict[str, Any]]:
 
 
 def rom_report(tree: Path) -> dict[str, dict[str, Any]]:
-    """Each version's built ROM hashed against the Makefile's SHA1 row."""
+    """Each version's built ROM hashed against the SHA1 row of its generated facts (versions/<v>/text_sizes.mk)."""
     try:
-        wanted = dict(SHA1_ROW.findall((tree / "Makefile").read_text()))
+        facts = sorted(tree.glob("versions/*/text_sizes.mk"))
+        wanted = dict(row for mk in facts for row in SHA1_ROW.findall(mk.read_text()))
         name = project_name(tree)
     except OSError:
         return {}

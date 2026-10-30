@@ -128,7 +128,8 @@ class JudgeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "config.toml").write_text('name = "Demo"\n')
-            (root / "Makefile").write_text(f"SHA1_us := {'0' * 40}\n")
+            (root / "versions/us").mkdir(parents=True)
+            (root / "versions/us/text_sizes.mk").write_text(f"SHA1_us := {'0' * 40}\n")
             (root / "build/us").mkdir(parents=True)
             self.assertEqual(shipproof.rom_report(root), {"us": {"sha1": None, "ok": False}})
             (root / "build/us/Demo.z64").write_bytes(b"")

@@ -23,7 +23,8 @@ the reason it could not: nothing is estimated, and a gate that failed makes the 
   style         `recipe style --full` findings on the unpacked revision, those of `rules` (all when none are named)
   roms          versions whose ROM, linked on a stamp-pool tree synced to the revision (`pool`: the shared tree the pool
                 is seeded from, `config`: its data config, `wait`: seconds to wait for a free tree), is not the
-                Makefile's SHA1; the revision is built at any commit and the train's own tree is never touched"""
+                SHA1 of its versions/<v>/text_sizes.mk; the revision is built at any commit and the train's own tree is
+                never touched"""
 
 from __future__ import annotations
 
@@ -307,7 +308,7 @@ def _link(rev: Revision, spec: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 def _roms(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
     report = _link(rev, spec)
     if not report:
-        raise RuntimeError("the revision's Makefile names no ROM SHA1 to compare")
+        raise RuntimeError("the revision's versions/*/text_sizes.mk name no ROM SHA1 to compare")
     return sum(1 for r in report.values() if not r["ok"]), {
         "versions": len(report),
         "exact": sorted(v for v, r in report.items() if r["ok"]),
