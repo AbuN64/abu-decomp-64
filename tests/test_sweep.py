@@ -192,6 +192,14 @@ class RuleErrorTests(unittest.TestCase):
                 rules(text)
             self.assertIn(word, str(raised.exception))
 
+    def test_a_rules_file_a_project_lacks_refuses_at_the_read_naming_its_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "config" / "sweep.toml"  # the standard place; docs/sweep.toml is not tried
+            with self.assertRaises(DecompError) as raised:
+                sweep.load_rules([missing])
+        self.assertEqual(raised.exception.key, "sweep.rules")
+        self.assertIn(str(missing), str(raised.exception))
+
     def test_a_rule_names_only_trees_that_exist(self):
         with self.assertRaises(DecompError):
             Tree({}).sweep(PATTERN.replace('why = "w"', 'why = "w"\ntrees = ["ghost"]'))

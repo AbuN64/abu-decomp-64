@@ -112,12 +112,13 @@ class JudgeTests(unittest.TestCase):
     def test_the_inputs_every_unit_reads_are_the_projects_own_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "config.toml").write_text('name = "Demo"\n[paths]\nplatform = "config/platform.toml"\n')
+            (root / "config.toml").write_text('name = "Demo"\n')
             inputs = shipproof.global_inputs(root)
         self.assertIn("config/platform.toml", inputs)
-        self.assertIn("blobs.toml", inputs)
+        self.assertIn("config/blobs.toml", inputs)
         self.assertIn("Demo.ld", inputs)
         self.assertNotIn("rom.toml", inputs)
+        self.assertNotIn("blobs.toml", inputs)
         self.assertNotIn("RageWars.ld", inputs)
         rec = record()
         git = fake_git({"Demo.ld": ""})

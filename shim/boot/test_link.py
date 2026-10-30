@@ -30,6 +30,7 @@ class BindingTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(dir=args.work)
         self.addCleanup(self.tmp.cleanup)
         self.path = pathlib.Path(self.tmp.name)
+        (self.path / "source/config").mkdir(parents=True)
         facts = self.path / "source/versions/test"
         facts.mkdir(parents=True)
         (facts / "symbol_addrs.txt").write_text("marker = 0x80000200; // rom:0x100\nend = 0x80400000; //\n")
@@ -230,7 +231,7 @@ int main(void) { return n64c_boot_entry(); }
     def test_unfacted_rnc_streams(self):
         # an RNC stream (sane header, packed bytes inside the ROM) that no blob fact or row covers is listed; streams
         # inside a fact, a row, or with an impossible header are not
-        (self.path / "source/blobs.toml").write_text('[blob."known"]\ncodec = "rnc1"\nrom."test" = [[0x200, 0x240]]\n')
+        (self.path / "source/config/blobs.toml").write_text('[blob."known"]\ncodec = "rnc1"\nrom."test" = [[0x200, 0x240]]\n')
         rom = bytearray(0x1000)
         def stream(at, method, unpacked, packed):
             rom[at:at + 12] = b"RNC" + bytes([method]) + unpacked.to_bytes(4, "big") + packed.to_bytes(4, "big")
@@ -248,7 +249,7 @@ int main(void) { return n64c_boot_entry(); }
     def test_blob_layouts_from_blob_facts(self):
         # every RNC blob fact of the version is a packed stream; blob_layouts rows type an RNC stream's unpacked
         # bytes or an uncompressed blob's ROM bytes (GRAPH programs compiled from named types, root first)
-        (self.path / "source/blobs.toml").write_text(
+        (self.path / "source/config/blobs.toml").write_text(
             '[blob."pack.a"]\ncodec = "rnc1"\nrom."test" = [[0x500, 0x540]]\n'
             '[blob."pack.b"]\ncodec = "rnc2"\nrom."test" = [[0x540, 0x560]]\nrom."other" = [[0x10, 0x20]]\n'
             '[blob."plain"]\ncodec = "none"\nrom."test" = [[0x600, 0x640]]\n'
@@ -309,7 +310,7 @@ int main(void) { return n64c_boot_entry(); }
         self.assertIn('{"pack.b", 1344u, 0u, 32u, N64C_RES_UNTYPED, "pack.b"},', code)
         streams = copy.deepcopy(self.project)
         streams["byte_streams"] = [{"format": "samples", "evidence": "Fixture byte data"}]
-        (self.path / "source/blobs.toml").write_text((self.path / "source/blobs.toml").read_text() +
+        (self.path / "source/config/blobs.toml").write_text((self.path / "source/config/blobs.toml").read_text() +
                                                      '[blob."sample.1"]\ncodec = "none"\nformat = "samples"\n'
                                                      'rom."test" = [[0x780, 0x790]]\n')
         self.generate(streams)
@@ -340,7 +341,7 @@ int main(void) { return n64c_boot_entry(); }
             self.generate(bad)
 
     def test_byte_stream_transport_ranges(self):
-        (self.path / "source/blobs.toml").write_text(
+        (self.path / "source/config/blobs.toml").write_text(
             '[blob."sequence"]\ncodec = "none"\nformat = "sequence bytes"\n'
             'rom."test" = [[0x600,0x604], [0x700,0x720]]\n')
         self.project["resources"] = [{"name": "header", "rom": "0x700", "bytes": 8,

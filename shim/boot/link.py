@@ -207,12 +207,19 @@ def descriptor(item, label, unpacked=False):
     return kind, text.strip(), sum(int(c) for c in widths)
 
 
+def blob_file(source):
+    """The decomp's blob facts file: config.toml [paths] blobs over unbake's packaged default."""
+    from unbake import api  # the boot tools run under the decomp venv
+
+    return pathlib.Path(source) / api.paths(pathlib.Path(source))["blobs"]
+
+
 def blob_facts(source, version):
-    """{blob name: (rom, bytes, codec, format)} of the blobs the decomp's blob facts (blobs.toml) place in this
+    """{blob name: (rom, bytes, codec, format)} of the blobs the decomp's blob facts (the blobs file) place in this
     version's ROM as one range."""
     import tomllib  # Python 3.11+, only where blob facts are read
 
-    path = source / "blobs.toml"
+    path = blob_file(source)
     if not path.exists():
         return {}
     facts = {}
@@ -232,10 +239,10 @@ def blob_facts(source, version):
 
 
 def blob_ranges(source, version):
-    """{blob name: (ranges, codec, format)} of every blob fact (blobs.toml) with ROM ranges in this version."""
+    """{blob name: (ranges, codec, format)} of every blob fact (the blobs file) with ROM ranges in this version."""
     import tomllib  # Python 3.11+, only where blob facts are read
 
-    path = source / "blobs.toml"
+    path = blob_file(source)
     if not path.exists():
         return {}
     out = {}
@@ -437,7 +444,7 @@ def generate(manifest, source, output):
         code.append(f'    {{"{label}", {rom}u, 0u, {size}u, {KINDS[kind]}, {c_string(fields)}}},')
     code += ['    {0},  /* keeps the array non-empty; the count below excludes it */', '};',
              'const size_t n64c_boot_resource_count = sizeof n64c_boot_resources / sizeof n64c_boot_resources[0] - 1;']
-    # Blob layouts, keyed by the decomp's blob facts (blobs.toml): an RNC stream's row types its unpacked bytes (the PI
+    # Blob layouts, keyed by the decomp's blob facts (the blobs file): an RNC stream's row types its unpacked bytes (the PI
     # layer serves every stream's header in host order; streams without a row unpack raw), an uncompressed blob's row
     # types its ROM bytes like a resources row.
     # A row names one blob ("blob") or every blob of a format ("format", the blob facts' format string).
