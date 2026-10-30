@@ -255,6 +255,12 @@ target_link_libraries(n64c_f3d_replay PRIVATE n64c_fast3d)
 target_compile_options(n64c_f3d_replay PRIVATE -Wall -Wextra -Werror)
 # N64C_REPLAY_CAPTURE: one capture directory or a list of them; one gate test each, named after it.
 if(BUILD_TESTING)
+    if(WIN32)
+        # Inspect the cross-built archive on the build host; no Windows runner is needed.
+        add_test(NAME n64c_windows_gl_loader COMMAND "${Python3_EXECUTABLE}" -I
+            "${N64C_SHIM_DIR}/tests/test_windows_gl_loader.py"
+            "${CMAKE_NM}" "$<TARGET_FILE:n64c_fast3d>")
+    endif()
     foreach(capture IN LISTS N64C_REPLAY_CAPTURE)
         get_filename_component(capture_name "${capture}" NAME)
         add_test(NAME n64c_f3d_replay_${capture_name} COMMAND "${Python3_EXECUTABLE}" -I

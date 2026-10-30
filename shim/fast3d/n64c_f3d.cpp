@@ -4,6 +4,9 @@
 // a console-variable store and a resource manager that holds only Fast3D's shader archive. Colour
 // images become Fast3D framebuffers through n64c_dl's colour-image hook (OTR_G_SETFB after each
 // G_SETCIMG); the root list runs inside [G_DL root][OTR_G_RESETFB][G_ENDDL] so no framebuffer stays bound.
+#ifdef _WIN32
+#include <GL/glew.h>
+#endif
 #include "n64c_f3d.h"
 #include "f3d_window.h"
 #include "n64c_controls.h"
