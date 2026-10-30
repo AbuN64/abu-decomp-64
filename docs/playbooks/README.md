@@ -51,3 +51,7 @@ Throughout every phase:
 - **Measure on main.** Progress is a number taken on the main branch after landing, not a lane's private tree.
 - **Every repeated step becomes a tested tool**, never a lane-local script.
 - The project's own check stays green for every version after every change.
+
+## Rules
+- Workflow playbooks MUST live once in AbuDecomp64 docs/playbooks, written generically with game facts coming from the project profile.
+- Game decomp repositories (RageWars, BattleTanx) MUST NOT carry playbook copies and MUST carry only their own facts.
