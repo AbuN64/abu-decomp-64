@@ -10,12 +10,17 @@ A marker counts as a failure only when its unit is named in the sources listing 
 reported; every other marker is left over from a build without that unit: it is listed as `stale`, with its age.
 Nothing here blocks a play. Whether a shared port seat may run at all is tas_seat's rule (stamped repo, SHA and shim pin
 against the project's current main); `pins_stale` only reports a port build older than its tree: "pins" is the stamp
-the build writes ({<pins_key>: sha}); "pins_repo" is the tree it must match.
+the build writes ({<pins_key>: sha}); "pins_repo" is the reference, a git URL or path whose HEAD is mirrored into a bare
+repo under the user's cache directory (fetched on every check) and compared by git ancestry: a build is stale only when
+its sha is an ancestor of the reference's HEAD (and differs) or unrelated to it. A reference that cannot be fetched
+refuses with its cause; it never falls back to comparing equality.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import subprocess
 import time
@@ -101,24 +106,68 @@ def building(lock: Any) -> bool:
     return False
 
 
+def pins_source(profile: Any, key: str, value: Any) -> str | Path:
+    """A `pins_repo` value: a git URL is kept as written, anything else is a path resolved against the profile."""
+    return value if isinstance(value, str) and "://" in value else profile.path(key, value)
+
+
+def mirror_path(source: str) -> Path:
+    """The tool's own bare mirror of a reference source, under the user's cache directory."""
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return base / "abu-decomp" / "pins" / hashlib.sha256(source.encode()).hexdigest()[:16]
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+
+
+def reference_head(source: str) -> tuple[Path, str]:
+    """Fetch every branch and HEAD of `source` into its bare mirror: (mirror, the sha of the source's HEAD). Refuses,
+    naming the cause, when the mirror cannot be made or the source cannot be fetched."""
+    mirror = mirror_path(source)
+    mirror.parent.mkdir(parents=True, exist_ok=True)
+    made = _git("init", "--bare", "-q", str(mirror))
+    fetched = made if made.returncode else _git(
+        "-C", str(mirror), "fetch", "-q", "--prune", "--no-tags", source,
+        "+refs/heads/*:refs/mirror/heads/*", "+HEAD:refs/mirror/head",
+    )  # fmt: skip
+    head = _git("-C", str(mirror), "rev-parse", "refs/mirror/head") if not fetched.returncode else fetched
+    if head.returncode or not head.stdout.strip():
+        cause = (head.stderr or fetched.stderr).strip().splitlines()
+        raise DecompError("tas.pins", f"cannot read the reference {source}: {cause[-1] if cause else 'no HEAD'}")
+    return mirror, head.stdout.strip()
+
+
+def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    """True when `ancestor` is reachable from `descendant` in `repo`; an unknown or empty sha is not an ancestor."""
+    if not (ancestor and descendant):
+        return False
+    return _git("-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant).returncode == 0
+
+
 def pins_lag(build: dict[str, Any], key: str, what: str, tree: str) -> str:
-    """Empty when the binary was built at its tree's HEAD (or no stamp is configured), else why not. The stamp holds
-    the built sha under `key`; the port build and the oracle host share this check."""
+    """Empty when the binary's stamp is the reference's HEAD, a descendant of it, or no stamp is configured; else why
+    not. The stamp holds the built sha under `key`; `pins_repo` is the reference (see `reference_head`). The binary is
+    stale only when its sha is an ancestor of the reference (and differs) or unrelated to it: a build ahead of the
+    reference is not. Refuses when the reference cannot be fetched. The port build and the oracle host share this."""
     if not (build.get("pins") and build.get("pins_repo")):
         return ""
     try:
         built = json.loads(Path(build["pins"]).read_text()).get(key, "")
     except (OSError, ValueError, AttributeError):
         built = ""
-    done = subprocess.run(
-        ["git", "-C", str(build["pins_repo"]), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
-    )
-    now = done.stdout.strip()
-    if done.returncode or not now or built == now:
+    mirror, now = reference_head(str(build["pins_repo"]))
+    if built == now:
         return ""
+    if _is_ancestor(mirror, built, now):
+        relation = "built is an ancestor of the pins"
+    elif _is_ancestor(mirror, now, built):
+        return ""  # the build is ahead of the reference: the reference is the older side
+    else:
+        relation = "built is unrelated to the pins"
     if build.get("lock") and building(build["lock"]) and built:
         return ""  # the rebuild is running: the last published binary stays valid for new plays until the swap
-    return f"{what} older than pins: built at {tree} {built[:9] or 'unknown'}, pins are at {now[:9]}"
+    return f"{what} older than pins: built at {tree} {built[:9] or 'unknown'}, pins are at {now[:9]} ({relation})"
 
 
 def read(cfg: dict[str, Any], profile: Any = None, now: float | None = None) -> dict[str, Any]:
@@ -142,9 +191,11 @@ def read(cfg: dict[str, Any], profile: Any = None, now: float | None = None) -> 
         newest = newest_source(Path(sources))
         if newest and newest[0] > port.stat().st_mtime:
             out["stale"], out["stale_by"] = True, newest[1]
-    out["pins_stale"] = pins_lag(
-        build, build.get("pins_key", ""), "port build", Path(str(build.get("pins_repo", ""))).name
-    )
+    tree = str(build.get("pins_repo", "")).rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+    try:
+        out["pins_stale"] = pins_lag(build, build.get("pins_key", ""), "port build", tree)
+    except DecompError as error:
+        out["pins_stale"] = str(error)  # health never blocks a play: an unreadable reference is reported, not hidden
     parts = []
     if out["pins_stale"]:
         parts.append(out["pins_stale"])

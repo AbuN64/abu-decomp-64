@@ -96,8 +96,12 @@ def settings(profile: Profile) -> dict[str, Any] | None:
     lead = int(table.get("render_lead", 2))
     if lead < 0:
         raise DecompError("tas.oracle", f"render_lead is a poll count >= 0, not {lead}")
-    keys = ("pins", "pins_repo", "lock")
+    keys = ("pins", "lock")
+    from abu_decomp import tas_health
+
     stamp = {key: profile.path(f"tas.oracle.{key}", table[key]) for key in keys if key in table}
+    if "pins_repo" in table:
+        stamp["pins_repo"] = tas_health.pins_source(profile, "tas.oracle.pins_repo", table["pins_repo"])
     return {
         **stamp,
         "rebuild": str(table.get("rebuild", "")),

@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,6 +34,9 @@ class HealthTests(unittest.TestCase):
             "build": {"units": self.units, "sources": self.listing, "rebuild": "make port"},
         }
         self.profile = SimpleNamespace(source_file=Path("/p/w.json"))
+        cache = mock.patch.dict(os.environ, {"XDG_CACHE_HOME": str(root / "cache")})
+        cache.start()
+        self.addCleanup(cache.stop)
         patch = mock.patch("abu_decomp.tas_triage._project", return_value=self.project)
         patch.start()
         self.addCleanup(patch.stop)
@@ -49,30 +53,94 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(got["summary"], "build: 1 units failed")
         self.assertFalse(got["stale"])
 
-    def pinned(self, built):
-        stamp = self.port.parent / "pins.json"
-        stamp.write_text(json.dumps({"tree_sha": built}))
-        self.cfg["build"].update(pins=stamp, pins_key="tree_sha", pins_repo=self.port.parent / "ports")
-        with mock.patch("abu_decomp.tas_health.subprocess.run") as run:
-            run.return_value = SimpleNamespace(returncode=0, stdout="b" * 40 + "\n")
-            return tas_health.read(self.cfg)
+    def git_history(self):
+        """A reference repo: commit `old`, its child `new` (HEAD), and an `orphan` sharing no history."""
+        repo = self.port.parent / "ports"
+        repo.mkdir()
+        git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
 
-    def test_port_built_at_older_pins_is_named(self):
-        got = self.pinned("a" * 40)
+        def commit(message):
+            subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", message], check=True)
+            return subprocess.run(
+                [*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+            ).stdout.strip()
+
+        subprocess.run([*git[:3], "init", "-q"], check=True)
+        old = commit("old")
+        new = commit("new")
+        subprocess.run([*git, "checkout", "-q", "--orphan", "other"], check=True)
+        orphan = commit("orphan")
+        subprocess.run([*git, "checkout", "-q", new], check=True)
+        self.git = git
+        return SimpleNamespace(old=old, new=new, orphan=orphan)
+
+    def pinned(self, built, head=None):
+        """Health read for a build stamped `built` against the reference repo, optionally with HEAD moved to `head`."""
+        history = self.git_history()
+        if head:
+            subprocess.run([*self.git, "checkout", "-q", getattr(history, head)], check=True)
+        stamp = self.port.parent / "pins.json"
+        stamp.write_text(json.dumps({"tree_sha": getattr(history, built, built)}))
+        self.cfg["build"].update(pins=stamp, pins_key="tree_sha", pins_repo=self.port.parent / "ports")
+        return history, tas_health.read(self.cfg)
+
+    def test_port_built_at_an_ancestor_of_the_pins_is_named_with_both_shas_and_the_relation(self):
+        history, got = self.pinned("old")
         self.assertEqual(
-            got["pins_stale"], "port build older than pins: built at ports aaaaaaaaa, pins are at bbbbbbbbb"
+            got["pins_stale"],
+            f"port build older than pins: built at ports {history.old[:9]}, pins are at {history.new[:9]}"
+            " (built is an ancestor of the pins)",
         )
         self.assertIn("port build older than pins", got["summary"])
         self.assertEqual(tas_health.header(got)["rebuild"], "make port")
 
     def test_port_built_at_the_pins_is_current(self):
-        self.assertEqual(self.pinned("b" * 40)["pins_stale"], "")
+        self.assertEqual(self.pinned("new")[1]["pins_stale"], "")
+
+    def test_port_built_ahead_of_the_reference_is_current(self):
+        """The real case: the live oracle's 6deae23 against a reference at c923e29, an ancestor of the build."""
+        self.assertEqual(self.pinned("new", head="old")[1]["pins_stale"], "")
+
+    def test_port_built_at_a_sha_unrelated_to_the_reference_is_stale(self):
+        history, got = self.pinned("orphan")
+        self.assertEqual(
+            got["pins_stale"],
+            f"port build older than pins: built at ports {history.orphan[:9]}, pins are at {history.new[:9]}"
+            " (built is unrelated to the pins)",
+        )
+
+    def test_port_built_at_a_sha_the_reference_does_not_have_is_stale(self):
+        self.assertIn("built is unrelated to the pins", self.pinned("0" * 40)[1]["pins_stale"])
+
+    def test_unreadable_reference_is_reported_never_compared_by_equality(self):
+        self.git_history()
+        stamp = self.port.parent / "pins.json"
+        stamp.write_text(json.dumps({"tree_sha": "a" * 40}))
+        self.cfg["build"].update(pins=stamp, pins_key="tree_sha", pins_repo=self.port.parent / "gone")
+        got = tas_health.read(self.cfg)
+        self.assertRegex(got["pins_stale"], r"cannot read the reference .*/gone: ")
+        with self.assertRaises(DecompError):
+            tas_health.pins_lag(self.cfg["build"], "tree_sha", "x", "t")
+
+    def test_reference_is_mirrored_and_refetched_on_every_check(self):
+        history = self.git_history()
+        stamp = self.port.parent / "pins.json"
+        stamp.write_text(json.dumps({"tree_sha": history.new}))
+        self.cfg["build"].update(pins=stamp, pins_key="tree_sha", pins_repo=self.port.parent / "ports")
+        self.assertEqual(tas_health.read(self.cfg)["pins_stale"], "")
+        subprocess.run([*self.git, "commit", "-q", "--allow-empty", "-m", "newer"], check=True)
+        self.assertIn("built is an ancestor of the pins", tas_health.read(self.cfg)["pins_stale"])
+
+    def test_pins_source_keeps_a_url_and_resolves_a_path(self):
+        profile = mock.MagicMock()
+        profile.path.return_value = Path("/resolved")
+        self.assertEqual(tas_health.pins_source(profile, "k", "http://h:1/p/r.git"), "http://h:1/p/r.git")
+        self.assertEqual(tas_health.pins_source(profile, "k", "rel/dir"), Path("/resolved"))
 
     def test_missing_stamp_counts_as_older(self):
-        self.cfg["build"].update(pins=self.port.parent / "none.json", pins_repo=self.port.parent)
-        with mock.patch("abu_decomp.tas_health.subprocess.run") as run:
-            run.return_value = SimpleNamespace(returncode=0, stdout="c" * 40)
-            self.assertRegex(tas_health.read(self.cfg)["pins_stale"], r"built at \S+ unknown, pins are at ccccccccc")
+        self.git_history()
+        self.cfg["build"].update(pins=self.port.parent / "none.json", pins_repo=self.port.parent / "ports")
+        self.assertRegex(tas_health.read(self.cfg)["pins_stale"], r"built at \S+ unknown, pins are at [0-9a-f]{9} ")
 
     def test_profile_build_section_carries_the_pins_keys(self):
         profile = mock.MagicMock()
