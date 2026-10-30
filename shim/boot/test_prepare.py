@@ -256,15 +256,13 @@ class ObjectCacheTests(unittest.TestCase):
                  "pathlib.Path(sys.argv[3]).write_text(str(out) + ': ' + sys.argv[2] + '\\n')\n"
                  "(out.parent / 'ran').write_text('x')\n")
 
-    def test_a_coverage_units_gcno_is_restored_naming_the_tree_it_is_restored_in(self):
-        """PF3: a coverage build kept the object cache off (a restored object had no .gcno) and cost 642-678 CPU s a
-        build. The .gcno is an --out; restored in another tree it names that tree as its compile directory."""
+    def gcno_restored(self, trees):
+        """Builds the coverage unit in each of TREES (name -> directory, the second restored from the first's cache)
+        and returns what the second tree's .gcno holds beside whether its step ran."""
         header_file = self.path / "src" / "h.h"
         header_file.write_text("1")
-        found = {}
-        for tree in ("a", "b"):
-            build = self.path / tree
-            build.mkdir()
+        found = []
+        for build in trees:
             (build / "step.py").write_text(self.GCNO_STEP)
             obj = build / "u.o"
             subprocess.run([sys.executable, "-I", str(ROOT / "unitstep.py"), "--base", str(build / "u"), "--source",
@@ -273,11 +271,41 @@ class ObjectCacheTests(unittest.TestCase):
                             "--depfile", str(build / "u.d"), "--dep-target", str(obj), "--", sys.executable,
                             str(build / "step.py"), str(obj), str(header_file), str(build / "u.d")],
                            check=True, cwd=build)
-            found[tree] = ((build / "ran").exists(), (build / "u.gcno").read_bytes())
-        self.assertTrue(found["a"][0])
-        self.assertFalse(found["b"][0])  # restored, no step ran
-        cwd = str(self.path / "b").encode() + b"\0"
-        self.assertEqual(found["b"][1], b"oncg*24Bstmp" + bytes(4) + len(cwd).to_bytes(4, "little") + cwd + b"rest")
+            found.append(((build / "ran").exists(), (build / "u.gcno").read_bytes()))
+        return found
+
+    @staticmethod
+    def gcno_expect(tree):
+        """The .gcno a restore leaves in TREE: the compile directory is the canonical path, which is what getcwd
+        answers however the directory was reached (bind mount, symlink)."""
+        cwd = os.path.realpath(tree).encode() + b"\0"
+        return b"oncg*24Bstmp" + bytes(4) + len(cwd).to_bytes(4, "little") + cwd + b"rest"
+
+    def test_a_coverage_units_gcno_is_restored_naming_the_tree_it_is_restored_in(self):
+        """PF3: a coverage build kept the object cache off (a restored object had no .gcno) and cost 642-678 CPU s a
+        build. The .gcno is an --out; restored in another tree it names that tree as its compile directory."""
+        trees = [self.path / "a", self.path / "b"]
+        for tree in trees:
+            tree.mkdir()
+        first, second = self.gcno_restored(trees)
+        self.assertTrue(first[0])
+        self.assertFalse(second[0])  # restored, no step ran
+        self.assertEqual(second[1], self.gcno_expect(trees[1]))
+
+    def test_a_gcno_restored_through_a_symlinked_directory_names_its_canonical_path(self):
+        """The tree is reached through a symlink (as /mnt/devstorage is on the rig, a bind mount of another path):
+        the logical path differs from the canonical one getcwd answers, and the .gcno must hold the canonical one."""
+        real = self.path / "real"
+        (real / "a").mkdir(parents=True)
+        (real / "b").mkdir()
+        link = self.path / "link"
+        link.symlink_to(real)
+        trees = [link / "a", link / "b"]
+        first, second = self.gcno_restored(trees)
+        self.assertNotEqual(os.path.realpath(trees[1]), str(trees[1]))
+        self.assertFalse(second[0])
+        self.assertEqual(second[1], self.gcno_expect(trees[1]))
+        self.assertNotIn(str(link).encode(), second[1])  # the logical path is not what the .gcno names
 
     def test_restore_answers_from_signatures(self):
         """A restore of an unchanged dependency stats it and never reads the digest memo; touching the file's
