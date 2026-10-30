@@ -100,6 +100,12 @@ sys.path.insert(0, os.path.join(root, "src"))
 PACKAGE = "abu_decomp"
 
 
+def emit(line):
+    # a test may leave its own output without a newline: every fact starts on a fresh line
+    sys.stdout.write("\n" + line + "\n")
+    sys.stdout.flush()
+
+
 def imported():
     return sorted({os.path.realpath(m.__file__) for n, m in sys.modules.items()
                    if (n == PACKAGE or n.startswith(PACKAGE + ".")) and getattr(m, "__file__", None)})
@@ -110,7 +116,7 @@ def inside(path):
 
 
 __import__(PACKAGE)
-print("suite-import:", os.path.realpath(sys.modules[PACKAGE].__file__), flush=True)
+emit("suite-import: " + os.path.realpath(sys.modules[PACKAGE].__file__))
 import pytest  # noqa: E402
 
 
@@ -121,8 +127,11 @@ class Tally:
 
     def pytest_runtest_logreport(self, report):
         if report.failed:
-            self.failed += 1
             self.first = self.first or report.nodeid
+        if hasattr(report, "context"):  # a subtest report: its test has its own report, pytest counts them apart
+            return
+        if report.failed:
+            self.failed += 1
         elif report.skipped and report.when != "teardown":
             self.skipped += 1
         elif report.passed and report.when == "call":
@@ -140,11 +149,11 @@ code = int(pytest.main(["-q", "-p", "no:cacheprovider", "-rfE", "--tb=short", "t
 seconds = time.monotonic() - start
 outside = [path for path in imported() if not inside(path)]
 if outside:
-    print("suite-import:", outside[0], flush=True)
+    emit("suite-import: " + outside[0])
     sys.exit(3)
-print(f"suite-summary: {tally.passed} passed, {tally.failed} failed, {tally.skipped} skipped in {seconds:.0f} s")
-if code or tally.failed or not tally.passed:
-    print("suite-first-failure:", tally.first or f"pytest exit {code}, {tally.passed} passed")
+emit(f"suite-summary: {tally.passed} passed, {tally.failed} failed, {tally.skipped} skipped in {seconds:.0f} s")
+if code or tally.first or not tally.passed:
+    emit("suite-first-failure: " + (tally.first or f"pytest exit {code}, {tally.passed} passed"))
     sys.exit(1)
 """
 

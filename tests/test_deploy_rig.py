@@ -364,6 +364,27 @@ class SuiteScriptTests(unittest.TestCase):
         self.assertTrue(facts["suite-summary"].startswith("1 passed, 1 failed, 0 skipped in "))
         self.assertFalse((self.dest / "suite.txt").exists())
 
+    def test_a_test_printing_without_a_newline_does_not_swallow_the_facts(self):
+        self.write_test("import sys; sys.stdout.write('kept-by-default')")
+        done, facts = self.run_suite(self.commit())
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertTrue(facts["suite-summary"].startswith("2 passed, 0 failed, 0 skipped in "))
+
+    def test_subtests_are_not_counted_as_tests_and_a_failing_one_is_named(self):
+        body = (
+            "import unittest\n\n\nclass Case(unittest.TestCase):\n    def test_many(self):\n"
+            "        for n in range(3):\n            with self.subTest(n=n):\n"
+            "                self.assertNotEqual(n, %s)\n"
+        )
+        (self.repo / "tests/test_it.py").write_text(body % 9)
+        done, facts = self.run_suite(self.commit())
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertTrue(facts["suite-summary"].startswith("1 passed, 0 failed, 0 skipped in "))
+        (self.repo / "tests/test_it.py").write_text(body % 1)
+        done, facts = self.run_suite(self.commit())
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("test_many", facts["suite-first-failure"])
+
     def test_zero_collected_tests_is_a_failure_not_a_pass(self):
         (self.repo / "tests/test_it.py").unlink()
         done, facts = self.run_suite(self.commit())
