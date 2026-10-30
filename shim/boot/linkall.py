@@ -220,6 +220,8 @@ def autogen(argv):
     # on Windows the storage is plain. Nothing else defines the name, so nothing can collide with it.)
     attributes = "aligned(16)" if hostabi.COFF else "weak, aligned(16)"
     code += [f"__attribute__(({attributes})) char {n}[4096];" for n in stubs]
+    if not stubs:
+        code.append("typedef void n64c_autodata_translation_unit;")
     args.output.with_name("autodata.c").write_text("\n".join(code) + "\n")
     args.output.write_text(json.dumps(trial, indent=2, sort_keys=True) + "\n")
     report.update(pulled=len(pulled), members=len(members), refused=deny)
