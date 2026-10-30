@@ -865,13 +865,11 @@ NOINST RAWSTACK static void push_frame(void *fn, void *call_site, const unsigned
     mine->depth++;
     last_stack = mine;
 }
-/* The work measure the oracle charges guest time by: one tick per function entry of the original game, whether or
- * not the census is armed (n64c_sched.c; a build without the scheduler links none and charges nothing). */
+/* The work measure the oracle charges guest time by: one tick per function entry of the original game, not of the
+ * shim's own instrumented code (n64c_sched.c; a build without the scheduler links none and charges nothing). */
 void n64c_clock_work(void) __attribute__((weak));
 NOINST RAWSTACK static void trace_enter(void *fn, void *call_site, const unsigned long *regs)
 {
-    if (n64c_clock_work)
-        n64c_clock_work();
     if (!__atomic_load_n(&armed, __ATOMIC_ACQUIRE))
         return;
     HookSlot *h = &hooks[slot_of(fn) & hook_mask];
@@ -879,6 +877,8 @@ NOINST RAWSTACK static void trace_enter(void *fn, void *call_site, const unsigne
         h = &hooks[(unsigned)(h + 1 - hooks) & hook_mask];
     if (!h->fn)
         h = NULL; /* none of the three tables knows this function */
+    if (h && h->census && n64c_clock_work)
+        n64c_clock_work();
     if (h && h->shim_left) {
         for (unsigned s = slot_of(fn) & shim_mask; shim_slots[s].index; s = (s + 1) & shim_mask) {
             if (shim_slots[s].fn != fn || __atomic_load_n(&shim_slots[s].entered, __ATOMIC_RELAXED))

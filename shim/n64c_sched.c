@@ -621,7 +621,7 @@ OSTime n64c_clock_now_ns(void)
 }
 /* A guest thread entered a function of the original game: the time it used runs the clock. Devices that fall due
  * in that span fire in time order on this thread (a message to a higher-priority thread moves the baton there). */
-void n64c_clock_work(void)
+__attribute__((no_instrument_function)) void n64c_clock_work(void)
 {
     HostThread *h = self();
     if (!h || in_clock) return;
