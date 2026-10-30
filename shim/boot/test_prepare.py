@@ -181,11 +181,9 @@ int read_table(void) { return table[0]; }
         self.assertEqual(run_b(), 0)
         self.assertIn("return 6", files_b[0].read_text(), "a changed header misses the cache")
 
-    @unittest.skipUnless(args.m32, "source va_list ABI requires m32")
     def test_native_varargs(self):
         files, data = self.generate("""
-typedef char *va_list;
-#include "stdarg.h"
+#include <stdarg.h>
 double sum(int count, ...) {
     va_list ap;
     double value;
