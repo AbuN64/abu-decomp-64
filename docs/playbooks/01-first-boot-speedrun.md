@@ -61,6 +61,3 @@ the fault, and undefined behaviour makes the same stop move between trees.
 Host-only undefined behaviour, threads and timing, the mixer, data widths,
 then branches the boot never took. Those show up while playing, which is
 [02-tas-behaviour-loop](02-tas-behaviour-loop.md).
-
-## Rules
-- A boot-path function MUST land as one C body that behaves correctly (NON_MATCHING in its real file until it matches) serving both the port and the decomp, with no port-only fork or second copy.

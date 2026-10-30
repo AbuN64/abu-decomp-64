@@ -101,13 +101,3 @@ inside a function's prologue).
 | Describe / compare | `decomp behave --project TREE --host FILE --function SYM [--candidate FILE.c]` |
 | Name | `recipe name`, `recipe structure` |
 | Land | `decomp land`, `decomp ship` |
-- A TAS cycle MUST NOT copy oracle RAM or state into the port to continue past a crash.
-- A TAS cycle SHOULD take a bucket of findings grouped by root signature rather than a single crash, and SHOULD turn every root cause into a sweep rule.
-- The TAS page MUST be the only viewer of runs; the retired stream (`decomp stream`, :8443 and its units) MUST NOT be linked, restarted or rebuilt.
-- A second TAS page MUST NOT be run on the workstation; the rig page is the only one.
-- Every heavy TAS process (play, oracle, behave, coverage, port build) MUST take slots from the one seat pool (admit plus jobserver) sized from host cores and free memory, with owner-watched play ahead of lane interactive, batch and coverage.
-- Per-lane parallelism knobs MUST NOT be added; new heavy tools MUST route through the seat pool.
-- The TAS page port MUST be rebuilt side by side and swapped atomically so plays are never refused, triggered by the landing event with a timer only as fallback.
-- tas-serve and related services SHOULD be restarted whenever a deploy needs it.
-- `decomp tas` MUST have one replay path; a distinct headless replay mode MUST NOT be added, and turbo and determinism runs MUST also show their output on the TAS page.
-- Every replay MUST stream a sampled live view (frames read back at the page's rate, JPEG in memory) and MUST NOT write per-poll PPM files; 1x plus audio is a per-tile choice, not a separate mode.
