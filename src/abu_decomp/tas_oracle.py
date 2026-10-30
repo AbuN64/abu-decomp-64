@@ -28,6 +28,7 @@ same-poll score. Rows are cached in diff.json as both sides' pictures are comple
 from __future__ import annotations
 
 import json
+import mmap
 import os
 import re
 import shutil
@@ -35,7 +36,7 @@ import signal
 import subprocess
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from abu_decomp import DecompError, procguard
 from abu_decomp.config import Profile, check_keys
@@ -169,6 +170,12 @@ def start(
     argv = [str(oracle["host"])]
     events = os.environ.get("N64C_TRACE_EVENTS")
     gdb = shutil.which("gdb") if events else None
+    if events and gdb and not host_tags_polls(oracle["host"]):
+        raise DecompError(
+            "tas.oracle",
+            f"the oracle host {oracle['host']} has no {POLL_SYMBOL}: its events would carry no poll; rebuild it "
+            f"({oracle.get('rebuild') or 'no tas.oracle.rebuild set'})",
+        )
     if events and gdb:
         # the event trace's twin (TAS-COVER-6 ran it by hand): dprintf lines land in oracle.txt, `split_events`
         # moves them to oracle-events.txt; the outcome is then gdb's, so the run says the trace was on
@@ -191,27 +198,80 @@ def start(
 ORACLE_EVENTS = "oracle-events.txt"
 
 
+POLL_SYMBOL = "n64host_tas_poll"  # the host's exported poll counter (cake-taste-64 golden.cpp), read by every dprintf
+_EVENT = re.compile(r"^EV\|([^|@]+)@(\d+)((?:\|[^|]*)*)$")
+
+
+class Event(NamedTuple):
+    """One traced call: the function, the controller poll it ran after (the counter's value, so the change a state
+    sample sees at poll N was written by the events tagged N-1) and its arguments as printed (integers, or the `name=value` fields a
+    port-side gdb init prints)."""
+
+    function: str
+    poll: int
+    args: tuple[str, ...]
+
+
 def event_commands(spec: str) -> list[str]:
     """The original's dprintf lines for `--trace-events FUNC[/N],...`: a recompiled function is
     fn(uint8_t *rdram, recomp_context *ctx), so guest argument i (a0..a3) is the 64-bit register slot at ctx+32+8i
-    ($rsi at entry). Lines `EV|FUNC|a0|..`, the port's format, so the two files diff line by line."""
+    ($rsi at entry). Lines `EV|FUNC@POLL|a0|..`, the port's format (supervisor/gdb.py): POLL is the host's own poll
+    counter `n64host_tas_poll`, so the two files diff line by line and per poll."""
     out = []
     for item in (s.strip() for s in spec.split(",")):
         if not item:
             continue
         name, _, count = item.partition("/")
         n = min(int(count or 0), 4)
-        fmt = "EV|" + name + "|%d" * n + "\\n"
-        out.append(f'dprintf *{name},"{fmt}"' + "".join(f", *(int*)($rsi+{32 + 8 * i})" for i in range(n)))
+        fmt = "EV|" + name + "@%ld" + "|%d" * n + "\\n"
+        args = [f"(long){POLL_SYMBOL}"] + [f"*(int*)($rsi+{32 + 8 * i})" for i in range(n)]
+        out.append(f'dprintf *{name},"{fmt}", ' + ", ".join(args))
     return out
 
 
+def host_tags_polls(host: Path) -> bool:
+    """Whether the oracle host carries the poll counter the event lines read (a host built before the tag would stall
+    gdb's dprintf on a missing symbol, or print events with no poll)."""
+    try:
+        with host.open("rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as image:
+            return image.find(POLL_SYMBOL.encode()) >= 0
+    except (OSError, ValueError):
+        return False
+
+
+def parse_events(text: str, source: str = "events") -> list[Event]:
+    """The `EV|FUNC@POLL|args` lines of a text, in order. A line without its poll is refused (an event no poll can
+    place compares nothing): the same form from the port's bridge and the original's gdb."""
+    events = []
+    for number, line in enumerate((x for x in text.splitlines() if x.startswith("EV|")), 1):
+        found = _EVENT.match(line)
+        if not found:
+            raise DecompError("tas.oracle", f"{source} event {number} carries no poll (want EV|FUNC@POLL|..): {line!r}")
+        events.append(Event(found[1], int(found[2]), tuple(found[3].split("|")[1:])))
+    return events
+
+
+def read_events(path: Path) -> list[Event] | None:
+    """The events a side left in `path`, None when it left no file (the run traced no events)."""
+    try:
+        return parse_events(path.read_text(errors="replace"), path.name)
+    except FileNotFoundError:
+        return None
+
+
+def events_in(events: list[Event], poll: int) -> list[str]:
+    """The calls tagged `poll`, in the order they ran: `FUNC(a0,..)`."""
+    return [f"{e.function}({','.join(map(str, e.args))})" for e in events if e.poll == poll]
+
+
 def split_events(run: Path) -> int:
-    """Move the `EV|` lines of the original's output into RUN/oracle-events.txt; returns how many."""
+    """Move the `EV|` lines of the original's output into RUN/oracle-events.txt; returns how many. Each must carry its
+    poll (`parse_events` refuses the run otherwise)."""
     try:
         lines = [x for x in (run / LOG).read_text(errors="replace").splitlines() if x.startswith("EV|")]
     except OSError:
         return 0
+    parse_events("\n".join(lines), LOG)
     if lines:
         (run / ORACLE_EVENTS).write_text("\n".join(lines) + "\n")
     return len(lines)
@@ -438,20 +498,25 @@ def bmp(rgb: bytes) -> bytes:
 
 
 def verdict(record: dict[str, Any]) -> str:
-    """An oracle run passes only with successful outcomes, a state comparison that covered every poll of both traces
-    (equal poll sets, both reaching the movie's last poll) and no unreviewed divergence."""
+    """An oracle run passes only with successful outcomes and a state comparison that covered every poll of both the
+    state samples (`state_polls`) and the poll traces (`trace_polls`): equal poll sets, both reaching the movie's last
+    poll, and no unreviewed divergence."""
     state = record.get("state_diff") or {}
-    covered = state.get("coverage") or {}
     movie = int(record.get("polls") or 0)
     if (
         record.get("outcome") != "ok"
         or record.get("oracle", {}).get("outcome") != "ok"
         or state.get("error")
         or not state.get("polls_compared")
-        or not covered.get("complete")
-        or (covered.get("port_last") or 0) < movie
-        or (covered.get("oracle_last") or 0) < movie
         or state.get("divergent") != 0
     ):
         return "fail"
+    for name in ("state_polls", "trace_polls"):
+        covered = state.get(name) or {}
+        if (
+            not covered.get("complete")
+            or (covered.get("port_last") or 0) < movie
+            or (covered.get("oracle_last") or 0) < movie
+        ):
+            return "fail"
     return "ok"

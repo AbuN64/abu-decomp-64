@@ -24,15 +24,19 @@ Files (all under `<tas.runs>`):
 - `oracle-state/<key>/`: the original's trace for one movie (`state-oracle.txt`, `oracle-trace.txt`, dumps
   `dump-<poll>.bin`), cached by movie, Expansion Pak, card, oracle host and spec, so the original runs once per movie.
 - `plays/<run>/state-diff.json`: `{schema:2, key, movie, polls_compared, first_compared, port_polls, oracle_polls,
-  coverage: {complete, port_first, port_last, oracle_first, oracle_last, only_port, only_oracle, port_only_ranges,
-  oracle_only_ranges, first_missing} (see `coverage`),
+  checkpoint (the logical point of a poll both sides sampled at, `CHECKPOINT`), events: {port, oracle} (how many
+  poll-tagged calls each side traced, null when it traced none),
+  state_polls and trace_polls: {complete, port_sampled, oracle_sampled, compared, port_first, port_last,
+  oracle_first, oracle_last, only_port, only_oracle, port_only_ranges, oracle_only_ranges, first_missing} (see
+  `coverage`) for the state samples and for the "poll vi" traces; a pass needs both complete,
   symbols, regions: {name: {status: same|diverges|unreached, symbols, static_symbols, runtime_symbols,
   polls_differing, first: row|null, runtime: row|null}}, divergent, raw_divergent, reviewed_divergent,
   unreviewed_divergent, raw_symbols, reviewed_symbols, unreviewed_symbols, reviewed, notes, wall_seconds}`,
   where a row is `{poll,
   phase, static, symbol, field, port, oracle, differing_symbols, fields:[{symbol, field, kind, address, index, port,
-  oracle}...], vi:{port, oracle}, timing}`; `state-port.txt`, `port-trace.txt` (the port's symbol-hash and
-  "poll vi" traces) and `state/` (the port's dumps).
+  oracle}...], vi:{port, oracle}, timing, events:{checkpoint, tagged_poll, port:["FUNC(args)"..], oracle:[..]}}`
+  (the calls tagged poll-1, the writers of what the sample at `poll` saw; null for a side that traced no events);
+  `state-port.txt`, `port-trace.txt` (the port's symbol-hash and "poll vi" traces) and `state/` (the port's dumps).
 - `findings.jsonl` (the shared feed, module tas_findings): a `clear` of the movie's earlier state-diverge lines, then
   one line per row: `{kind:"state-diverge", id, time, movie, run, batch, poll, region, symbol, datum (= symbol), field
   (symbol plus member path, the bucket root), port, oracle, signature, evidence:{phase: "first"|"runtime", static,
@@ -72,6 +76,8 @@ SPECS, ORACLES = "state-spec", "oracle-state"
 FINDINGS, KIND = tas_findings.FILE, "state-diverge"
 DIFF, PORT_HASHES, PORT_TRACE, DUMPS = "state-diff.json", "state-port.txt", "port-trace.txt", "state"
 ORACLE_HASHES = "state-oracle.txt"
+PORT_EVENTS = "events.txt"  # the port's traced calls (supervisor/gdb.py), `EV|FUNC@POLL|..`
+CHECKPOINT = "poll-entry"  # TS_CHECKPOINT of tas_state.h: the one point of a poll both sides sample state at
 COMPLETE = "complete.json"  # in a cache entry: the run ended 0 and reached the movie's end
 STATE_LOG = "state-oracle.log"  # a refused state run's own output, kept in the run folder
 RAM = 0x800000
@@ -509,6 +515,9 @@ def coverage(port: dict[int, Any], original: dict[int, Any]) -> dict[str, Any]:
         missing = "the port's trace is empty" if not p else "the original's trace is empty"
     return {
         "complete": bool(p) and p == o,
+        "port_sampled": len(p),
+        "oracle_sampled": len(o),
+        "compared": len(p & o),
         "port_first": min(p, default=None),
         "port_last": max(p, default=None),
         "oracle_first": min(o, default=None),
@@ -978,6 +987,12 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
         (run / DIFF).write_text(json.dumps(result, indent=1))
         return {"error": result["error"], "oracle_run": session.oracle_run}
     result["oracle_run"] = session.oracle_run
+    tas_oracle.split_events(run)  # the original's traced calls leave its output now that its run has ended
+    events = {
+        "port": tas_oracle.read_events(run / PORT_EVENTS),
+        "oracle": tas_oracle.read_events(run / tas_oracle.ORACLE_EVENTS),
+    }
+    result.update(checkpoint=CHECKPOINT, events={k: None if v is None else len(v) for k, v in events.items()})
     port = read_trace(run / PORT_HASHES, len(syms))
     original = read_trace(session.oracle_dir / ORACLE_HASHES, len(syms))
     if not port:
@@ -991,7 +1006,10 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
         first_compared=found["first_compared"],
         port_polls=max(port) if port else 0,
         oracle_polls=max(original) if original else 0,
-        coverage=coverage(port, original),
+        state_polls=coverage(port, original),
+        trace_polls=coverage(
+            tas_oracle.trace(run / PORT_TRACE), tas_oracle.trace(session.oracle_dir / tas_oracle.ORACLE_TRACE)
+        ),
     )
     raw_regions = _rows(syms, found) if found["compared"] else {}
     facts = session.cfg.get("env", {}).get("N64C_PORT_DIR", os.environ.get("N64C_PORT_DIR", "."))
@@ -1078,6 +1096,12 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
         }
         info["vi"] = vi
         info["timing"] = vi["port"] is not None and vi["port"] != vi["oracle"]
+        if any(v is not None for v in events.values()):
+            info["events"] = {
+                "checkpoint": CHECKPOINT,
+                "tagged_poll": poll - 1,
+                **{k: None if v is None else tas_oracle.events_in(v, poll - 1) for k, v in events.items()},
+            }
         return info
 
     rows: list[tuple[str, dict[str, Any]]] = []
@@ -1128,6 +1152,10 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
             )
         },
         "regions": len(names),
+        "checkpoint": CHECKPOINT,
+        "events": result["events"],
+        "state_polls": result["state_polls"],
+        "trace_polls": result["trace_polls"],
         "oracle_run": session.oracle_run,
         "detail": result["detail"],
         "findings": len(rows),

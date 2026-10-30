@@ -39,7 +39,7 @@ class VerdictTests(unittest.TestCase):
     """The verdict reads state-diff.json as `tas_statediff.finish` writes it."""
 
     @staticmethod
-    def record(**coverage):
+    def record(trace=None, **coverage):
         full = {
             "complete": True,
             "port_first": 1,
@@ -54,11 +54,24 @@ class VerdictTests(unittest.TestCase):
             "outcome": "ok",
             "oracle": {"outcome": "ok"},
             "polls": 100,
-            "state_diff": {"polls_compared": 100, "divergent": 0, "coverage": {**full, **coverage}},
+            "state_diff": {
+                "polls_compared": 100,
+                "divergent": 0,
+                "state_polls": {**full, **coverage},
+                "trace_polls": {**full, **(trace or {})},
+            },
         }
 
     def test_full_coverage_passes(self):
         self.assertEqual(tas_oracle.verdict(self.record()), "ok")
+
+    def test_an_incomplete_poll_trace_fails_a_complete_state_comparison(self):
+        record = self.record(trace={"complete": False, "oracle_last": 60, "only_port": 40})
+        self.assertEqual(tas_oracle.verdict(record), "fail")
+        self.assertEqual(tas_oracle.verdict(self.record(trace={"port_last": 99})), "fail")
+        record = self.record()
+        del record["state_diff"]["trace_polls"]
+        self.assertEqual(tas_oracle.verdict(record), "fail")  # a state diff that never named its trace coverage
 
     def test_the_pp_1p_slice_with_a_one_sided_tail_fails(self):
         # pp-1p-match: port_polls 59874, oracle_polls 23368, polls_compared 23368, divergent 0 passed before.

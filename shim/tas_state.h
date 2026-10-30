@@ -15,10 +15,16 @@
  * (FNV-1a over 32-bit values). Equal hashes mean equal logical state. A trace holds one line per poll,
  * "<poll> <symbol>:<hash> ...", naming only the symbols whose 32-bit hash changed since the previous poll (all of them
  * at the first poll), so a movie's whole history of ~50 changing symbols per poll stays a few megabytes.
+ * CHECKPOINT: both sides sample at TS_CHECKPOINT, one logical point of a poll, defined here once: inside the guest's
+ * controller poll N, after the poll counter reads N and the pad is filled, before the poll returns to the game. The
+ * frame N-1 display list was submitted before the game came back to read input, and frame N's input is not yet
+ * consumed, so a value written and restored inside one frame is never seen half-done. Events (EV|FUNC@N|..) carry the
+ * counter of the poll they ran after, so the writers of the change seen at poll N are those tagged N-1.
  * The same text lives in abu-decomp-64 shim/tas_state.h (TS_ORACLE unset: native words) and in cake-taste-64
  * hosts/n64recomp/tas_state.h (TS_ORACLE set: word-swizzled RDRAM); change both together. */
 #ifndef TAS_STATE_H
 #define TAS_STATE_H
+#define TS_CHECKPOINT "poll-entry"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

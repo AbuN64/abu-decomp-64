@@ -407,6 +407,41 @@ class FinishTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lockstep-ignore.tsv:1"):
             sd.finish(self.session, None, "movie-a", {})
 
+    def test_the_record_names_the_checkpoint_events_and_both_coverages(self):
+        self.traces("1 0:1 1:2 2:3\n2 2:9\n", "1 0:1 1:2 2:3\n2\n")
+        (self.run / sd.PORT_EVENTS).write_text("EV|textBegin@1|1\nEV|textReset@1\n")
+        (self.run / "oracle.txt").write_text("host up\nEV|textBegin@1|1\n")
+        with mock.patch.object(sd, "_dump_pass", return_value={}):
+            summary = sd.finish(self.session, None, "movie-a", {})
+        report = json.loads((self.run / sd.DIFF).read_text())
+        for out in (summary, report):
+            self.assertEqual(out["checkpoint"], "poll-entry")
+            self.assertEqual(out["events"], {"port": 2, "oracle": 1})
+            self.assertTrue(out["state_polls"]["complete"] and out["trace_polls"]["complete"])
+            self.assertEqual((out["state_polls"]["port_sampled"], out["trace_polls"]["compared"]), (2, 3))
+        row = report["regions"]["CAMERA"]["first"]
+        self.assertEqual(row["poll"], 2)
+        self.assertEqual(
+            row["events"],
+            {
+                "checkpoint": "poll-entry",
+                "tagged_poll": 1,
+                "port": ["textBegin(1)", "textReset()"],
+                "oracle": ["textBegin(1)"],
+            },
+        )
+
+    def test_a_poll_trace_one_side_cut_short_is_named_apart_from_the_state_samples(self):
+        self.traces("1 0:1 1:2 2:3\n2\n3\n", "1 0:1 1:2 2:3\n2\n3\n")
+        (self.cache / "oracle-trace.txt").write_text("1 1\n2 3\n")
+        with mock.patch.object(sd, "_dump_pass", return_value={}):
+            sd.finish(self.session, None, "movie-a", {})
+        report = json.loads((self.run / sd.DIFF).read_text())
+        self.assertTrue(report["state_polls"]["complete"])
+        self.assertFalse(report["trace_polls"]["complete"])
+        self.assertEqual(report["trace_polls"]["port_only_ranges"], [[3, 3]])
+        self.assertNotIn("events", report["regions"]["ACTORS"])
+
     def test_one_run_reports_every_divergent_region_and_keeps_going(self):
         # both regions differ only after the first compared poll: the oracle run's own trace is the whole detail
         self.traces("1 0:1 1:2 2:3\n2 2:9\n3 0:5\n", "1 0:1 1:2 2:3\n2\n3\n")
@@ -853,7 +888,10 @@ class OracleEventTests(unittest.TestCase):
 
         self.assertEqual(
             tas_oracle.event_commands("Gfx_DrawRect/2"),
-            ['dprintf *Gfx_DrawRect,"EV|Gfx_DrawRect|%d|%d\\n", *(int*)($rsi+32), *(int*)($rsi+40)'],
+            [
+                'dprintf *Gfx_DrawRect,"EV|Gfx_DrawRect@%ld|%d|%d\\n", (long)n64host_tas_poll, '
+                "*(int*)($rsi+32), *(int*)($rsi+40)"
+            ],
         )
 
     def test_split_events_moves_the_event_lines_out_of_the_output(self):
@@ -861,6 +899,109 @@ class OracleEventTests(unittest.TestCase):
 
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
-        (tmp / tas_oracle.LOG).write_text("host up\nEV|F|1\nnoise\nEV|F|2\n")
+        (tmp / tas_oracle.LOG).write_text("host up\nEV|F@3|1\nnoise\nEV|F@4|2\n")
         self.assertEqual(tas_oracle.split_events(tmp), 2)
-        self.assertEqual((tmp / tas_oracle.ORACLE_EVENTS).read_text(), "EV|F|1\nEV|F|2\n")
+        self.assertEqual((tmp / tas_oracle.ORACLE_EVENTS).read_text(), "EV|F@3|1\nEV|F@4|2\n")
+
+    def test_an_event_with_no_poll_is_refused(self):
+        from abu_decomp import DecompError, tas_oracle
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / tas_oracle.LOG).write_text("EV|F@3|1\nEV|F|2\n")
+        with self.assertRaisesRegex(DecompError, "event 2 carries no poll"):
+            tas_oracle.split_events(tmp)
+        self.assertFalse((tmp / tas_oracle.ORACLE_EVENTS).exists())
+
+    def test_the_host_must_carry_the_poll_counter(self):
+        from abu_decomp import tas_oracle
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / "tagged").write_bytes(b"\0\0" + tas_oracle.POLL_SYMBOL.encode() + b"\0")
+        (tmp / "old").write_bytes(b"\0N64R_TAS_STATE\0")
+        (tmp / "empty").write_bytes(b"")
+        self.assertTrue(tas_oracle.host_tags_polls(tmp / "tagged"))
+        self.assertFalse(tas_oracle.host_tags_polls(tmp / "old"))
+        self.assertFalse(tas_oracle.host_tags_polls(tmp / "empty"))
+        self.assertFalse(tas_oracle.host_tags_polls(tmp / "missing"))
+
+
+DATA = Path(__file__).parent / "data" / "tas_checkpoint"
+CLIP_TOP = 55  # g_textClipTop in the menu movie's 150-symbol spec
+
+
+class PollTaggedEventTests(unittest.TestCase):
+    """The port's and the original's events are one form, `EV|FUNC@POLL|args`, and place a call in a poll."""
+
+    def test_the_ports_real_events_parse_with_their_polls(self):
+        from abu_decomp import tas_oracle
+
+        events = tas_oracle.read_events(DATA / "events-port.txt")
+        first = tas_oracle.Event("clipRead", 1027, ("target=0x6020b734", "top=0", "cached=0", "caller=0x836a0c4"))
+        self.assertEqual(events[0], first)
+        self.assertTrue(events and all(e.poll in (1027, 1028, 1029) for e in events))
+        self.assertIn("func_802A1870_de(89,60,194,164)", tas_oracle.events_in(events, 1027))
+
+    def test_the_two_sides_events_tag_the_same_poll_in_the_same_form(self):
+        from abu_decomp import tas_oracle
+
+        port = tas_oracle.parse_events("EV|textBegin@7|1\nEV|textReset@7\nEV|textBegin@8|2\n")
+        oracle = tas_oracle.parse_events("EV|textBegin@7|1\nEV|textBegin@8|2\nEV|textReset@8\n")
+        self.assertEqual(tas_oracle.events_in(port, 7), ["textBegin(1)", "textReset()"])
+        self.assertEqual(tas_oracle.events_in(oracle, 7), ["textBegin(1)"])  # the poll tag places the difference
+        self.assertEqual(tas_oracle.events_in(oracle, 8), ["textBegin(2)", "textReset()"])
+
+    def test_no_file_is_not_an_empty_trace(self):
+        from abu_decomp import tas_oracle
+
+        self.assertIsNone(tas_oracle.read_events(DATA / "absent.txt"))
+
+
+class CheckpointRegressionTests(unittest.TestCase):
+    """A slice of the real menu-movie traces (tool-06eb26f, polls 1 and 1026-1032): g_textClipTop reads 0 in the port
+    and 60 in the original at poll 1029. Naming one checkpoint must not make a real difference pass."""
+
+    def traces(self):
+        return sd.read_trace(DATA / "state-port.txt", 150), sd.read_trace(DATA / "state-oracle.txt", 150)
+
+    def test_the_real_difference_still_fails_at_the_checkpoint(self):
+        port, original = self.traces()
+        found = sd.diverged(port, original, [0] * 150)
+        self.assertEqual(found["first"][CLIP_TOP], 1029)
+        self.assertEqual(sd.CHECKPOINT, "poll-entry")
+        covered = sd.coverage(port, original)
+        self.assertTrue(covered["complete"])  # the slice is complete: the verdict can only fail on the difference
+        from abu_decomp import tas_oracle
+
+        record = {
+            "outcome": "ok",
+            "oracle": {"outcome": "ok"},
+            "polls": 1032,
+            "state_diff": {
+                "polls_compared": found["compared"],
+                "divergent": 1,
+                "state_polls": covered,
+                "trace_polls": covered,
+            },
+        }
+        self.assertEqual(tas_oracle.verdict(record), "fail")
+
+    def test_the_same_slice_against_itself_passes_only_with_both_coverages(self):
+        from abu_decomp import tas_oracle
+
+        port, _ = self.traces()
+        found = sd.diverged(port, port, [0] * 150)
+        self.assertEqual(set(found["first"]), {None})
+        covered = sd.coverage(port, port)
+        state = {"polls_compared": found["compared"], "divergent": 0, "state_polls": covered, "trace_polls": covered}
+        record = {"outcome": "ok", "oracle": {"outcome": "ok"}, "polls": 1032, "state_diff": state}
+        self.assertEqual(tas_oracle.verdict(record), "ok")
+        state["trace_polls"] = sd.coverage({n: 0 for n in port}, {n: 0 for n in list(port)[:-2]})
+        self.assertEqual(tas_oracle.verdict(record), "fail")
+
+    def test_coverage_counts_what_each_side_sampled(self):
+        port, original = {n: [] for n in range(1, 11)}, {n: [] for n in range(1, 9)}
+        out = sd.coverage(port, original)
+        self.assertEqual((out["port_sampled"], out["oracle_sampled"], out["compared"]), (10, 8, 8))
+        self.assertEqual((out["complete"], out["port_only_ranges"]), (False, [[9, 10]]))
