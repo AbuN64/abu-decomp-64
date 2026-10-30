@@ -12,6 +12,8 @@ from unittest import mock
 
 from abu_decomp import slots
 
+BOUND = 60  # seconds a failing wait gives up after; a passing one is woken by its signal and never waits on it
+
 
 def select_ready(fd: int) -> bool:
     return bool(select.select([fd], [], [], 0)[0])
@@ -102,26 +104,79 @@ class SlotsTest(unittest.TestCase):
         owner.release()
         a.release()
 
+    def parking(self, *names: str, hold: threading.Event | None = None) -> dict[str, threading.Event]:
+        """An event per thread name, set when that thread's waiter first goes to sleep: its ticket is queued and the
+        pass that read the queue and the pool is over, so the test goes on exactly then, whatever the host load.
+        With HOLD, that first sleep lasts until HOLD is set, so the test decides when the parked thread passes again."""
+        parked = {name: threading.Event() for name in names}
+        sleep = slots._Wait.sleep
+
+        def park(waiter, seconds):
+            event = parked.get(threading.current_thread().name)
+            if event:
+                event.set()
+            if event and hold is not None and not hold.is_set():
+                hold.wait(BOUND)
+                return
+            sleep(waiter, seconds)
+
+        patcher = mock.patch.object(slots._Wait, "sleep", park)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return parked
+
     def test_priority_orders_the_queue(self) -> None:
         a = slots.acquire("batch", 2, "fill")
+        parked = self.parking("background", "interactive")
         order, threads = [], []
         for klass in ("background", "interactive"):
 
             def run(klass=klass):
                 with slots.hold(klass, 2, klass):  # the whole pool: one runs at a time, so order is the grant order
                     order.append(klass)
-                    time.sleep(0.2)
 
-            threads.append(threading.Thread(target=run))
+            threads.append(threading.Thread(target=run, name=klass))
             threads[-1].start()
-            # both waiters queued before the release, whatever the host load (a fixed sleep raced under load, PF9)
-            deadline = time.monotonic() + 10
-            while len(slots.status()["queue"]) < len(threads) and time.monotonic() < deadline:
-                time.sleep(0.01)
+            self.assertTrue(parked[klass].wait(BOUND), f"{klass} never queued")  # both queued before the release
         a.release()
         for thread in threads:
-            thread.join(10)
-        self.assertEqual(order[0], "interactive")
+            thread.join(BOUND)
+        self.assertEqual(order, ["interactive", "background"])
+
+    def test_a_better_ticket_queued_after_the_pass_read_the_queue_is_served_first(self) -> None:
+        """The race the load exposed: a background pass read the queue (nobody ahead), then an interactive ticket queued
+        and the pool freed before the pass locked the slots; the background took them past the better ticket."""
+        a = slots.acquire("batch", 2, "fill")
+        resume = threading.Event()  # the interactive waiter stays parked until the background pass has locked the slots
+        parked = self.parking("interactive", hold=resume)
+        order, threads, queued = [], [], threading.Event()
+        real, real_take = slots._can_run, slots._take
+
+        def can_run(*args, **kwargs):
+            if threading.current_thread().name == "background" and not queued.is_set():
+                queued.set()
+                threads.append(threading.Thread(target=run, args=("interactive",), name="interactive"))
+                threads[-1].start()
+                self.assertTrue(parked["interactive"].wait(BOUND), "interactive never queued")
+                a.release()
+            return real(*args, **kwargs)
+
+        def take(*args):
+            got = real_take(*args)
+            if threading.current_thread().name == "background":
+                resume.set()
+            return got
+
+        def run(klass):
+            with slots.hold(klass, 2, klass):
+                order.append(klass)
+
+        with mock.patch.object(slots, "_can_run", side_effect=can_run), mock.patch.object(slots, "_take", take):
+            background = threading.Thread(target=run, args=("background",), name="background")
+            background.start()
+            background.join(BOUND)
+            threads[0].join(BOUND)
+        self.assertEqual(order, ["interactive", "background"])
 
     def test_hold_is_reentrant_in_a_thread(self) -> None:
         with slots.hold("batch", 2, "outer"):

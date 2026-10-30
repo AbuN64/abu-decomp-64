@@ -986,6 +986,8 @@ class RunReach:
         self.run = run
         self.pending = pending  # true while the run is queued: its folder and port are not there yet, so keep listening
         self.lock = threading.Lock()
+        # notified on every record taken or refused and when the reader ends
+        self.changed = threading.Condition(self.lock)
         self.bits = bytearray()
         self.poll = 0
         self.count = 0  # records accepted
@@ -1009,10 +1011,11 @@ class RunReach:
                 if pos != len(data):
                     raise ValueError("trailing bytes")
         except ValueError:
-            with self.lock:
+            with self.changed:
                 self.rejected += 1
+                self.changed.notify_all()
             return False
-        with self.lock:
+        with self.changed:
             if data[0] == 1:
                 self.bits = bytearray(data[5:])
             else:
@@ -1025,6 +1028,7 @@ class RunReach:
             self.size += len(data)
             while len(self.records) > REACH_KEPT_RECORDS or self.size > REACH_KEPT_BYTES:
                 self.size -= len(self.records.popleft()[1])
+            self.changed.notify_all()
         return True
 
     def snapshot(self) -> tuple[bytes, int]:
@@ -1051,7 +1055,9 @@ class RunReach:
                 tmp = self.run / (REACH_FILE + ".tmp")
                 tmp.write_bytes(bits)
                 tmp.replace(self.run / REACH_FILE)
-        self.done = True
+        with self.changed:  # done means reach.bin is written: a waiter on it finds the file
+            self.done = True
+            self.changed.notify_all()
 
     def serve(self) -> None:
         """The reader: datagrams on the run's reach socket (the input socket's name + `.reach`, abstract namespace;
@@ -1063,7 +1069,9 @@ class RunReach:
                 sock.bind(address)
             except OSError as error:  # another serve already listens for this run
                 print(f"tas page: no reach stream for {self.run.name}: {error}", flush=True)
-                self.done = True
+                with self.changed:
+                    self.done = True
+                    self.changed.notify_all()
                 return
             sock.settimeout(REACH_READ_TIMEOUT)
             self.listening.set()

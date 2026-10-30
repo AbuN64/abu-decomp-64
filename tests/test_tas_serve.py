@@ -804,6 +804,9 @@ class WallTests(Base):
         self.assertEqual(shown, set(names))  # every index was named before its first picture
 
 
+REACH_BOUND = 60  # seconds a failing wait on the relay gives up after; a passing one never waits on it
+
+
 class ReachTests(Base):
     def setUp(self):
         super().setUp()
@@ -833,6 +836,11 @@ class ReachTests(Base):
             time.sleep(0.005)
         self.fail("timed out")
 
+    def reached(self, relay, check):
+        """Blocks until `check()` holds, woken by the relay's own notifications (a record taken, the reader ended)."""
+        with relay.changed:
+            self.assertTrue(relay.changed.wait_for(check, REACH_BOUND), "the relay never reached the state")
+
     def test_records_reach_a_video_client_in_order_full_first_and_end_in_reach_bin(self):
         run = self.make_run("x", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid())
         bmp, _ = capture_bmp(320, 240)
@@ -843,7 +851,7 @@ class ReachTests(Base):
         self.assertTrue(relay.listening.wait(5))
         send(reach_record(1, 10, bitset([0, 1])))
         send(reach_record(2, 11, [9], [0]))
-        self.until(lambda: relay.count == 2)
+        self.reached(relay, lambda: relay.count == 2)
         video = Stream(self.base, "/video/x", tas_serve.VIDEO_HEADER)
         self.addCleanup(video.close)
         flagged, (_length, _stamp, _seq), body = video.record()
@@ -863,9 +871,8 @@ class ReachTests(Base):
         final = bitset([0, 1, 9, 17, 18, 30], 8)
         record = run / tas.RECORD
         record.write_text(json.dumps({"id": "x", "status": "done"}))
-        self.until(lambda: (run / "reach.bin").is_file())
+        self.reached(relay, lambda: relay.done)  # done is set after reach.bin is written
         self.assertEqual((run / "reach.bin").read_bytes(), final)
-        self.assertTrue(relay.done)
 
     def test_a_queued_run_is_listened_for_before_its_port_starts_and_until_it_leaves_the_queue(self):
         run = self.server.cfg["runs"] / "plays" / "q1"

@@ -389,6 +389,13 @@ def acquire(
             free: dict[int, float] = {}
             if not blocked and _can_run(weight, limit, rank, free, mem_gib):
                 got = _take(root, weight, limit)
+                if got and any(n < name for n, _ in _live_tickets(tickets)):
+                    # a better ticket queued after this pass read the queue and before the slots were locked: it goes
+                    # first, so give them back and let it (asleep on the pool folder) see them free
+                    for fd, _ in got:
+                        os.close(fd)
+                    _wake(root)
+                    got = None
                 if got:
                     info.update(since=time.time(), waited=round(time.time() - began, 2))
                     for fd, _ in got:
