@@ -12,6 +12,7 @@
 #include "n64c_si.h"
 #include <pthread.h>
 #include <errno.h>
+#include <fenv.h>
 #include <setjmp.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,9 +78,12 @@ typedef struct {
 } DevEvent;
 static DevEvent devs[DEV_SLOTS];
 static unsigned long dev_seq;
-/* Guest work: each function entry of the original game charges work_ns of guest time (the oracle's
- * HOST_GUEST_NS_PER_ENTRY); 0 charges nothing and the clock then moves only when every guest thread waits. */
-static double work_ns, work_carry;
+/* Guest work: each function entry of the original game charges work_fx of guest time (the oracle's
+ * HOST_GUEST_NS_PER_ENTRY in 1/2^WORK_FRAC ns); 0 charges nothing and the clock then moves only when every guest
+ * thread waits. The charge runs on guest threads, so it is integer arithmetic: a float operation there would leave
+ * sticky exception flags in the guest's FPU status, which osGetFpcCsr reports as a fault. */
+#define WORK_FRAC 20
+static unsigned long long work_fx, work_carry;
 static _Thread_local int in_clock; /* this thread is inside n64c_clock_advance_to: no nested charge */
 /* A guest thread that keeps reading the clock without giving up the CPU is waiting on it (a delay or a fault
  * handler's watchdog loop). On the console Count runs on regardless; here it moves only when the host advances
@@ -608,7 +612,10 @@ int n64c_clock_si_armed(void)
 void n64c_clock_set_work_ns(double ns)
 {
     pthread_mutex_lock(&big);
-    work_ns = ns;
+    fexcept_t flags;
+    (void)fegetexceptflag(&flags, FE_ALL_EXCEPT);
+    work_fx = ns > 0 ? (unsigned long long)(ns * (double)(1ull << WORK_FRAC) + 0.5) : 0;
+    (void)fesetexceptflag(&flags, FE_ALL_EXCEPT);
     work_carry = 0;
     pthread_mutex_unlock(&big);
 }
@@ -626,13 +633,13 @@ __attribute__((no_instrument_function)) void n64c_clock_work(void)
     HostThread *h = self();
     if (!h || in_clock) return;
     pthread_mutex_lock(&big);
-    if (work_ns <= 0 || baton != h) {
+    if (!work_fx || baton != h) {
         pthread_mutex_unlock(&big);
         return;
     }
-    work_carry += work_ns;
-    unsigned long long whole = (unsigned long long)work_carry;
-    work_carry -= (double)whole;
+    work_carry += work_fx;
+    unsigned long long whole = work_carry >> WORK_FRAC;
+    work_carry &= (1ull << WORK_FRAC) - 1;
     unsigned long long units = clock_sub + whole * 3;
     OSTime t = clock_now + (units >> 6);
     unsigned sub = (unsigned)(units & 63);
@@ -787,7 +794,7 @@ void n64c_sched_reset(void)
     compare_deadline = 0;
     compare_armed = 0;
     memset(devs, 0, sizeof devs);
-    work_ns = work_carry = 0;
+    work_fx = work_carry = 0;
     interrupt_mask = OS_IM_ALL;
     pending_events = 0;
     memset(events, 0, sizeof events);
