@@ -31,6 +31,7 @@ class ShipTests(unittest.TestCase):
         git(self.root, "init", "-q", "--bare", "-b", "main", str(self.remote))
         git(self.root, "clone", "-q", str(self.remote), str(self.other))
         (self.other / "a.c").write_text("int a;\n")
+        (self.other / "config.toml").write_text('name = "x"\n')  # the project name: the ship reads it for its inputs
         git(self.other, "add", ".")
         git(self.other, "commit", "-q", "-m", "base")
         git(self.other, "push", "-q", "origin", "HEAD:main")

@@ -3,7 +3,9 @@
 import subprocess
 from pathlib import Path
 
-from abu_decomp import owners
+import pytest
+
+from abu_decomp import DecompError, owners
 
 COMMON = """#ifndef COMMON_H
 #define COMMON_H
@@ -40,7 +42,12 @@ UNITS = {
 
 
 def project(tmp_path: Path) -> Path:
-    files = {"include/COMMON/common.h": COMMON, "docs/MODULES.tsv": MAP, **UNITS}
+    files = {
+        "include/COMMON/common.h": COMMON,
+        "config.toml": 'module_map = "docs/MODULES.tsv"\n',
+        "docs/MODULES.tsv": MAP,
+        **UNITS,
+    }
     for name, text in files.items():
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_text(text)
@@ -111,3 +118,12 @@ def test_the_units_are_those_under_the_layouts_source_roots(tmp_path: Path) -> N
     (root / "config.toml").write_text('[layout]\nsource_roots = ["src", "sdk"]\n')
     subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
     assert owners.sources(root) == sorted([*before, "sdk/os.c"])
+
+
+def test_the_module_map_is_the_given_file_else_the_one_config_toml_names(tmp_path: Path) -> None:
+    assert owners.map_file(tmp_path, Path("m.tsv")) == Path("m.tsv")
+    with pytest.raises(DecompError) as refused:
+        owners.map_file(tmp_path, None)  # a project that names no module map has no default one
+    assert refused.value.key == "owners.map"
+    (tmp_path / "config.toml").write_text('module_map = "docs/MODULES.tsv"\n')
+    assert owners.map_file(tmp_path, None) == tmp_path / "docs/MODULES.tsv"

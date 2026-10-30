@@ -24,11 +24,23 @@ from pathlib import Path
 
 from unbake import api
 
-from abu_decomp import deaddecls
+from abu_decomp import DecompError, deaddecls
 
 SOURCE_SUFFIXES = (".c", ".cpp", ".cc")
 SHARED = 3  # a declaration used by more modules than this stays in the shared folder
 DEFINE = re.compile(r"#\s*define\s+(\w+)")
+
+
+def map_file(root: Path, given: Path | None) -> Path:
+    """The module map to read: the given file, else the one config.toml `module_map` names; none is a refusal."""
+    if given:
+        return given
+    spelled = api.module_map(root)
+    if not spelled:
+        raise DecompError(
+            "owners.map", f"{root} names no module map", "pass --map FILE, or set module_map in its config.toml"
+        )
+    return root / spelled
 
 
 def read_map(path: Path) -> tuple[dict[str, str], dict[str, str]]:
@@ -107,7 +119,7 @@ def declarations(root: Path, folder: str) -> list[dict[str, object]]:
 def run(
     root: Path, folder: str, map_path: Path | None = None, packs: Path | None = None, shared: int = SHARED
 ) -> dict[str, object]:
-    unit_module, module_header = read_map(map_path or root / "docs" / "MODULES.tsv")
+    unit_module, module_header = read_map(map_file(root, map_path))
     rows = declarations(root, folder)
     want = {n for r in rows for n in r["names"]}  # type: ignore[attr-defined]
     value_names = {n for r in rows if r["kind"] == "value" for n in r["names"]}  # type: ignore[attr-defined]

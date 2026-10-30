@@ -484,7 +484,7 @@ class Ship:
         builds nothing. The reason of the first input that does not is kept in `self.carry_why`."""
         if not self.proof or self.worktree or not rows:
             return False
-        common, generated = self.common(), self.generated_globs()
+        common, generated, inputs = self.common(), self.generated_globs(), shipproof.global_inputs(self.tree)
         for lane, path in rows:
             try:
                 digest = shipproof.patch_hash(path)
@@ -497,6 +497,7 @@ class Ship:
                 tip,
                 lambda *args: self.git(*args, ok=False),
                 generated,
+                inputs,
             )
             if not ok:
                 self.carry_why = f"{lane}: {why}"

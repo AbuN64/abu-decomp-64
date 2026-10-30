@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from unbake import api
+
 EXAMPLES = 3
 GENERATORS = (
     "dead-decls.include",
@@ -276,8 +278,9 @@ def _commands(
         "slices": ([*cleanup, "slices", "--names", str(names)], _slices),
         "name.auto": ([*recipe, "name", "--json", "auto", "--out", str(scratch / "auto-rows.jsonl")], _auto),
         "name.T": ([*recipe, "name", "--json", "--step", "T", "next"], _step_t),
-        "structure.map": ([*recipe, "structure", "--json", "--map", "docs/MODULES.tsv"], _structure),
     }
+    if module_map := api.module_map(tree):
+        out["structure.map"] = ([*recipe, "structure", "--json", "--map", module_map], _structure)
     if functions:
         out["data.place"] = ([*decomp, "data", "place", "--tree", str(tree), "--check", *functions], _place)
     return out

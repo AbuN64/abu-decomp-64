@@ -28,6 +28,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from unbake import api
+
 from abu_decomp import DecompError, meter, worktree
 from abu_decomp.data import check as check_mod
 from abu_decomp.data import gate as gate_mod
@@ -584,7 +586,7 @@ def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
                 )  # --reextract: a splat.yaml edit pays the re-split
             if why:
                 return {"worktree": made}, 1, [{"key": "data.extract", "blocking": True, "message": why}]
-        if "Makefile" not in files and any(f in ("config.toml", "rom.toml") for f in files):
+        if "Makefile" not in files and any(f in ("config.toml", api.paths(tree)["platform"]) for f in files):
             # a project row (a file's flags, a folder) moved: the committed Makefile still keys them by the old path, so a
             # renamed unit compiled without its -ffast-math (Math_Sqrtf edit=9, 10-25). The train regenerates it after landing.
             from abu_decomp import tools

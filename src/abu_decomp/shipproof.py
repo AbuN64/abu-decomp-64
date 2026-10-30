@@ -21,9 +21,12 @@ import os
 import re
 import sys
 import time
+import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
+
+from unbake import api
 
 from abu_decomp import DecompError, land, meter, tools, worktree
 from abu_decomp.config import Profile
@@ -33,16 +36,8 @@ PROOFS = "decomp-ship.proofs"
 LANDED = "decomp-ship.landed"
 NOTES = "ship-proof"  # refs/notes/ship-proof
 # Files every unit's object reads without naming them in its .d: a commit touching one of these proves nothing carries.
-GLOBAL_INPUTS = (
-    "config.toml",
-    "Makefile",
-    "local.mk",
-    "rom.toml",
-    "blobs.toml",
-    "RageWars.ld",
-    "versions/*/text_sizes.mk",
-    "tools/*",
-)
+# The project's own are named by `global_inputs`.
+GLOBAL_INPUTS = ("config.toml", "Makefile", "local.mk", "versions/*/text_sizes.mk", "tools/*")
 # Rows merged one by one (a commit and a patch editing different rows never conflict).
 ROW_FILES = ("versions/*/symbol_addrs.txt", "versions/*/aliases.txt", "versions/*/splat.yaml")
 # What `unbake sync` writes after a build: never part of a patch, regenerated in a batch (ship --regen).
@@ -65,6 +60,18 @@ def matches(name: str, globs: Sequence[str]) -> bool:
 
 def patch_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def project_name(root: Path) -> str:
+    """The project's `name` (config.toml): it names the link script and the ROM."""
+    return str(tomllib.loads((root / "config.toml").read_text(encoding="utf-8"))["name"])
+
+
+def global_inputs(root: Path) -> tuple[str, ...]:
+    """GLOBAL_INPUTS and the project's own: its platform and blobs files (config.toml [paths]) and its link script
+    (`<name>.ld`, the config.toml `name`)."""
+    paths = api.paths(root)
+    return (*GLOBAL_INPUTS, paths["platform"], paths["blobs"], f"{project_name(root)}.ld")
 
 
 def is_generated(name: str, extra: Sequence[str] = ()) -> bool:
@@ -163,11 +170,12 @@ def rom_report(tree: Path) -> dict[str, dict[str, Any]]:
     """Each version's built ROM hashed against the Makefile's SHA1 row."""
     try:
         wanted = dict(SHA1_ROW.findall((tree / "Makefile").read_text()))
+        name = project_name(tree)
     except OSError:
         return {}
     report = {}
     for version, expected in sorted(wanted.items()):
-        rom = tree / "build" / version / "RageWars.z64"
+        rom = tree / "build" / version / f"{name}.z64"
         try:
             got = hashlib.sha1(rom.read_bytes()).hexdigest()
         except OSError:
@@ -342,6 +350,7 @@ def judge(
     tip: str,
     git: Callable[..., tuple[int, str]],
     generated: Sequence[str] = (),
+    inputs: Sequence[str] = GLOBAL_INPUTS,
 ) -> tuple[bool, str]:
     """(True, why) when the proof of `record` still holds on `tip`: nothing landed since its base touched a file the
     patch's units read or a row the patch edits. `git(*args)` runs git in the shared tree as (exit, output)."""
@@ -359,7 +368,7 @@ def judge(
     names = git("diff", "--name-only", "--no-renames", base, tip)[1].split()
     others = [n for n in names if not is_generated(n, generated)]
     for name in others:
-        if matches(name, GLOBAL_INPUTS):
+        if matches(name, inputs):
             return False, f"{name} changed since the proof: every unit reads it"
     closure_names, rows = set(record["closure"]), record["rows"]
     headers = bool(record["headers"])

@@ -1,6 +1,7 @@
 """`decomp cleanup preflight`: refusals grouped by (tool, code), classified, written as JSON and TSV."""
 
 import json
+from pathlib import Path
 
 from abu_decomp import preflight
 from abu_decomp.preflight import Refusal
@@ -91,3 +92,14 @@ def test_document_counts_unclassified_and_write_makes_json_and_tsv(tmp_path) -> 
     assert json.loads(paths[0].read_text())["groups"][0]["tool"] == "owners.units"
     head, first = paths[1].read_text().splitlines()[:2]
     assert head.startswith("tool\tcode\tclass") and first.startswith("owners.units\tno header for <path>\tresidue")
+
+
+def test_the_structure_map_check_runs_only_for_a_project_that_names_a_module_map(tmp_path: Path) -> None:
+    def names() -> set[str]:
+        return set(preflight._commands(tmp_path, tmp_path / "names", tmp_path / "scratch", []))
+
+    assert "structure.map" not in names()
+    (tmp_path / "config.toml").write_text('module_map = "config/modules.tsv"\n')
+    assert "structure.map" in names()
+    argv = preflight._commands(tmp_path, tmp_path / "names", tmp_path / "scratch", [])["structure.map"][0]
+    assert argv[-2:] == ["--map", "config/modules.tsv"]

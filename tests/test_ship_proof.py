@@ -109,6 +109,31 @@ class JudgeTests(unittest.TestCase):
         for name in ("config.toml", "Makefile", "versions/us/text_sizes.mk", "tools/gcc/cc1"):
             self.assertFalse(self.judge({name: ""})[0], name)
 
+    def test_the_inputs_every_unit_reads_are_the_projects_own_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.toml").write_text('name = "Demo"\n[paths]\nplatform = "config/platform.toml"\n')
+            inputs = shipproof.global_inputs(root)
+        self.assertIn("config/platform.toml", inputs)
+        self.assertIn("blobs.toml", inputs)
+        self.assertIn("Demo.ld", inputs)
+        self.assertNotIn("rom.toml", inputs)
+        self.assertNotIn("RageWars.ld", inputs)
+        rec = record()
+        git = fake_git({"Demo.ld": ""})
+        self.assertTrue(shipproof.judge(rec, rec["patch"], "M", git)[0])  # judged without the project's inputs
+        self.assertFalse(shipproof.judge(rec, rec["patch"], "M", git, inputs=inputs)[0])
+
+    def test_the_built_rom_is_named_by_the_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.toml").write_text('name = "Demo"\n')
+            (root / "Makefile").write_text(f"SHA1_us := {'0' * 40}\n")
+            (root / "build/us").mkdir(parents=True)
+            self.assertEqual(shipproof.rom_report(root), {"us": {"sha1": None, "ok": False}})
+            (root / "build/us/Demo.z64").write_bytes(b"")
+            self.assertEqual(shipproof.rom_report(root)["us"]["sha1"], "da39a3ee5e6b4b0d3255bfef95601890afd80709")
+
     def test_rows_merge_one_by_one_in_a_fact_file(self) -> None:
         path = "versions/us/symbol_addrs.txt"
         other = f"diff --git a/{path} b/{path}\n+g = 0x80000020;\n"

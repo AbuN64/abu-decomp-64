@@ -1202,7 +1202,7 @@ def _cleanup_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--lanes", type=int, help="slices: the lane count (GLOBALS and STRUCT slices scale with it)")
     parser.add_argument(
-        "--map", help="slices, owners: a module map file (unit<TAB>module lines; default docs/MODULES.tsv)"
+        "--map", help="slices, owners: a module map file (unit<TAB>module lines; default the config.toml module_map)"
     )
     parser.add_argument(
         "--batch-cpu", type=float, default=300.0, help="owners (no --dir): estimated stamp CPU s a batch may cost"

@@ -428,7 +428,7 @@ def plan(
     gate: Callable[[str], list[str]] | None = None,
     keep: frozenset[str] = frozenset(),
 ) -> dict[str, object]:
-    map_path = map_path or root / "docs" / "MODULES.tsv"
+    map_path = owners.map_file(root, map_path)
     unit_module, module_header = owners.read_map(map_path)
     ranges = address_ranges(map_path)
     files = tracked(root)

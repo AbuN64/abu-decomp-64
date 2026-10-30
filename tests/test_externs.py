@@ -18,6 +18,7 @@ MAP = (
 )
 GUARD = "#ifndef {0}\n#define {0}\n#endif\n"
 FILES = {
+    "config.toml": 'module_map = "docs/MODULES.tsv"\n',
     "docs/MODULES.tsv": MAP,
     "include/A/A.H": GUARD.format("A_H"),
     "include/B/B.H": GUARD.format("B_H"),
