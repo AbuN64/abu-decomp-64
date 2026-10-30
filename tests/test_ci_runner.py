@@ -14,8 +14,9 @@ from abu_decomp import slots
 class Scratch(unittest.TestCase):
     def test_all_test_pools_share_workspace_storage_and_registered_cleanup(self):
         runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / "ci/run_tests.py"))
-        floor = slots.DISK_FLOOR_GIB
+        floor = 40.0
         with (
+            mock.patch.object(slots, "DISK_FLOOR_GIB", floor),  # the conftest zeroes the floor for unrelated tests
             tempfile.TemporaryDirectory() as workspace,
             mock.patch.dict(os.environ),
             mock.patch.object(tempfile, "tempdir", None),
