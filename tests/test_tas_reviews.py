@@ -40,7 +40,13 @@ class ReviewTests(unittest.TestCase):
         record = {
             "outcome": "ok",
             "oracle": {"outcome": "ok"},
-            "state_diff": {"polls_compared": 728, "divergent": 0, "reviewed_symbols": 46},
+            "polls": 728,
+            "state_diff": {
+                "polls_compared": 728,
+                "divergent": 0,
+                "reviewed_symbols": 46,
+                "coverage": {"complete": True, "port_last": 728, "oracle_last": 728},
+            },
         }
         self.assertEqual(tas_oracle.verdict(record), "ok")
         for state in (
