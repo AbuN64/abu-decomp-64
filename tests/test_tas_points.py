@@ -263,7 +263,7 @@ class PadTests(PointBase):
 
         run = self.root / "run"
         run.mkdir()
-        oracle = {"host": Path("host"), "env": {}, "shot_every": 25, "timeout_seconds": 5}
+        oracle = {"host": Path("host"), "env": {}, "shot_every": 25, "render_lead": 2, "timeout_seconds": 5}
         with mock.patch.object(tas_oracle.subprocess, "Popen", fake_popen), self.assertRaises(OSError):
             tas_oracle.start(oracle, run, 5, "on", pads=2)
         self.assertEqual(calls[0]["N64R_PADS"], "2")

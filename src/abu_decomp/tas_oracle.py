@@ -1,7 +1,8 @@
 """The original game beside the port: `tas play --oracle` replays the same movie in the recompiled original ROM (Cake
 Taste's oracle host) and compares the two pictures poll by poll.
 
-Section `tas.oracle`: {"host": path, "env": {...}, "shot_every": N (default 25), "timeout_seconds": T (default 300)}.
+Section `tas.oracle`: {"host": path, "env": {...}, "shot_every": N (default 25), "render_lead": K (default 2),
+"timeout_seconds": T (default 300)}.
 `host` is the oracle executable (cake-taste-64 hosts/n64recomp `n64host`); `env` its fixed environment (the original
 ROM `N64R_ROM`, a config folder `N64R_CONFIG` runs may share). The host speaks the port's frame protocol under N64R_
 names, and the run folder gets the same files for both sides:
@@ -12,6 +13,10 @@ names, and the run folder gets the same files for both sides:
 - pictures at chosen polls, only when asked (`tas play --oracle-pictures`, the page, or `pictures = true` in this
   section; default off so batch and monkey runs never fill the disk): every `shot_every` polls both write
   shots/<side>/poll-NNNNNN.ppm (`N64C_TAS_SHOT_EVERY` / `N64C_TAS_SHOT_DIR` and the N64R_ twins);
+- without pictures nothing reads a rendered frame (the guest reads RDRAM, never the renderer), and the software
+  Vulkan draw was ~90% of the oracle's CPU (pp-1p-match: ~930 of ~1030 s): `N64R_TAS_RENDER_LEAD` = `render_lead` has
+  the host draw only the frames of the `render_lead` polls before each `shot_every` point (the latest picture,
+  oracle.bmp) and before the exit; `render_lead` 0 draws every frame. With pictures every frame is drawn;
 - poll timing: `N64C_TAS_TRACE` / `N64R_TAS_TRACE` = port-trace.txt / oracle-trace.txt, one "poll vi" line per poll.
 The oracle runs headless (SDL offscreen: RT64 on a Vulkan headless surface, no display server) with
 `N64R_CLOCK=entries`, so its guest time comes from the work done, not the host: the same movie gives the same
@@ -41,7 +46,7 @@ from typing import Any, NamedTuple
 from abu_decomp import DecompError, procguard
 from abu_decomp.config import Profile, check_keys
 
-_KEYS = frozenset({"host", "env", "shot_every", "pictures", "timeout_seconds", "rebuild", "lock", "pins", "pins_repo"})
+_KEYS = frozenset({"host", "env", "shot_every", "render_lead", "pictures", "timeout_seconds", "rebuild", "lock", "pins", "pins_repo"})
 VIEW, LOG, DIFF = "oracle.bmp", "oracle.txt", "diff.json"
 AUDIO = "audio-oracle.pcm"  # the original's sound, as the port's audio.pcm (+ ".rate")
 PORT_TRACE, ORACLE_TRACE = "port-trace.txt", "oracle-trace.txt"
@@ -71,6 +76,9 @@ def settings(profile: Profile) -> dict[str, Any] | None:
     every = int(table.get("shot_every", 25))
     if every < 1:
         raise DecompError("tas.oracle", f"shot_every is a poll count >= 1, not {every}")
+    lead = int(table.get("render_lead", 2))
+    if lead < 0:
+        raise DecompError("tas.oracle", f"render_lead is a poll count >= 0, not {lead}")
     keys = ("pins", "pins_repo", "lock")
     stamp = {key: profile.path(f"tas.oracle.{key}", table[key]) for key in keys if key in table}
     return {
@@ -79,6 +87,7 @@ def settings(profile: Profile) -> dict[str, Any] | None:
         "host": profile.path("tas.oracle.host", table["host"]),
         "env": {str(k): str(v) for k, v in table.get("env", {}).items()},
         "shot_every": every,
+        "render_lead": lead,
         "pictures": bool(table.get("pictures", False)),
         "timeout_seconds": int(table.get("timeout_seconds", 300)),
     }
@@ -158,6 +167,7 @@ def start(
         "N64R_AUDIO_OUT": str(run / AUDIO),
         "N64R_TAS_SHOT_EVERY": str(oracle["shot_every"]),  # the host's entry-count checkpoints (behaviour) follow it
         "N64R_TAS_TRACE": str(run / ORACLE_TRACE),
+        "N64R_TAS_RENDER_LEAD": "0" if oracle.get("pictures") else str(oracle["render_lead"]),
         **(extra or {}),
     }
     if oracle.get("pictures"):  # no SHOT_DIR, no .ppm: the host still writes its checkpoints

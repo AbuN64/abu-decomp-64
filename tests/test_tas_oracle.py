@@ -222,8 +222,13 @@ class PlayTests(unittest.TestCase):
             tas_oracle.required(self.load(oracle={"host": "missing"}))
         with self.assertRaises(DecompError):
             tas_oracle.settings(self.load(oracle={"host": "n64host", "shot_every": 0}))
+        with self.assertRaises(DecompError):
+            tas_oracle.settings(self.load(oracle={"host": "n64host", "render_lead": -1}))
         got = tas_oracle.required(self.profile)
         self.assertEqual((got["host"], got["shot_every"], got["timeout_seconds"]), (self.host, 25, 300))
+        self.assertEqual(got["render_lead"], 2)
+        lead = tas_oracle.settings(self.load(oracle={"host": "n64host", "render_lead": 0}))
+        self.assertEqual(lead["render_lead"], 0)
 
     def test_a_stale_oracle_is_refused_loudly(self):
         """The oracle ensure stamps the cake-taste-64 sha it built; a host older than the tree's HEAD is refused."""
@@ -279,6 +284,7 @@ class PlayTests(unittest.TestCase):
         self.assertEqual(cwd, run)
         self.assertEqual(oracle_env["N64R_TAS_PLAY"], str(run / "movie.raw"))
         self.assertEqual((oracle_env["N64R_TAS_EXIT_AFTER"], oracle_env["N64R_TAS_SHOT_EVERY"]), ("7", "25"))
+        self.assertEqual(oracle_env["N64R_TAS_RENDER_LEAD"], "0")  # pictures asked: every frame is drawn
         self.assertEqual((oracle_env["N64R_CLOCK"], oracle_env["SDL_VIDEODRIVER"]), ("entries", "offscreen"))
         self.assertEqual(oracle_env["N64R_AUDIO_OUT"], str(run / "audio-oracle.pcm"))  # beside the port's audio.pcm
         self.assertEqual(oracle_env["N64R_PAK"], "off")  # the run's Expansion Pak, as the port's --pak
@@ -324,6 +330,7 @@ class PlayTests(unittest.TestCase):
             self.assertNotIn(key, seen["port"])
         self.assertNotIn("N64R_TAS_SHOT_DIR", seen["oracle"])
         self.assertEqual(seen["oracle"]["N64R_TAS_SHOT_EVERY"], "25")  # the host's entry-count checkpoints stay
+        self.assertEqual(seen["oracle"]["N64R_TAS_RENDER_LEAD"], "2")  # no pictures: only the frames before a point
         self.assertEqual(seen["port"]["N64C_TAS_TRACE"], str(run / "port-trace.txt"))
         self.assertFalse((run / "shots").exists())
         self.assertIsNone(result["oracle"]["max_diff"])

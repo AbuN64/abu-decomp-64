@@ -797,7 +797,7 @@ class BeginTests(unittest.TestCase):
         (self.folder / "oracle.spec").write_text("spec")
         host = self.tmp / "n64host"
         host.write_text("")
-        self.oracle = {"host": host, "env": {}, "shot_every": 25, "timeout_seconds": 5}
+        self.oracle = {"host": host, "env": {}, "shot_every": 25, "render_lead": 2, "timeout_seconds": 5}
         self.cfg = {"port": str(self.tmp / "port"), "runs": self.runs, "exit_after": 7}
 
     def begin(self, attach=False):
