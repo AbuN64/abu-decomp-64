@@ -969,8 +969,9 @@ def pick_rows(r: dict[str, Any], base: int) -> None:
 
 
 def ledger_file(cfg: dict[str, Any]) -> Path:
-    """The reviewed-difference ledger: `lockstep-ignore.tsv` in the port's facts folder (N64C_PORT_DIR from tas.env or the
-    process), a relative folder taken from the profile's folder, never from the working directory. Unset names no file."""
+    """The reviewed-difference ledger: `lockstep-ignore.tsv` in the port's facts folder (N64C_PORT_DIR from tas.env or
+    the process), a relative folder taken from the profile's folder, never from the working directory. Unset names no
+    file."""
     facts = cfg.get("env", {}).get("N64C_PORT_DIR", os.environ.get("N64C_PORT_DIR", ""))
     if not facts:
         return Path("<N64C_PORT_DIR unset>") / "lockstep-ignore.tsv"
