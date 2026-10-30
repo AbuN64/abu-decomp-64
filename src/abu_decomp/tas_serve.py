@@ -1451,6 +1451,9 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             side, poll = args.get("side", ""), args.get("poll", "")
             if not run or side not in tas_oracle.SIDES or not poll.isdigit():
                 return self.missing()
+            meta = (tas.read_record(run) or {}).get("oracle")
+            if side == "oracle" and (cause := tas_oracle.gate_cause(meta)):
+                return self.reply(cause.encode(), "text/plain; charset=utf-8", HTTPStatus.CONFLICT)
             try:
                 _, body, _ = server.capture(run / tas_oracle.SHOTS / side / f"poll-{int(poll):06d}.ppm")
             except (OSError, ValueError):
@@ -1465,7 +1468,10 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 return self.missing()
             summary = tas_oracle.summary(run, row) or {}
             every = int(meta.get("every") or 1)
-            rows = tas_oracle.compare(run, every, summary.get("status") == "done")
+            try:
+                rows = tas_oracle.compare(run, every, summary.get("status") == "done", meta)
+            except DecompError as error:
+                return self.json({"every": every, "rows": [], "refused": error.detail})
             return self.json({"every": every, "rows": rows})
 
         def log(self, run: Path | None, query: str) -> None:

@@ -1592,7 +1592,12 @@ def play(
         oracle_process, oracle_end, oracle_waiter = None, {}, None
         if original:
             env.update(tas_oracle.port_env(original, run))
-            record["oracle"] = {"status": "running", "every": original["shot_every"], "host": str(original["host"])}
+            record["oracle"] = {
+                "status": "running",
+                "every": original["shot_every"],
+                "host": str(original["host"]),
+                **tas_oracle.picture_marks(original),  # render_lead per picture: a gated one is no basis for a diff
+            }
             oracle_began = time.monotonic()
             with _starting_play_process():
                 oracle_process = tas_oracle.start(

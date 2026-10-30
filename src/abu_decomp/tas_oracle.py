@@ -16,7 +16,10 @@ names, and the run folder gets the same files for both sides:
 - without pictures nothing reads a rendered frame (the guest reads RDRAM, never the renderer), and the software
   Vulkan draw was ~90% of the oracle's CPU (pp-1p-match: ~930 of ~1030 s): `N64R_TAS_RENDER_LEAD` = `render_lead` has
   the host draw only the frames of the `render_lead` polls before each `shot_every` point (the latest picture,
-  oracle.bmp) and before the exit; `render_lead` 0 draws every frame. With pictures every frame is drawn;
+  oracle.bmp) and before the exit; `render_lead` 0 draws every frame. With pictures every frame is drawn. The run
+  record marks every oracle picture with the lead it was drawn under (`oracle.render_lead`, `oracle.pictures`), and
+  every picture comparison (`compare`, `summary`, `verdict`, /shot, /diff) refuses a picture drawn under a lead above
+  0: a screen built over more than `render_lead` frames can differ from a full render;
 - poll timing: `N64C_TAS_TRACE` / `N64R_TAS_TRACE` = port-trace.txt / oracle-trace.txt, one "poll vi" line per poll.
 The oracle runs headless (SDL offscreen: RT64 on a Vulkan headless surface, no display server) with
 `N64R_CLOCK=entries`, so its guest time comes from the work done, not the host: the same movie gives the same
@@ -46,7 +49,9 @@ from typing import Any, NamedTuple
 from abu_decomp import DecompError, procguard
 from abu_decomp.config import Profile, check_keys
 
-_KEYS = frozenset({"host", "env", "shot_every", "render_lead", "pictures", "timeout_seconds", "rebuild", "lock", "pins", "pins_repo"})
+_KEYS = frozenset(
+    {"host", "env", "shot_every", "render_lead", "pictures", "timeout_seconds", "rebuild", "lock", "pins", "pins_repo"}
+)
 VIEW, LOG, DIFF = "oracle.bmp", "oracle.txt", "diff.json"
 AUDIO = "audio-oracle.pcm"  # the original's sound, as the port's audio.pcm (+ ".rate")
 PORT_TRACE, ORACLE_TRACE = "port-trace.txt", "oracle-trace.txt"
@@ -91,6 +96,41 @@ def settings(profile: Profile) -> dict[str, Any] | None:
         "pictures": bool(table.get("pictures", False)),
         "timeout_seconds": int(table.get("timeout_seconds", 300)),
     }
+
+
+def effective_lead(oracle: dict[str, Any]) -> int:
+    """The render lead the host runs with: 0 (every frame drawn) when pictures are asked, else `render_lead`."""
+    return 0 if oracle.get("pictures") else oracle["render_lead"]
+
+
+def picture_marks(oracle: dict[str, Any]) -> dict[str, Any]:
+    """The `oracle` part of the run record that marks each picture the oracle writes with its render lead:
+    oracle.bmp always, shots/oracle only when pictures are asked."""
+    lead = effective_lead(oracle)
+    return {
+        "render_lead": lead,
+        "pictures": {VIEW: lead, **({f"{SHOTS}/oracle": lead} if oracle.get("pictures") else {})},
+    }
+
+
+def gate_cause(meta: Any) -> str:
+    """Why the oracle pictures of a run (its record's `oracle`) are no basis for a comparison, one line; "" when every
+    picture was drawn under render lead 0."""
+    lead = meta.get("render_lead") if isinstance(meta, dict) else None
+    if lead == 0:
+        return ""
+    if lead is None:
+        return "the oracle's pictures carry no render_lead mark, so they may be gated; rerun with --oracle-pictures"
+    return (
+        f"the oracle's pictures were drawn under render_lead {lead} (only the last {lead} polls before each shot "
+        "point), not every frame; rerun with --oracle-pictures"
+    )
+
+
+def require_full(meta: Any) -> None:
+    """Refuse the oracle pictures of a run drawn under a render gate (see `gate_cause`)."""
+    if cause := gate_cause(meta):
+        raise DecompError("tas.oracle", cause)
 
 
 def pins_lag(oracle: dict[str, Any]) -> str:
@@ -167,7 +207,7 @@ def start(
         "N64R_AUDIO_OUT": str(run / AUDIO),
         "N64R_TAS_SHOT_EVERY": str(oracle["shot_every"]),  # the host's entry-count checkpoints (behaviour) follow it
         "N64R_TAS_TRACE": str(run / ORACLE_TRACE),
-        "N64R_TAS_RENDER_LEAD": "0" if oracle.get("pictures") else str(oracle["render_lead"]),
+        "N64R_TAS_RENDER_LEAD": str(effective_lead(oracle)),
         **(extra or {}),
     }
     if oracle.get("pictures"):  # no SHOT_DIR, no .ppm: the host still writes its checkpoints
@@ -403,9 +443,10 @@ def _lock(run: Path) -> threading.Lock:
         return _locks.setdefault(str(run), threading.Lock())
 
 
-def compare(run: Path, every: int, oracle_done: bool) -> list[dict[str, Any]]:
+def compare(run: Path, every: int, oracle_done: bool, meta: dict[str, Any]) -> list[dict[str, Any]]:
     """Every poll both sides pictured, oldest first: {"poll", "diff", "drift", "vi_drift"}. A row is cached in
-    diff.json once the oracle pictures it is compared with are all there (or the oracle has ended)."""
+    diff.json once the oracle pictures it is compared with are all there (or the oracle has ended). `meta` is the
+    run record's `oracle`: oracle shots drawn under a render gate are refused (DecompError)."""
     with _lock(run):
         try:
             cached = {int(r["poll"]): r for r in json.loads((run / DIFF).read_text())["rows"]}
@@ -414,6 +455,7 @@ def compare(run: Path, every: int, oracle_done: bool) -> list[dict[str, Any]]:
         port, orig = shots(run, "port"), shots(run, "oracle")
         if not port or not orig:
             return sorted(cached.values(), key=lambda r: r["poll"])
+        require_full(meta)
         last = max(orig)
         port_vi, oracle_vi = trace(run / PORT_TRACE), trace(run / ORACLE_TRACE)
         rows = dict(cached)
@@ -465,7 +507,10 @@ def summary(run: Path, record: dict[str, Any]) -> dict[str, Any] | None:
         return None
     done = meta.get("status") == "done" or not _alive(meta.get("pid"))
     every = int(meta.get("every") or 1)
-    rows = compare(run, every, done)
+    try:
+        rows, refused = compare(run, every, done, meta), None
+    except DecompError as error:
+        rows, refused = [], error.detail
     worst = max(rows, key=lambda r: r["diff"]) if rows else None
     latest = rows[-1] if rows else None
     return {
@@ -483,6 +528,7 @@ def summary(run: Path, record: dict[str, Any]) -> dict[str, Any] | None:
         "vi_drift": latest["vi_drift"] if latest else None,
         "fps": meta.get("fps"),
         **first_divergence(rows),
+        **({"pictures_refused": refused} if refused else {}),
     }
 
 
@@ -510,12 +556,15 @@ def bmp(rgb: bytes) -> bytes:
 def verdict(record: dict[str, Any]) -> str:
     """An oracle run passes only with successful outcomes and a state comparison that covered every poll of both the
     state samples (`state_polls`) and the poll traces (`trace_polls`): equal poll sets, both reaching the movie's last
-    poll, and no unreviewed divergence."""
+    poll, and no unreviewed divergence. A picture score from gated oracle pictures fails it too."""
     state = record.get("state_diff") or {}
     movie = int(record.get("polls") or 0)
+    meta = record.get("oracle", {})
     if (
         record.get("outcome") != "ok"
-        or record.get("oracle", {}).get("outcome") != "ok"
+        or meta.get("outcome") != "ok"
+        or meta.get("pictures_refused")
+        or (meta.get("diff") is not None and gate_cause(meta))
         or state.get("error")
         or not state.get("polls_compared")
         or state.get("divergent") != 0

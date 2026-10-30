@@ -18,6 +18,8 @@ from abu_decomp import DecompError, tas, tas_oracle, tas_serve
 from abu_decomp.config import load_profile
 
 W, H = tas_oracle.WIDTH, tas_oracle.HEIGHT
+FULL = {"render_lead": 0}  # the run record's oracle mark of pictures drawn with every frame
+GATED = {"render_lead": 2}
 
 
 def picture(rgb=(0, 0, 0), box=None, box_rgb=(255, 255, 255)) -> bytes:
@@ -145,7 +147,7 @@ class CompareTests(unittest.TestCase):
         (self.run_dir / "port-trace.txt").write_text("10 20\n20 40\n30 60\n")
         (self.run_dir / "oracle-trace.txt").write_text("10 21\n20 42\n30 63\n40 8")  # the last line is half written
         (self.run_dir / "shots" / "port" / "poll-000060.ppm").write_bytes(tas_oracle.PPM_HEAD + b"\0")  # incomplete
-        rows = {r["poll"]: r for r in tas_oracle.compare(self.run_dir, 10, oracle_done=False)}
+        rows = {r["poll"]: r for r in tas_oracle.compare(self.run_dir, 10, oracle_done=False, meta=FULL)}
         self.assertEqual(sorted(rows), [10, 20, 30, 40, 50])
         self.assertEqual((rows[10]["diff"], rows[10]["drift"], rows[10]["vi_drift"]), (0.0, 0, 1))
         self.assertEqual((rows[30]["diff"], rows[30]["drift"], rows[30]["vi_drift"]), (0.25, -10, 3))
@@ -155,15 +157,17 @@ class CompareTests(unittest.TestCase):
         cached = json.loads((self.run_dir / "diff.json").read_text())
         self.assertEqual([r["poll"] for r in cached["rows"]], [10, 20, 30, 40, 50])  # oracle shots to 80: all settled
         with mock.patch.object(tas_oracle, "diff_share", side_effect=AssertionError("recomputed")):
-            self.assertEqual(len(tas_oracle.compare(self.run_dir, 10, oracle_done=False)), 5)  # read from the cache
+            self.assertEqual(
+                len(tas_oracle.compare(self.run_dir, 10, oracle_done=False, meta=FULL)), 5
+            )  # read from the cache
 
     def test_rows_wait_for_their_neighbours_until_the_oracle_ends(self):
         a = picture()
         self.shots("port", {10: a, 20: a})
         self.shots("oracle", {10: a, 20: a})
-        self.assertEqual(len(tas_oracle.compare(self.run_dir, 10, oracle_done=False)), 2)
+        self.assertEqual(len(tas_oracle.compare(self.run_dir, 10, oracle_done=False, meta=FULL)), 2)
         self.assertFalse((self.run_dir / "diff.json").exists())  # poll 10 could still match poll 40
-        self.assertEqual(len(tas_oracle.compare(self.run_dir, 10, oracle_done=True)), 2)
+        self.assertEqual(len(tas_oracle.compare(self.run_dir, 10, oracle_done=True, meta=FULL)), 2)
         self.assertEqual(len(json.loads((self.run_dir / "diff.json").read_text())["rows"]), 2)
 
     def test_first_divergence_names_the_first_aligned_poll_over_each_threshold(self):
@@ -182,15 +186,64 @@ class CompareTests(unittest.TestCase):
         self.shots("port", {25: picture(), 50: picture((0, 255, 0))})
         self.shots("oracle", {25: picture(), 50: picture()})
         (self.run_dir / "oracle-trace.txt").write_text("49 70\n50 71\n")
-        record = {"oracle": {"status": "done", "every": 25, "polls_reached": 50, "outcome": "ok", "fps": 900.0}}
+        record = {"oracle": {**FULL, "status": "done", "every": 25, "polls_reached": 50, "outcome": "ok", "fps": 900.0}}
         got = tas_oracle.summary(self.run_dir, record)
         self.assertEqual(got["frame"], f"/oracle/{self.run_dir.name}")
         self.assertEqual((got["status"], got["poll"], got["outcome"], got["every"]), ("done", 50, "ok", 25))
         self.assertEqual((got["max_diff"], got["max_poll"], got["diff"], got["diff_poll"]), (1.0, 50, 1.0, 50))
-        running = tas_oracle.summary(self.run_dir, {"oracle": {"status": "running", "every": 25, "pid": os.getpid()}})
+        running = tas_oracle.summary(
+            self.run_dir, {"oracle": {**FULL, "status": "running", "every": 25, "pid": os.getpid()}}
+        )
         self.assertEqual((running["status"], running["poll"], running["outcome"]), ("running", 50, None))
-        ended = tas_oracle.summary(self.run_dir, {"oracle": {"status": "running", "every": 25, "pid": 2**22 + 7}})
+        ended = tas_oracle.summary(
+            self.run_dir, {"oracle": {**FULL, "status": "running", "every": 25, "pid": 2**22 + 7}}
+        )
         self.assertEqual((ended["status"], ended["poll"]), ("done", 50))  # reaped before the record says so
+
+
+class GatedPictureTests(unittest.TestCase):
+    """A picture drawn under a render gate (render_lead > 0) is refused by every picture comparison."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.run_dir = Path(directory.name)
+        for side in ("port", "oracle"):
+            write_shot(self.run_dir / "shots" / side, 25, picture())
+
+    def test_marks_follow_the_effective_lead(self):
+        gate = {"render_lead": 2, "pictures": False}
+        self.assertEqual(tas_oracle.picture_marks(gate), {"render_lead": 2, "pictures": {"oracle.bmp": 2}})
+        both = tas_oracle.picture_marks({**gate, "pictures": True})
+        self.assertEqual(both, {"render_lead": 0, "pictures": {"oracle.bmp": 0, "shots/oracle": 0}})
+
+    def test_cause_is_one_line_naming_the_flag(self):
+        for meta in (GATED, {}, None):
+            cause = tas_oracle.gate_cause(meta)
+            self.assertIn("--oracle-pictures", cause)
+            self.assertNotIn("\n", cause)
+        self.assertIn("render_lead 2", tas_oracle.gate_cause(GATED))
+        self.assertEqual(tas_oracle.gate_cause(FULL), "")
+
+    def test_compare_refuses_gated_shots(self):
+        with self.assertRaisesRegex(DecompError, "--oracle-pictures"):
+            tas_oracle.compare(self.run_dir, 25, True, GATED)
+        with self.assertRaisesRegex(DecompError, "--oracle-pictures"):
+            tas_oracle.compare(self.run_dir, 25, True, {})  # an unmarked picture may be gated
+        self.assertFalse((self.run_dir / "diff.json").exists())
+        self.assertEqual(len(tas_oracle.compare(self.run_dir, 25, True, FULL)), 1)
+
+    def test_summary_scores_nothing_and_says_why(self):
+        got = tas_oracle.summary(self.run_dir, {"oracle": {**GATED, "status": "done", "every": 25, "outcome": "ok"}})
+        self.assertIn("--oracle-pictures", got["pictures_refused"])
+        self.assertEqual((got["diff"], got["max_diff"], got["diverge_1pct"]), (None, None, None))
+        full = tas_oracle.summary(self.run_dir, {"oracle": {**FULL, "status": "done", "every": 25, "outcome": "ok"}})
+        self.assertNotIn("pictures_refused", full)
+
+    def test_verdict_fails_on_a_gated_picture_score(self):
+        record = {"oracle": {**GATED, "pictures_refused": "x"}}
+        self.assertEqual(tas_oracle.verdict(record), "fail")
+        self.assertEqual(tas_oracle.verdict({"oracle": {**GATED, "outcome": "ok", "diff": 0.0}}), "fail")
 
 
 class PlayTests(unittest.TestCase):
@@ -301,6 +354,10 @@ class PlayTests(unittest.TestCase):
         self.assertEqual((oracle["max_diff"], oracle["max_poll"], oracle["vi_drift"]), (0.25, 50, -2))
         record = tas.read_record(run)
         self.assertEqual((record["oracle"]["outcome"], record["oracle"]["every"]), ("ok", 25))
+        self.assertEqual(record["oracle"]["render_lead"], 0)  # pictures asked: the record proves a full render
+        self.assertEqual(record["oracle"]["pictures"], {"oracle.bmp": 0, "shots/oracle": 0})
+        self.assertEqual(oracle["render_lead"], 0)
+        self.assertNotIn("pictures_refused", oracle)
         with self.assertRaises(DecompError):
             tas.play(self.profile, None, oracle=True)  # a human run has no movie to replay
         with self.assertRaises(DecompError):
@@ -334,6 +391,8 @@ class PlayTests(unittest.TestCase):
         self.assertEqual(seen["port"]["N64C_TAS_TRACE"], str(run / "port-trace.txt"))
         self.assertFalse((run / "shots").exists())
         self.assertIsNone(result["oracle"]["max_diff"])
+        gated = tas.read_record(run)["oracle"]  # the gate is marked per picture; only oracle.bmp is written
+        self.assertEqual((gated["render_lead"], gated["pictures"]), (2, {"oracle.bmp": 2}))
 
     def test_one_oracle_process_yields_the_pictures_and_the_state_trace(self):
         from abu_decomp import tas_statediff
@@ -479,7 +538,7 @@ class ServeTests(unittest.TestCase):
         self.server = tas_serve.Server(load_profile(seat))
         self.run = root / "runs" / "plays" / "r1"
         self.run.mkdir(parents=True)
-        oracle = {"status": "done", "every": 25, "polls_reached": 50, "outcome": "ok"}
+        oracle = {**FULL, "status": "done", "every": 25, "polls_reached": 50, "outcome": "ok"}
         (self.run / "run.json").write_text(
             json.dumps({"id": "r1", "movie": "m", "status": "done", "outcome": "ok", "started": 1.0, "oracle": oracle})
         )
@@ -498,7 +557,18 @@ class ServeTests(unittest.TestCase):
             with urllib.request.urlopen(self.base + path, timeout=10) as reply:
                 return reply.status, reply.headers.get("Content-Type"), reply.read()
         except urllib.error.HTTPError as error:
-            return error.code, None, b""
+            return error.code, None, error.read()
+
+    def test_gated_record_refuses_oracle_shots_and_diff(self):
+        record = json.loads((self.run / "run.json").read_text())
+        record["oracle"] = {**record["oracle"], **GATED}
+        (self.run / "run.json").write_text(json.dumps(record))
+        status, _, body = self.get("/shot/r1?side=oracle&poll=25")
+        self.assertEqual(status, 409)
+        self.assertIn(b"--oracle-pictures", body)
+        diff = json.loads(self.get("/diff/r1")[2])
+        self.assertEqual(diff["rows"], [])
+        self.assertIn("--oracle-pictures", diff["refused"])
 
     def test_state_oracle_picture_shots_and_scores(self):
         row = self.server.state()["runs"][0]["oracle"]
