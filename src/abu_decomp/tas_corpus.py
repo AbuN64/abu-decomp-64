@@ -188,7 +188,7 @@ def offer(profile: Profile, cfg: dict[str, Any], run: Path, record: dict[str, An
         or record.get("taken")
         or record.get("label") in (GATE_LABEL, SPOT_LABEL)
         or record.get("input") != "movie"
-        or Path(str(record.get("port") or "")) != Path(cfg["port"])
+        or Path(str(record.get("port") or "")) != Path(cfg.get("port") or "")
         or not (run / tas_coverage.COVERAGE).is_file()
     ):
         return None
@@ -438,7 +438,7 @@ def add(profile: Profile, movie: str, why: str = "") -> dict[str, Any]:
     """Keep `movie` by hand (never minimised away); its newest run on this build is the baseline, else one replay."""
     cfg = tas.settings(profile)
     tas.movie_polls(cfg, movie)
-    run = newest_run(cfg, movie, tas.build_id(cfg["port"]))
+    run = newest_run(cfg, movie, tas.build_id(tas.port_of(cfg)))
     if run is None:
         run = Path(tas.play(profile, movie, label=SPOT_LABEL)["run"])
     with locked(cfg):
@@ -467,7 +467,7 @@ def seed(profile: Profile, jobs: int = 0) -> dict[str, Any]:
     """Offer every movie: its newest run on this build (replayed when it has none) joins as a candidate, then the
     corpus is minimised over all of them. Existing entries stay candidates; pinned ones always stay."""
     cfg = tas.settings(profile)
-    build = tas.build_id(cfg["port"])
+    build = tas.build_id(tas.port_of(cfg))
     names = sorted(p.stem for p in cfg["movies"].glob("*.tas")) if cfg["movies"].is_dir() else []
     health = tas_health.read(cfg, profile)
     missing = [n for n in names if newest_run(cfg, n, build) is None]
@@ -687,7 +687,7 @@ def _gate(
     profile: Profile, cfg: dict[str, Any], port: Path | str | None, jobs: int, oracle: bool
 ) -> tuple[dict[str, Any], int]:
     exe = tas.with_port(cfg, port)["port"]
-    main = Path(exe) == Path(cfg["port"])
+    main = Path(exe) == Path(tas.port_of(cfg))
     data = load(cfg)
     if not data["entries"]:
         raise DecompError("tas.corpus", "the corpus is empty: decomp tas corpus seed")
@@ -791,7 +791,7 @@ def gate_due(cfg: dict[str, Any]) -> bool:
     except DecompError:
         return False
     last = read_gate(cfg) or {}
-    build = tas.build_id(Path(cfg["port"]))
+    build = tas.build_id(Path(tas.port_of(cfg)))
     return bool(build) and last.get("build") != build
 
 

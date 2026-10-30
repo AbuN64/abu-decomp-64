@@ -399,7 +399,7 @@ class Server:
             "started": record.get("started", 0),
             "ended": None if running else record.get("ended"),
             "label": record.get("label") or None,
-            "port": record.get("port") or str(self.cfg["port"]),
+            "port": record.get("port") or str(self.cfg.get("port") or ""),
             "input": "human" if taken else "movie",
             "took_at": self.took_at(run, record)
             if taken and (record.get("from") or record.get("input") != "human")
@@ -464,10 +464,10 @@ class Server:
             for r in [self.row(run, row) for run, row in live + done] + queued
         ]
         runs.sort(key=lambda r: r["started"])
-        port = self.cfg["port"]
+        port = self.cfg.get("port")
         try:
             built = port.stat().st_mtime
-        except OSError:
+        except (OSError, AttributeError):
             built = 0
         return {
             "now": time.time(),

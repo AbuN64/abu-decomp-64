@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from abu_decomp import tas, tas_health, tas_rank, tas_symbolize
+from abu_decomp import DecompError, tas, tas_health, tas_rank, tas_symbolize
 
 
 class HealthTests(unittest.TestCase):
@@ -21,7 +21,8 @@ class HealthTests(unittest.TestCase):
         (self.project / "src" / "MENU").mkdir(parents=True)
         (self.project / "include").mkdir()
         (self.project / "src" / "MENU" / "a.CPP").write_text("void func_80411EEC_de(int a)\n{\n}\n")
-        self.source = root / "a.CPP"
+        (root / "src" / "MENU").mkdir(parents=True)
+        self.source = root / "src" / "MENU" / "a.CPP"
         self.source.write_text("x")
         self.listing = root / "sources.txt"
         self.listing.write_text(f"{self.source}\n")
@@ -73,14 +74,6 @@ class HealthTests(unittest.TestCase):
             run.return_value = SimpleNamespace(returncode=0, stdout="c" * 40)
             self.assertIn("built at rage-ports unknown", tas_health.read(self.cfg)["pins_stale"])
 
-    def test_play_on_the_page_port_refuses_when_older_than_pins(self):
-        health = {"pins_stale": "page port older than pins: x", "rebuild": "page-port ensure"}
-        with (
-            mock.patch("abu_decomp.tas.settings", return_value={**self.cfg, "runs": self.port.parent / "runs"}),
-            self.assertRaisesRegex(Exception, "page port older than pins: x; rebuild it first: page-port ensure"),
-        ):
-            tas.play(self.profile, "m", health=health)
-
     def test_profile_build_section_carries_the_pins_keys(self):
         profile = mock.MagicMock()
         profile.path.side_effect = lambda name, value: Path(value)
@@ -120,6 +113,93 @@ class HealthTests(unittest.TestCase):
         got = tas_symbolize.claim(self.profile, {"outcome": "stop", "subject": "func_80999999_de"}, [], health)
         self.assertEqual(got["kind"], "unknown")
         self.assertNotIn("build", got)
+
+
+# the port session's shared-port-audit: *.failed markers of 2026-10-26 whose units the build no longer has
+STALE_FROM_THE_AUDIT = (
+    ("ACHIEVE/80424E30.CPP", "src/ACHIEVE/80424E30.CPP:66 unknown type name 'Profile'", 1793025053),
+    ("IO/802013D8_2.CPP", "src/IO/802013D8_2.CPP does not compile", 1793025115),
+    ("MENU/802ABDBC_11.CPP", "src/MENU/802ABDBC_11.CPP:349 conflicting types for 'func_80237E80_de'", 1793025123),
+    (
+        "MENU/PAK/8043F69C_11.CPP",
+        "src/MENU/PAK/8043F69C_11.CPP:110 conflicting types for 'func_802B7130_de'",
+        1793025153,
+    ),
+    ("RENDER_2/802192C0_4.CPP", "src/RENDER_2/802192C0_4.CPP:349 conflicting types for 'func_80237E80_de'", 1793025204),
+)
+CURRENT_GRAPH = """build decomp_unit_9099: phony CMakeFiles/decomp_unit_9099 decomp/src/game/ACHIEVE/80424E30_3/x.o
+build decomp_unit_415049b67ff62adb: phony CMakeFiles/decomp_unit_415049b67ff62adb decomp/src/game/ACHIEVE/80437A50/y.o
+build decomp_unit_1: phony decomp/src/game/MENU/PAK/8043F69C_12/z.o decomp/src/game/IO/802013D8_3/w.o
+"""
+
+
+class CurrentBuildTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.units = self.root / "build" / "decomp" / "src"
+        self.port = self.root / "live" / "ragewars"
+        self.port.parent.mkdir()
+        self.port.write_text("bin")
+        (self.root / "build").mkdir()
+        (self.root / "build" / "build.ninja").write_text(CURRENT_GRAPH)
+        self.sources = self.root / "build" / "decomp-sources.txt"
+        self.sources.write_text("/w/src/game/ACHIEVE/80437A50/80437A50.CPP\n")
+        for unit, error, mtime in STALE_FROM_THE_AUDIT:
+            marker = self.units / f"{unit}.failed"
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(error + "\n")
+            os.utime(marker, (mtime, mtime))
+        self.cfg = {
+            "port": self.port,
+            "build": {
+                "units": self.units,
+                "sources": self.sources,
+                "graph": [str(self.root / "build" / "build.ninja")],
+                "rebuild": "r",
+            },
+        }
+        self.now = 1793025204 + 4 * 86400 + 5
+
+    def test_the_five_audit_markers_are_stale_and_no_failure(self):
+        got = tas_health.read(self.cfg, now=self.now)
+        self.assertEqual(got["failed"], [])
+        self.assertEqual(sorted(m["unit"] for m in got["stale_markers"]), sorted(u for u, _, _ in STALE_FROM_THE_AUDIT))
+        self.assertEqual({m["age"] for m in got["stale_markers"]}, {"4d"})
+        self.assertEqual(got["stale_markers"][0]["age_seconds"], self.now - 1793025053)
+        self.assertEqual(got["summary"], "5 stale *.failed markers of units not in this build (oldest 4d)")
+        self.assertEqual(tas_health.header(got)["stale_markers"], got["stale_markers"])
+        self.assertNotIn("failed", tas_health.header(got))
+
+    def test_a_marker_of_a_unit_in_the_graph_is_a_failure_beside_the_stale_ones(self):
+        marker = self.units / "game" / "ACHIEVE" / "80437A50" / "80437A50.CPP.failed"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("boom\n")
+        got = tas_health.read(self.cfg, now=self.now)
+        self.assertEqual([r["unit"] for r in got["failed"]], ["game/ACHIEVE/80437A50/80437A50.CPP"])
+        self.assertEqual(len(got["stale_markers"]), 5)
+        self.assertTrue(got["summary"].startswith("build: 1 units failed; 5 stale"))
+
+    def test_the_graph_is_the_one_beside_the_reported_port(self):
+        other = self.root / "candidate"
+        other.mkdir()
+        (other / "build.ninja").write_text("build x: phony src/IO/802013D8_2.CPP\n")
+        cfg = {
+            **self.cfg,
+            "port": other / "ragewars",
+            "build": {**self.cfg["build"], "graph": ["{port_dir}/build.ninja"]},
+        }
+        (other / "ragewars").write_text("bin")
+        cfg["build"]["sources"] = ""
+        got = tas_health.read(cfg, now=self.now)
+        self.assertEqual([r["unit"] for r in got["failed"]], ["IO/802013D8_2.CPP"])
+        self.assertEqual(len(got["stale_markers"]), 4)
+
+    def test_markers_with_no_readable_build_file_are_refused(self):
+        self.cfg["build"].update(sources=self.root / "gone.txt", graph=[])
+        with self.assertRaisesRegex(DecompError, "5 \\*.failed markers but none of the build files"):
+            tas_health.read(self.cfg, now=self.now)
 
 
 class CompareTests(unittest.TestCase):

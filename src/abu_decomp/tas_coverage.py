@@ -692,7 +692,9 @@ def build_dir(cfg: dict[str, Any]) -> Path:
     port's own folder when it is that tree; else the tree `tas.build.units` lies in (its nearest folder holding a
     CMakeCache.txt): a page port is published away from its build tree (live/port), and coverage refused it as "not
     a coverage build" (PORT-FIX-O1, 10-25)."""
-    own = Path(cfg["port"]).parent
+    from abu_decomp import tas
+
+    own = Path(tas.port_of(cfg)).parent
     units = (cfg.get("build") or {}).get("units")
     if (own / LINK).exists() or not units:
         return own
@@ -782,7 +784,7 @@ def baseline(cfg: dict[str, Any]) -> Path:
     from abu_decomp import tas
 
     build = build_dir(cfg)
-    path = cfg["runs"] / f"coverage-baseline-{tas.build_id(Path(cfg['port']))[:12] or 'unbuilt'}.json"
+    path = cfg["runs"] / f"coverage-baseline-{tas.build_id(Path(tas.port_of(cfg)))[:12] or 'unbuilt'}.json"
     if not path.is_file():
         for old in cfg["runs"].glob("coverage-baseline-*.json"):
             old.unlink()
@@ -886,7 +888,7 @@ def _build(
     def current() -> tuple[
         str, str
     ]:  # the current port's (build sha, code hash): a run on equal code is a run on this build
-        return tas.build_id(Path(cfg["port"])), tas.code_hash(Path(cfg["port"]))
+        return tas.build_id(Path(tas.port_of(cfg))), tas.code_hash(Path(tas.port_of(cfg)))
 
     def one(item: tuple[str, Path]) -> dict[str, Any]:
         name, run = item
@@ -972,7 +974,7 @@ def _build(
             with stage("merge-page"):
                 _merge_page(build_tree, page, summary_file, tracefiles)
             (page / MERGE_KEY).write_text(merged_key)
-    _, names = tas_symbolize.symbols(cfg["port"])
+    _, names = tas_symbolize.symbols(tas.port_of(cfg))
     with stage("union"):
         report = union(rows, totals, cov["version"], collected, set(names) if names else None)
     report["runs"] = [

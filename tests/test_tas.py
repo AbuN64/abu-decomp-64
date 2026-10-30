@@ -100,6 +100,7 @@ class MovieTests(unittest.TestCase):
                         "movies": "movies",
                         "runs": "runs",
                         "port": "port",
+                        "seat": {"stamp": "port-provenance.json"},
                         "rom": "game.z64",
                         "args": ["--user-dir", "{user_dir}"],
                         "exit_after": 7,
@@ -336,6 +337,27 @@ class MovieTests(unittest.TestCase):
         with self.port("1 aa\n", seen):
             tas.play(self.profile, "m", now=T0)
         self.assertNotIn("N64C_REACH_ROWS", seen[0])
+
+    def test_the_run_records_the_explicit_ports_executable_source_and_shim(self):
+        self.movie()
+        exe = self.root / "lane-port"
+        exe.write_text("lane build")
+        exe.chmod(0o755)
+        (self.root / "port-provenance.json").write_text('{"repo": "r", "sha": "s1", "shim": "p1"}')
+        with self.port("1 aa\n", []):
+            result = tas.play(self.profile, "m", now=T0, port=exe)
+        record = tas.read_record(Path(result["run"]))["port_provenance"]
+        self.assertEqual(
+            record,
+            {
+                "executable": str(exe.resolve()),
+                "sha1": tas.build_id(exe),
+                "seat": False,
+                "repo": "r",
+                "sha": "s1",
+                "shim": "p1",
+            },
+        )
 
     def test_a_lane_runs_its_own_build_under_its_label(self):
         self.movie()

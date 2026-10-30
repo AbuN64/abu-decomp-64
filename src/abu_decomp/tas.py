@@ -1,6 +1,7 @@
 """`decomp tas save|list|show|delete|play`: controller movies replayed against the port.
 
-Section `tas`: {"movies", "runs", "port", "args", "rom", "env", "exit_after", "timeout_seconds", "gdb"}.
+Section `tas`: {"movies", "runs", "port" (the shared seat, optional: see module tas_seat), "seat", "args", "rom", "env",
+"exit_after", "timeout_seconds", "gdb"}.
 `movies` is the folder of named movies (kept in a repository), `runs` holds recordings and replay runs, `port` is
 the game executable and `args` its arguments, where the token `{user_dir}` becomes a fresh folder per run so saves
 never leak between runs. `rom` is the image whose SHA-1 a movie names; replay refuses another one.
@@ -81,6 +82,7 @@ from abu_decomp import (
     tas_points,
     tas_rank,
     tas_sanitize,
+    tas_seat,
     tas_select,
     tas_statediff,
     tas_symbolize,
@@ -127,9 +129,10 @@ _KEYS = frozenset(
         "coverage",
         "sanitizer",
         "select",
+        "seat",
     }
 )
-_REQUIRED = frozenset({"movies", "runs", "port", "args", "rom"})
+_REQUIRED = frozenset({"movies", "runs", "args", "rom"})
 STOP_FUNCTION = "n64c_boot_stopped"
 STOP_SUBJECT = "*(char**)&n64c_boot_stop_symbol"
 
@@ -176,13 +179,31 @@ def _build(profile: Profile, table: Any) -> dict[str, Any]:
     return out
 
 
+def _seat(profile: Profile, table: Any) -> dict[str, Any]:
+    if not table:
+        return {}
+    check_keys(profile.source_file, "tas.seat", table, frozenset({"stamp"}), tas_seat.SEAT_KEYS)
+    out = {key: str(table[key]) for key in tas_seat.SEAT_KEYS if key in table and key != "tree"}
+    if "tree" in table:
+        out["tree"] = profile.path("tas.seat.tree", table["tree"])
+    return out
+
+
+def port_of(cfg: dict[str, Any]) -> Path:
+    """The port executable cfg runs: an explicit `--port` (with_port) or the profile's shared seat; none is an error."""
+    if not cfg.get("port"):
+        raise DecompError("tas.port", "no port executable: the profile names no shared seat; pass --port <executable>")
+    return Path(cfg["port"])
+
+
 def settings(profile: Profile) -> dict[str, Any]:
     table = profile.section("tas")
     check_keys(profile.source_file, "tas", table, _REQUIRED, _KEYS)
     return {
         "movies": profile.path("tas.movies", table["movies"]),
         "runs": profile.path("tas.runs", table["runs"]),
-        "port": profile.path("tas.port", table["port"]),
+        "port": profile.path("tas.port", table["port"]) if "port" in table else None,
+        "seat": _seat(profile, table.get("seat")),
         "args": [str(arg) for arg in table["args"]],
         "rom": profile.path("tas.rom", table["rom"]),
         "env": {str(k): str(v) for k, v in table.get("env", {}).items()},
@@ -469,7 +490,7 @@ def _argv(
 ) -> list[str]:
     """The port's command line. The Controller Pak is always named: `--cpak off` for an empty slot (the port's own
     default is a card), else the card file the run owns. `--fps-unlock` is the framerate unlock (presentation only)."""
-    argv = [str(cfg["port"]), "--cpak", str(card) if card else "off"]
+    argv = [str(port_of(cfg)), "--cpak", str(card) if card else "off"]
     argv += [arg.replace("{user_dir}", str(user_dir)) for arg in _slot_free(cfg["args"])]
     argv = [*argv, "--pak", "off"] if pak == "off" else argv
     return [*argv, "--fps-unlock"] if fps_unlock else argv
@@ -823,7 +844,7 @@ def with_port(cfg: dict[str, Any], port: Path | str | None) -> dict[str, Any]:
     path = Path(port).expanduser()
     if not path.is_file() or not os.access(path, os.X_OK):
         raise DecompError("tas.port", f"no executable port at {path}")
-    return {**cfg, "port": path.resolve()}
+    return {**cfg, "port": path.resolve(), "port_explicit": True}
 
 
 def new_run_id(cfg: dict[str, Any], name: str, now: datetime | None = None) -> str:
@@ -1393,15 +1414,14 @@ def play(
             raise DecompError("tas.sanitize", "no sanitizer port: set tas.sanitizer.port in the profile or pass --port")
         port = cfg["sanitizer_port"]
     cfg = with_port(cfg, port)
+    if port is None:
+        tas_seat.check(cfg)
     label = label or ("sanitizer" if sanitize else None)
     check_label(label)
     if not 0 <= speed <= 1000:
         raise DecompError("tas.play", f"speed is 0 (turbo) .. 1000, not {speed}")
     began = time.monotonic()
     health = tas_health.read(cfg, profile) if health is None else health
-    if port is None and health and health.get("pins_stale"):
-        rebuild = health.get("rebuild") or "(no tas.build.rebuild set)"
-        raise DecompError("tas.play", f"{health['pins_stale']}; rebuild it first: {rebuild}")
     check_inspect(shots_every, dump_ram_at, trace_draws)
     check_pak(pak)
     check_cpak(cpak)
@@ -1532,6 +1552,7 @@ def play(
         "started": time.time(),
         "pid": os.getpid(),
         "port": str(cfg["port"]),
+        "port_provenance": tas_seat.record(cfg, Path(cfg["port"]), build, port is not None),
         "label": label or None,
         "input": "human" if human or retry else "movie",
         "pak": pak,
@@ -1890,7 +1911,7 @@ def play_all(
     why_skipped = ""
     if changed or resume:
         newest: dict[str, tuple[Path, dict[str, Any]]] = {}
-        code = code_hash(Path(cfg["port"])) if resume else ""
+        code = code_hash(port_of(cfg)) if resume else ""
         for run, row in run_rows(cfg):  # oldest first: the newest good plain movie run of each movie wins
             if (
                 row.get("input") == "movie"

@@ -684,7 +684,7 @@ def begin(
     from abu_decomp import tas
 
     oracle = tas_oracle.required(profile)
-    exe = Path(cfg["port"])
+    exe = Path(tas.port_of(cfg))
     folder = build_spec(profile, cfg, exe)
     table = load_map(folder)
     movie = (run / "movie.raw").read_bytes()

@@ -631,7 +631,7 @@ def summary_of(inputs: Inputs) -> dict[str, Any]:
     body, status = phase.phase()
     body = body if status == 200 and isinstance(body, dict) else {}
     try:
-        built = inputs.cfg["port"].stat().st_mtime
+        built = tas.port_of(inputs.cfg).stat().st_mtime
     except OSError:
         built = 0
     return {
@@ -647,7 +647,12 @@ def summary_of(inputs: Inputs) -> dict[str, Any]:
         "movies": s.get("movies"),
         "stage": body.get("stage"),
         "next_stage": body.get("next_stage"),
-        "build": {"port": str(inputs.cfg["port"]), "pin": inputs.sha(), "built": built, "format": port_format(inputs)},
+        "build": {
+            "port": str(tas.port_of(inputs.cfg)),
+            "pin": inputs.sha(),
+            "built": built,
+            "format": port_format(inputs),
+        },
     }
 
 

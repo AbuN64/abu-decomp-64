@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, procguard, slots, tas, tas_coverage, tas_oracle
+from abu_decomp import DecompError, procguard, slots, tas, tas_coverage, tas_oracle, tas_seat
 from abu_decomp.behave import prototype
 from abu_decomp.config import Profile
 
@@ -658,7 +658,9 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
     spent = 0.0  # CPU seconds of the oracle and port processes (wait4 of each process tree) so far
     cfg = tas.settings(profile)
     oracle = oracle_host(profile, options)
-    port = (options.port or cfg["port"]).resolve()
+    if not options.port:
+        tas_seat.check(cfg)
+    port = (options.port or tas.port_of(cfg)).resolve()
     if not port.is_file():
         raise ReplayError("behave.replay.port", f"no port executable at {port}")
     movies = options.movies or [m for m in _corpus_movies(cfg)]

@@ -28,6 +28,16 @@ def _run_without_gcovr(command, *args, **kwargs):
 
 
 @pytest.fixture(autouse=True)
+def _stand_in_seat(request, monkeypatch):
+    """A play without --port needs a shared seat whose build states the project's current main (tas_seat); tests that
+    drive play with a stand-in port skip that check, and test_tas_seat.py is the one place that runs it."""
+    if request.module.__name__.rpartition(".")[2] != "test_tas_seat":
+        from abu_decomp import tas_seat
+
+        monkeypatch.setattr(tas_seat, "check", lambda cfg: None)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_rig(tmp_path, monkeypatch):
     monkeypatch.setenv("ABU_SLOTS_DIR", str(tmp_path / "slots"))
     from abu_decomp import slots
