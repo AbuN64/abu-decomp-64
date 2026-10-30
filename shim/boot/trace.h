@@ -24,6 +24,10 @@ typedef struct {
 } N64cShimEntry;
 extern const N64cShimEntry n64c_shim_entries[];
 extern const unsigned n64c_shim_count;
+/* The original functions whose entries charge guest work (RUNTIME.md "Virtual guest time"): every function of the
+ * version's symbols outside the SDK range and not bound to native code. */
+extern const char *const n64c_trace_charged[];
+extern const unsigned n64c_trace_charged_count;
 /* Resolve the entries and arm the hook. Call before the original entry runs. */
 #ifdef _WIN32
 #define n64c_trace_init N64C_ABSENT(void (*)(void)) /* n64c_hook.h: the Windows build has no census */

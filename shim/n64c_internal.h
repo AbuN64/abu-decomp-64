@@ -16,7 +16,9 @@ void n64c_clock_arm_si(OSTime t, void (*due)(void)); /* same, one slot: the seri
 void n64c_clock_arm_vi(OSTime t, void (*due)(void)); /* same, one slot: the next VI retrace */
 void n64c_clock_schedule(OSTime t, void (*due)(void *), void *arg); /* same, any free slot: an RSP task in flight */
 void n64c_clock_work(void);                          /* a guest thread entered an original function: charge its work */
-void n64c_clock_set_work_ns(double ns);              /* guest nanoseconds charged per entry (0: none) */
+#define N64C_WORK_FRAC 20                            /* guest work per entry is kept in 1/2^20 ns */
+void n64c_clock_set_work(unsigned long long fx);     /* guest time charged per entry, 1/2^N64C_WORK_FRAC ns (0: none) */
+unsigned long long n64c_clock_parse_work(const char *ns); /* decimal ns as that fixed point; 0: not a positive number */
 OSTime n64c_clock_now_ns(void);                      /* the virtual clock in nanoseconds */
 int n64c_clock_si_armed(void);                       /* a serial interface DMA is running (its completion not yet delivered) */
 void n64c_sched_trace(void (*sink)(const char *line, void *user), void *user);

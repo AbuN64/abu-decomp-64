@@ -50,7 +50,8 @@ class MovieTests(unittest.TestCase):
         self.assertEqual((own["movie"], own["poll"], own["seconds"]), ("walk", 200, movie.MIN_SECONDS + 100))
         self.assertEqual(own["count"], 40)  # the movie's polls and how often it enters the function
         env = own["env"]
-        self.assertEqual((env["N64R_PAK"], env["N64R_PADS"], env["N64R_CLOCK"]), ("off", "1", "entries"))
+        self.assertEqual((env["N64R_PAK"], env["N64R_PADS"]), ("off", "1"))
+        self.assertNotIn("N64R_CLOCK", env)  # the logical clock is the oracle's only clock
         self.assertEqual(Path(env["N64R_TAS_PLAY"]).read_text(), "0000 0 0\n0001 2 3\n")
         self.assertNotIn("N64R_CPAK", env)
 

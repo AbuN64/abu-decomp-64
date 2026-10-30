@@ -54,7 +54,10 @@ class TraceTests(unittest.TestCase):
         self.path = pathlib.Path(self.tmp.name)
         facts = self.path / "source/versions/test"
         facts.mkdir(parents=True)
-        (facts / "symbol_addrs.txt").write_text("alpha = 0x80000010; //\nbeta = 0x80000020; //\n")
+        (facts / "symbol_addrs.txt").write_text(
+            "alpha = 0x80000010; // type:func\nbeta = 0x80000020; // type:func\nD_data = 0x80000030; //\n"
+            "shimmed = 0x80000050; // type:func\nnative_api = 0x80000080; // type:func\n"
+            "osLib = 0x802B0000; // type:func\n")
         (self.path / "trace.tsv").write_text(TRACE)
         project = {"version": "test", "sources": [],
                    "bindings": {"shimmed": "host_shim", "shimmed_alias": "host_shim", "dead_bound": "never_shim",
@@ -75,6 +78,15 @@ class TraceTests(unittest.TestCase):
         self.assertIn("n64c_shim_count = 3;", table)
         self.assertIn('{8, 0x80000080u, 1, {"native_api"}}', table)
         self.assertNotIn('"game_alias"', table)
+    def test_charged_set_is_original_code_the_port_compiles(self):
+        # One tick per entry of an original function, never of the SDK range (osLib), of a bound function (shimmed)
+        # or of one the shim defines under its original name (native_api); data symbols are not functions.
+        table = self.generate()
+        charged = table[table.index("n64c_trace_charged[]"):]
+        self.assertIn('    "alpha",\n    "beta",\n};', charged)
+        self.assertIn("n64c_trace_charged_count = 2;", charged)
+        for name in ("shimmed", "native_api", "osLib", "D_data"):
+            self.assertNotIn(f'"{name}"', charged)
     def test_bad_trace_is_refused(self):
         for text in ["order\taddress\tsymbol\n2\t0x80000010\talpha\n", "order\taddress\tsymbol\n1\t0x80000010\n",
                      "order\taddress\tsymbol\n1\t0x80000010\tbad name\n", "order\taddress\tsymbol\n"]:
@@ -200,7 +212,8 @@ int main(void) { n64c_trace_init(); return real_main(); }
             '#include "trace.h"\nconst N64cTraceEntry n64c_trace_entries[] = {\n'
             '    {1, 0x80000010u, 0, {"keep"}}, {2, 0x80000020u, 0, {"crash"}}, {3, 0x80000030u, 0, {"spin"}},\n'
             '    {4, 0x80000040u, 0, {"never"}}};\nconst unsigned n64c_trace_count = 4;\n'
-            'const N64cShimEntry n64c_shim_entries[] = {{0, 0}};\nconst unsigned n64c_shim_count = 0;\n')
+            'const N64cShimEntry n64c_shim_entries[] = {{0, 0}};\nconst unsigned n64c_shim_count = 0;\n'
+            'const char *const n64c_trace_charged[] = {0};\nconst unsigned n64c_trace_charged_count = 0;\n')
         (self.path / "shim.c").write_text(RUN_ON_SHIM)
         shim = ROOT.parent
         objects = []

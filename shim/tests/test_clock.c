@@ -51,7 +51,7 @@ static void run(void)
 {
     N64cConfig cfg = {0};
     n64c_init(&cfg);
-    n64c_clock_set_work_ns(ENTRY_NS);
+    n64c_clock_set_work((unsigned long long)ENTRY_NS << N64C_WORK_FRAC);
     log_[0] = 0;
     osCreateMesgQueue(&q, slot, 2);
     n64c_clock_work(); /* the host is not a guest thread: nothing is charged */
@@ -66,8 +66,55 @@ static void run(void)
     n64c_run_idle();
 }
 
+/* libultra's osContInit as events on the clock: the 500 ms settle timer (to Count 23437500), then the SI write and
+ * read exchanges; once per boot, so a repeat costs nothing. */
+enum { SETTLE = 23437500, SI_WRITE = 3000, SI_READ = 12000, SI_PORT = 15000 }; /* 64 us, 256 us, 320 us of Count */
+static OSMesgQueue siq;
+static OSMesg si_slot[1];
+static OSThread cont_thread;
+static OSTime cont_done, cont_again;
+static int cont_finished;
+static void controller(void *arg)
+{
+    (void)arg;
+    u8 bits;
+    OSContStatus st[MAXCONTROLLERS];
+    osContInit(&siq, &bits, st);
+    cont_done = n64c_clock_now();
+    osContInit(&siq, &bits, st);
+    cont_again = n64c_clock_now();
+    cont_finished = 1;
+}
+static void cont_boot(OSTime start)
+{
+    N64cConfig cfg = {0};
+    n64c_init(&cfg);
+    n64c_clock_set_work((unsigned long long)ENTRY_NS << N64C_WORK_FRAC);
+    if (start) n64c_clock_advance_to(start);
+    osCreateMesgQueue(&siq, si_slot, 1);
+    osSetEventMesg(OS_EVENT_SI, &siq, (OSMesg){.data32 = 0});
+    osCreateThread(&cont_thread, 3, controller, 0, 0, 10);
+    osStartThread(&cont_thread);
+    cont_finished = 0;
+    for (int frame = 0; frame < 60 && !cont_finished; frame++) n64c_frame(); /* idle: the clock jumps to events */
+    CHECK(cont_finished);
+    n64c_shutdown();
+}
+
 int main(void)
 {
+    /* the charge is a decimal number of nanoseconds, kept to 2^-20 ns; anything else is refused */
+    CHECK(n64c_clock_parse_work("1000") == 1000ull << N64C_WORK_FRAC);
+    CHECK(n64c_clock_parse_work("4702.010109321735") == 4930414952ull); /* the oracle's HOST_GUEST_NS_PER_ENTRY */
+    CHECK(n64c_clock_parse_work("0.5") == 1ull << (N64C_WORK_FRAC - 1));
+    CHECK(!n64c_clock_parse_work("") && !n64c_clock_parse_work("1e3") && !n64c_clock_parse_work("-1") &&
+          !n64c_clock_parse_work("12x") && !n64c_clock_parse_work("."));
+    cont_boot(0); /* early: waits out the settle, then both exchanges */
+    CHECK(cont_done >= SETTLE + SI_WRITE + SI_READ && (cont_done - SETTLE - SI_WRITE - SI_READ) % SI_PORT == 0);
+    CHECK(cont_again == cont_done);
+    OSTime early = cont_done - SETTLE;
+    cont_boot(30000000); /* late: no settle wait, the same exchanges */
+    CHECK(cont_done - 30000000 == early && cont_again == cont_done);
     run();
     CHECK(retraces_after_first == 1);
     CHECK(retraces_before_second == 1); /* 16666 entries are 16.666 ms: retrace 2 is at 16.6667 ms */

@@ -82,17 +82,16 @@ s32 osDpSetNextBuffer(void *buffer, u64 size)
 }
 /* N64C_GUEST_NS_PER_ENTRY: guest nanoseconds one function entry of the original game costs, the oracle's
  * HOST_GUEST_NS_PER_ENTRY (cpu.calibration of the project profile). Unset: no work is charged. */
-static double guest_ns_per_entry(void)
+static unsigned long long guest_work_per_entry(void)
 {
     const char *text = getenv("N64C_GUEST_NS_PER_ENTRY");
     if (!text || !*text) return 0;
-    char *end;
-    double ns = strtod(text, &end);
-    if (*end || !(ns > 0)) {
-        fprintf(stderr, "boot-missing: N64C_GUEST_NS_PER_ENTRY must be a positive number, got %s\n", text);
+    unsigned long long fx = n64c_clock_parse_work(text);
+    if (!fx) {
+        fprintf(stderr, "boot-missing: N64C_GUEST_NS_PER_ENTRY must be a positive decimal number, got %s\n", text);
         _Exit(78);
     }
-    return ns;
+    return fx;
 }
 void n64c_init(const N64cConfig *cfg)
 {
@@ -103,7 +102,7 @@ void n64c_init(const N64cConfig *cfg)
     n64c_vi_reset();
     n64c_pi_close();
     n64c_cont_reset(cfg);
-    n64c_clock_set_work_ns(guest_ns_per_entry());
+    n64c_clock_set_work(guest_work_per_entry());
     memset(handlers, 0, sizeof handlers);
     present_fn = NULL;
     rendered_output = NULL;

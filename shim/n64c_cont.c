@@ -24,6 +24,7 @@ static u8 serial_packet[64];
 static char eeprom_path[512], pak_path[512];
 static int eeprom_present, eeprom_16k;
 static int last_cmd_read; /* libultra's __osContLastCmd == read: the request is already in the PIF, only the answer is fetched */
+static int cont_initialized; /* libultra's __osContinitialized: the settle and SI exchange run once per boot */
 static u8 pak_ram[N64C_CPAK_BYTES];
 static int pak_loaded, pak_ok;
 /* The card in the slot is the file: a missing file is a new card (formatted and saved at once), an existing one
@@ -79,6 +80,7 @@ void n64c_cont_reset(const N64cConfig *cfg)
     memset(latched, 0, sizeof latched);
     memset(serial_packet,0,sizeof serial_packet);
     last_cmd_read = 0;
+    cont_initialized = 0;
     eeprom_present = cfg && cfg->eeprom_path != NULL;
     eeprom_16k = cfg ? cfg->eeprom_16k : 0;
     eeprom_path[0] = pak_path[0] = 0;
@@ -126,8 +128,55 @@ static void done(OSMesgQueue *mq)
         osSendMesg(mq, m, OS_MESG_NOBLOCK);
     }
 }
+/* A packet exchange on the serial bus takes the console's time, and its end is the SI interrupt: the PIF takes the
+ * 64-byte request in 64 us (6000 cycles of the bus clock), then answers the read in 256 us plus 320 us for each
+ * controller that talks. The numbers are those of the oracle's SI adapter (CakeTaste64 hosts/n64recomp/si_adapter.cpp),
+ * so the interrupt lands at the same virtual time on both sides. */
+enum { SI_WRITE_NS = 64000, SI_READ_NS = 256000, SI_READ_PORT_NS = 320000 };
+static OSTime si_ticks(u32 ns) { return (OSTime)ns * OS_CPU_COUNTER / 1000000000u; }
+static OSTime si_deadline;
+static void si_complete(void) { n64c_event_post(OS_EVENT_SI); }
+static void si_start(u32 ns)
+{
+    si_deadline = n64c_clock_now() + si_ticks(ns);
+    n64c_clock_arm_si(si_deadline, si_complete);
+}
+/* One packet exchange a guest thread waits out: the bus runs, its SI interrupt lands on mq. */
+static void si_exchange(OSMesgQueue *mq, u32 ns)
+{
+    si_mq = mq;
+    si_start(ns);
+    osRecvMesg(mq, NULL, OS_MESG_BLOCK);
+}
+static int talking_ports(void)
+{
+    int talking = 0;
+    for (int i = 0; i < MAXCONTROLLERS; i++)
+        talking += port_present(i) != 0;
+    return talking;
+}
+/* libultra's osContInit: once per boot, it first lets the controllers settle until 500 ms after osInitialize (a
+ * one-shot timer to Count 23437500, the ROM's own constant), then exchanges the status request with the PIF (a write
+ * and a read, each ending in the SI interrupt on mq) and reports the status. A later call, or a host caller with no
+ * queue, reports the status at once with no bus time. */
+enum { CONT_SETTLE_COUNT = 23437500 };
 s32 osContInit(OSMesgQueue *mq, u8 *bitpattern, OSContStatus *status)
 {
+    if (!cont_initialized && mq && n64c_sched_on_guest()) {
+        cont_initialized = 1;
+        OSTime t = osGetTime();
+        if (t < CONT_SETTLE_COUNT) {
+            OSMesgQueue settle;
+            OSMesg slot = {0};
+            OSTimer timer;
+            osCreateMesgQueue(&settle, &slot, 1);
+            osSetTimer(&timer, CONT_SETTLE_COUNT - t, 0, &settle, slot);
+            osRecvMesg(&settle, NULL, OS_MESG_BLOCK);
+        }
+        si_exchange(mq, SI_WRITE_NS);
+        si_exchange(mq, SI_READ_NS + SI_READ_PORT_NS * (u32)talking_ports());
+        last_cmd_read = 0;
+    }
     query(last_status);
     if (status)
         memcpy(status, last_status, sizeof last_status);
@@ -169,19 +218,6 @@ static void sample_pads(void)
     n64c_tas_poll(&latched[0]);
     N64C_ZONE_END(zi);
 }
-/* A packet exchange on the serial bus takes the console's time, and its end is the SI interrupt: the PIF takes the
- * 64-byte request in 64 us (6000 cycles of the bus clock), then answers the read in 256 us plus 320 us for each
- * controller that talks. The numbers are those of the oracle's SI adapter (CakeTaste64 hosts/n64recomp/si_adapter.cpp),
- * so the interrupt lands at the same virtual time on both sides. */
-enum { SI_WRITE_NS = 64000, SI_READ_NS = 256000, SI_READ_PORT_NS = 320000 };
-static OSTime si_ticks(u32 ns) { return (OSTime)ns * OS_CPU_COUNTER / 1000000000u; }
-static OSTime si_deadline;
-static void si_complete(void) { n64c_event_post(OS_EVENT_SI); }
-static void si_start(u32 ns)
-{
-    si_deadline = n64c_clock_now() + si_ticks(ns);
-    n64c_clock_arm_si(si_deadline, si_complete);
-}
 /* libultra's osContStartReadData (RENDER controller poll: the game's SI queue is the one it passed to osSetEventMesg for
  * OS_EVENT_SI). Unless the last exchange was already a read, the request is written first and the caller waits on the
  * queue for the write's interrupt; then the read starts, the pads are sampled as the PIF answers (the oracle's TAS poll
@@ -208,10 +244,7 @@ s32 osContStartReadData(OSMesgQueue *mq)
         }
     }
     sample_pads();
-    int talking = 0;
-    for (int i = 0; i < MAXCONTROLLERS; i++)
-        talking += port_present(i) != 0;
-    si_start(SI_READ_NS + SI_READ_PORT_NS * (u32)talking);
+    si_start(SI_READ_NS + SI_READ_PORT_NS * (u32)talking_ports());
     last_cmd_read = 1;
     __osSiRelAccess();
     return 0;

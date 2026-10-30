@@ -38,11 +38,13 @@ def generate(trace, manifest, source, output):
     # CMake passes the effective manifest that produced bindings.ld. Re-running
     # SDK policy here can replace an explicit native adapter with a different API.
     project = json.loads(manifest.read_text())
-    by_address = {}
+    by_address, functions = {}, {}
     for line in (source / "versions" / project["version"] / "symbol_addrs.txt").read_text().splitlines():
-        match = re.match(r"\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)\s*;", line)
+        match = re.match(r"\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)\s*;(.*)", line)
         if match:
             by_address.setdefault(int(match[2], 16), []).append(match[1])
+            if "type:func" in match[3]:
+                functions[match[1]] = int(match[2], 16)
     native_names = native_functions()
     native_bindings = {symbol: target for symbol, target in project["bindings"].items()
                        if target in native_names}
@@ -73,6 +75,17 @@ def generate(trace, manifest, source, output):
     if not native:
         lines.append("    {0, 0},")
     lines += ["};", f"const unsigned n64c_shim_count = {len(native)};", ""]
+    # Guest work (RUNTIME.md "Virtual guest time"): one tick per entry of an original function the port compiles, so
+    # never of the SDK range (policy) or of a function the port runs natively (bound, or defined by the shim under its
+    # original name); both sides charge this same set (the oracle's cpu.native_code fact lists the same vrams).
+    native_addresses = {functions[name] for name in bound | (native_names & set(functions)) if name in functions}
+    charged = sorted(name for name, address in functions.items()
+                     if not policy.SDK_LO <= address < policy.SDK_HI and address not in native_addresses)
+    if not all(IDENT.fullmatch(name) for name in charged):
+        raise ValueError("unusable function name in symbol_addrs.txt")
+    lines.append("const char *const n64c_trace_charged[] = {")
+    lines += [f'    "{name}",' for name in charged] or ["    0,"]
+    lines += ["};", f"const unsigned n64c_trace_charged_count = {len(charged)};", ""]
     output.mkdir(parents=True, exist_ok=True)
     temporary = output / "trace_table.c.tmp"
     temporary.write_text("\n".join(lines))

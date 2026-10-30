@@ -437,6 +437,8 @@ const unsigned n64c_trace_count = 9;
 /* This fixture executes original bodies only; no native bindings. */
 const N64cShimEntry n64c_shim_entries[] = {{0, 0}};
 const unsigned n64c_shim_count = 0;
+const char *const n64c_trace_charged[] = {0};
+const unsigned n64c_trace_charged_count = 0;
 """
 FIXTURE_DRIVER = r"""#include <stdio.h>
 #include <string.h>

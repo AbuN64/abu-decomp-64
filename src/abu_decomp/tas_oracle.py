@@ -21,9 +21,9 @@ names, and the run folder gets the same files for both sides:
   every picture comparison (`compare`, `summary`, `verdict`, /shot, /diff) refuses a picture drawn under a lead above
   0: a screen built over more than `render_lead` frames can differ from a full render;
 - poll timing: `N64C_TAS_TRACE` / `N64R_TAS_TRACE` = port-trace.txt / oracle-trace.txt, one "poll vi" line per poll.
-The oracle runs headless (SDL offscreen: RT64 on a Vulkan headless surface, no display server) with
-`N64R_CLOCK=entries`, so its guest time comes from the work done, not the host: the same movie gives the same
-pictures every time, at any speed. It always runs at full speed beside the port.
+The oracle runs headless (SDL offscreen: RT64 on a Vulkan headless surface, no display server) on the logical
+guest clock, so its guest time comes from the work done, not the host: the same movie gives the same pictures
+every time, at any speed. It always runs at full speed beside the port.
 
 `compare` scores each poll both sides pictured: `diff` is the share of pixels that differ visibly (a channel off by
 32..64 of 255 or more; two offset 64-wide quantisations must both differ), 0 = the same picture. The two runs can
@@ -178,7 +178,7 @@ _ENTRY_NS = re.compile(r"^#define HOST_GUEST_NS_PER_ENTRY\s+(\S+)\s*$", re.MULTI
 
 
 def guest_ns_per_entry(oracle: dict[str, Any]) -> str:
-    """The guest nanoseconds the oracle charges per function entry (`N64R_CLOCK=entries`), read from the
+    """The guest nanoseconds the oracle charges per charged function entry, read from the
     `cpu_profile.h` its build rendered from the profile's CPU calibration (`tas.oracle.cpu_profile`, else `gen/`
     beside the host): the work measure the port's clock shares, so both sides charge guest time alike."""
     header = oracle["cpu_profile"] or oracle["host"].parent / "gen" / "cpu_profile.h"
@@ -210,7 +210,6 @@ def movie_env(play: Path, pak: str, pads: int, exit_after: int, card: Path | Non
     """The host variables that replay a movie: the deterministic clock (guest time from the work done), the
     Expansion Pak, the pads, the poll-keyed movie, when the host stops and the Controller Pak card, if any."""
     env = {
-        "N64R_CLOCK": "entries",
         "N64R_PAK": pak,
         "N64R_PADS": str(pads),  # controllers the guest sees; each movie.raw line holds that many pads
         "N64R_TAS_PLAY": str(play),
@@ -237,7 +236,6 @@ def start(
         **os.environ,
         "SDL_VIDEODRIVER": "offscreen",
         "SDL_AUDIODRIVER": "dummy",
-        "N64R_CLOCK": "entries",
         **oracle["env"],
         **movie_env(run / "movie.raw", pak, pads, exit_after, None),
         "N64R_VIEW": str(run / VIEW),

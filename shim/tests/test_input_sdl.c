@@ -105,6 +105,12 @@ void n64c_clock_arm_si(OSTime t, void (*due)(void)) { (void)t; (void)due; }
 int n64c_clock_si_armed(void) { return 0; }
 void n64c_clock_advance_to(OSTime t) { (void)t; }
 int n64c_sched_on_guest(void) { return 0; }
+OSTime osGetTime(void) { return 0; } /* osContInit's settle and SI exchanges run only on a guest thread */
+void osCreateMesgQueue(OSMesgQueue *mq, OSMesg *buf, s32 count) { (void)mq; (void)buf; (void)count; }
+void osSetTimer(OSTimer *t, OSTime countdown, OSTime interval, OSMesgQueue *mq, OSMesg msg)
+{
+    (void)t; (void)countdown; (void)interval; (void)mq; (void)msg;
+}
 void n64c_event_post(u32 event) { (void)event; }
 s32 osSendMesg(OSMesgQueue *mq, OSMesg m, s32 flag)
 {

@@ -12,7 +12,6 @@
 #include "n64c_si.h"
 #include <pthread.h>
 #include <errno.h>
-#include <fenv.h>
 #include <setjmp.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,11 +77,11 @@ typedef struct {
 } DevEvent;
 static DevEvent devs[DEV_SLOTS];
 static unsigned long dev_seq;
-/* Guest work: each function entry of the original game charges work_fx of guest time (the oracle's
- * HOST_GUEST_NS_PER_ENTRY in 1/2^WORK_FRAC ns); 0 charges nothing and the clock then moves only when every guest
- * thread waits. The charge runs on guest threads, so it is integer arithmetic: a float operation there would leave
- * sticky exception flags in the guest's FPU status, which osGetFpcCsr reports as a fault. */
-#define WORK_FRAC 20
+/* Guest work: each charged function entry costs work_fx of guest time (the oracle's HOST_GUEST_NS_PER_ENTRY in
+ * 1/2^N64C_WORK_FRAC ns); 0 charges nothing and the clock then moves only when every guest thread waits. The charge
+ * is integer arithmetic end to end: a float operation would leave sticky exception flags in the guest's FPU status,
+ * which osGetFpcCsr reports as a fault. */
+#define WORK_FRAC N64C_WORK_FRAC
 static unsigned long long work_fx, work_carry;
 static _Thread_local int in_clock; /* this thread is inside n64c_clock_advance_to: no nested charge */
 /* A guest thread that keeps reading the clock without giving up the CPU is waiting on it (a delay or a fault
@@ -609,15 +608,31 @@ int n64c_clock_si_armed(void)
     pthread_mutex_unlock(&big);
     return armed;
 }
-void n64c_clock_set_work_ns(double ns)
+void n64c_clock_set_work(unsigned long long fx)
 {
     pthread_mutex_lock(&big);
-    fexcept_t flags;
-    (void)fegetexceptflag(&flags, FE_ALL_EXCEPT);
-    work_fx = ns > 0 ? (unsigned long long)(ns * (double)(1ull << WORK_FRAC) + 0.5) : 0;
-    (void)fesetexceptflag(&flags, FE_ALL_EXCEPT);
+    work_fx = fx;
     work_carry = 0;
     pthread_mutex_unlock(&big);
+}
+/* "4702.010109321735" -> round(ns * 2^WORK_FRAC), in integers. Decimals past the twelfth are below the unit. */
+unsigned long long n64c_clock_parse_work(const char *ns)
+{
+    unsigned long long whole = 0, frac = 0, scale = 1;
+    const char *p = ns;
+    int digits = 0;
+    for (; *p >= '0' && *p <= '9'; p++, digits++) {
+        if (whole >= 1ull << 40) return 0;
+        whole = whole * 10 + (unsigned)(*p - '0');
+    }
+    if (*p == '.')
+        for (p++; *p >= '0' && *p <= '9'; p++, digits++)
+            if (scale < 1000000000000ull) {
+                frac = frac * 10 + (unsigned)(*p - '0');
+                scale *= 10;
+            }
+    if (*p || !digits) return 0;
+    return (whole << WORK_FRAC) + ((frac << WORK_FRAC) + scale / 2) / scale;
 }
 OSTime n64c_clock_now_ns(void)
 {
