@@ -45,10 +45,14 @@ class ReviewTests(unittest.TestCase):
                 "polls_compared": 728,
                 "divergent": 0,
                 "reviewed_symbols": 46,
-                "coverage": {"complete": True, "port_last": 728, "oracle_last": 728},
+                "state_polls": {"complete": True, "port_last": 728, "oracle_last": 728},
+                "trace_polls": {"complete": True, "port_last": 728, "oracle_last": 728},
             },
         }
         self.assertEqual(tas_oracle.verdict(record), "ok")
+        for cut in ("state_polls", "trace_polls"):
+            state = {**record["state_diff"], cut: {"complete": False, "port_last": 728, "oracle_last": 700}}
+            self.assertEqual(tas_oracle.verdict({**record, "state_diff": state}), "fail", cut)
         for state in (
             {"polls_compared": 728, "divergent": 1},
             {"polls_compared": 0, "divergent": 0},
