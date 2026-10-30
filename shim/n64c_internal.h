@@ -13,13 +13,18 @@ void n64c_clock_advance_to(OSTime t);         /* fire timers due up to t, steppi
 OSTime n64c_clock_now(void);
 void n64c_clock_arm_ai(OSTime t, void (*due)(void)); /* call due once the clock reaches t (one slot: the audio FIFO) */
 void n64c_clock_arm_si(OSTime t, void (*due)(void)); /* same, one slot: the serial interface's DMA */
+void n64c_clock_arm_vi(OSTime t, void (*due)(void)); /* same, one slot: the next VI retrace */
+void n64c_clock_schedule(OSTime t, void (*due)(void *), void *arg); /* same, any free slot: an RSP task in flight */
+void n64c_clock_work(void);                          /* a guest thread entered an original function: charge its work */
+void n64c_clock_set_work_ns(double ns);              /* guest nanoseconds charged per entry (0: none) */
+OSTime n64c_clock_now_ns(void);                      /* the virtual clock in nanoseconds */
 int n64c_clock_si_armed(void);                       /* a serial interface DMA is running (its completion not yet delivered) */
 void n64c_sched_trace(void (*sink)(const char *line, void *user), void *user);
 /* n64c_vi.c */
 void n64c_vi_reset(void);
 OSTime n64c_vi_next_retrace_time(void);
 void n64c_vi_interrupt(void);                 /* deliver the pending VI manager notification */
-void n64c_vi_retrace(void);                   /* count, deliver VI message, swap buffer */
+void n64c_vi_retrace(void);                   /* count, deliver VI message, swap buffer; the clock fires it */
 void *n64c_vi_current_fb(void);
 /* n64c_pi.c */
 int n64c_pi_open(const char *rom_path);

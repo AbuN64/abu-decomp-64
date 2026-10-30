@@ -210,16 +210,18 @@ int main(void)
     n64c_run_idle();
     osViSetEvent(&q[0], m32(0), 1);
     static OSTimer tm_once, tm_rep;
-    /* one retrace is 782031.25 cycles; a 1 000 000 cycle timer lands inside the 2nd retrace, the repeating one at 1.2M, 2.4M, 3.6M */
+    /* one retrace is 781250 cycles (60 Hz), retrace 1 at time 0; a 1 000 000 cycle timer lands inside the 3rd
+     * retrace period, the repeating one at 1.2M, 2.4M, 3.6M */
     osSetTimer(&tm_once, 1000000, 0, &q[1], m32(1));
     osSetTimer(&tm_rep, 1200000, 1200000, &q[1], m32(2));
-    n64c_frame(); /* retrace 1 at 782031: nothing due */
+    n64c_frame(); /* retrace 1 at 0: nothing due */
     L("c%d ", (int)osViGetRetraceCount());
-    n64c_frame(); /* retrace 2 at 1564062: T1 (1.0M), T2 (1.2M) fire first */
-    n64c_frame(); /* retrace 3 at 2346093: nothing due */
-    n64c_frame(); /* retrace 4 at 3128125: T2 at 2.4M */
-    expect("vi_and_timers", "V0 c1 T1 T2 V0 V0 T2 V0 ");
-    L("t%d", (int)(osGetTime() == ((OSTime)4 * OS_CPU_COUNTER * 1001) / 60000));
+    n64c_frame(); /* retrace 2 at 781250: nothing due */
+    n64c_frame(); /* retrace 3 at 1562500: T1 (1.0M), T2 (1.2M) fire first */
+    n64c_frame(); /* retrace 4 at 2343750: nothing due */
+    n64c_frame(); /* retrace 5 at 3125000: T2 at 2.4M */
+    expect("vi_and_timers", "V0 c1 V0 T1 T2 V0 V0 T2 V0 ");
+    L("t%d", (int)(osGetTime() == (OSTime)4 * OS_CPU_COUNTER / 60));
     expect("clock_exact", "t1");
     /* F: a thread spinning on the clock sees time pass; a timer due inside the spin wakes a higher-priority
      * waiter at once, and the spin then ends (on the console Count never stops for a running thread) */

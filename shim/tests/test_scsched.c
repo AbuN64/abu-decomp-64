@@ -3,6 +3,7 @@
  * RSP and RDP until both report, the last graphics task swaps the buffer and tells its owner, every client
  * hears each retrace, a removed client does not. */
 #include "../n64c_os.h"
+#include "../n64c_internal.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -59,6 +60,17 @@ static int drain_done(void)
     return n;
 }
 #define GFX_LAST (OS_SC_NEEDS_RSP | OS_SC_NEEDS_RDP | OS_SC_LAST_TASK | OS_SC_SWAPBUFFER)
+/* The RSP finishes a task a fixed guest time after it starts (graphics 8 ms, audio 2 ms): let the clock run past
+ * that, a chained task included, and let the woken scheduler thread act. */
+static void settle(void)
+{
+    for (int i = 0; i < 3; i++) {
+        n64c_run_idle();
+        n64c_clock_advance_to(n64c_clock_now() + OS_CPU_COUNTER / 125);
+    }
+    n64c_run_idle();
+}
+
 int main(void)
 {
     N64cConfig cfg = {0};
@@ -79,7 +91,7 @@ int main(void)
 
     OSScTask g = task(M_GFXTASK, GFX_LAST, fba);
     submit(&g);
-    n64c_run_idle();
+    settle();
     expect("last_gfx_task_runs", "g");
     check("last_gfx_done_message", drain_done() == 101);
     check("task_owes_nothing", g.state == 0 && !sc.curRSPTask && !sc.curRDPTask);
@@ -87,7 +99,7 @@ int main(void)
 
     OSScTask first = task(M_GFXTASK, OS_SC_NEEDS_RSP | OS_SC_NEEDS_RDP, fbb);
     submit(&first);
-    n64c_run_idle();
+    settle();
     expect("first_of_two_runs", "g");
     check("first_of_two_silent", drain_done() == 0 && osViGetNextFramebuffer() == fba);
 
@@ -96,36 +108,40 @@ int main(void)
     osSendMesg(&sc.commandQueue, (OSMesg){.ptr = &g2}, OS_MESG_NOBLOCK);
     osSendMesg(&sc.commandQueue, (OSMesg){.ptr = &a}, OS_MESG_NOBLOCK);
     osSendMesg(&sc.interruptQueue, (OSMesg){.data32 = N64C_SC_CMD_MSG}, OS_MESG_NOBLOCK);
-    n64c_run_idle();
+    settle();
     expect("audio_before_graphics", "ag");
     check("both_done_audio_first", drain_done() == 200 * 1000 + 101);
 
     /* a task posted straight to the queue osScGetCmdQ returned */
     OSScTask direct = task(M_AUDTASK, OS_SC_NEEDS_RSP, 0);
     osSendMesg(osScGetCmdQ(&sc), (OSMesg){.ptr = &direct}, OS_MESG_NOBLOCK);
-    n64c_run_idle();
+    settle();
     expect("direct_post_runs", "a");
     check("direct_post_done", drain_done() == 200);
 
     /* retrace: every client hears the scheduler's retrace record; the hook runs once */
-    n64c_frame();
     OSMesg m;
+    while (osRecvMesg(&cq, &m, OS_MESG_NOBLOCK) == 0) {} /* retraces that came due while the RSP tasks ran */
+    while (osRecvMesg(&cq2, &m, OS_MESG_NOBLOCK) == 0) {}
+    const int hooks0 = hooks;
+    const u32 frames0 = sc.frameCount;
+    n64c_frame();
     check("client_hears_retrace", osRecvMesg(&cq, &m, OS_MESG_NOBLOCK) == 0 && m.ptr == &sc && *(s32 *)m.ptr == 1);
     check("second_client_hears_retrace", osRecvMesg(&cq2, &m, OS_MESG_NOBLOCK) == 0 && m.ptr == &sc);
-    check("hook_ran_once", hooks == 1);
-    check("frame_counted", sc.frameCount == 1);
+    check("hook_ran_once", hooks == hooks0 + 1);
+    check("frame_counted", sc.frameCount == frames0 + 1);
 
     /* a task waiting at retrace is started there */
     OSScTask g3 = task(M_GFXTASK, GFX_LAST, fba);
     osSendMesg(&sc.commandQueue, (OSMesg){.ptr = &g3}, OS_MESG_NOBLOCK);
     n64c_frame();
-    n64c_run_idle();
+    settle();
     expect("retrace_drains_commands", "g");
     check("retrace_task_done", drain_done() == 101);
 
     osScRemoveClient(&sc, &client2);
-    osRecvMesg(&cq, &m, OS_MESG_NOBLOCK);
-    osRecvMesg(&cq2, &m, OS_MESG_NOBLOCK);
+    while (osRecvMesg(&cq, &m, OS_MESG_NOBLOCK) == 0) {}
+    while (osRecvMesg(&cq2, &m, OS_MESG_NOBLOCK) == 0) {}
     n64c_frame();
     check("removed_client_silent", osRecvMesg(&cq2, &m, OS_MESG_NOBLOCK) == -1);
     check("remaining_client_hears", osRecvMesg(&cq, &m, OS_MESG_NOBLOCK) == 0);
@@ -139,7 +155,7 @@ int main(void)
     OSScTask audio = task(M_AUDTASK, OS_SC_NEEDS_RSP, NULL);
     submit(&pending);
     submit(&audio);
-    n64c_run_idle();
+    settle();
     expect("audio_bypasses_pending_framebuffer", "a");
     check("pending_buffer_keeps_task_queued", sc.gfxListHead == &pending && sc.gfxListTail == &pending && !pending.next);
     check("blocked_graphics_has_no_completion", drain_done() == 200);
@@ -149,6 +165,7 @@ int main(void)
     osViSwapBuffer(fbc);
     n64c_frame();
     expect("retrace_releases_waiting_graphics", "g");
+    settle();
     check("released_task_completes_once", drain_done() == 101 && !sc.gfxListHead && !sc.gfxListTail);
     n64c_frame();
     expect("released_task_not_replayed", "");

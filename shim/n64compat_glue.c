@@ -46,8 +46,15 @@ void n64c_set_present(N64cPresentFn fn, void *user)
     present_user = user;
 }
 void osSpTaskLoad(OSTask *t) { (void)t; }
-/* The RSP runs to completion inside the call; the game then sees the SP (and DP, for graphics) events exactly as
- * it would after the interrupt. The audio task is handed to the audio adapter, which owns the PCM sink. */
+/* The RSP work runs inside the call, where guest time stands still; the game sees the SP (and DP, for graphics)
+ * events a fixed guest duration later, as the oracle's tasks complete (graphics 8 ms, every other task 2 ms). The
+ * audio task is handed to the audio adapter, which owns the PCM sink. */
+enum { GFX_TASK_TICKS = OS_CPU_COUNTER / 125, RSP_TASK_TICKS = OS_CPU_COUNTER / 500 };
+static void rsp_task_done(void *graphics)
+{
+    n64c_event_post(OS_EVENT_SP);
+    if (graphics) n64c_event_post(OS_EVENT_DP);
+}
 void osSpTaskStartGo(OSTask *t)
 {
     if (t->type < 3 && handlers[t->type].fn) {
@@ -56,11 +63,9 @@ void osSpTaskStartGo(OSTask *t)
         handlers[t->type].fn(t, handlers[t->type].user);
         host_fpu_leave(&saved);
     }
-    if (t->type == M_GFXTASK) {
-        rendered_output = t->output_buff;
-        n64c_event_post(OS_EVENT_DP);
-    }
-    n64c_event_post(OS_EVENT_SP);
+    if (t->type == M_GFXTASK) rendered_output = t->output_buff;
+    n64c_clock_schedule(n64c_clock_now() + (t->type == M_GFXTASK ? GFX_TASK_TICKS : RSP_TASK_TICKS), rsp_task_done,
+                        t->type == M_GFXTASK ? (void *)t : NULL);
 }
 s32 osSpTaskYielded(OSTask *t) { (void)t; return 0; }
 s32 osDpSetNextBuffer(void *buffer, u64 size)
@@ -75,6 +80,20 @@ s32 osDpSetNextBuffer(void *buffer, u64 size)
     fflush(stderr);
     _Exit(78);
 }
+/* N64C_GUEST_NS_PER_ENTRY: guest nanoseconds one function entry of the original game costs, the oracle's
+ * HOST_GUEST_NS_PER_ENTRY (cpu.calibration of the project profile). Unset: no work is charged. */
+static double guest_ns_per_entry(void)
+{
+    const char *text = getenv("N64C_GUEST_NS_PER_ENTRY");
+    if (!text || !*text) return 0;
+    char *end;
+    double ns = strtod(text, &end);
+    if (*end || !(ns > 0)) {
+        fprintf(stderr, "boot-missing: N64C_GUEST_NS_PER_ENTRY must be a positive number, got %s\n", text);
+        _Exit(78);
+    }
+    return ns;
+}
 void n64c_init(const N64cConfig *cfg)
 {
     n64c_sched_reset();
@@ -84,6 +103,7 @@ void n64c_init(const N64cConfig *cfg)
     n64c_vi_reset();
     n64c_pi_close();
     n64c_cont_reset(cfg);
+    n64c_clock_set_work_ns(guest_ns_per_entry());
     memset(handlers, 0, sizeof handlers);
     present_fn = NULL;
     rendered_output = NULL;
@@ -107,9 +127,8 @@ int n64c_frame(void)
     N64C_ZONE(zr1,"game-run");
     n64c_sched_run_idle();
     N64C_ZONE_END(zr1);
-    n64c_clock_advance_to(n64c_vi_next_retrace_time());
     N64C_ZONE(zvi,"vi-retrace");
-    n64c_vi_retrace();
+    n64c_clock_advance_to(n64c_vi_next_retrace_time()); /* the retrace is a device event on the clock */
     N64C_ZONE_END(zvi);
     N64C_ZONE(zr2,"game-run");
     n64c_sched_run_idle();

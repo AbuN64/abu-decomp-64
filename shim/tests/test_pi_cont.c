@@ -116,10 +116,17 @@ int main(void)
     n64c_set_task_handler(M_AUDTASK, aud_task, &ten);
     OSTask t = {.type = M_GFXTASK};
     osSpTaskStartGo(&t);
-    CHECK(gfx_seen == 1 && aud_seen == 0 && spq.validCount == 1 && dpq.validCount == 1);
+    CHECK(gfx_seen == 1 && aud_seen == 0 && spq.validCount == 0 && dpq.validCount == 0); /* the RSP is still running */
+    n64c_clock_advance_to(n64c_clock_now() + OS_CPU_COUNTER / 125 - 1);
+    CHECK(spq.validCount == 0 && dpq.validCount == 0);
+    n64c_clock_advance_to(n64c_clock_now() + 1); /* graphics: 8 ms after the start */
+    CHECK(spq.validCount == 1 && dpq.validCount == 1);
     t.type = M_AUDTASK;
     osSpTaskStartGo(&t);
-    CHECK(aud_seen == 10 && spq.validCount == 2 && dpq.validCount == 1);
+    n64c_clock_advance_to(n64c_clock_now() + OS_CPU_COUNTER / 500 - 1);
+    CHECK(aud_seen == 10 && spq.validCount == 1);
+    n64c_clock_advance_to(n64c_clock_now() + 1); /* audio: 2 ms */
+    CHECK(spq.validCount == 2 && dpq.validCount == 1);
     /* VI swap latches at the next retrace */
     char fb1[1], fb2[1];
     osViSwapBuffer(fb1);

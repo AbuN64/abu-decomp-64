@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* n64c_vi: video interface timing. One retrace is one field at 60000/1001 Hz on the virtual 46.875 MHz clock;
+/* n64c_vi: video interface timing. Retraces are events on the virtual clock at 60 Hz of guest time, retrace 1 at
+ * time 0, like the oracle's (hosts/n64recomp/RUNTIME.md "Virtual guest time");
  * osViSwapBuffer takes effect at the next retrace, like the hardware latching the origin register. */
 #include "n64c_internal.h"
 #include "n64c_diag.h"
@@ -22,6 +23,7 @@ static struct {
     u32 control;
 } vi;
 
+static void vi_due(void);
 void n64c_vi_reset(void)
 {
     vi.mq = NULL;
@@ -35,6 +37,7 @@ void n64c_vi_reset(void)
     vi.mode_set = 0;
     vi.mode = (OSViMode){0};
     vi.control = 0;
+    n64c_clock_arm_vi(0, vi_due);
 }
 static _Noreturn void stop(const char *what, u32 value)
 {
@@ -103,10 +106,14 @@ void *osViGetCurrentFramebuffer(void) { return vi.current; }
 void *osViGetNextFramebuffer(void) { return vi.swap_pending ? vi.next : vi.current; }
 u32 osViGetRetraceCount(void) { return vi.retraces; }
 void *n64c_vi_current_fb(void) { return vi.black ? NULL : vi.current; }
-/* Absolute time of retrace number n (1-based): n * clock * 1001 / 60000, exact in 64-bit integers. */
-OSTime n64c_vi_next_retrace_time(void)
+/* Absolute time of retrace number n (1-based): (n - 1) / 60 s, exact in Count ticks. */
+static OSTime retrace_time(u32 n) { return (OSTime)(n - 1) * (OS_CPU_COUNTER / 60u); }
+OSTime n64c_vi_next_retrace_time(void) { return retrace_time(vi.retraces + 1); }
+/* The next retrace is armed before this one runs: the message it sends can move the baton to another guest thread. */
+static void vi_due(void)
 {
-    return ((OSTime)(vi.retraces + 1) * OS_CPU_COUNTER * OS_VI_NTSC_HZ_DEN) / OS_VI_NTSC_HZ_NUM;
+    n64c_clock_arm_vi(retrace_time(vi.retraces + 2), vi_due);
+    n64c_vi_retrace();
 }
 void n64c_vi_retrace(void)
 {

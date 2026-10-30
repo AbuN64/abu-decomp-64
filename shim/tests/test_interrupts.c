@@ -100,9 +100,10 @@ int main(void)
     /* Masked VI still advances hardware retraces; notification is deferred and coalesced. */
     osViSetEvent(&q,(OSMesg){.data32=66},1);
     osSetIntMask(OS_IM_NONE);
+    const u32 retraces=osViGetRetraceCount();
     n64c_vi_retrace(); n64c_vi_retrace();
     osCreateViManager(OS_PRIORITY_VIMGR); /* creation cannot reset pending VI state */
-    CHECK(osViGetRetraceCount()==2);
+    CHECK(osViGetRetraceCount()==retraces+2);
     empty();
     osSetIntMask(OS_IM_VI);
     receive(66); empty();

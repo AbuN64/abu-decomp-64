@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Shim tests live beside the shim: N64 names are allowed here and nowhere else outside the shim and the port's boundary directory.
-foreach(t sched scsched interrupts si_timing gu pi_cont si_pfs cpak dl audio vi_dp rnc memory memory_win pi_relocate pi_resources pi_packed system fpu fpu_thread al albnk tas reach menu)
+foreach(t sched scsched interrupts si_timing clock gu pi_cont si_pfs cpak dl audio vi_dp rnc memory memory_win pi_relocate pi_resources pi_packed system fpu fpu_thread al albnk tas reach menu)
     add_executable(n64c_test_${t} test_${t}.c)
     target_link_libraries(n64c_test_${t} PRIVATE n64compat)
     target_compile_options(n64c_test_${t} PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)

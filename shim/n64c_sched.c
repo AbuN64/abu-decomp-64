@@ -59,15 +59,28 @@ static int interrupt_enabled(u32 event)
     return (interrupt_mask & event_masks[event]) == event_masks[event];
 }
 static OSTimer *timers;            /* sorted by value (absolute due time) */
-static OSTime clock_now;
+static OSTime clock_now;           /* the virtual clock in Count ticks (46.875 MHz) ... */
+static unsigned clock_sub;         /* ... plus 1/64 tick units (3 per nanosecond) of work charged within a tick */
 static OSTime compare_deadline;
-static OSTime ai_deadline; /* virtual time the audio FIFO's oldest buffer finishes playing */
-static int ai_armed;
-static void (*ai_due)(void);
-static OSTime si_deadline; /* virtual time the serial interface finishes the DMA it is running */
-static int si_armed;
-static void (*si_due)(void);
 static int compare_armed;
+/* Device events on the one clock, each fired once the clock reaches its time, earliest first (arming order breaks a
+ * tie): the audio FIFO's oldest buffer finishing, the serial interface's DMA, the next VI retrace and the RSP tasks
+ * in flight. The first three have a fixed slot (re-arming replaces); RSP completions take any free slot. */
+enum { DEV_AI, DEV_SI, DEV_VI, DEV_FIXED, DEV_SLOTS = 16 };
+typedef struct {
+    int armed;
+    OSTime at;
+    unsigned long seq;
+    void (*due)(void);
+    void (*due_arg)(void *);
+    void *arg;
+} DevEvent;
+static DevEvent devs[DEV_SLOTS];
+static unsigned long dev_seq;
+/* Guest work: each function entry of the original game charges work_ns of guest time (the oracle's
+ * HOST_GUEST_NS_PER_ENTRY); 0 charges nothing and the clock then moves only when every guest thread waits. */
+static double work_ns, work_carry;
+static _Thread_local int in_clock; /* this thread is inside n64c_clock_advance_to: no nested charge */
 /* A guest thread that keeps reading the clock without giving up the CPU is waiting on it (a delay or a fault
  * handler's watchdog loop). On the console Count runs on regardless; here it moves only when the host advances
  * it, and the spinning thread keeps the host from running by holding the baton, so the loop would never end.
@@ -233,7 +246,7 @@ s32 osJamMesg(OSMesgQueue *mq, OSMesg msg, s32 flag) { return send(mq, msg, flag
 __attribute__((weak)) OSMesgQueue *n64c_si_queue(void) { return NULL; } /* the controller adapter, when linked, names it */
 static int si_idle_wait(OSMesgQueue *mq) /* caller holds big */
 {
-    return mq == n64c_si_queue() && mq->validCount == 0 && !si_armed && !(pending_events & (1u << OS_EVENT_SI));
+    return mq == n64c_si_queue() && mq->validCount == 0 && !devs[DEV_SI].armed && !(pending_events & (1u << OS_EVENT_SI));
 }
 s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flag)
 {
@@ -524,6 +537,13 @@ s32 osStopTimer(OSTimer *t)
     pthread_mutex_unlock(&big);
     return found;
 }
+static void clock_jump(OSTime t)
+{
+    if (t > clock_now) {
+        clock_now = t;
+        clock_sub = 0;
+    }
+}
 static OSTime clock_read(void)
 {
     HostThread *h = self();
@@ -556,55 +576,99 @@ void __osSetCompare(u32 value)
     if (timers && timers->value <= clock_now) pending_events |= 1u << OS_EVENT_COUNTER;
     pthread_mutex_unlock(&big);
 }
-void n64c_clock_arm_ai(OSTime t, void (*due)(void))
+static void dev_arm(int slot, OSTime t, void (*due)(void), void (*due_arg)(void *), void *arg)
 {
     pthread_mutex_lock(&big);
-    ai_deadline = t;
-    ai_due = due;
-    ai_armed = 1;
+    devs[slot] = (DevEvent){1, t, dev_seq++, due, due_arg, arg};
     pthread_mutex_unlock(&big);
 }
-void n64c_clock_arm_si(OSTime t, void (*due)(void))
+void n64c_clock_arm_ai(OSTime t, void (*due)(void)) { dev_arm(DEV_AI, t, due, NULL, NULL); }
+void n64c_clock_arm_si(OSTime t, void (*due)(void)) { dev_arm(DEV_SI, t, due, NULL, NULL); }
+void n64c_clock_arm_vi(OSTime t, void (*due)(void)) { dev_arm(DEV_VI, t, due, NULL, NULL); }
+void n64c_clock_schedule(OSTime t, void (*due)(void *), void *arg)
 {
     pthread_mutex_lock(&big);
-    si_deadline = t;
-    si_due = due;
-    si_armed = 1;
+    for (int i = DEV_FIXED; i < DEV_SLOTS; i++)
+        if (!devs[i].armed) {
+            devs[i] = (DevEvent){1, t, dev_seq++, NULL, due, arg};
+            pthread_mutex_unlock(&big);
+            return;
+        }
     pthread_mutex_unlock(&big);
+    fprintf(stderr, "n64c-sched: more than %d device events in flight\n", DEV_SLOTS - DEV_FIXED);
+    abort();
 }
 int n64c_clock_si_armed(void)
 {
     pthread_mutex_lock(&big);
-    int armed = si_armed;
+    int armed = devs[DEV_SI].armed;
     pthread_mutex_unlock(&big);
     return armed;
+}
+void n64c_clock_set_work_ns(double ns)
+{
+    pthread_mutex_lock(&big);
+    work_ns = ns;
+    work_carry = 0;
+    pthread_mutex_unlock(&big);
+}
+OSTime n64c_clock_now_ns(void)
+{
+    pthread_mutex_lock(&big);
+    OSTime ns = (clock_now * 64 + clock_sub) / 3;
+    pthread_mutex_unlock(&big);
+    return ns;
+}
+/* A guest thread entered a function of the original game: the time it used runs the clock. Devices that fall due
+ * in that span fire in time order on this thread (a message to a higher-priority thread moves the baton there). */
+void n64c_clock_work(void)
+{
+    HostThread *h = self();
+    if (!h || in_clock) return;
+    pthread_mutex_lock(&big);
+    if (work_ns <= 0 || baton != h) {
+        pthread_mutex_unlock(&big);
+        return;
+    }
+    work_carry += work_ns;
+    unsigned long long whole = (unsigned long long)work_carry;
+    work_carry -= (double)whole;
+    unsigned long long units = clock_sub + whole * 3;
+    OSTime t = clock_now + (units >> 6);
+    unsigned sub = (unsigned)(units & 63);
+    pthread_mutex_unlock(&big);
+    in_clock = 1;
+    n64c_clock_advance_to(t);
+    in_clock = 0;
+    pthread_mutex_lock(&big);
+    if (clock_now == t) clock_sub = sub;
+    pthread_mutex_unlock(&big);
 }
 void n64c_clock_advance_to(OSTime t)
 {
     for (;;) {
         pthread_mutex_lock(&big);
         OSTimer *due = timers && timers->value <= t ? timers : NULL;
-        /* A device finished its transfer, earliest first: the audio FIFO's oldest buffer (the AI interrupt that tells
-         * the game to refill it) or the serial interface's DMA (the SI interrupt that tells the game its controller
-         * read is complete). The device event runs before any timer or Compare that falls due at the same time or
-         * later, so a completion reaches the game's queue ahead of the retrace it precedes. */
-        int ai_ready = ai_armed && ai_deadline <= t;
-        int si_ready = si_armed && si_deadline <= t;
-        int take_si = si_ready && (!ai_ready || si_deadline < ai_deadline);
-        OSTime at = take_si ? si_deadline : ai_deadline;
-        if ((ai_ready || si_ready) && (!due || at <= due->value) && (!compare_armed || at <= compare_deadline)) {
-            void (*fire)(void) = take_si ? si_due : ai_due;
-            if (take_si) si_armed = 0; else ai_armed = 0;
-            if (at > clock_now) clock_now = at;
+        /* A device event is due, earliest first. It runs before any timer or Compare that falls due at the same time
+         * or later, so a completion reaches the game's queue ahead of the retrace it precedes. */
+        int best = -1;
+        for (int i = 0; i < DEV_SLOTS; i++)
+            if (devs[i].armed && devs[i].at <= t &&
+                (best < 0 || devs[i].at < devs[best].at || (devs[i].at == devs[best].at && devs[i].seq < devs[best].seq)))
+                best = i;
+        if (best >= 0 && (!due || devs[best].at <= due->value) && (!compare_armed || devs[best].at <= compare_deadline)) {
+            DevEvent e = devs[best];
+            devs[best].armed = 0;
+            clock_jump(e.at);
             pthread_mutex_unlock(&big);
-            fire();
+            if (e.due) e.due(); else e.due_arg(e.arg);
             if (!self()) n64c_sched_run_idle();
             continue;
         }
         if (compare_armed && compare_deadline <= t &&
             (!due || !interrupt_enabled(OS_EVENT_COUNTER) || compare_deadline <= due->value)) {
             compare_armed = 0;
-            if (compare_deadline > clock_now) clock_now = compare_deadline;
+            clock_jump(compare_deadline);
             pthread_mutex_unlock(&big);
             n64c_event_post(OS_EVENT_COUNTER);
             if (!self()) n64c_sched_run_idle();
@@ -612,13 +676,13 @@ void n64c_clock_advance_to(OSTime t)
         }
         if (due && !interrupt_enabled(OS_EVENT_COUNTER)) {
             pending_events |= 1u << OS_EVENT_COUNTER;
-            if (t > clock_now) clock_now = t;
+            clock_jump(t);
             pthread_mutex_unlock(&big);
             return;
         }
         if (due) {
             timers = due->next;
-            if (due->value > clock_now) clock_now = due->value;
+            clock_jump(due->value);
             OSMesgQueue *mq = due->mq;
             OSMesg msg = due->msg;
             if (due->interval) {
@@ -634,8 +698,7 @@ void n64c_clock_advance_to(OSTime t)
             if (!self()) n64c_sched_run_idle();
             continue;
         }
-        if (t > clock_now)
-            clock_now = t;
+        clock_jump(t);
         pthread_mutex_unlock(&big);
         return;
     }
@@ -720,10 +783,11 @@ void n64c_sched_reset(void)
     baton = NULL;
     timers = NULL;
     clock_now = 0;
+    clock_sub = 0;
     compare_deadline = 0;
     compare_armed = 0;
-    ai_armed = 0;
-    si_armed = 0;
+    memset(devs, 0, sizeof devs);
+    work_ns = work_carry = 0;
     interrupt_mask = OS_IM_ALL;
     pending_events = 0;
     memset(events, 0, sizeof events);
