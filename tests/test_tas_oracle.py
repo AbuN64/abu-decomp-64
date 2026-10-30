@@ -258,7 +258,8 @@ class PlayTests(unittest.TestCase):
         self.host.chmod(0o755)
         (self.root / "gen").mkdir()
         (self.root / "gen" / "cpu_profile.h").write_text(
-            "#pragma once\n#define HOST_NATIVE_CPU_SCALE 4.37\n#define HOST_GUEST_NS_PER_ENTRY 4702.01\n")
+            "#pragma once\n#define HOST_NATIVE_CPU_SCALE 4.37\n#define HOST_GUEST_NS_PER_ENTRY 4702.01\n"
+        )
         (self.root / "movies").mkdir()
         sha = hashlib.sha1(b"rom").hexdigest()
         (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA *50\n")
@@ -271,13 +272,20 @@ class PlayTests(unittest.TestCase):
         return load_profile(self.seat)
 
     def test_the_port_is_given_the_oracles_work_charge(self):
-        self.assertEqual(tas_oracle.guest_ns_per_entry(self.host), "4702.01")
+        oracle = tas_oracle.settings(self.profile)
+        self.assertEqual(tas_oracle.guest_ns_per_entry(oracle), "4702.01")
         (self.root / "gen" / "cpu_profile.h").write_text("#define HOST_GUEST_NS_PER_ENTRY 0\n")
         with self.assertRaises(DecompError):
-            tas_oracle.guest_ns_per_entry(self.host)
+            tas_oracle.guest_ns_per_entry(oracle)
         (self.root / "gen" / "cpu_profile.h").unlink()
         with self.assertRaises(DecompError):
-            tas_oracle.guest_ns_per_entry(self.host)
+            tas_oracle.guest_ns_per_entry(oracle)
+
+    def test_the_work_charge_comes_from_the_named_cpu_profile(self):
+        named = self.root / "named.h"
+        named.write_text("#define HOST_GUEST_NS_PER_ENTRY 12.5\n")
+        oracle = tas_oracle.settings(self.load(oracle={"host": "n64host", "cpu_profile": "named.h"}))
+        self.assertEqual(tas_oracle.guest_ns_per_entry(oracle), "12.5")
 
     def test_settings(self):
         self.assertIsNone(tas_oracle.settings(self.load()))

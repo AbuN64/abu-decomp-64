@@ -50,7 +50,19 @@ from abu_decomp import DecompError, procguard
 from abu_decomp.config import Profile, check_keys
 
 _KEYS = frozenset(
-    {"host", "env", "shot_every", "render_lead", "pictures", "timeout_seconds", "rebuild", "lock", "pins", "pins_repo"}
+    {
+        "host",
+        "env",
+        "shot_every",
+        "render_lead",
+        "pictures",
+        "timeout_seconds",
+        "rebuild",
+        "lock",
+        "pins",
+        "pins_repo",
+        "cpu_profile",
+    }
 )
 VIEW, LOG, DIFF = "oracle.bmp", "oracle.txt", "diff.json"
 AUDIO = "audio-oracle.pcm"  # the original's sound, as the port's audio.pcm (+ ".rate")
@@ -90,6 +102,7 @@ def settings(profile: Profile) -> dict[str, Any] | None:
         **stamp,
         "rebuild": str(table.get("rebuild", "")),
         "host": profile.path("tas.oracle.host", table["host"]),
+        "cpu_profile": profile.path("tas.oracle.cpu_profile", table["cpu_profile"]) if "cpu_profile" in table else None,
         "env": {str(k): str(v) for k, v in table.get("env", {}).items()},
         "shot_every": every,
         "render_lead": lead,
@@ -160,11 +173,11 @@ def required(profile: Profile, fresh: bool = True) -> dict[str, Any]:
 _ENTRY_NS = re.compile(r"^#define HOST_GUEST_NS_PER_ENTRY\s+(\S+)\s*$", re.MULTILINE)
 
 
-def guest_ns_per_entry(host: Path) -> str:
+def guest_ns_per_entry(oracle: dict[str, Any]) -> str:
     """The guest nanoseconds the oracle charges per function entry (`N64R_CLOCK=entries`), read from the
-    `gen/cpu_profile.h` its build rendered from the profile's CPU calibration: the work measure the port's clock
-    shares, so both sides charge guest time alike."""
-    header = host.parent / "gen" / "cpu_profile.h"
+    `cpu_profile.h` its build rendered from the profile's CPU calibration (`tas.oracle.cpu_profile`, else `gen/`
+    beside the host): the work measure the port's clock shares, so both sides charge guest time alike."""
+    header = oracle["cpu_profile"] or oracle["host"].parent / "gen" / "cpu_profile.h"
     try:
         found = _ENTRY_NS.search(header.read_text())
     except OSError as error:
@@ -180,7 +193,7 @@ def port_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
     disk twice, 10-23): only the trace, the run's latest picture (view.bmp) and a fault's own capture remain."""
     env = {
         "N64C_TAS_TRACE": str(run / PORT_TRACE),
-        "N64C_GUEST_NS_PER_ENTRY": guest_ns_per_entry(oracle["host"]),  # the oracle's work charge: one guest clock
+        "N64C_GUEST_NS_PER_ENTRY": guest_ns_per_entry(oracle),  # the oracle's work charge: one guest clock
     }
     if oracle.get("pictures"):
         shots = run / SHOTS / "port"
