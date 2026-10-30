@@ -176,6 +176,8 @@ def _build(profile: Profile, table: Any) -> dict[str, Any]:
     for key in ("units", "sources", "pins", "pins_repo", "lock"):
         if key in table:
             out[key] = profile.path(f"tas.build.{key}", table[key])
+    if "graph" in table:
+        out["graph"] = [str(g) for g in table["graph"]]  # `{port_dir}` is filled per reported port (tas_health)
     return out
 
 
