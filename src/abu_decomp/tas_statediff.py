@@ -968,6 +968,15 @@ def pick_rows(r: dict[str, Any], base: int) -> None:
     r["runtime"] = (later[0][0], later[0][1]) if r["static"] and later else None
 
 
+def ledger_file(cfg: dict[str, Any]) -> Path:
+    """The reviewed-difference ledger: `lockstep-ignore.tsv` in the port's facts folder (N64C_PORT_DIR from tas.env or the
+    process), a relative folder taken from the profile's folder, never from the working directory. Unset names no file."""
+    facts = cfg.get("env", {}).get("N64C_PORT_DIR", os.environ.get("N64C_PORT_DIR", ""))
+    if not facts:
+        return Path("<N64C_PORT_DIR unset>") / "lockstep-ignore.tsv"
+    return Path(cfg.get("root") or ".") / facts / "lockstep-ignore.tsv"
+
+
 def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any]) -> dict[str, Any]:
     """Compare the two traces, name each divergent region's first differing field, write state-diff.json and the
     findings. Returns the summary stored in the run record."""
@@ -1012,8 +1021,11 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
         ),
     )
     raw_regions = _rows(syms, found) if found["compared"] else {}
-    facts = session.cfg.get("env", {}).get("N64C_PORT_DIR", os.environ.get("N64C_PORT_DIR", "."))
-    ledger_path = Path(facts) / "lockstep-ignore.tsv"
+    ledger_path = ledger_file(session.cfg)
+    if not ledger_path.is_file():
+        result.update(error=f"no reviewed-difference ledger at {ledger_path}", divergent=None)
+        (run / DIFF).write_text(json.dumps(result, indent=1))
+        return {"error": result["error"], "oracle_run": session.oracle_run}
     ledger = tas_reviews.read(ledger_path)
     reviewed = []
     remaining = list(found["first"])

@@ -204,6 +204,7 @@ def settings(profile: Profile) -> dict[str, Any]:
     table = profile.section("tas")
     check_keys(profile.source_file, "tas", table, _REQUIRED, _KEYS)
     return {
+        "root": profile.source_file.parent,
         "movies": profile.path("tas.movies", table["movies"]),
         "runs": profile.path("tas.runs", table["runs"]),
         "port": profile.path("tas.port", table["port"]) if "port" in table else None,

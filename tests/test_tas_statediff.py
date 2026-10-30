@@ -347,6 +347,7 @@ class FinishTests(unittest.TestCase):
         (self.cache / "oracle-trace.txt").write_text("1 1\n2 3\n3 7\n")
         self.session = sd.Session(self.folder, self.run, {"runs": self.tmp / "runs"}, "k", TABLE, self.cache, True)
         self.dump_args = []
+        self.ledger("")  # a run always names its ledger; the tests that care write their own
 
     def traces(self, port: str, original: str) -> None:
         (self.run / sd.PORT_HASHES).write_text(port)
@@ -400,6 +401,26 @@ class FinishTests(unittest.TestCase):
         )
         self.assertEqual(summary["divergent"], 1)
         self.assertEqual(self.findings()[0]["symbol"], "gItems")
+
+    def test_a_relative_ledger_folder_is_the_profiles_not_the_working_directory(self):
+        (self.tmp / "profile" / "facts").mkdir(parents=True)
+        (self.tmp / "profile" / "facts" / "lockstep-ignore.tsv").write_text("gPos\tReviewed.\n")
+        self.session.cfg.update(root=self.tmp / "profile", env={"N64C_PORT_DIR": "facts"})
+        self.traces("1 0:1 1:2 2:3\n", "1 0:1 1:2 2:4\n")
+        with mock.patch.object(sd, "_dump_pass") as dump:
+            summary = sd.finish(self.session, None, "movie-a", {})
+        dump.assert_not_called()
+        self.assertEqual((summary["raw_symbols"], summary["reviewed_symbols"]), (1, 1))
+
+    def test_a_missing_or_unnamed_ledger_refuses_instead_of_comparing_with_none(self):
+        self.traces("1 0:1 1:2 2:3\n", "1 0:1 1:2 2:4\n")
+        for env in ({}, {"N64C_PORT_DIR": str(self.tmp / "nowhere")}):
+            self.session.cfg["env"] = env
+            with mock.patch.dict("os.environ", {}, clear=False) as environ:
+                environ.pop("N64C_PORT_DIR", None)
+                summary = sd.finish(self.session, None, "movie-a", {})
+            self.assertIn("no reviewed-difference ledger at", summary["error"])
+            self.assertIn("no reviewed-difference ledger", json.loads((self.run / sd.DIFF).read_text())["error"])
 
     def test_malformed_ledger_cannot_accept_a_difference(self):
         self.ledger("gPos\t\n")
