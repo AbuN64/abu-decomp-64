@@ -315,6 +315,51 @@ class PlayTests(unittest.TestCase):
         self.assertFalse((run / "shots").exists())
         self.assertIsNone(result["oracle"]["max_diff"])
 
+    def test_one_oracle_process_yields_the_pictures_and_the_state_trace(self):
+        from abu_decomp import tas_statediff
+
+        hosts, seen = [], {}
+        host = str(self.host)
+
+        class Process:
+            def __init__(self, argv, env, stdout, **kwargs):
+                self.pid = 4242 if argv[0] == host else 4343
+                self.stdin = io.StringIO()
+                if argv[0] == host:  # the one oracle: pictures, its poll trace and the state trace
+                    hosts.append(env)
+                    Path(env["N64R_TAS_TRACE"]).write_text("25 40\n57 90\n")
+                    Path(env["N64R_TAS_STATE_HASH"]).write_text("57\n")
+                    return
+                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n" * 50)
+                stdout.write("n64c-tas: done polls=57\n")
+
+        def begin(profile, cfg, run, pak, card, polls, pads=1, attach=False):
+            seen["attach"] = attach
+            folder = self.root / "spec"
+            folder.mkdir(exist_ok=True)
+            return tas_statediff.Session(folder, run, cfg, "k", {}, run, False, attached=attach, movie_polls=len(polls))
+
+        def finish(session, profile, movie, record):
+            seen["end"] = dict(session._end)
+            seen["trace"] = (session.run / tas_statediff.ORACLE_HASHES).read_text()
+            return {"oracle_run": "seen"}
+
+        with (
+            mock.patch.object(tas.subprocess, "Popen", Process),
+            mock.patch.object(tas, "_wait", lambda *a, **k: (0, 0.5)),
+            mock.patch.object(tas_statediff, "begin", begin),
+            mock.patch.object(tas_statediff, "finish", finish),
+        ):
+            result = tas.play(self.profile, "m", oracle=True)
+        self.assertTrue(seen["attach"])
+        self.assertEqual(len(hosts), 1)  # no second host for the state trace
+        self.assertEqual(hosts[0]["N64R_TAS_STATE_HASH"], str(Path(result["run"]) / tas_statediff.ORACLE_HASHES))
+        self.assertTrue(hosts[0]["N64R_TAS_STATE"].endswith("oracle.spec"))
+        self.assertEqual(seen["end"]["code"], 0)  # the state diff reads the one oracle's exit and CPU
+        self.assertEqual(seen["end"]["cpu"], 0.5)
+        self.assertEqual(seen["trace"], "57\n")
+        self.assertEqual(result["state_diff"], {"oracle_run": "seen"})
+
 
 class PortEnvTests(unittest.TestCase):
     def test_every_port_process_counts_into_its_own_folder_whatever_the_profile_says(self):
@@ -338,13 +383,21 @@ class PortEnvTests(unittest.TestCase):
             (cache / "dump-2.bin").write_bytes(b"x")  # nothing missing: only the port is spawned
             cfg = {"port": "port", "args": [], "env": {"GCOV_PREFIX": "/build"}, "timeout_seconds": 1}
             session = SimpleNamespace(
-                cfg=cfg, run=run, pads=1, pak="on", oracle_dir=cache, folder=Path(name), oracle_cfg={}
+                cfg=cfg,
+                run=run,
+                pads=1,
+                pak="on",
+                oracle_dir=cache,
+                folder=Path(name),
+                oracle_cfg={},
+                detail_runs=[],
+                notes=[],
             )
             seen = []
             popen = lambda argv, env, **_: seen.append(env)  # noqa: E731
             with (
                 mock.patch.object(tas_statediff.subprocess, "Popen", popen),
-                mock.patch.object(tas, "_wait"),
+                mock.patch.object(tas, "_wait", return_value=(0, 0.0)),
                 mock.patch.dict(os.environ, {"GCOV_PREFIX": "/elsewhere"}),
             ):
                 tas_statediff._dump_pass(session, [2], mock.Mock())
@@ -363,7 +416,15 @@ class PortEnvTests(unittest.TestCase):
             (cache / "dump-2.bin").write_bytes(b"x")
             cfg = {"port": "port", "args": [], "env": {}, "timeout_seconds": 1}
             session = SimpleNamespace(
-                cfg=cfg, run=run, pads=1, pak="on", oracle_dir=cache, folder=Path(name), oracle_cfg={}
+                cfg=cfg,
+                run=run,
+                pads=1,
+                pak="on",
+                oracle_dir=cache,
+                folder=Path(name),
+                oracle_cfg={},
+                detail_runs=[],
+                notes=[],
             )
             dumps = run / tas_statediff.DUMPS
 
@@ -374,7 +435,10 @@ class PortEnvTests(unittest.TestCase):
                 (dumps / "gcov" / "home" / "a.gcda").write_bytes(b"g")
                 (dumps / "state-2.bin").write_bytes(b"d")
 
-            with mock.patch.object(tas_statediff.subprocess, "Popen", popen), mock.patch.object(tas, "_wait"):
+            with (
+                mock.patch.object(tas_statediff.subprocess, "Popen", popen),
+                mock.patch.object(tas, "_wait", return_value=(0, 0.0)),
+            ):
                 tas_statediff._dump_pass(session, [2], mock.Mock())
             self.assertEqual(
                 sorted(p.name for p in dumps.iterdir() if p.name != "output.txt"), ["movie.raw", "state-2.bin"]

@@ -1552,8 +1552,8 @@ def play(
         if state_diff and not sanitize and not human and not retry:
             try:
                 with _starting_play_process():
-                    state = tas_statediff.begin(profile, cfg, run, pak, card, polls, pads)
-                    if state:
+                    state = tas_statediff.begin(profile, cfg, run, pak, card, polls, pads, attach=bool(original))
+                    if state and state.process:
                         children.append(state.process)
                         if state._waiter:
                             reapers.append(state._waiter)
@@ -1569,7 +1569,15 @@ def play(
             record["oracle"] = {"status": "running", "every": original["shot_every"], "host": str(original["host"])}
             oracle_began = time.monotonic()
             with _starting_play_process():
-                oracle_process = tas_oracle.start(original, run, cfg["exit_after"], pak, card=oracle_card, pads=pads)
+                oracle_process = tas_oracle.start(
+                    original,
+                    run,
+                    cfg["exit_after"],
+                    pak,
+                    extra=state.oracle_env() if state and state.attached else None,  # one host: pictures and trace
+                    card=oracle_card,
+                    pads=pads,
+                )
                 children.append(oracle_process)
                 record["oracle"]["pid"] = oracle_process.pid
 
@@ -1580,6 +1588,8 @@ def play(
             oracle_waiter = threading.Thread(target=reap, daemon=True)
             oracle_waiter.start()
             reapers.append(oracle_waiter)
+            if state and state.attached:
+                state.join_oracle(oracle_end, oracle_waiter)
         _write_record(run, record)
         _check_play_signal()
         argv = _argv(cfg, user_dir, pak, card, fps_unlock)

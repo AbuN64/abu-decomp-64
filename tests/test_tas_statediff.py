@@ -408,29 +408,28 @@ class FinishTests(unittest.TestCase):
             sd.finish(self.session, None, "movie-a", {})
 
     def test_one_run_reports_every_divergent_region_and_keeps_going(self):
+        # both regions differ only after the first compared poll: the oracle run's own trace is the whole detail
         self.traces("1 0:1 1:2 2:3\n2 2:9\n3 0:5\n", "1 0:1 1:2 2:3\n2\n3\n")
-        fake = self.dumps({2: {18: (1).to_bytes(8, "big")}, 3: {8: (9).to_bytes(2, "big")}})
-        with mock.patch.object(sd, "_dump_pass", side_effect=fake):
+        with mock.patch.object(sd, "_dump_pass") as dump:
             summary = sd.finish(self.session, None, "movie-a", {})
-        self.assertEqual(self.dump_args, [[2, 3]])
+        dump.assert_not_called()
+        self.assertEqual((summary["detail"]["source"], summary["detail"]["polls"]), ("trace", []))
         self.assertEqual((summary["divergent"], summary["findings"]), (2, 2))
         report = json.loads((self.run / sd.DIFF).read_text())
         self.assertEqual((report["polls_compared"], report["first_compared"]), (3, 1))
         actors, camera = report["regions"]["ACTORS"], report["regions"]["CAMERA"]
         self.assertEqual(
-            (actors["status"], actors["first"]["poll"], actors["first"]["symbol"], actors["first"]["field"]),
-            ("diverges", 3, "gItems", "[1].value"),
+            (actors["status"], actors["first"]["poll"], actors["first"]["symbol"], actors["first"].get("field")),
+            ("diverges", 3, "gItems", None),
         )
         self.assertFalse(actors["first"]["static"])
         self.assertIsNone(actors["runtime"])
         self.assertEqual((camera["first"]["poll"], camera["first"]["symbol"]), (2, "gPos"))
-        self.assertEqual((camera["first"]["port"], camera["first"]["oracle"]), (0, 1))
         rows = self.findings()
         self.assertEqual(sorted(r["region"] for r in rows), ["ACTORS", "CAMERA"])
         row = next(r for r in rows if r["region"] == "ACTORS")
         self.assertEqual(
-            (row["kind"], row["movie"], row["poll"], row["symbol"], row["field"]),
-            ("state-diverge", "movie-a", 3, "gItems", "gItems[1].value"),
+            (row["kind"], row["movie"], row["poll"], row["symbol"]), ("state-diverge", "movie-a", 3, "gItems")
         )
         self.assertEqual(row["evidence"]["vi"], {"port": 5, "oracle": 7})
         self.assertTrue(row["evidence"]["timing"])
@@ -503,6 +502,8 @@ class FinishTests(unittest.TestCase):
         with mock.patch.object(sd, "_dump_pass", side_effect=fake):
             summary = sd.finish(self.session, None, "movie-a", {})
         self.assertEqual(self.dump_args, [[1, 3]])
+        self.assertEqual(summary["detail"]["source"], "replay")
+        self.assertIn("static first divergence at polls [1]", summary["detail"]["reason"])  # the run record's reason
         self.assertEqual((summary["divergent"], summary["findings"]), (1, 2))
         actors = json.loads((self.run / sd.DIFF).read_text())["regions"]["ACTORS"]
         self.assertEqual((actors["static_symbols"], actors["runtime_symbols"]), (1, 1))
@@ -525,7 +526,7 @@ class FinishTests(unittest.TestCase):
         self.assertEqual(self.findings(), [])  # only the clear: an earlier divergence stops standing
 
     def test_a_failed_dump_pass_still_reports_the_regions(self):
-        self.traces("1 0:1 1:2 2:3\n2 2:9\n", "1 0:1 1:2 2:3\n2\n")
+        self.traces("1 0:1 1:2 2:9\n", "1 0:1 1:2 2:3\n")
         with mock.patch.object(sd, "_dump_pass", side_effect=OSError("no port")):
             summary = sd.finish(self.session, None, "movie-a", {})
         self.assertEqual(summary["divergent"], 1)
@@ -533,6 +534,18 @@ class FinishTests(unittest.TestCase):
         self.assertIn("dump pass failed", report["notes"][0])
         self.assertIsNone(report["regions"]["CAMERA"]["first"].get("field"))
         self.assertEqual(report["regions"]["CAMERA"]["first"]["symbol"], "gPos")
+
+    def test_a_failed_detail_replay_is_named_in_the_result(self):
+        self.traces("1 0:1 1:2 2:9\n", "1 0:1 1:2 2:3\n")
+
+        def killed(session, polls, profile):
+            session.detail_runs.append({"side": "original", "exit": None, "outcome": "hang", "cpu_seconds": 300.0})
+            return {}
+
+        with mock.patch.object(sd, "_dump_pass", side_effect=killed):
+            summary = sd.finish(self.session, None, "movie-a", {})
+        self.assertEqual(summary["detail"]["failed"], ["original"])
+        self.assertEqual(summary["detail"]["runs"][0]["cpu_seconds"], 300.0)
 
     def test_a_port_without_the_feature_says_so(self):
         self.traces("", "1 0:1 1:2 2:3\n")
@@ -573,6 +586,235 @@ class DumpPassPadsTests(unittest.TestCase):
         self.assertEqual(port.call_args.kwargs["env"]["N64C_PADS"], "2")
         self.assertEqual(oracle.call_args.kwargs["pads"], 2)
         self.assertEqual(len((run / sd.DUMPS / "movie.raw").read_text().splitlines()), 3)
+
+
+class DumpPassFailureTests(unittest.TestCase):
+    """_dump_pass(): a replay killed at its bound or exiting non-zero is reported with exit, CPU and log, never read."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.run, self.cache = self.tmp / "run", self.tmp / "oracle-state" / "k"
+        self.run.mkdir()
+        self.cache.mkdir(parents=True)
+        (self.run / "movie.raw").write_text("0000\n" * 5)
+        cfg = {"env": {}, "timeout_seconds": 1}
+        self.session = sd.Session(
+            self.tmp, self.run, cfg, "k", TABLE, self.cache, True, oracle_cfg={"timeout_seconds": 1}
+        )
+
+    def replay(self, port_end, original_end):
+        from abu_decomp import tas
+
+        def original(oracle, work, *args, **kwargs):  # the original leaves its output and one dump
+            (work / "oracle.txt").write_text("original output")
+            (work / "state-3.bin").write_bytes(b"theirs")
+            return mock.Mock()
+
+        def port(argv, env, stdout, **kwargs):
+            stdout.write("port output")
+            (self.run / sd.DUMPS / "state-3.bin").write_bytes(b"mine")
+
+        with (
+            mock.patch.object(tas, "_argv", return_value=["port"]),
+            mock.patch.object(tas, "_wait", side_effect=[port_end, original_end]),
+            mock.patch.object(sd.tas_oracle, "start", side_effect=original),
+            mock.patch.object(sd.subprocess, "Popen", side_effect=port),
+        ):
+            return sd._dump_pass(self.session, [3], None)
+
+    def test_the_original_killed_at_its_bound_is_reported_and_adds_nothing(self):
+        dumps = self.replay((0, 40.0), (None, 300.0))
+        self.assertEqual(dumps, {})
+        self.assertFalse((self.cache / "dump-3.bin").exists())  # a killed replay is not cached
+        ran = {r["side"]: r for r in self.session.detail_runs}
+        self.assertEqual((ran["port"]["exit"], ran["port"]["cpu_seconds"]), (0, 40.0))
+        self.assertEqual((ran["original"]["outcome"], ran["original"]["exit"]), ("hang", None))
+        self.assertEqual(ran["original"]["cpu_seconds"], 300.0)
+        self.assertEqual(Path(ran["original"]["log"]).read_text(), "original output")
+        self.assertIn("detail replay of the original hang, 300.0 CPU s", self.session.notes[0])
+
+    def test_the_port_exiting_non_zero_is_reported_and_its_dumps_are_not_read(self):
+        dumps = self.replay((3, 12.5), (0, 30.0))
+        self.assertEqual(dumps, {})
+        ran = {r["side"]: r for r in self.session.detail_runs}
+        self.assertEqual((ran["port"]["outcome"], ran["port"]["subject"]), ("exit", "exit 3"))
+        self.assertEqual(Path(ran["port"]["log"]).read_text(), "port output")
+        self.assertIn("detail replay of the port exit (exit 3), 12.5 CPU s", self.session.notes[0])
+
+    def test_two_clean_replays_pair_the_dumps(self):
+        dumps = self.replay((0, 40.0), (0, 30.0))
+        self.assertEqual(dumps, {3: (b"mine", b"theirs")})
+        self.assertEqual(self.session.notes, [])
+        self.assertEqual([r["exit"] for r in self.session.detail_runs], [0, 0])
+
+
+class OracleRunTests(unittest.TestCase):
+    """_oracle_done(): only a run that exited 0 and reached the movie's end is cached as complete."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.runs = self.tmp / "runs"
+        self.run = self.runs / "plays" / "r1"
+        self.run.mkdir(parents=True)
+        self.final = self.runs / sd.ORACLES / "k"
+        self.work = self.runs / sd.ORACLES / "k.tmp1-r1"
+        self.work.mkdir(parents=True)
+
+    def session(self, hashes, code, cpu=12.5, attached=False):
+        folder = self.run if attached else self.work
+        (folder / sd.ORACLE_HASHES).write_text(hashes)
+        (folder / "oracle-trace.txt").write_text("1 5\n")
+        (folder / "oracle.txt").write_text("host output")
+        (folder / "oracle.bmp").write_bytes(b"BM")
+        session = sd.Session(
+            self.tmp, self.run, {"runs": self.runs}, "k", TABLE, folder, False, attached=attached, movie_polls=3
+        )
+        session._end.update(code=code, cpu=cpu, wall=9.0)
+        return session
+
+    def refused(self, session, outcome, cpu):
+        self.assertFalse(sd._oracle_done(session))
+        self.assertFalse(self.final.exists())  # never cached
+        facts = session.oracle_run
+        self.assertEqual((facts["outcome"], facts["cpu_seconds"]), (outcome, cpu))
+        self.assertIn("not cached", facts["refused"])
+        self.assertIn(facts["refused"], session.notes)
+        return facts
+
+    def test_a_run_killed_at_the_bound_is_not_cached(self):
+        facts = self.refused(self.session("1\n2\n", None), "hang", 12.5)
+        self.assertEqual(facts["exit"], None)
+        self.assertEqual((self.run / sd.STATE_LOG).read_text(), "host output")  # the log stays in the run
+        self.assertFalse(self.work.exists())
+
+    def test_a_non_zero_exit_is_not_cached_even_with_a_whole_trace(self):
+        facts = self.refused(self.session("1\n2\n3\n", 3), "exit", 12.5)
+        self.assertEqual((facts["exit"], facts["subject"], facts["polls"]), (3, "exit 3", 3))
+        self.assertEqual((self.run / sd.STATE_LOG).read_text(), "host output")
+
+    def test_partial_hashes_are_not_cached_after_a_clean_exit(self):
+        facts = self.refused(self.session("1\n2\n3", 0), "ok", 12.5)  # the last line is half written
+        self.assertEqual((facts["polls"], facts["wanted_polls"]), (2, 3))
+        self.assertIn("2 of 3 polls", facts["refused"])
+
+    def test_a_whole_run_is_cached_with_its_marker_and_without_its_pictures(self):
+        session = self.session("1\n2\n3\n", 0)
+        self.assertTrue(sd._oracle_done(session))
+        self.assertTrue(session.cached)
+        self.assertEqual(session.oracle_dir, self.final)
+        self.assertEqual(
+            sorted(p.name for p in self.final.iterdir()), [sd.COMPLETE, "oracle-trace.txt", sd.ORACLE_HASHES]
+        )
+        self.assertTrue(sd._complete(self.final, 3))
+
+    def test_the_plays_one_oracle_leaves_the_run_its_files_and_the_cache_copies(self):
+        session = self.session("1\n2\n3\n", 0, attached=True)
+        self.assertTrue(sd._oracle_done(session))
+        self.assertEqual(
+            sorted(p.name for p in self.final.iterdir()), [sd.COMPLETE, "oracle-trace.txt", sd.ORACLE_HASHES]
+        )
+        for kept in ("oracle.txt", "oracle.bmp", "oracle-trace.txt", sd.ORACLE_HASHES):
+            self.assertTrue((self.run / kept).is_file(), kept)  # the picture verdict still reads these
+
+    def test_the_plays_one_oracle_killed_at_the_bound_keeps_the_run_and_caches_nothing(self):
+        session = self.session("1\n2\n", None, cpu=300.0, attached=True)
+        facts = self.refused(session, "hang", 300.0)
+        self.assertEqual(facts["log"], str(self.run / "oracle.txt"))
+        self.assertEqual((self.run / "oracle.txt").read_text(), "host output")
+        self.assertTrue((self.run / sd.ORACLE_HASHES).is_file())
+
+    def test_a_refused_run_is_an_error_in_the_diff_with_its_exit_and_cpu(self):
+        session = self.session("1\n", None, cpu=300.0)
+        summary = sd.finish(session, None, "movie-a", {})
+        self.assertEqual(summary["error"], "the original left no state trace")
+        report = json.loads((self.run / sd.DIFF).read_text())
+        self.assertEqual((report["oracle_run"]["outcome"], report["oracle_run"]["cpu_seconds"]), ("hang", 300.0))
+        self.assertEqual(summary["oracle_run"], report["oracle_run"])
+
+    def test_an_entry_is_complete_only_with_a_clean_marker_and_the_movie_s_whole_trace(self):
+        entry = self.runs / sd.ORACLES / "e"
+        entry.mkdir()
+        (entry / sd.ORACLE_HASHES).write_text("1\n2\n3\n")
+        self.assertFalse(sd._complete(entry, 3))  # no marker: an entry an older build left, maybe partial
+        (entry / sd.COMPLETE).write_text(json.dumps({"exit": 0}))
+        self.assertTrue(sd._complete(entry, 3))
+        self.assertFalse(sd._complete(entry, 4))  # the trace stops short of the movie
+        (entry / sd.COMPLETE).write_text(json.dumps({"exit": 1}))
+        self.assertFalse(sd._complete(entry, 3))
+        (entry / sd.COMPLETE).write_text("{")
+        self.assertFalse(sd._complete(entry, 3))
+
+
+class BeginTests(unittest.TestCase):
+    """begin(): one oracle process per play, and an incomplete cache entry is never reused."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.runs = self.tmp / "runs"
+        self.run = self.runs / "plays" / "r1"
+        self.run.mkdir(parents=True)
+        (self.run / "movie.raw").write_text("0000\n" * 3)
+        self.folder = self.tmp / "spec"
+        self.folder.mkdir()
+        (self.folder / "oracle.spec").write_text("spec")
+        host = self.tmp / "n64host"
+        host.write_text("")
+        self.oracle = {"host": host, "env": {}, "shot_every": 25, "timeout_seconds": 5}
+        self.cfg = {"port": str(self.tmp / "port"), "runs": self.runs, "exit_after": 7}
+
+    def begin(self, attach=False):
+        from abu_decomp import tas
+
+        with (
+            mock.patch.object(sd, "available", return_value=None),
+            mock.patch.object(sd.tas_oracle, "required", return_value=self.oracle),
+            mock.patch.object(sd, "build_spec", return_value=self.folder),
+            mock.patch.object(sd, "load_map", return_value=TABLE),
+            mock.patch.object(sd.tas_oracle, "start", return_value=mock.Mock()) as start,
+            mock.patch.object(tas, "_wait", return_value=(0, 1.0)),
+        ):
+            session = sd.begin(None, self.cfg, self.run, "on", None, [0, 0, 0], attach=attach)
+            if session and session._waiter:
+                session._waiter.join()
+        return session, start
+
+    def test_a_play_with_its_own_oracle_starts_none_here_and_asks_it_for_the_trace(self):
+        session, start = self.begin(attach=True)
+        start.assert_not_called()
+        self.assertTrue(session.attached)
+        self.assertIsNone(session.process)
+        self.assertEqual(session.oracle_dir, self.run)
+        env = session.oracle_env()
+        self.assertEqual(env["N64R_TAS_STATE_HASH"], str(self.run / sd.ORACLE_HASHES))
+        self.assertEqual(env["N64R_TAS_STATE"], str(self.folder / "oracle.spec"))
+
+    def test_a_state_only_play_still_starts_the_one_oracle(self):
+        session, start = self.begin()
+        start.assert_called_once()
+        self.assertFalse(session.attached)
+
+    def test_an_incomplete_cache_entry_is_cleared_and_never_reused(self):
+        session, _ = self.begin(attach=True)
+        entry = self.runs / sd.ORACLES / session.key
+        entry.mkdir(parents=True)
+        (entry / sd.ORACLE_HASHES).write_text("1\n2\n")  # what the killed run left: no marker, short trace
+        again, start = self.begin()
+        self.assertFalse(again.cached)
+        start.assert_called_once()
+        self.assertFalse(entry.exists())
+
+    def test_a_complete_cache_entry_is_reused(self):
+        session, _ = self.begin(attach=True)
+        entry = self.runs / sd.ORACLES / session.key
+        entry.mkdir(parents=True)
+        (entry / sd.ORACLE_HASHES).write_text("1\n2\n3\n")
+        (entry / sd.COMPLETE).write_text(json.dumps({"exit": 0}))
+        again, start = self.begin(attach=True)
+        self.assertTrue(again.cached)
+        start.assert_not_called()
 
 
 class HostTraceTests(unittest.TestCase):

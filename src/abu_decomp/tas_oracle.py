@@ -232,6 +232,22 @@ def outcome(code: int | None) -> dict[str, Any]:
     return {"outcome": "exit", "subject": f"exit {code}"}
 
 
+def run_facts(
+    code: int | None, cpu: float | None, wall: float | None, polls: int, wanted: int, log: Path | None
+) -> dict[str, Any]:
+    """How one host run ended, for the run record: exit and its outcome, CPU, wall, the polls it reached of the
+    `wanted` and where its output is kept."""
+    return {
+        **outcome(code),
+        "exit": code,
+        "cpu_seconds": cpu,
+        "wall_seconds": wall,
+        "polls": polls,
+        "wanted_polls": wanted,
+        "log": str(log) if log else None,
+    }
+
+
 def startup_note(code: int | None, polls: int) -> str:
     """A named finding for an original that died by a signal before its first poll: the host (its GPU driver, EGL, the
     loader) failed, not the game, so the run has nothing of the original to compare (TAS-COVER-2/3: an EGL SIGSEGV read

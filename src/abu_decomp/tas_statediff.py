@@ -72,6 +72,8 @@ SPECS, ORACLES = "state-spec", "oracle-state"
 FINDINGS, KIND = tas_findings.FILE, "state-diverge"
 DIFF, PORT_HASHES, PORT_TRACE, DUMPS = "state-diff.json", "state-port.txt", "port-trace.txt", "state"
 ORACLE_HASHES = "state-oracle.txt"
+COMPLETE = "complete.json"  # in a cache entry: the run ended 0 and reached the movie's end
+STATE_LOG = "state-oracle.log"  # a refused state run's own output, kept in the run folder
 RAM = 0x800000
 BASE = 0x80000000
 OPEN_ARRAY_CAP = 0x4000  # bytes taken for an `extern T x[]` whose size only the symbol gap gives
@@ -618,8 +620,23 @@ class Session:
     pads: int = 1  # controllers both sides see; every movie line holds that many pads
     began: float = field(default_factory=time.monotonic)
     notes: list[str] = field(default_factory=list)
+    attached: bool = False  # the picture oracle of this play is the state oracle too: one process, no second Popen
+    movie_polls: int = 0  # polls in the movie; an oracle trace that stops short of it is incomplete
+    oracle_run: dict[str, Any] = field(default_factory=dict)  # how the oracle run ended: exit, CPU, polls, log
+    detail_runs: list[dict[str, Any]] = field(default_factory=list)  # the replays the difference detail spent
     _end: dict[str, Any] = field(default_factory=dict)
     _waiter: threading.Thread | None = None
+
+    def oracle_env(self) -> dict[str, str]:
+        """What the play's one oracle adds to its environment to leave the state trace beside the pictures."""
+        return {
+            "N64R_TAS_STATE": str(self.folder / "oracle.spec"),
+            "N64R_TAS_STATE_HASH": str(self.run / ORACLE_HASHES),
+        }
+
+    def join_oracle(self, end: dict[str, Any], waiter: threading.Thread) -> None:
+        """Tie the session to the play's own oracle process: its exit and CPU land in `end`, set by `waiter`."""
+        self._end, self._waiter = end, waiter
 
     def port_env(self) -> dict[str, str]:
         return {
@@ -640,10 +657,19 @@ def _oracle_extra(spec: Path, out: Path, extra: dict[str, str]) -> dict[str, str
 
 
 def begin(
-    profile: Profile, cfg: dict[str, Any], run: Path, pak: str, card: Path | None, polls: list[Any], pads: int = 1
+    profile: Profile,
+    cfg: dict[str, Any],
+    run: Path,
+    pak: str,
+    card: Path | None,
+    polls: list[Any],
+    pads: int = 1,
+    attach: bool = False,
 ) -> Session | None:
     """Start a run's state diff: the spec for the port in use, and the original's trace of this movie (started now,
-    beside the port, unless one is cached). None when this seat cannot (no original or no units)."""
+    beside the port, unless a complete one is cached). With `attach` (a --oracle play) no process starts here: the
+    play's picture oracle writes the trace too (`oracle_env`, `join_oracle`). None when this seat cannot (no original
+    or no units)."""
     if available(profile) is not None:
         return None
     from abu_decomp import tas
@@ -675,15 +701,20 @@ def begin(
         key,
         table,
         cache,
-        (cache / ORACLE_HASHES).is_file(),
+        _complete(cache, len(polls)),
         oracle_cfg=oracle,
         pak=pak,
         card=card,
         pads=pads,
+        movie_polls=len(polls),
     )
     if session.cached:
         with contextlib.suppress(OSError):
             os.utime(cache)  # a hit keeps the entry alive past tas.prune_oracle
+        return session
+    shutil.rmtree(cache, ignore_errors=True)  # an entry that is not complete is never reused, and never in the way
+    if attach:
+        session.attached, session.oracle_dir = True, run
         return session
     work = cache.with_name(cache.name + f".tmp{os.getpid()}-{run.name}")
     work.mkdir(parents=True, exist_ok=True)
@@ -706,31 +737,79 @@ def begin(
 
     def reap() -> None:
         code, cpu = tas._wait(session.process, oracle["timeout_seconds"])
-        session._end.update(code=code, cpu=cpu)
+        session._end.update(code=code, cpu=cpu, wall=round(time.monotonic() - session.began, 1))
 
     session._waiter = threading.Thread(target=reap, daemon=True)
     session._waiter.start()
     return session
 
 
+def _last_poll(path: Path) -> int:
+    """The last poll a hash trace holds (its half-written last line does not count); 0 when none."""
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return 0
+    last = 0
+    for line in text[: text.rfind("\n") + 1].splitlines():
+        head = line.split(None, 1)[0] if line.strip() else ""
+        if head.isdigit():
+            last = int(head)
+    return last
+
+
+def _complete(cache: Path, movie_polls: int) -> bool:
+    """Whether a cache entry holds a whole run: the marker a clean exit leaves and a trace to the movie's end."""
+    try:
+        marker = json.loads((cache / COMPLETE).read_text())
+    except (OSError, ValueError):
+        return False
+    return marker.get("exit") == 0 and _last_poll(cache / ORACLE_HASHES) >= movie_polls > 0
+
+
 def _oracle_done(session: Session) -> bool:
-    """Wait for the original's trace and move it into the cache; False when it left none."""
+    """Wait for the original's run and keep its trace in the cache when the run is whole: it exited 0 and its trace
+    reaches the movie's end. Otherwise refuse, with the exit, CPU, polls and log in `session.oracle_run`."""
     if session.cached:
         return True
     if session._waiter:
         session._waiter.join()
     work = session.oracle_dir
     final = session.cfg["runs"] / ORACLES / session.key
-    if not (work / ORACLE_HASHES).is_file():
-        code = session._end.get("code")
-        died = tas_oracle.startup_note(code, 0) if isinstance(code, int) and code < 0 else ""
-        session.notes.append(died or f"the original left no state trace (exit {code})")
-        shutil.rmtree(work, ignore_errors=True)
+    code, cpu = session._end.get("code"), session._end.get("cpu")
+    hashes = work / ORACLE_HASHES
+    polls = _last_poll(hashes)
+    whole = code == 0 and polls >= session.movie_polls > 0
+    log = session.run / (tas_oracle.LOG if session.attached else STATE_LOG)
+    session.oracle_run = tas_oracle.run_facts(code, cpu, session._end.get("wall"), polls, session.movie_polls, log)
+    if not whole:
+        died = tas_oracle.startup_note(code, polls) if isinstance(code, int) else ""
+        why = (
+            died
+            or f"the original's state run is incomplete, not cached: {session.oracle_run['outcome']}"
+            f"{' (' + session.oracle_run['subject'] + ')' if 'subject' in session.oracle_run else ''},"
+            f" {polls} of {session.movie_polls} polls, {cpu} CPU s; log {log}"
+        )
+        session.notes.append(why)
+        session.oracle_run["refused"] = why
+        if not session.attached:
+            with contextlib.suppress(OSError):
+                shutil.copyfile(work / tas_oracle.LOG, log)  # the run record keeps the log; the work dir goes
+            shutil.rmtree(work, ignore_errors=True)
         return False
-    for junk in ("oracle.bmp", "oracle-cpak.mpk", "oracle.txt"):
-        with contextlib.suppress(OSError):
-            (work / junk).unlink()
-    shutil.rmtree(work / tas_oracle.SHOTS, ignore_errors=True)
+    if session.attached:
+        staged = final.with_name(final.name + f".tmp{os.getpid()}-{session.run.name}")
+        staged.mkdir(parents=True, exist_ok=True)
+        for kept in (ORACLE_HASHES, tas_oracle.ORACLE_TRACE):
+            with contextlib.suppress(OSError):
+                shutil.copyfile(work / kept, staged / kept)  # copies: the run keeps its own oracle files
+        work = staged
+    else:
+        for junk in ("oracle.bmp", "oracle-cpak.mpk", "oracle.txt"):
+            with contextlib.suppress(OSError):
+                (work / junk).unlink()
+        shutil.rmtree(work / tas_oracle.SHOTS, ignore_errors=True)
+    (work / COMPLETE).write_text(json.dumps({"exit": code, "polls": polls, "movie_polls": session.movie_polls}))
     try:
         os.replace(work, final)
     except OSError:
@@ -812,21 +891,39 @@ def _dump_pass(session: Session, polls: list[int], profile: Profile) -> dict[int
             **procguard.owned(),
             cwd=port_dir,
         )
-        tas._wait(process, cfg["timeout_seconds"])
+        code, cpu = tas._wait(process, cfg["timeout_seconds"])
+    ran = [
+        {"side": "port", **tas_oracle.run_facts(code, cpu, None, 0, 0, port_dir / "output.txt"), "dump_polls": polls}
+    ]
+    port_ok = code == 0
     # the port's ROM copy and counters are read by no one after the dump: 13 MB a run, 40 GB over 2700 runs (10-27)
     for scrap in (user, port_dir / "gcov"):
         shutil.rmtree(scrap, ignore_errors=True)
+    original_ok = True
     if original is not None and work is not None:
-        tas._wait(original, session.oracle_cfg["timeout_seconds"])
-        for p in missing:
+        code, cpu = tas._wait(original, session.oracle_cfg["timeout_seconds"])
+        log = session.run / DUMPS / "original-output.txt"
+        with contextlib.suppress(OSError):
+            shutil.copyfile(work / tas_oracle.LOG, log)  # kept whatever the exit, the work dir goes
+        ran.append({"side": "original", **tas_oracle.run_facts(code, cpu, None, 0, 0, log), "dump_polls": missing})
+        original_ok = code == 0
+        for p in missing if original_ok else ():  # a replay that did not end cleanly adds nothing to the cache
             produced = work / f"state-{p}.bin"
             if produced.is_file():
                 os.replace(produced, cache / f"dump-{p}.bin")
         shutil.rmtree(work, ignore_errors=True)
+    session.detail_runs += ran
+    for one in ran:
+        if one["exit"] != 0:
+            session.notes.append(
+                f"detail replay of the {one['side']} {one['outcome']}"
+                f"{' (' + one['subject'] + ')' if 'subject' in one else ''}, {one['cpu_seconds']} CPU s;"
+                f" log {one['log']}"
+            )
     out = {}
     for p in polls:
         mine, theirs = port_dir / f"state-{p}.bin", cache / f"dump-{p}.bin"
-        if mine.is_file() and theirs.is_file():
+        if port_ok and mine.is_file() and theirs.is_file():
             out[p] = (mine.read_bytes(), theirs.read_bytes())
     return out
 
@@ -877,9 +974,10 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
         "notes": session.notes,
     }
     if not _oracle_done(session):
-        result.update(error="the original left no state trace", divergent=None)
+        result.update(error="the original left no state trace", divergent=None, oracle_run=session.oracle_run)
         (run / DIFF).write_text(json.dumps(result, indent=1))
-        return {"error": result["error"]}
+        return {"error": result["error"], "oracle_run": session.oracle_run}
+    result["oracle_run"] = session.oracle_run
     port = read_trace(run / PORT_HASHES, len(syms))
     original = read_trace(session.oracle_dir / ORACLE_HASHES, len(syms))
     if not port:
@@ -916,15 +1014,34 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
         reviewed_symbols=len(reviewed),
     )
     per_region = _rows(syms, {**found, "first": remaining}) if found["compared"] else {}
+    # The hash trace names the polls, regions and symbols; only a static first divergence needs bytes to name its
+    # field. That is the evidence reason for a detail replay (which then also dumps the runtime rows' polls); without
+    # one the oracle run's own trace is the detail.
+    static_polls = sorted({r["first"][0] for r in per_region.values() if r["first"][2]})
     wanted = sorted(
         {p for r in per_region.values() for p in ([r["first"][0]] + ([r["runtime"][0]] if r["runtime"] else []))}
+        if static_polls
+        else ()
     )
     dumps: dict[int, Any] = {}
     if wanted:
+        result["detail"] = {
+            "source": "replay",
+            "reason": f"static first divergence at polls {static_polls}: the hash trace holds no bytes to name a field",
+            "polls": wanted,
+        }
         try:
             dumps = _dump_pass(session, wanted, profile)
         except (OSError, DecompError) as error:
             session.notes.append(f"dump pass failed: {error}")
+        result["detail"]["runs"] = session.detail_runs
+        result["detail"]["failed"] = [r["side"] for r in session.detail_runs if r["exit"] != 0]
+    else:
+        result["detail"] = {
+            "source": "trace",
+            "reason": "no static first divergence: the oracle run's own trace names every poll, region and symbol",
+            "polls": [],
+        }
     # Byte-order diagnostics never authorize an exclusion: only the reviewed ledger does.
     byte_order: dict[str, list[str]] = {}
     if found["compared"] and found["first_compared"] in dumps:
@@ -1011,6 +1128,8 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
             )
         },
         "regions": len(names),
+        "oracle_run": session.oracle_run,
+        "detail": result["detail"],
         "findings": len(rows),
         "polls_compared": found["compared"],
         "file": str(run / DIFF),
