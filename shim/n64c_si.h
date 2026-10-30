@@ -16,6 +16,11 @@ int n64c_cont_pak_present(int channel);
  * the file (0, or -1 when the file cannot be written). */
 u8 *n64c_cont_pak_image(int channel);
 int n64c_cont_pak_commit(u32 offset, u32 length);
+/* One one-channel Joybus exchange (a status request or an accessory packet) waited out on mq; none when mq is NULL. */
+void n64c_cont_channel_exchange(OSMesgQueue *mq, int channel);
+/* libultra's accessory packet on channel, with the status request that follows an empty slot's bad CRC: 1 when a
+ * card answered. */
+int n64c_cont_accessory(OSMesgQueue *mq, int channel);
 /* Re-scan the controller ports (reset command on every channel, then the status poll) and fill status[4]. No
  * completion message is left behind. Returns 0. */
 s32 n64c_cont_rescan(OSMesgQueue *mq, OSContStatus *status);

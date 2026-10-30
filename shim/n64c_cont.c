@@ -23,7 +23,11 @@ static OSContPad latched[MAXCONTROLLERS];
 static u8 serial_packet[64];
 static char eeprom_path[512], pak_path[512];
 static int eeprom_present, eeprom_16k;
-static int last_cmd_read; /* libultra's __osContLastCmd == read: the request is already in the PIF, only the answer is fetched */
+/* libultra's __osContLastCmd: the request the PIF holds. A command equal to it is not written again, only its answer is
+ * read. A one-channel request (status of one port, accessory packet) carries its channel and address, so it is always
+ * written and leaves CMD_ONE, which no all-port command equals. */
+enum { CMD_STATUS = 0x00, CMD_READ = 0x01, CMD_ONE = 0xFD, CMD_NONE = 0xFE };
+static u8 last_cmd = CMD_NONE;
 static int cont_initialized; /* libultra's __osContinitialized: the settle and SI exchange run once per boot */
 static u8 pak_ram[N64C_CPAK_BYTES];
 static int pak_loaded, pak_ok;
@@ -79,7 +83,7 @@ void n64c_cont_reset(const N64cConfig *cfg)
 #endif
     memset(latched, 0, sizeof latched);
     memset(serial_packet,0,sizeof serial_packet);
-    last_cmd_read = 0;
+    last_cmd = CMD_NONE;
     cont_initialized = 0;
     eeprom_present = cfg && cfg->eeprom_path != NULL;
     eeprom_16k = cfg ? cfg->eeprom_16k : 0;
@@ -136,17 +140,48 @@ enum { SI_WRITE_NS = 64000, SI_READ_NS = 256000, SI_READ_PORT_NS = 320000 };
 static OSTime si_ticks(u32 ns) { return (OSTime)ns * OS_CPU_COUNTER / 1000000000u; }
 static OSTime si_deadline;
 static void si_complete(void) { n64c_event_post(OS_EVENT_SI); }
-static void si_start(u32 ns)
+/* Start one DMA on the bus. While one runs, libultra's raw DMA refuses (returns -1) and a caller's wait takes the
+ * running exchange's interrupt instead. */
+static int si_start(u32 ns)
 {
+    if (n64c_clock_si_armed())
+        return -1;
     si_deadline = n64c_clock_now() + si_ticks(ns);
     n64c_clock_arm_si(si_deadline, si_complete);
+    return 0;
 }
-/* One packet exchange a guest thread waits out: the bus runs, its SI interrupt lands on mq. */
-static void si_exchange(OSMesgQueue *mq, u32 ns)
+/* Wait out the running DMA: a guest thread blocks on mq for its SI interrupt; a host caller with no guest thread to
+ * block lets the bus run out its time here. */
+static void si_wait(OSMesgQueue *mq)
+{
+    if (n64c_sched_on_guest()) {
+        osRecvMesg(mq, NULL, OS_MESG_BLOCK);
+    } else {
+        n64c_clock_advance_to(si_deadline);
+        osRecvMesg(mq, NULL, OS_MESG_NOBLOCK);
+    }
+}
+/* libultra's shape of one Joybus command: the request is written and waited out unless the PIF already holds it, then
+ * the answer is read from the `talking` controllers the request addresses (a silent channel costs no port time). A
+ * blocking call (status, accessory packet) waits out the read too; a start call returns with the read running, and its
+ * interrupt is the message the game's next poll waits for. `sample` runs as the PIF answers. Returns the read's raw DMA
+ * result. */
+static int si_transfer(OSMesgQueue *mq, u8 cmd, int talking, int block, void (*sample)(void))
 {
     si_mq = mq;
-    si_start(ns);
-    osRecvMesg(mq, NULL, OS_MESG_BLOCK);
+    if (last_cmd != cmd || cmd == CMD_ONE) {
+        si_start(SI_WRITE_NS);
+        si_wait(mq);
+    }
+    last_cmd = cmd;
+    if (n64c_clock_si_armed())
+        return -1; /* the read is refused: no answer, nothing sampled */
+    if (sample)
+        sample();
+    int ret = si_start(SI_READ_NS + SI_READ_PORT_NS * (u32)talking);
+    if (block)
+        si_wait(mq);
+    return ret;
 }
 static int talking_ports(void)
 {
@@ -173,9 +208,7 @@ s32 osContInit(OSMesgQueue *mq, u8 *bitpattern, OSContStatus *status)
             osSetTimer(&timer, CONT_SETTLE_COUNT - t, 0, &settle, slot);
             osRecvMesg(&settle, NULL, OS_MESG_BLOCK);
         }
-        si_exchange(mq, SI_WRITE_NS);
-        si_exchange(mq, SI_READ_NS + SI_READ_PORT_NS * (u32)talking_ports());
-        last_cmd_read = 0;
+        si_transfer(mq, CMD_STATUS, talking_ports(), 1, NULL);
     }
     query(last_status);
     if (status)
@@ -196,12 +229,23 @@ s32 n64c_cont_rescan(OSMesgQueue *mq, OSContStatus *status)
         memcpy(status, last_status, sizeof last_status);
     return 0;
 }
+/* libultra's osContStartQuery: the status request of every port, its answer the message the game's next poll waits
+ * for. A host caller with no queue gets the status at once, with no bus time. */
 s32 osContStartQuery(OSMesgQueue *mq)
 {
-    last_cmd_read = 0;
     query(last_status);
-    done(mq);
-    return 0;
+    if (!mq)
+        return 0;
+    __osSiGetAccess();
+    int ret = si_transfer(mq, CMD_STATUS, talking_ports(), 0, NULL);
+    __osSiRelAccess();
+    return ret;
+}
+/* One one-channel exchange a guest thread waits out (libultra's __osPfsGetStatus request, or an accessory packet). */
+void n64c_cont_channel_exchange(OSMesgQueue *mq, int channel)
+{
+    if (mq)
+        si_transfer(mq, CMD_ONE, port_present(channel) != 0, 1, NULL);
 }
 void osContGetQuery(OSContStatus *status) { memcpy(status, last_status, sizeof last_status); }
 /* The pad sample of one controller read: the live source or the recorded movie, one TAS poll. */
@@ -230,24 +274,10 @@ s32 osContStartReadData(OSMesgQueue *mq)
         sample_pads();
         return 0;
     }
-    if (n64c_clock_si_armed())
-        return -1; /* the SI is busy: libultra's raw DMA refuses */
-    si_mq = mq;
     __osSiGetAccess();
-    if (!last_cmd_read) {
-        si_start(SI_WRITE_NS);
-        if (n64c_sched_on_guest()) {
-            osRecvMesg(mq, NULL, OS_MESG_BLOCK);
-        } else { /* no guest thread to block: the bus runs out its time here */
-            n64c_clock_advance_to(si_deadline);
-            osRecvMesg(mq, NULL, OS_MESG_NOBLOCK);
-        }
-    }
-    sample_pads();
-    si_start(SI_READ_NS + SI_READ_PORT_NS * (u32)talking_ports());
-    last_cmd_read = 1;
+    int ret = si_transfer(mq, CMD_READ, talking_ports(), 0, sample_pads);
     __osSiRelAccess();
-    return 0;
+    return ret;
 }
 void osContGetReadData(OSContPad *pad) { memcpy(pad, latched, sizeof latched); }
 /* ---- EEPROM: 8-byte blocks, 4 Kbit (64 blocks) or 16 Kbit (256 blocks) ---- */
@@ -298,23 +328,33 @@ int n64c_cont_pak_commit(u32 offset, u32 length)
     int ok = fseek(f, (long)offset, SEEK_SET) == 0 && fwrite(pak_ram + offset, 1, length, f) == length;
     return (fclose(f) == 0 && ok) ? 0 : -1;
 }
+/* libultra's accessory packet (__osContRamRead/Write): one exchange on the channel. A silent channel does not answer; a
+ * controller with an empty slot answers with a bad data CRC, so libultra asks that channel's status (one more exchange)
+ * and gives up; a card answers. Returns 1 when a card answered. */
+int n64c_cont_accessory(OSMesgQueue *mq, int channel)
+{
+    n64c_cont_channel_exchange(mq, channel);
+    if (!port_present(channel))
+        return 0;
+    if (!pak_on(channel)) {
+        n64c_cont_channel_exchange(mq, channel);
+        return 0;
+    }
+    return 1;
+}
 s32 osContRamRead(OSMesgQueue *mq, int channel, u16 address, u8 *buffer)
 {
-    if (!pak_on(channel) || (u32)address * 32 + 32 > sizeof pak_ram)
+    if (!n64c_cont_accessory(mq, channel) || (u32)address * 32 + 32 > sizeof pak_ram)
         return -1;
     memcpy(buffer, pak_ram + address * 32, 32);
-    done(mq);
     return 0;
 }
 s32 osContRamWrite(OSMesgQueue *mq, int channel, u16 address, u8 *buffer)
 {
-    if (!pak_on(channel) || (u32)address * 32 + 32 > sizeof pak_ram)
+    if (!n64c_cont_accessory(mq, channel) || (u32)address * 32 + 32 > sizeof pak_ram)
         return -1;
     memcpy(pak_ram + address * 32, buffer, 32);
-    if (n64c_cont_pak_commit((u32)address * 32, 32) != 0)
-        return -1;
-    done(mq);
-    return 0;
+    return n64c_cont_pak_commit((u32)address * 32, 32) != 0 ? -1 : 0;
 }
 /* Pak packets on the serial bus: read is [2, addr_hi, addr_lo] answered by 32 bytes and their CRC; write is
  * [3, addr_hi, addr_lo, 32 bytes] answered by the CRC of the data. The low five bits of the address field are the

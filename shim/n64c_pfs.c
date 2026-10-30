@@ -17,11 +17,12 @@ static void bind(OSPfs *pfs, OSMesgQueue *mq, int channel)
     pfs->activebank = 0xFF;
     pfs->status = 0;
 }
+/* libultra's one-channel status request: one exchange on the bus, then the slot's state. */
 s32 __osPfsGetStatus(OSMesgQueue *mq, int channel)
 {
-    (void)mq;
     if (channel < 0 || channel >= MAXCONTROLLERS)
         return PFS_ERR_NOPACK;
+    n64c_cont_channel_exchange(mq, channel);
     return n64c_cont_pak_present(channel) ? 0 : PFS_ERR_NOPACK;
 }
 static u16 get16(const u8 *p) { return (u16)((p[0] << 8) | p[1]); }
@@ -291,14 +292,18 @@ s32 n64c_pfs_check_id(OSPfs *pfs)
     return 0;
 }
 /* ---- Rumble Pak ---- */
+/* libultra's osMotorInit probes the accessory area with four packets: it writes 0xFE to 0x400 and reads it back, then
+ * 0x80. A memory card ignores the area and answers zeros, so the probe ends with PFS_ERR_DEVICE; an empty slot or a
+ * silent channel ends at the first packet with PFS_ERR_NOPACK. */
 s32 osMotorInit(OSMesgQueue *mq, OSPfs *pfs, int channel)
 {
-    s32 ret;
     bind(pfs, mq, channel);
-    ret = __osPfsGetStatus(mq, channel);
-    if (ret != 0)
-        return ret;
-    return PFS_ERR_DEVICE; /* a memory Pak answers, not a Rumble Pak */
+    if (channel < 0 || channel >= MAXCONTROLLERS)
+        return PFS_ERR_NOPACK;
+    for (int i = 0; i < 4; i++)
+        if (!n64c_cont_accessory(mq, channel))
+            return PFS_ERR_NOPACK;
+    return PFS_ERR_DEVICE;
 }
 /* A motor that never initialised is not driven; the documented result is PFS_ERR_INVALID. */
 s32 osMotorStart(OSPfs *pfs) { (void)pfs; return PFS_ERR_INVALID; }

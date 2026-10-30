@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* SI access lock, controller re-scan, Controller Pak and Rumble Pak answers. Expected values are the documented
  * libultra results for an empty slot (PFS_ERR_NOPACK) and an uninitialised handle (PFS_ERR_INVALID); with a card in
- * the slot the file system answers (tests/test_cpak.c walks it). */
+ * the slot the file system answers (tests/test_cpak.c walks it). Each status request and accessory packet is a bus
+ * exchange, a write and a read in Count ticks (46.875 MHz): 64 us + 256 us, plus 320 us when the channel's controller
+ * answers. */
 #include "../n64c_os.h"
 #include "../n64c_cont.h"
 #include "../n64c_pfs.h"
@@ -13,6 +15,7 @@ static int fails;
 static char trace[64];
 static void note(char c) { size_t n = strlen(trace); trace[n] = c; trace[n + 1] = 0; }
 static OSThread th[2];
+enum { TALKING = 3000 + 27000, SILENT = 3000 + 12000 };
 static void holder(void *p)
 {
     (void)p;
@@ -43,16 +46,25 @@ static void run_pak(const char *path)
     memset(&pfs, 0xAB, sizeof pfs);
     CHECK(sizeof(OSPfs) == 0x68 || sizeof(void *) != 4);
     if (!path) {
-        CHECK(__osPfsGetStatus(&mq, 0) == PFS_ERR_NOPACK);
+        OSTime t = osGetTime();
+        CHECK(__osPfsGetStatus(&mq, 0) == PFS_ERR_NOPACK && osGetTime() - t == TALKING);
         CHECK(osPfsInitPak(&mq, &pfs, 0) == PFS_ERR_NOPACK);
         CHECK(pfs.queue == &mq && pfs.channel == 0 && pfs.status == 0 && pfs.activebank == 0xFF);
-        CHECK(osMotorInit(&mq, &pfs, 0) == PFS_ERR_NOPACK);
+        /* the empty slot's bad CRC on the first packet, then its status request */
+        t = osGetTime();
+        CHECK(osMotorInit(&mq, &pfs, 0) == PFS_ERR_NOPACK && osGetTime() - t == 2 * TALKING);
     } else {
         CHECK(__osPfsGetStatus(&mq, 0) == 0);
         CHECK(osPfsInitPak(&mq, &pfs, 0) == 0 && pfs.status == PFS_INITIALIZED && pfs.dir_size == 16);
-        CHECK(osMotorInit(&mq, &pfs, 0) == PFS_ERR_DEVICE);
+        OSTime t = osGetTime();
+        CHECK(osMotorInit(&mq, &pfs, 0) == PFS_ERR_DEVICE && osGetTime() - t == 4 * TALKING); /* the four probe packets */
     }
+    /* a silent channel: one packet nobody answers; a channel out of range: no exchange */
+    OSTime t = osGetTime();
+    CHECK(osMotorInit(&mq, &pfs, 1) == PFS_ERR_NOPACK && osGetTime() - t == SILENT);
+    t = osGetTime();
     CHECK(__osPfsGetStatus(&mq, 1) == PFS_ERR_NOPACK && __osPfsGetStatus(&mq, 7) == PFS_ERR_NOPACK);
+    CHECK(osGetTime() - t == SILENT);
     CHECK(osPfsInitPak(&mq, &pfs, 3) == PFS_ERR_NOPACK && pfs.channel == 3);
     /* a handle that never initialised cannot name files, and the motor is not driven */
     pfs.status = 0;

@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A controller read is a packet exchange that takes bus time and ends in the SI interrupt, as on the console: the pads
  * are sampled when the PIF answers, the call returns with the exchange running, and the interrupt (one read time
- * later) is the message the game's next poll waits for. Times are Count ticks (46.875 MHz): 64 us = 3000, 576 us = 27000. */
+ * later) is the message the game's next poll waits for. A query is the status command's write and read. Times are Count
+ * ticks (46.875 MHz): 64 us = 3000, 576 us = 27000, from T0, the end of the host's first query. */
 #include "../n64c_internal.h"
 #include "../n64c_cont.h"
 #include <stdio.h>
@@ -15,6 +16,7 @@ static OSMesg slot[1];
 static OSThread poller, idler;
 static OSTime sample_at[8], call_at[READS], ret_at[READS], done_at[READS];
 static int samples;
+static OSTime T0;
 static void pad_source(int port, OSContPad *p, void *user)
 {
     (void)port; (void)p; (void)user;
@@ -52,32 +54,36 @@ int main(void)
     osCreateMesgQueue(&q, slot, 1);
     osSetEventMesg(OS_EVENT_SI, &q, (OSMesg){.data32 = 1});
     n64c_cont_set_input(pad_source, NULL);
-    CHECK(osContStartQuery(&q) == 0 && osRecvMesg(&q, NULL, OS_MESG_NOBLOCK) == 0); /* names q the controller reply queue */
+    /* names q the controller reply queue: the write is waited out, the call returns with the read on the bus */
+    CHECK(osContStartQuery(&q) == 0 && osGetTime() == WRITE && q.validCount == 0);
+    n64c_clock_advance_to(WRITE + READ);
+    CHECK(osRecvMesg(&q, NULL, OS_MESG_NOBLOCK) == 0);
+    T0 = osGetTime();
     osCreateThread(&idler, 2, idle_entry, NULL, NULL, 10);
     osStartThread(&idler);
     n64c_run_idle();
-    CHECK(idle_wait_returned == 1 && osGetTime() == 0);
+    CHECK(idle_wait_returned == 1 && osGetTime() == T0);
     osCreateThread(&poller, 1, poll_entry, NULL, NULL, 10);
     osStartThread(&poller);
     n64c_run_idle();
     /* first read: the request is written first; the caller waits for that interrupt and nothing is sampled yet */
-    CHECK(samples == 0 && osGetTime() == 0);
-    n64c_clock_advance_to(WRITE - 1);
+    CHECK(samples == 0 && osGetTime() == T0);
+    n64c_clock_advance_to(T0 + WRITE - 1);
     CHECK(samples == 0);
-    n64c_clock_advance_to(WRITE);
-    CHECK(samples == 1 && sample_at[0] == WRITE && ret_at[0] == WRITE && done_at[0] == 0);
+    n64c_clock_advance_to(T0 + WRITE);
+    CHECK(samples == 1 && sample_at[0] == T0 + WRITE && ret_at[0] == T0 + WRITE && done_at[0] == 0);
     /* the exchange is on the bus: the call returned, the interrupt has not come, and a second start is refused */
-    n64c_clock_advance_to(WRITE + READ - 1);
+    n64c_clock_advance_to(T0 + WRITE + READ - 1);
     CHECK(done_at[0] == 0);
     CHECK(osContStartReadData(&q) == -1 && samples == 1);
     /* one big step: the device events run at their own times, ahead of the end of the step, in order */
-    n64c_clock_advance_to(1000000);
-    CHECK(done_at[0] == WRITE + READ);
+    n64c_clock_advance_to(T0 + 1000000);
+    CHECK(done_at[0] == T0 + WRITE + READ);
     /* second read: the request is already in the PIF, so it is sampled at once and only the answer takes time */
-    CHECK(call_at[1] == WRITE + READ && sample_at[1] == WRITE + READ && ret_at[1] == WRITE + READ);
-    CHECK(done_at[1] == WRITE + 2 * READ);
-    /* after a query exchange the read writes its request again */
-    CHECK(call_at[2] == WRITE + 2 * READ && sample_at[2] == WRITE + 2 * READ + WRITE && ret_at[2] == sample_at[2]);
+    CHECK(call_at[1] == T0 + WRITE + READ && sample_at[1] == T0 + WRITE + READ && ret_at[1] == T0 + WRITE + READ);
+    CHECK(done_at[1] == T0 + WRITE + 2 * READ);
+    /* after a query (its write and read) the read writes its request again */
+    CHECK(call_at[2] == T0 + 2 * WRITE + 3 * READ && sample_at[2] == call_at[2] + WRITE && ret_at[2] == sample_at[2]);
     CHECK(done_at[2] == sample_at[2] + READ);
     CHECK(samples == READS && n64c_sched_alive() == 0);
     n64c_shutdown();
