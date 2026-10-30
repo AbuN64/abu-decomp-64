@@ -1,10 +1,12 @@
 import importlib.util
 import io
 import os
+import re
 import site
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path, PurePosixPath
@@ -30,11 +32,47 @@ def suite_output(sha=SHA, imported=f"{CHECKOUT}/src/abu_decomp/__init__.py", fai
     return "\n".join([*lines, "suite-log: /home/abu/finish/deploy-suite-aaaaaaaaaaaa.log"])
 
 
+class FakeLock:
+    """The rig lock seam: records `lock` and `unlock` in `events` (shared with the fake rig to prove ordering)."""
+
+    def __init__(self, events=None, notes=()):
+        self.events = [] if events is None else events
+        self.notes = list(notes)
+
+    def __call__(self):
+        return self
+
+    def __enter__(self):
+        self.events.append("lock")
+        return list(self.notes)
+
+    def __exit__(self, *exc):
+        self.events.append("unlock")
+        return False
+
+
+NEWER = "d" * 12 + "e" * 28
+
+
 class Seams:
     """A fake rig and fake git: the rig keeps the two links, `decomp tools deploy` moves the stage link."""
 
-    def __init__(self, gitea=True, github=True, links=(OLD, OLD), deploy_code=0, readback_code=0, repoint_code=0,
-                 suite_code=0, suite_out=None):
+    def __init__(
+        self,
+        gitea=True,
+        github=True,
+        links=(OLD, OLD),
+        deploy_code=0,
+        readback_code=0,
+        repoint_code=0,
+        suite_code=0,
+        suite_out=None,
+        head=None,
+        notes=(),
+    ):
+        self.head = head
+        self.events = []
+        self.lock = FakeLock(self.events, notes)
         self.on = {"gitea": gitea, "github": github}
         self.suite_code, self.suite_out = suite_code, suite_out
         self.links = dict(zip(deploy_rig.LINKS, links, strict=True))
@@ -44,6 +82,9 @@ class Seams:
 
     def git(self, *args):
         self.git_calls.append(args)
+        self.events.append("git")
+        if "rev-parse" in args:
+            return 0, self.head or ""
         if "fetch" in args:
             self.fetched = next(name for name, url in deploy_rig.REMOTES.items() if url in args)
             return 0, ""
@@ -53,19 +94,22 @@ class Seams:
 
     def ssh(self, command):
         self.ssh_calls.append(command)
+        self.events.append("ssh")
         if command.startswith("readlink"):
             return 0, "\n".join(self.links.values())
         if "decomp tools deploy" in command:
             if not self.deploy_code:
-                self.links["venv-decomp-stage"] = NEW
+                self.links["venv-decomp-stage"] = f"/home/abu/venv-decomp-stage.{command.split('--sha ')[1][:12]}"
             return self.deploy_code, "engine said no" if self.deploy_code else "deployed"
         if "DEPLOY-SUITE" in command:
             if self.suite_out is not None:
                 return self.suite_code, self.suite_out
-            return self.suite_code, suite_output(failed="tests/test_x.py::Case::test_y" if self.suite_code else None)
+            sha = re.search(r" suite ([0-9a-f]{40}) ", command).group(1)
+            failed = "tests/test_x.py::Case::test_y" if self.suite_code else None
+            return self.suite_code, suite_output(sha=sha, failed=failed)
         if "mv -T" in command:
             if not self.repoint_code:
-                self.links["venv-decomp"] = NEW
+                self.links["venv-decomp"] = re.search(r"ln -sfn (\S+)", command).group(1)
             return self.repoint_code, ""
         if "make -k -j8 check" in command:
             if self.readback_code:
@@ -78,14 +122,14 @@ class Seams:
 
 
 def run_main(seams, environ):
-    saved = deploy_rig.ssh, deploy_rig.git
-    deploy_rig.ssh, deploy_rig.git = seams.ssh, seams.git
+    saved = deploy_rig.ssh, deploy_rig.git, deploy_rig.rig_lock
+    deploy_rig.ssh, deploy_rig.git, deploy_rig.rig_lock = seams.ssh, seams.git, seams.lock
     out, err = io.StringIO(), io.StringIO()
     try:
         with redirect_stdout(out), redirect_stderr(err):
             code = deploy_rig.main(environ)
     finally:
-        deploy_rig.ssh, deploy_rig.git = saved
+        deploy_rig.ssh, deploy_rig.git, deploy_rig.rig_lock = saved
     return code, out.getvalue(), err.getvalue()
 
 
@@ -233,8 +277,15 @@ class SuiteGateTests(unittest.TestCase):
         seams = Seams()
         run_main(seams, ENVIRON)
         order = [
-            "build" if "decomp tools deploy" in c else "suite" if "DEPLOY-SUITE" in c
-            else "repoint" if "mv -T" in c else "readback" if "make -k" in c else "links"
+            "build"
+            if "decomp tools deploy" in c
+            else "suite"
+            if "DEPLOY-SUITE" in c
+            else "repoint"
+            if "mv -T" in c
+            else "readback"
+            if "make -k" in c
+            else "links"
             for c in seams.ssh_calls
         ]
         self.assertEqual(order, ["links", "build", "suite", "repoint", "links", "readback"])
@@ -310,8 +361,8 @@ class SuiteScriptTests(unittest.TestCase):
         self.repo, self.home, self.dest = base / "repo", base / "home", base / "dest"
         for path in (self.repo / "src/abu_decomp", self.repo / "tests", self.home / "finish", self.dest):
             path.mkdir(parents=True)
-        (base / "pyproject.toml").write_text("[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n")
-        (self.repo / "pyproject.toml").write_text("[project]\nname = \"tiny\"\n")  # no pytest section
+        (base / "pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')
+        (self.repo / "pyproject.toml").write_text('[project]\nname = "tiny"\n')  # no pytest section
         (self.repo / "src/abu_decomp/__init__.py").write_text("VALUE = 1\n")
         self.write_test("assert abu_decomp.VALUE == 1")
         git("init", "-q", "-b", "main", cwd=self.repo)
@@ -323,9 +374,7 @@ class SuiteScriptTests(unittest.TestCase):
         )
 
     def sha(self):
-        done = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True, text=True, check=True
-        )
+        done = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True, text=True, check=True)
         return done.stdout.strip()
 
     def commit(self):
@@ -343,7 +392,9 @@ class SuiteScriptTests(unittest.TestCase):
                 "PYTHONUSERBASE": site.getuserbase(),  # the interpreter under test keeps finding pytest
                 **(env or {}),
             },
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         return done, deploy_rig.suite_facts(done.stdout)
 
@@ -429,6 +480,172 @@ class DeployFileTests(unittest.TestCase):
         self.assertTrue((root / path).is_file())
         self.assertTrue(os.access(root / path, os.X_OK))
         self.assertEqual((root / path).read_text().splitlines()[0], "#!/usr/bin/env python3")
+
+
+class SerializedTests(unittest.TestCase):
+    """One rig lock per deploy: taken before any seam, held through the readback, freed on every ending."""
+
+    def test_the_lock_wraps_every_git_and_ssh_call_from_the_first_to_the_readback(self):
+        seams = Seams()
+        deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
+        self.assertEqual(seams.events[0], "lock")
+        self.assertEqual(seams.events[-1], "unlock")
+        self.assertEqual(seams.events.count("lock") + seams.events.count("unlock"), 2)
+        self.assertIn("make -k -j8 check", seams.ssh_calls[-1])
+
+    def test_the_lock_is_freed_when_the_deploy_refuses(self):
+        for seams in (Seams(github=False), Seams(suite_code=1), Seams(deploy_code=3)):
+            with self.assertRaises(deploy_rig.Refused):
+                deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
+            self.assertEqual(seams.events[0], "lock")
+            self.assertEqual(seams.events[-1], "unlock")
+
+    def test_the_wait_note_leads_the_log(self):
+        seams = Seams(notes=["another deploy holds it"])
+        self.assertEqual(deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)[0], "another deploy holds it")
+
+    def test_main_takes_the_rig_lock_seam(self):
+        seams = Seams()
+        code, _, _ = run_main(seams, ENVIRON)
+        self.assertEqual((code, seams.events[0], seams.events[-1]), (0, "lock", "unlock"))
+
+    def test_two_deploys_through_one_lock_never_interleave_and_the_second_skips(self):
+        mutex, events, seams, logs = threading.Lock(), [], Seams(), {}
+
+        class Shared(FakeLock):
+            def __enter__(self):
+                mutex.acquire()
+                events.append(("lock", threading.current_thread().name))
+                return []
+
+            def __exit__(self, *exc):
+                events.append(("unlock", threading.current_thread().name))
+                mutex.release()
+                return False
+
+        def seam(kind, inner):
+            def call(*args):
+                events.append((kind, threading.current_thread().name))
+                return inner(*args)
+
+            return call
+
+        def work():
+            logs[threading.current_thread().name] = deploy_rig.deploy(
+                SHA, seam("ssh", seams.ssh), seam("git", seams.git), Shared()
+            )
+
+        threads = [threading.Thread(target=work, name=name) for name in ("a", "b")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        first = events[0][1]
+        held = {who for _, who in events[: events.index(("unlock", first))]}
+        self.assertEqual(held, {first})
+        self.assertEqual(len(seams.commands("decomp tools deploy")), 1)
+        self.assertTrue(any("build and swap skipped" in line for lines in logs.values() for line in lines))
+
+    def test_the_hold_script_parses_and_prints_waiting_then_locked(self):
+        self.assertEqual(subprocess.run(["bash", "-n"], input=deploy_rig.HOLD, text=True, check=False).returncode, 0)
+        self.assertLess(deploy_rig.HOLD.index("waiting"), deploy_rig.HOLD.index("locked"))
+        self.assertIn("flock 7", deploy_rig.HOLD)
+        self.assertEqual(deploy_rig.LOCK, "deploy-decomp.lock")
+
+
+class PromotionTests(unittest.TestCase):
+    """Under the lock the deploy builds the newest landed main, never an older one."""
+
+    def test_a_descendant_main_head_is_deployed_instead_and_the_log_says_the_older_deploy_deferred(self):
+        seams = Seams(head=NEWER)
+        lines = deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
+        self.assertEqual(seams.commands("decomp tools deploy"), [deploy_rig.deploy_command(NEWER)])
+        self.assertNotIn(SHA, " ".join(seams.ssh_calls))
+        moved = f"{SHA[:12]}: main has moved to {NEWER[:12]}, deploying main's head; the older deploy deferred"
+        self.assertIn(moved, lines)
+        self.assertEqual(set(seams.links.values()), {f"/home/abu/venv-decomp-stage.{NEWER[:12]}"})
+
+    def test_an_older_deploy_after_the_newer_one_ends_on_the_newer_directory_without_a_build(self):
+        newer = f"/home/abu/venv-decomp-stage.{NEWER[:12]}"
+        seams = Seams(head=NEWER, links=(newer, newer))
+        lines = deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
+        self.assertEqual(seams.commands("decomp tools deploy") + seams.commands("mv -T"), [])
+        self.assertEqual(set(seams.links.values()), {newer})
+        self.assertTrue(any("deferred" in line for line in lines))
+
+    def test_the_head_itself_is_deployed_without_a_promotion_line(self):
+        seams = Seams(head=SHA)
+        lines = deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
+        self.assertFalse(any("deferred" in line for line in lines))
+
+    def test_a_main_that_is_not_a_descendant_refuses_before_any_rig_command(self):
+        seams = Seams(gitea=False, head=NEWER)
+        with self.assertRaisesRegex(deploy_rig.Refused, "is not on gitea main"):
+            deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
+        self.assertEqual(seams.ssh_calls, [])
+
+    def test_a_head_that_github_main_lacks_refuses_and_names_the_head(self):
+        seams = Seams(github=False, head=NEWER)
+        with self.assertRaisesRegex(deploy_rig.Refused, f"{NEWER[:12]} is not on github main"):
+            deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
+        self.assertEqual(seams.ssh_calls, [])
+
+
+class SuiteIsolationTests(unittest.TestCase):
+    """Two suite runs of the same SHA at once (the real SUITE script and runner) each import only their own checkout."""
+
+    def test_concurrent_runs_of_one_sha_use_their_own_checkout_log_and_slots(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as tmp:
+            tmp = Path(tmp)
+            (tmp / "home/finish").mkdir(parents=True)
+            repo = tmp / "repo"
+            files = {
+                "src/abu_decomp/__init__.py": "",
+                "tests/test_ok.py": "def test_ok():\n    pass\n",
+                "pyproject.toml": "[tool.pytest.ini_options]\ntestpaths = ['tests']\n",
+            }
+            for name, body in files.items():
+                (repo / name).parent.mkdir(parents=True, exist_ok=True)
+                (repo / name).write_text(body)
+            git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+            subprocess.run(["git", "-c", "init.templateDir=", "init", "-q", "-b", "main", str(repo)], check=True)
+            subprocess.run([*git, "add", "-A"], check=True)
+            subprocess.run([*git, "commit", "-q", "-m", "x"], check=True)
+            sha = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+            script = deploy_rig.SUITE.replace("__RUNNER__", deploy_rig.RUNNER)
+            procs = []
+            for n in (1, 2):
+                dest = tmp / f"dest{n}"
+                dest.mkdir()
+                procs.append(
+                    subprocess.Popen(
+                        ["bash", "-c", script, "suite", sha, str(repo), sys.executable, str(dest)],
+                        env={**os.environ, "HOME": str(tmp / "home"), "PYTHONUSERBASE": site.getuserbase()},
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                )
+            facts = []
+            for proc in procs:
+                out = proc.communicate()[0]
+                self.assertEqual(proc.returncode, 0, out)
+                facts.append(deploy_rig.suite_facts(out))
+            for fact in facts:
+                self.assertTrue(PurePosixPath(fact["suite-import"]).is_relative_to(fact["suite-checkout"]), fact)
+            self.assertNotEqual(facts[0]["suite-checkout"], facts[1]["suite-checkout"])
+            self.assertNotEqual(facts[0]["suite-log"], facts[1]["suite-log"])
+            for fact in facts:
+                self.assertIn(fact["suite-checkout"], Path(fact["suite-log"]).read_text())
+
+    def test_the_suite_script_names_no_path_that_two_runs_of_one_sha_share(self):
+        self.assertIn('log=$(mktemp "$HOME/finish/deploy-suite-', deploy_rig.SUITE)
+        self.assertIn("ABU_SLOTS_DIR=$(mktemp -d", deploy_rig.SUITE)
+        self.assertIn("TMPDIR=$PWD/.tmp", deploy_rig.SUITE)
+        self.assertIn("PYTHONPATH=$PWD/src", deploy_rig.SUITE)
+
+    def test_the_readback_worktree_is_unique_per_run(self):
+        self.assertIn('wt=$(mktemp -d "$HOME/code/wt/DEPLOY-READBACK.XXXXXX")', deploy_rig.READBACK)
 
 
 if __name__ == "__main__":

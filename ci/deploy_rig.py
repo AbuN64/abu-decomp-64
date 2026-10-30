@@ -2,7 +2,11 @@
 """Deploys the landed AbuDecomp64 commit to the rig: `.deploy` runs this after Land, from a clean checkout, with the
 landed SHA in LANDED_Projects_AbuN64_AbuDecomp64. Any refusal or failed step prints one line on stderr and exits 1.
 
-  1. the SHA must be on gitea main and on github main (else nothing touches the rig);
+  0. one rig-side flock per repo (~/finish/deploy-decomp.lock), taken before anything else and held until
+     the readback ends (or the deploy dies), so deploys of this repo never overlap. Under it gitea main is fetched:
+     when main has moved past the landed SHA to a descendant, main's head is deployed instead and the log says the
+     older deploy deferred; when main is not a descendant of the landed SHA, the deploy refuses;
+  1. the SHA to deploy must be on gitea main and on github main (else nothing touches the rig);
   2. `decomp tools deploy --sha SHA --venv ~/venv-decomp-stage` through the rig's build slot installs the pins of
      AbuDecomp64's pyproject at SHA (no --unbake, --recipe or --taste) into a fresh ~/venv-decomp-stage.<sha12> and
      swaps the stage link. The engine builds `<live>.<sha12>` itself, so one deploy gives one directory for both links;
@@ -10,12 +14,14 @@ landed SHA in LANDED_Projects_AbuN64_AbuDecomp64. Any refusal or failed step pri
      pytest modules) runs through ~/finish/slot on a clean checkout of exactly SHA, with the freshly built venv's
      python and the checkout's src first on the import path. The imported abu_decomp path is printed and must lie
      inside the checkout. Any failure refuses (one line naming the first failing test) before ~/venv-decomp moves;
-     the summary line, the SHA and the imported path go into the deploy log and into <venv>/suite.txt;
+     the summary line, the SHA and the imported path go into the deploy log and into <venv>/suite.txt. Each run has its
+     own checkout, log, slots dir and tmp dir, so no state is shared between runs;
   4. ~/venv-decomp is repointed to the same directory by rename. Previous venv directories stay; when both links
      already read that directory, the build and the repoint are skipped (the suite gate still runs);
   5. readback, always: both links resolve to the directory, and `make check` on a fresh RageWars worktree at gitea main
      exits 0 (the 5 ROMs are built and their SHA-1 asserted), set up as ~/finish/maincheck.sh does."""
 
+import contextlib
 import os
 import re
 import shlex
@@ -23,7 +29,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager
 from pathlib import PurePosixPath
 
 ENV = "LANDED_Projects_AbuN64_AbuDecomp64"
@@ -39,13 +46,25 @@ SHA = re.compile(r"[0-9a-f]{40}")
 
 # ssh(command) runs one shell line on the rig and git(args) runs git here; both return (exit code, output).
 Seam = Callable[..., "tuple[int, str]"]
+Lock = Callable[[], AbstractContextManager[list[str]]]  # rig_lock(): holds the flock for its with-block
+
+# The per-repo rig lock: one ssh session takes the flock on its file and holds it while its stdin stays open, so the
+# lock lives exactly as long as the deploy (a killed deploy closes the pipe and frees it). It prints `waiting` when
+# another deploy holds the lock and `locked` once this one has it.
+LOCK = "deploy-decomp.lock"
+HOLD = r"""exec 7>>"$HOME/finish/$1" || exit 9
+flock -n 7 || echo waiting
+flock 7 || exit 9
+echo locked
+exec cat
+"""
 
 READBACK = r"""set -u
 repo=$HOME/code/ragewars-decomp
-wt=$HOME/code/wt/DEPLOY-READBACK
+wt=$(mktemp -d "$HOME/code/wt/DEPLOY-READBACK.XXXXXX") || exit 9
+trap 'git -C "$repo" worktree remove --force "$wt" 2>/dev/null; rmdir "$wt" 2>/dev/null' EXIT
 git -C "$repo" fetch -q gitea main || exit 9
 sha=$(git -C "$repo" rev-parse FETCH_HEAD) || exit 9
-git -C "$repo" worktree remove --force "$wt" 2>/dev/null
 git -C "$repo" worktree add -q --detach "$wt" "$sha" || exit 9
 cd "$wt" || exit 9
 ln -s "$repo/roms" roms
@@ -57,7 +76,6 @@ step() {
 step setup unbake setup --no-make
 step extract make extract
 step check make -k -j8 check
-git -C "$repo" worktree remove --force "$wt"
 echo "readback: make check exit 0 at RageWars gitea main $sha"
 """
 
@@ -66,7 +84,7 @@ SUITE = r"""set -u
 sha=$1 url=$2 py=$3 dest=$4
 work=$(mktemp -d "$HOME/finish/DEPLOY-SUITE.XXXXXX") || exit 9
 trap 'rm -rf "$work"' EXIT
-log=$HOME/finish/deploy-suite-${sha:0:12}.log
+log=$(mktemp "$HOME/finish/deploy-suite-${sha:0:12}.XXXXXX.log") || exit 9
 git -c init.templateDir= init -q "$work/checkout" || exit 9
 cd "$work/checkout" || exit 9
 git fetch -q "$url" main || { echo "suite-error: cannot fetch main from $url" >&2; exit 9; }
@@ -183,6 +201,31 @@ def suite_command(sha: str, python: str, dest: str, url: str = REMOTES["gitea"])
     return f"~/finish/slot bash -c {script} suite {sha} {url} {python} {dest}"
 
 
+@contextlib.contextmanager
+def rig_lock() -> Iterator[list[str]]:
+    """Holds the rig flock for the with-block; yields the log lines about the wait (empty when the lock was free)."""
+    holder = subprocess.Popen(
+        ["ssh", "-o", "BatchMode=yes", RIG, f"bash -c {shlex.quote(HOLD)} hold {LOCK}"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    notes = []
+    try:
+        for line in holder.stdout:
+            if line.strip() == "locked":
+                break
+            if line.strip() == "waiting":
+                notes.append(f"another deploy holds ~/finish/{LOCK}, waiting for it")
+        else:
+            raise Refused(f"cannot take ~/finish/{LOCK} on the rig (ssh exit {holder.wait()})")
+        yield notes
+    finally:
+        holder.stdin.close()  # the rig side reads its stdin until EOF, then exits and frees the lock
+        holder.wait()
+
+
 def landed_sha(environ: dict[str, str]) -> str:
     sha = environ.get(ENV, "")
     if not SHA.fullmatch(sha):
@@ -194,17 +237,29 @@ def last_line(text: str, default: object) -> str:
     return text.splitlines()[-1] if text else str(default)
 
 
-def check_on_main(sha: str, git: Seam) -> None:
-    """Refuse unless sha is an ancestor of main on gitea and on github (fetched into a scratch bare repo)."""
+def newest_main(sha: str, git: Seam) -> str:
+    """The SHA to deploy: gitea main's head when it descends from sha (sha itself when it is the head), else Refused.
+    The head must also be on github main. Both mains are fetched into a scratch bare repo."""
     work = tempfile.mkdtemp(prefix="deploy-rig-")
     try:
         git("-C", work, "init", "-q", "--bare")
-        for name, url in REMOTES.items():
-            code, out = git("-C", work, "fetch", "-q", "--no-tags", "--filter=blob:none", url, "main")
+
+        def fetch(name: str) -> None:
+            code, out = git("-C", work, "fetch", "-q", "--no-tags", "--filter=blob:none", REMOTES[name], "main")
             if code:
-                raise Refused(f"cannot fetch {name} main ({url}): {last_line(out, code)}")
-            if git("-C", work, "merge-base", "--is-ancestor", sha, "FETCH_HEAD")[0]:
-                raise Refused(f"{sha[:12]} is not on {name} main")
+                raise Refused(f"cannot fetch {name} main ({REMOTES[name]}): {last_line(out, code)}")
+
+        def require_on(name: str, commit: str) -> None:
+            if git("-C", work, "merge-base", "--is-ancestor", commit, "FETCH_HEAD")[0]:
+                raise Refused(f"{commit[:12]} is not on {name} main")
+
+        fetch("gitea")
+        require_on("gitea", sha)
+        code, out = git("-C", work, "rev-parse", "FETCH_HEAD")
+        head = out if code == 0 and SHA.fullmatch(out) else sha
+        fetch("github")
+        require_on("github", head)
+        return head
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -254,12 +309,21 @@ def suite(sha: str, target: str, ssh: Seam) -> list[str]:
     ]
 
 
-def deploy(sha: str, ssh: Seam, git: Seam) -> list[str]:
-    """The whole mechanism; returns the log lines to print. Raises Refused on the first failed step."""
-    target = f"{RIG_HOME}/venv-decomp-stage.{sha[:12]}"
-    check_on_main(sha, git)
-    links = read_links(ssh)
+def deploy(sha: str, ssh: Seam, git: Seam, lock: Lock) -> list[str]:
+    """Takes the rig lock, then deploys the newest landed main; returns the log lines to print."""
+    with lock() as waited:
+        return [*waited, *deploy_locked(sha, ssh, git)]
+
+
+def deploy_locked(sha: str, ssh: Seam, git: Seam) -> list[str]:
+    """The mechanism under the lock. Raises Refused on the first failed step."""
     lines = []
+    head = newest_main(sha, git)
+    if head != sha:
+        lines.append(f"{sha[:12]}: main has moved to {head[:12]}, deploying main's head; the older deploy deferred")
+        sha = head
+    target = f"{RIG_HOME}/venv-decomp-stage.{sha[:12]}"
+    links = read_links(ssh)
     skipped = all(path == target for path in links.values())
     if skipped:
         lines.append(f"{sha[:12]}: both links already read {target}, build and swap skipped")
@@ -286,7 +350,7 @@ def deploy(sha: str, ssh: Seam, git: Seam) -> list[str]:
 
 def main(environ: dict[str, str] | None = None) -> int:
     try:
-        for line in deploy(landed_sha(dict(os.environ) if environ is None else environ), ssh, git):
+        for line in deploy(landed_sha(dict(os.environ) if environ is None else environ), ssh, git, rig_lock):
             print(line, flush=True)
     except Refused as refusal:
         print(f"deploy refused: {refusal}", file=sys.stderr)
