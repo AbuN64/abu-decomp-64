@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from abu_decomp import DecompError, procguard
-from abu_decomp.config import Profile, check_keys
+from abu_decomp.config import ConfigError, Profile, check_keys
 
 _KEYS = frozenset(
     {
@@ -61,9 +61,9 @@ _KEYS = frozenset(
         "lock",
         "pins",
         "pins_repo",
-        "cpu_profile",
     }
 )
+REMOVED_KEYS = {"cpu_profile": "the oracle's CPU profile is no longer read; delete the key"}
 VIEW, LOG, DIFF = "oracle.bmp", "oracle.txt", "diff.json"
 AUDIO = "audio-oracle.pcm"  # the original's sound, as the port's audio.pcm (+ ".rate")
 PORT_TRACE, ORACLE_TRACE = "port-trace.txt", "oracle-trace.txt"
@@ -89,6 +89,9 @@ def settings(profile: Profile) -> dict[str, Any] | None:
     table = profile.section("tas").get("oracle")
     if not table:
         return None
+    for key, why in REMOVED_KEYS.items():
+        if key in table:
+            raise ConfigError(profile.source_file, f"tas.oracle.{key}", f"removed key: {why}")
     check_keys(profile.source_file, "tas.oracle", table, frozenset({"host"}), _KEYS)
     every = int(table.get("shot_every", 25))
     if every < 1:
@@ -106,7 +109,6 @@ def settings(profile: Profile) -> dict[str, Any] | None:
         **stamp,
         "rebuild": str(table.get("rebuild", "")),
         "host": profile.path("tas.oracle.host", table["host"]),
-        "cpu_profile": profile.path("tas.oracle.cpu_profile", table["cpu_profile"]) if "cpu_profile" in table else None,
         "env": {str(k): str(v) for k, v in table.get("env", {}).items()},
         "shot_every": every,
         "render_lead": lead,

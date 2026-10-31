@@ -283,6 +283,12 @@ class PlayTests(unittest.TestCase):
         lead = tas_oracle.settings(self.load(oracle={"host": "n64host", "render_lead": 0}))
         self.assertEqual(lead["render_lead"], 0)
 
+    def test_the_removed_cpu_profile_key_is_refused(self):
+        with self.assertRaises(DecompError) as caught:
+            tas_oracle.settings(self.load(oracle={"host": "n64host", "cpu_profile": "cpu.json"}))
+        self.assertIn("tas.oracle.cpu_profile", str(caught.exception))
+        self.assertIn("removed key", str(caught.exception))
+
     def test_a_stale_oracle_is_refused_loudly(self):
         """The oracle ensure stamps the cake-taste-64 sha it built; a host older than the tree's HEAD is refused."""
         tree = self.root / "tree"

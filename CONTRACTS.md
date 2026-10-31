@@ -74,10 +74,24 @@ Cake Taste owns the only implementation of the event format and its flock append
 The port runs on one logical clock and pays the original's cost (CakeTaste64 RUNTIME.md "Virtual guest time"): one tick of guest time per entry of an original game function, by vram. SDK functions (policy `SDK_LO..SDK_HI`) and functions the port runs natively (bound by the manifest, or defined by the shim under their original name) are not charged; both sides charge the same set.
 
 - **Always present.** The charge is part of every build of a port, trace or not. `shim/cmake/n64c_charge.cmake` `n64c_charge_entries(<target> NS_PER_ENTRY <decimal> MANIFEST <effective manifest> SOURCE <original source dir> ORIGINAL_SOURCES <files>)` compiles the original units with `-finstrument-functions` and adds the generated `charged_table.c` (`shim/boot/charged.py`: the scale and the charged names). Tracing (`boot/trace.c`) is a separate optional layer that takes the same entry call and charges through the same inline `n64c_charge_entry`.
+- **Two forms, one set of flags.** `n64c_charge_entries` sets the flags as a `COMPILE_OPTIONS` source property on `ORIGINAL_SOURCES`: that serves units the target compiles itself and is ignored by a custom compiler command (an `add_custom_command` that runs the compiler, such as a port's unitstep or boot_objects). A custom command uses the exported form: `N64C_CHARGE_COMPILE_FLAGS` (a list, `-finstrument-functions -fno-omit-frame-pointer`, set by including `n64c_charge.cmake`) on its compile line and `N64C_CHARGE_HOOK_LIBRARY` (`n64compat`, which holds the entry hook `n64c_charge.c`) linked by the target that takes the object. A port copies:
+
+  ```cmake
+  include(<shim>/cmake/n64c_charge.cmake)
+  add_custom_command(OUTPUT unit.o
+      COMMAND ${CMAKE_C_COMPILER} $<TARGET_PROPERTY:n64compat,INTERFACE_COMPILE_OPTIONS>
+              ${N64C_CHARGE_COMPILE_FLAGS} -c unit.c -o unit.o
+      DEPENDS unit.c VERBATIM)
+  set_source_files_properties(unit.o PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+  target_sources(game PRIVATE unit.o)
+  target_link_libraries(game PRIVATE ${N64C_CHARGE_HOOK_LIBRARY})
+  ```
+
+  `cmake -DOBJECT=unit.o -P <shim>/cmake/n64c_charge_audit.cmake` audits a compiled unit: it refuses an object with no `__cyg_profile_func_enter` call. The charged table (`n64c_charge_entries` or the generated `charged_table.c`) is still required either way.
 - **Explicit, immutable scale.** `NS_PER_ENTRY` is the project's one declaration (guest ns per charged entry, a positive decimal; the CakeTaste64 oracle's value is 4702.010109321735), compiled into the executable as `n64c_guest_ns_per_entry`. No environment variable, no default and no run-time knob exists: the retired `N64C_GUEST_NS_PER_ENTRY` is gone from the shim and from `tas_oracle.port_env`. A call without it, or with `0`, stops the configure (`n64c_charge_entries`) and the table generator.
 - **Refusal.** A binary with no scale, a zero scale, no charged names, or none of them found in the executable's own `.symtab` prints `boot-missing: guest work charge: ...` and exits 7 at `n64c_init`, before the first frame. Charged names resolve once at start to addresses (the load bias of a position-independent image included).
 - **Cost.** The hook is an inline test of the baton-holder marker, a probe of a hash set of charged addresses and one relaxed decrement of `n64c_work_budget`; it calls out only (`n64c_work_due`) when the budget reaches the next clock event (a device, the Count compare, the retrace). Entries are folded into the clock at every clock read, so the clock value seen by game code is the one a per-entry tick would give; the host (no baton) and uncharged functions never charge.
-- **Tests.** `shim/tests/test_charge.c` (exact ticks, uncharged entries, retrace delivered at the charged entry), `test_charge_refuse.c` (exit 7 without a table), `shim/boot/test_charged.py` (the generated set and its refusals).
+- **Tests.** `shim/tests/test_charge.c` (exact ticks, uncharged entries, retrace delivered at the charged entry), `test_charge_refuse.c` (exit 7 without a table), `test_charge_custom.c` (a unit compiled by a custom command is charged; its object passes `n64c_charge_audit.cmake`, an object built without the flags fails it; tracing off), `shim/boot/test_charged.py` (the generated set and its refusals).
 
 ## Port boilerplate
 

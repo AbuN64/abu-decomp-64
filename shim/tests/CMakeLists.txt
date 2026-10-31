@@ -12,6 +12,31 @@ add_executable(n64c_test_charge_refuse test_charge_refuse.c)
 target_link_libraries(n64c_test_charge_refuse PRIVATE n64compat)
 target_compile_options(n64c_test_charge_refuse PRIVATE -Wall -Wextra -Werror)
 add_test(NAME n64c_charge_refuse COMMAND n64c_test_charge_refuse)
+# The custom-command form of the entry charge (cmake/n64c_charge.cmake): an original unit compiled by an
+# add_custom_command that runs the compiler (a port's unitstep), tracing off. Its object carries the entry call (audit)
+# and the linked executable is charged by it; an object compiled without the exported flags fails the audit.
+include(${N64C_SHIM_DIR}/cmake/n64c_charge.cmake)
+set(custom_unit "${CMAKE_CURRENT_BINARY_DIR}/charge_custom_unit.o")
+set(plain_unit "${CMAKE_CURRENT_BINARY_DIR}/charge_plain_unit.o")
+add_custom_command(OUTPUT "${custom_unit}"
+    COMMAND "${CMAKE_C_COMPILER}" $<TARGET_PROPERTY:n64compat,INTERFACE_COMPILE_OPTIONS> ${N64C_CHARGE_COMPILE_FLAGS}
+        -c "${CMAKE_CURRENT_SOURCE_DIR}/test_charge_custom_unit.c" -o "${custom_unit}"
+    DEPENDS test_charge_custom_unit.c VERBATIM)
+add_custom_command(OUTPUT "${plain_unit}"
+    COMMAND "${CMAKE_C_COMPILER}" $<TARGET_PROPERTY:n64compat,INTERFACE_COMPILE_OPTIONS>
+        -c "${CMAKE_CURRENT_SOURCE_DIR}/test_charge_custom_unit.c" -o "${plain_unit}"
+    DEPENDS test_charge_custom_unit.c VERBATIM)
+set_source_files_properties("${custom_unit}" "${plain_unit}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+add_executable(n64c_test_charge_custom test_charge_custom.c test_charge_custom_table.c "${custom_unit}")
+add_custom_target(n64c_charge_plain_unit ALL DEPENDS "${plain_unit}")
+target_link_libraries(n64c_test_charge_custom PRIVATE ${N64C_CHARGE_HOOK_LIBRARY})
+target_compile_options(n64c_test_charge_custom PRIVATE -Wall -Wextra -Werror)
+add_test(NAME n64c_charge_custom COMMAND n64c_test_charge_custom)
+add_test(NAME n64c_charge_custom_audit
+    COMMAND "${CMAKE_COMMAND}" -DOBJECT=${custom_unit} -P "${N64C_SHIM_DIR}/cmake/n64c_charge_audit.cmake")
+add_test(NAME n64c_charge_plain_audit
+    COMMAND "${CMAKE_COMMAND}" -DOBJECT=${plain_unit} -P "${N64C_SHIM_DIR}/cmake/n64c_charge_audit.cmake")
+set_tests_properties(n64c_charge_plain_audit PROPERTIES WILL_FAIL TRUE)
 if(N64C_M32)
     add_executable(n64c_test_guest_imports test_guest_imports.c)
     target_link_libraries(n64c_test_guest_imports PRIVATE n64compat)
