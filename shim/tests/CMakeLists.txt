@@ -71,6 +71,6 @@ target_compile_options(n64c_test_win_space PRIVATE -Wall -Wextra -Werror -UNDEBU
 add_test(NAME n64c_win_space COMMAND n64c_test_win_space)
 
 # The Windows window refuses a Mesa driver without the DLLs it loads from its own directory (fast3d/f3d_mesa_bundle.h).
-add_executable(n64c_test_mesa_bundle test_mesa_bundle.cpp)
+add_executable(n64c_test_mesa_bundle test_mesa_bundle.c)
 target_compile_options(n64c_test_mesa_bundle PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME n64c_mesa_bundle COMMAND n64c_test_mesa_bundle)

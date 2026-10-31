@@ -23,7 +23,7 @@ static void gl_call_failed(const char* call)
     }
 }
 #ifdef _WIN32
-static bool file_exists(const std::string &path) { return GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES; }
+static bool file_exists(const char *path) { return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
 
 // Mesa's D3D12 driver _exit()s at the first draw when its sibling DLLs are absent: refuse before that, naming the file.
 static void require_mesa_bundle()
