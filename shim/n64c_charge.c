@@ -65,6 +65,10 @@ static unsigned resolve(const void **set, unsigned mask)
             continue;
         const ElfW(Sym) *syms = (const ElfW(Sym) *)(image + sh[i].sh_offset);
         const char *strings = (const char *)(image + sh[sh[i].sh_link].sh_offset);
+        uintptr_t bias = 0; /* where a position-independent image was loaded: this function's own address against its entry */
+        for (unsigned k = 0; k < sh[i].sh_size / sizeof(ElfW(Sym)); k++)
+            if (ELF32_ST_TYPE(syms[k].st_info) == STT_FUNC && !strcmp(strings + syms[k].st_name, "n64c_charge_init"))
+                bias = (uintptr_t)&n64c_charge_init - (uintptr_t)syms[k].st_value;
         for (unsigned k = 0; k < sh[i].sh_size / sizeof(ElfW(Sym)); k++) {
             if (ELF32_ST_TYPE(syms[k].st_info) != STT_FUNC || !syms[k].st_value)
                 continue;
@@ -77,7 +81,7 @@ static unsigned resolve(const void **set, unsigned mask)
                 s = (s + 1) & (names - 1);
             if (!by_name[s])
                 continue;
-            const void *fn = (const void *)(uintptr_t)syms[k].st_value;
+            const void *fn = (const void *)(bias + (uintptr_t)syms[k].st_value);
             unsigned a = (((unsigned)(uintptr_t)fn * 2654435761u) >> 7) & mask;
             while (set[a] && set[a] != fn)
                 a = (a + 1) & mask;
