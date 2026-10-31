@@ -40,7 +40,7 @@ def answer(exit_code=0, log="/runs/.tmp/job-rig-1.log"):
 
 
 class Rig:
-    """The seams: Job Invoke answers by call order (activation, readback, serve), git knows both mains, logs are text."""
+    """The seams: Job Invoke answers by call order (activation, readback, serve), git knows both mains, logs are text"""
 
     def __init__(
         self,
