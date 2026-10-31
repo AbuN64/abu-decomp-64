@@ -21,6 +21,7 @@
 #include <windows.h>
 #include "win_context.h"
 #include "n64c_host.h"
+#include "win_space.h"
 #include "../n64c_memory.h"
 #include "../n64c_diag.h"
 #include <fcntl.h>
@@ -33,14 +34,10 @@ _Static_assert(sizeof(CONTEXT)<=sizeof(N64cHostContext),"N64cHostContext holds a
 extern IMAGE_DOS_HEADER __ImageBase;
 enum { PAGE=4096, GRANULE=65536, FRAMES=2048 /* 8 MiB of RDRAM */, KSEG0=0x80000000u, KSEG1=0xA0000000u };
 
-/* The guest's virtual pages (osMapTLB) live below the image: 0x00400000..0x01000000 holds the game's resource pager.
- * The process start claims that range in 64 KiB reservations before anything else allocates (n64c_host_process_start), and
- * a TLB mapping takes its chunks over. */
-enum { CLAIM_LO=0x00400000, CLAIM_HI=0x00A00000, CLAIM_CHUNKS=(CLAIM_HI-CLAIM_LO)/GRANULE };
-/* What the game uses: a 1 MB mapping at 0x00400000 and the pager's pages from 0x00800000. A start whose loader put its stack or
- * heap there is run again (n64c_host_process_start); the gap between is left to the system. */
-static int wanted(uintptr_t chunk) { return chunk<0x00500000 || chunk>=0x00800000; }
-static unsigned char claimed[CLAIM_CHUNKS];
+/* The guest's virtual pages (osMapTLB) live below the image, in the zones of win_space.h. The process start reserves them as
+ * placeholders before anything else allocates (n64c_host_process_start); a TLB mapping replaces the placeholders it covers
+ * and gives them back when it ends. A range outside the zones, or one the start could not reserve, is mapped directly. */
+static N64cSpace space;
 
 static HANDLE section;
 static PVOID veh_handle;
@@ -128,15 +125,14 @@ typedef struct { DsmPage *pages; DsmPage *owner; } Frame; /* owner NULL: the RDR
 #define BUCKETS 4096
 static Frame frames[FRAMES];
 static DsmPage *buckets[BUCKETS];
-static uintptr_t blocks[1024];  /* 64 KiB blocks reserved for virtual pages */
+typedef struct { uintptr_t base; unsigned pages; int held; } Block; /* held: a block of the guest zones, else reserved directly */
+static Block blocks[1024];      /* 64 KiB blocks reserved for virtual pages */
 static unsigned block_count;
-typedef struct { uintptr_t base; size_t bytes; int placeholder; } View;
-static View views[64];          /* 64 KiB-aligned TLB pages mapped as true aliases */
+typedef struct { uintptr_t base; size_t bytes; int held; } View;
+static View views[64];          /* 64 KiB-aligned TLB pages mapped as true aliases; held: through the guest zones */
 
-/* The 1 MB mapping at 0x00400000 is the one the game makes at boot and a thread created by another part of the program (the
- * loader's workers, SDL, the driver) can take the range in the moment between giving a reservation back and mapping the
- * view. A placeholder (Windows 10 1803 and later) is replaced by the view in one call, so there is no such moment. */
-enum { ZONE1=0x00400000, ZONE1_BYTES=0x00100000, MEM_RESERVE_PLACEHOLDER_=0x00040000, MEM_REPLACE_PLACEHOLDER_=0x00004000,
+/* Placeholders (Windows 10 1803 and later): the Win32 calls behind the guest zones' ops (win_space.h). */
+enum { MEM_RESERVE_PLACEHOLDER_=0x00040000, MEM_REPLACE_PLACEHOLDER_=0x00004000, MEM_COALESCE_PLACEHOLDERS_=0x1,
        MEM_PRESERVE_PLACEHOLDER_=0x2 };
 typedef PVOID (WINAPI *VirtualAlloc2Fn)(HANDLE,PVOID,SIZE_T,ULONG,ULONG,void *,ULONG);
 typedef PVOID (WINAPI *MapViewOfFile3Fn)(HANDLE,HANDLE,PVOID,ULONG64,SIZE_T,ULONG,ULONG,void *,ULONG);
@@ -144,7 +140,6 @@ typedef BOOL (WINAPI *UnmapViewOfFile2Fn)(HANDLE,PVOID,ULONG);
 static VirtualAlloc2Fn virtual_alloc2;
 static MapViewOfFile3Fn map_view_of_file3;
 static UnmapViewOfFile2Fn unmap_view_of_file2;
-static int zone1_placeholder; /* the range is one placeholder, not yet mapped */
 static int placeholders_available(void)
 {
     if (!virtual_alloc2) {
@@ -157,15 +152,59 @@ static int placeholders_available(void)
     }
     return virtual_alloc2 && map_view_of_file3 && unmap_view_of_file2;
 }
-/* Give the claimed chunks of [at, at+bytes) back (hold=0) or take them again (hold=1). */
-static void claim_chunks(uintptr_t at,size_t bytes,int hold)
+static int ops_reserve(void *process,uintptr_t at,size_t bytes)
 {
-    for (uintptr_t chunk=at&~(uintptr_t)(GRANULE-1);chunk<at+bytes;chunk+=GRANULE) {
-        if (chunk<CLAIM_LO || chunk>=CLAIM_HI) continue;
-        unsigned char *flag=&claimed[(chunk-CLAIM_LO)/GRANULE];
-        if (!hold && *flag) { VirtualFree((void *)chunk,0,MEM_RELEASE);*flag=0; }
-        else if (hold && !*flag && VirtualAlloc((void *)chunk,GRANULE,MEM_RESERVE,PAGE_NOACCESS)==(void *)chunk) *flag=1;
+    return virtual_alloc2(process,(void *)at,bytes,MEM_RESERVE|MEM_RESERVE_PLACEHOLDER_,PAGE_NOACCESS,NULL,0)!=NULL;
+}
+static int ops_release(void *process,uintptr_t at,size_t bytes)
+{
+    return VirtualFreeEx(process,(void *)at,bytes,MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER_);
+}
+static int ops_coalesce(void *process,uintptr_t at,size_t bytes)
+{
+    return VirtualFreeEx(process,(void *)at,bytes,MEM_RELEASE|MEM_COALESCE_PLACEHOLDERS_);
+}
+static int ops_map(void *process,uintptr_t at,size_t bytes,uint32_t physical)
+{
+    return map_view_of_file3(section,process,(void *)at,physical,bytes,MEM_REPLACE_PLACEHOLDER_,PAGE_READWRITE,NULL,0)!=NULL;
+}
+static int ops_unmap(void *process,uintptr_t at,size_t bytes)
+{
+    (void)bytes;
+    return unmap_view_of_file2(process,(void *)at,MEM_PRESERVE_PLACEHOLDER_);
+}
+static int ops_alloc(void *process,uintptr_t at,size_t bytes)
+{
+    return virtual_alloc2(process,(void *)at,bytes,MEM_RESERVE|MEM_REPLACE_PLACEHOLDER_,PAGE_NOACCESS,NULL,0)!=NULL;
+}
+static int ops_query(void *process,uintptr_t at,N64cSpaceRegion *region)
+{
+    MEMORY_BASIC_INFORMATION m;
+    if (!VirtualQueryEx(process,(void *)at,&m,sizeof m)) return 0;
+    region->base=(uintptr_t)m.BaseAddress;
+    region->allocation_base=(uintptr_t)m.AllocationBase;
+    region->size=m.RegionSize;
+    region->state=m.State;
+    region->type=m.Type;
+    if (m.State!=MEM_FREE && process==GetCurrentProcess()) {
+        HMODULE module;
+        if (m.AllocationBase==(void *)GetProcessHeap()) strcpy(region->module,"[process heap]");
+        else if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                    (const char *)m.AllocationBase,&module))
+            GetModuleFileNameA(module,region->module,sizeof region->module);
     }
+    return 1;
+}
+static void ops_log(void *process,const char *line) { (void)process;fprintf(stderr,"%s\n",line); }
+static N64cSpaceOps space_ops(HANDLE process)
+{
+    return (N64cSpaceOps){process,ops_reserve,ops_release,ops_coalesce,ops_map,ops_unmap,ops_alloc,ops_query,ops_log};
+}
+/* What occupies a range a direct mapping could not take. */
+static void report_range(uintptr_t at,size_t bytes,const char *what)
+{
+    const N64cSpaceOps ops=space_ops(GetCurrentProcess());
+    n64c_space_report(&ops,at,bytes,what);
 }
 static DsmPage *find_page(uintptr_t v)
 {
@@ -173,24 +212,44 @@ static DsmPage *find_page(uintptr_t v)
         if (p->v==v) return p;
     return NULL;
 }
-static int ensure_block(uintptr_t v)
+static Block *find_block(uintptr_t v)
 {
-    const uintptr_t block=v&~(uintptr_t)(GRANULE-1);
-    if (block>=CLAIM_LO && block<CLAIM_HI && claimed[(block-CLAIM_LO)/GRANULE]) return 1;
+    const uintptr_t base=v&~(uintptr_t)(GRANULE-1);
     for (unsigned i=0;i<block_count;i++)
-        if (blocks[i]==block) return 1;
-    if (block_count>=sizeof blocks/sizeof blocks[0]) return 0;
-    void *got=VirtualAlloc((void *)block,GRANULE,MEM_RESERVE,PAGE_NOACCESS);
-    if (got!=(void *)block) {
-        if (got) VirtualFree(got,0,MEM_RELEASE);
-        return 0;
+        if (blocks[i].base==base) return &blocks[i];
+    return NULL;
+}
+/* The 64 KiB block that holds v is reserved for virtual pages: a private reservation replacing the guest zone's placeholder, or
+ * a direct reservation outside the zones. */
+static Block *ensure_block(uintptr_t v)
+{
+    Block *block=find_block(v);
+    if (block) return block;
+    const uintptr_t base=v&~(uintptr_t)(GRANULE-1);
+    if (block_count>=sizeof blocks/sizeof blocks[0]) { fprintf(stderr,"n64c: no free guest block slot for %p\n",(void *)v);return NULL; }
+    const int held=n64c_space_block(&space,base);
+    if (held<0) return NULL;
+    if (!held) {
+        void *got=VirtualAlloc((void *)base,GRANULE,MEM_RESERVE,PAGE_NOACCESS);
+        if (got!=(void *)base) {
+            if (got) VirtualFree(got,0,MEM_RELEASE);
+            fprintf(stderr,"n64c: cannot reserve the guest block %p, error %lu\n",(void *)base,(unsigned long)GetLastError());
+            report_range(base,GRANULE,"cannot reserve the guest block");
+            return NULL;
+        }
     }
-    blocks[block_count++]=block;
-    return 1;
+    block=&blocks[block_count++];
+    *block=(Block){base,0,held};
+    return block;
+}
+static void drop_block(Block *block)
+{
+    if (!block->held || !n64c_space_block_end(&space,block->base)) VirtualFree((void *)block->base,0,MEM_RELEASE);
+    *block=blocks[--block_count];
 }
 static void release_blocks(void)
 {
-    while (block_count) VirtualFree((void *)blocks[--block_count],0,MEM_RELEASE);
+    while (block_count) drop_block(&blocks[block_count-1]);
 }
 static void protect_frame(uint32_t frame,DWORD protection)
 {
@@ -229,10 +288,23 @@ static void transfer(uint32_t frame,DsmPage *to)
 static int dsm_map(uintptr_t v,uint32_t physical)
 {
     const uint32_t frame=physical>>12;
-    if (frame>=FRAMES || find_page(v) || !ensure_block(v)) return -1;
-    if (!VirtualAlloc((void *)v,PAGE,MEM_COMMIT,PAGE_NOACCESS)) return -1;
+    if (frame>=FRAMES) { fprintf(stderr,"n64c: guest page %p maps physical %#x beyond RDRAM\n",(void *)v,(unsigned)physical);return -1; }
+    if (find_page(v)) { fprintf(stderr,"n64c: guest page %p is already mapped\n",(void *)v);return -1; }
+    Block *block=ensure_block(v);
+    if (!block) return -1;
+    if (!VirtualAlloc((void *)v,PAGE,MEM_COMMIT,PAGE_NOACCESS)) {
+        fprintf(stderr,"n64c: cannot commit the guest page %p, error %lu\n",(void *)v,(unsigned long)GetLastError());
+        report_range(v,PAGE,"cannot commit the guest page");
+        if (!block->pages) drop_block(block);
+        return -1;
+    }
     DsmPage *page=calloc(1,sizeof *page);
-    if (!page) { VirtualFree((void *)v,PAGE,MEM_DECOMMIT);return -1; }
+    if (!page) {
+        VirtualFree((void *)v,PAGE,MEM_DECOMMIT);
+        if (!block->pages) drop_block(block);
+        return -1;
+    }
+    block->pages++;
     page->v=v;
     page->frame=frame;
     page->next=frames[frame].pages;
@@ -250,6 +322,8 @@ static void dsm_unmap(DsmPage *page)
     for (DsmPage **p=&buckets[(page->v>>12)%BUCKETS];*p;p=&(*p)->hash_next)
         if (*p==page) { *p=page->hash_next;break; }
     VirtualFree((void *)page->v,PAGE,MEM_DECOMMIT);
+    Block *block=find_block(page->v);
+    if (block && !--block->pages) drop_block(block);
     free(page);
 }
 /* A fault inside a software-coherent frame: 1 when the swap was done and the instruction can run again. */
@@ -299,24 +373,18 @@ int n64c_host_tlb_map(void *vaddr,size_t bytes,uint32_t physical)
     if (!(v%GRANULE) && !(physical%GRANULE) && !(bytes%GRANULE)) {
         unsigned slot=0;
         while (slot<sizeof views/sizeof views[0] && views[slot].base) slot++;
-        int placeholder=zone1_placeholder && v==ZONE1 && bytes==ZONE1_BYTES;
-        void *view=NULL;
-        if (slot<sizeof views/sizeof views[0]) {
-            if (placeholder) view=map_view_of_file3(section,GetCurrentProcess(),(void *)v,physical,bytes,
-                                                    MEM_REPLACE_PLACEHOLDER_,PAGE_READWRITE,NULL,0);
-            else { claim_chunks(v,bytes,0);view=n64c_host_map(v,bytes,physical,N64C_PROT_RW); }
+        if (slot>=sizeof views/sizeof views[0]) {
+            fprintf(stderr,"n64c: no free view slot for %p\n",(void *)v);
+            rc=-1;
+        } else {
+            const int held=n64c_space_view(&space,v,bytes,physical); /* 1 mapped, 0 not a held range, -1 reported */
+            if (held==0 && !n64c_host_map(v,bytes,physical,N64C_PROT_RW)) {
+                fprintf(stderr,"n64c: map %p +%x failed, error %lu\n",(void *)v,(unsigned)bytes,(unsigned long)GetLastError());
+                report_range(v,bytes,"cannot map the guest range");
+                rc=-1;
+            } else if (held<0) rc=-1;
+            else views[slot]=(View){v,bytes,held};
         }
-        if (view && placeholder) zone1_placeholder=0;
-        if (view) views[slot]=(View){v,bytes,placeholder};
-        else { fprintf(stderr,"n64c: map %p +%x failed, error %lu\n",(void *)v,(unsigned)bytes,(unsigned long)GetLastError());
-            for (uintptr_t at=v;at<v+bytes;) { /* what is in the way */
-                MEMORY_BASIC_INFORMATION m;
-                if (!VirtualQuery((void *)at,&m,sizeof m)) break;
-                if (m.State!=MEM_FREE) fprintf(stderr,"n64c:   %p +%lx state %lx type %lx (allocated at %p)\n",m.BaseAddress,(unsigned long)m.RegionSize,
-                    (unsigned long)m.State,(unsigned long)m.Type,m.AllocationBase);
-                at=(uintptr_t)m.BaseAddress+m.RegionSize;
-            }
-            claim_chunks(v,bytes,1);rc=-1; }
     } else {
         size_t mapped=0;
         for (;mapped<bytes;mapped+=PAGE)
@@ -337,12 +405,7 @@ int n64c_host_tlb_unmap(void *vaddr,size_t bytes)
     EnterCriticalSection(&lock);
     for (unsigned i=0;i<sizeof views/sizeof views[0];i++)
         if (views[i].base==v) {
-            if (views[i].placeholder) {
-                if (unmap_view_of_file2(GetCurrentProcess(),(void *)v,MEM_PRESERVE_PLACEHOLDER_)) zone1_placeholder=1;
-            } else {
-                UnmapViewOfFile((void *)v);
-                claim_chunks(v,views[i].bytes,1);
-            }
+            if (!views[i].held || !n64c_space_view_end(&space,v,views[i].bytes)) UnmapViewOfFile((void *)v);
             views[i]=(View){0};
             LeaveCriticalSection(&lock);
             return 0;
@@ -356,47 +419,24 @@ int n64c_host_tlb_unmap(void *vaddr,size_t bytes)
 }
 
 /* The loader of the process creates its heap (and the system its mapped tables) in the lowest free address space, which is
- * where the game wants its virtual pages. So the program starts itself again suspended, reserves those ranges in the new
- * process before its loader has run, and resumes it; the new process finds the reservations and takes them over. */
-static int adopt_claims(void)
+ * where the game wants its virtual pages. So the program starts itself again suspended, reserves those ranges as placeholders in
+ * the new process before its loader has run, and resumes it; the new process finds the placeholders and takes them over. */
+static void adopt_zones(void)
 {
-    int all=1;
-    MEMORY_BASIC_INFORMATION whole;
-    if (VirtualQuery((void *)ZONE1,&whole,sizeof whole) && whole.State==MEM_RESERVE && whole.Type==MEM_PRIVATE &&
-        (uintptr_t)whole.AllocationBase==ZONE1 && whole.RegionSize==ZONE1_BYTES && placeholders_available())
-        zone1_placeholder=1;
-    for (unsigned i=0;i<CLAIM_CHUNKS;i++) {
-        const uintptr_t at=CLAIM_LO+i*GRANULE;
-        if (!wanted(at)) continue;
-        if (zone1_placeholder && at>=ZONE1 && at<ZONE1+ZONE1_BYTES) continue;
-        MEMORY_BASIC_INFORMATION m;
-        if (VirtualQuery((void *)at,&m,sizeof m) && m.State==MEM_RESERVE && m.Type==MEM_PRIVATE &&
-            (uintptr_t)m.AllocationBase==at && m.RegionSize==GRANULE) claimed[i]=1;
-        else all=0;
-    }
-    return all;
-}
-/* No second process (it could not be created): reserve what is free in this one. */
-static int claim_guest_space(void)
-{
-    int all=1;
-    for (unsigned i=0;i<CLAIM_CHUNKS;i++) {
-        void *at=(void *)(uintptr_t)(CLAIM_LO+i*GRANULE);
-        if (!wanted((uintptr_t)at)) continue;
-        void *got=VirtualAlloc(at,GRANULE,MEM_RESERVE,PAGE_NOACCESS);
-        if (got==at) claimed[i]=1;
-        else { all=0;if (got) VirtualFree(got,0,MEM_RELEASE); }
-    }
-    return all;
+    const N64cSpaceOps ops=space_ops(GetCurrentProcess());
+    const unsigned missing=n64c_space_adopt(&space,&ops);
+    if (missing) fprintf(stderr,"n64c: %u guest address chunks were not reserved at start; osMapTLB may fail\n",missing);
 }
 int n64c_host_process_start(void)
 {
     /* A crash ends with the fault record and the log, not with a system dialog nobody is there to close. */
     SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX);
     if (getenv("N64C_LAUNCHED")) {
-        const int adopted=adopt_claims();
-        if (!adopted)
-            fprintf(stderr,"n64c: the guest address ranges were not all reserved at start; osMapTLB may fail\n");
+        adopt_zones();
+        return -1;
+    }
+    if (!placeholders_available()) {
+        fprintf(stderr,"n64c: placeholders (Windows 10 1803 and later) are missing; the guest address ranges are not reserved\n");
         return -1;
     }
     SetEnvironmentVariableA("N64C_LAUNCHED","1");
@@ -411,18 +451,14 @@ int n64c_host_process_start(void)
                 (unsigned long)GetLastError());
         free(line);
         SetEnvironmentVariableA("N64C_LAUNCHED",NULL);
-        if (!claim_guest_space())
-            fprintf(stderr,"n64c: the guest address ranges are not free; osMapTLB may fail\n");
+        const N64cSpaceOps own=space_ops(GetCurrentProcess());
+        n64c_space_reserve(&own);
+        adopt_zones();
         return -1;
     }
     free(line);
-    const int placeholder=placeholders_available() &&
-        virtual_alloc2(child.hProcess,(void *)ZONE1,ZONE1_BYTES,MEM_RESERVE|MEM_RESERVE_PLACEHOLDER_,PAGE_NOACCESS,NULL,0);
-    for (unsigned i=0;i<CLAIM_CHUNKS;i++) {
-        const uintptr_t at=CLAIM_LO+i*GRANULE;
-        if (placeholder && at>=ZONE1 && at<ZONE1+ZONE1_BYTES) continue;
-        if (wanted(at)) (void)VirtualAllocEx(child.hProcess,(void *)at,GRANULE,MEM_RESERVE,PAGE_NOACCESS);
-    }
+    const N64cSpaceOps ops=space_ops(child.hProcess);
+    n64c_space_reserve(&ops);
     ResumeThread(child.hThread);
     WaitForSingleObject(child.hProcess,INFINITE);
     GetExitCodeProcess(child.hProcess,&code);

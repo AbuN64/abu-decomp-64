@@ -64,3 +64,8 @@ endif()
 add_executable(n64c_test_win_context test_win_context.c)
 target_compile_options(n64c_test_win_context PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME n64c_win_context COMMAND n64c_test_win_context)
+
+# The guest's placeholder ranges over a model of the Win32 rules; the module is OS-free, so it runs on every host.
+add_executable(n64c_test_win_space test_win_space.c ../os/win_space.c)
+target_compile_options(n64c_test_win_space PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME n64c_win_space COMMAND n64c_test_win_space)
