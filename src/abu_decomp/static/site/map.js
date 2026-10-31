@@ -80,6 +80,8 @@ export function mount(el, ctx) {
       g.fillStyle = isLit(flags, state.mask) ? paint(colourKey(st, flags, state.bit)) : dark; // dark unless a checked filter selects it
       g.fillRect((i % cols) * CELL, Math.floor(i / cols) * CELL, CELL - GAP, CELL - GAP);
     });
+    canvas.dataset.version = state.map.version; // ready marker: the canvas shows this answer under this mask
+    canvas.dataset.mask = String(state.mask);
   }
 
   async function load() {
