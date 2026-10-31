@@ -115,6 +115,7 @@ export function mount(el, ctx) {
   (async () => {
     for (const rec of (await ctx.api("/api/feedback")).feedback || []) S.flags.set(rec.id, rec);
     renderFlags();
+    el.dataset.ready = "play";
     if (S.run) { const feed = await ctx.api("/api/feed"); for (const ev of feed.events) if (ev.fields.run === S.run && ev.kind.startsWith("run.")) onRun(ev); watch(S.run); }
   })();
   refresh();
