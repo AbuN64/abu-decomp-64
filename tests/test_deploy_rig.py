@@ -533,7 +533,6 @@ class ServeScriptTests(ScriptCase):
         (self.root / "work/ci").mkdir(parents=True)
         (self.root / "work/ci/abu-decomp-tas.service").write_text("[Service]\n")
         restart = f'[ "$2" = restart ] && exit {restart_exit}'
-        restart = f"[ \"$2\" = restart ] && exit {restart_exit}"
         wrapper(bins / "systemctl", f'echo "systemctl $*" >> {calls}\n{restart}\nexit 0')
         wrapper(bins / "curl", f"echo curl >> {calls}\nprintf '%s' '{page}'")
         env = sh_env(HOME=str(home), PATH=f"{bins}:{os.environ['PATH']}")
