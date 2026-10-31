@@ -268,8 +268,15 @@ class PageLogicTest(unittest.TestCase):
             "cases": site_fn.cases_of(BAKED),
             "runs": [
                 {**RUN_FIELDS, "id": "u1", "kind": "unit", "stream": False, "first": None, "sides": ["port"]},
-                {**RUN_FIELDS, "id": "t1", "kind": "tas", "movie": "menu", "stream": False, "first": 12,
-                 "sides": ["port", "original"]},
+                {
+                    **RUN_FIELDS,
+                    "id": "t1",
+                    "kind": "tas",
+                    "movie": "menu",
+                    "stream": False,
+                    "first": 12,
+                    "sides": ["port", "original"],
+                },
             ],
         }
         script = f'import * as fn from "{FN_JS.as_uri()}"; {fake}'
