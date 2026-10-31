@@ -99,11 +99,15 @@ def cases_of(record: dict[str, Any]) -> list[dict[str, Any]]:
     return ([first] if first else []) + rows
 
 
-def first_poll(run: Path, name: str) -> int | None:
-    """The first poll the original ran the function in this run (None when it never did or left no trace)."""
+def first_poll(run: Path, movie: str, record: dict[str, Any]) -> int | None:
+    """The first poll the original ran the function in this run: from the run's own function trace, else from the
+    bake's first sighting when it was in this run's movie (None when neither names a poll)."""
     got = tas_coverage.read_oracle(run)
-    hit = got[0].get(name) if got else None
-    return int(hit[0]) if hit else None
+    hit = got[0].get(record["name"]) if got else None
+    if hit:
+        return int(hit[0])
+    seen = record.get("oracle") or {}
+    return int(seen["poll"]) if seen.get("movie") == movie and seen.get("poll") is not None else None
 
 
 def runs_of(server: Any, record: dict[str, Any]) -> list[dict[str, Any]]:
@@ -120,7 +124,8 @@ def runs_of(server: Any, record: dict[str, Any]) -> list[dict[str, Any]]:
         elif shown["target"] == name:
             out.append({**shown, "stream": False, "first": None})
     for path, shown in newest.values():
-        out.append({**shown, "stream": (path / STREAM_INDEX).is_file(), "first": first_poll(path, name)})
+        first = first_poll(path, shown["movie"], record)
+        out.append({**shown, "stream": (path / STREAM_INDEX).is_file(), "first": first})
     return sorted(out, key=lambda r: (site_core.RUN_KINDS.index(r["kind"]), -r["started"], r["id"]))
 
 

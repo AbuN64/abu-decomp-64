@@ -168,6 +168,12 @@ class AnswerTest(unittest.TestCase):
         _, got = self.answer(server, oracle=lambda run: ({}, 10))
         self.assertEqual([(r["id"], r["first"]) for r in got["runs"]], [("only", None)])
 
+    def test_the_bakes_first_sighting_names_the_poll_when_the_run_left_no_trace_and_ran_that_movie(self):
+        server = self.serve([run_row("m", "menu", 1.0), run_row("i", "intro", 2.0)])
+        (server.site / "fn" / "Fn_A.json").write_text(json.dumps({**BAKED, "oracle": {"movie": "menu", "poll": 9}}))
+        _, got = self.answer(server, oracle=lambda run: None)
+        self.assertEqual({r["id"]: r["first"] for r in got["runs"]}, {"m": 9, "i": None})
+
     def test_unknown_function_and_bad_paths_refuse(self):
         server = self.serve([])
         self.assertEqual(self.answer(server, "Nope")[0], 404)
