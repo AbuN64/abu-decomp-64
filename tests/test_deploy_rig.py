@@ -35,6 +35,10 @@ def suite_log(sha=SHA, imported=f"{CHECKOUT}/src/abu_decomp/__init__.py", failed
     return "\n".join(lines) + "\n"
 
 
+def noop_log(build=BUILD):
+    return f"{TOOLKIT} is {build}: already active\n"
+
+
 def answer(exit_code=0, log="/runs/.tmp/job-rig-1.log"):
     return deploy_rig.Answer({"Exit": exit_code, "Log": log, "Width": 16, "Host": "rig"})
 
@@ -258,6 +262,38 @@ class DeployTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertEqual(len(err.strip().splitlines()), 1)
             self.assertEqual((rig.git_calls, rig.requests), ([], []))
+
+
+class NoopActivationTests(unittest.TestCase):
+    def test_a_fresh_activation_checks_its_suite_facts_and_prints_them(self):
+        lines = Rig().deploy()
+        self.assertIn(f"{SHA[:12]}: suite {SUMMARY}", lines)
+        self.assertEqual(lines[-1], f"deployed {SHA}")
+
+    def test_an_already_active_exit_0_is_a_no_op_success_that_goes_on_to_readback_and_serve(self):
+        rig = Rig(suite=noop_log())
+        lines = rig.deploy()
+        self.assertEqual(len(rig.requests), 3)
+        self.assertTrue(any("activation was a no-op" in line for line in lines))
+        self.assertFalse(any(": suite " in line for line in lines))
+        self.assertEqual(lines[-1], f"deployed {SHA}")
+
+    def test_the_no_op_still_refuses_when_the_readback_finds_the_link_elsewhere(self):
+        rig = Rig(suite=noop_log(), readback=1)
+        rig.logs["/runs/.tmp/job-rig-2.log"] = f"readback: {TOOLKIT} reads /x/other, not {BUILD}\n"
+        with self.assertRaisesRegex(deploy_rig.Refused, "readback exit 1: readback: .* reads /x/other"):
+            rig.deploy()
+        self.assertEqual(len(rig.requests), 2)
+
+    def test_a_nonzero_exit_is_a_refusal_even_with_an_already_active_line(self):
+        rig = Rig(suite=noop_log(), activation=1)
+        with self.assertRaisesRegex(deploy_rig.Refused, "activation exit 1, links unchanged"):
+            rig.deploy()
+        self.assertEqual(len(rig.requests), 1)
+
+    def test_exit_0_without_suite_facts_or_the_no_op_line_is_still_a_gate_refusal(self):
+        with self.assertRaisesRegex(deploy_rig.Refused, "suite gate did not finish"):
+            Rig(suite=f"deploy-build: {BUILD}\n").deploy()
 
 
 class RefusalTests(unittest.TestCase):

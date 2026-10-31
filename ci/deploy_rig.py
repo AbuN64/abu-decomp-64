@@ -19,7 +19,9 @@ at the exact SHA in a Worktree (the job runs in <Root>/<board>.<card>/<repo> wit
      in the Worktree with BUILD's python and the Worktree's src first on the import path. The imported abu_decomp
      path must lie inside the Worktree. A failing suite exits non-zero: Job Invoke leaves the live and previous links
      alone and the deploy refuses with one line naming the first failing test. On exit 0 Job Invoke switches the
-     live link to BUILD and keeps the replaced venv as <toolkit>.previous;
+     live link to BUILD and keeps the replaced venv as <toolkit>.previous.
+     When the live link already names BUILD, Job Invoke answers Exit 0 with `<link> is <target>: already active` and
+     runs nothing: that is a no-op success, the suite gate is skipped and the readback still decides;
   3. the readback job: the live link resolves to BUILD, and the installed commit of AbuDecomp64 and of every direct
      git pin of its pyproject at SHA equals the pinned one. Any mismatch refuses (the live link stays as switched:
      fix forward, no rollback);
@@ -51,6 +53,9 @@ REMOTES = {
 PACKAGE = "abu_decomp"
 SHA = re.compile(r"[0-9a-f]{40}")
 SERVED = re.compile(r"^serve-sha: (\S*)$", re.MULTILINE)
+# Job Invoke answers Success and runs nothing when the live link already names the build: `<link> is <target>: already
+# active`. The activation's Exit is the verdict; this line only says the build and suite did not run.
+ALREADY_ACTIVE = re.compile(r"^\S+ is \S+: already active$", re.MULTILINE)
 
 # git(args) runs git here and returns (exit code, output); job(request) is `mo-butlermaster Job Invoke` and returns its
 # answer; read(path) reads a job's Log, which lives on this machine.
@@ -387,7 +392,10 @@ def deploy(sha: str, board: str, card: str, toolkit: str, job: Job, git: Seam, r
     text = read(log)
     if activation["Exit"]:
         raise Refused(f"activation exit {activation['Exit']}, links unchanged: {last_line(text, 'no output')} ({log})")
-    lines += suite(sha, log, text)
+    if ALREADY_ACTIVE.search(text):
+        lines.append(f"{revision}: activation was a no-op, the live link already names the build; suite gate skipped")
+    else:
+        lines += suite(sha, log, text)
     readback = job(request(board, card, sha, ["bash", "-c", READBACK, "readback", sha, toolkit, build]))
     lines.append(f"{revision}: readback job Exit {readback['Exit']}, Log {readback['Log']}")
     final = read(readback["Log"])
