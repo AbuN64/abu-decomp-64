@@ -81,12 +81,12 @@ struct N64cVoice {
     u8 *mixState;    /* 80 bytes: envelope mixer state */
     u8 *book;        /* BOOK_MAX bytes: the wave's codebook, copied where the RSP can read it */
     u8 *loopState;   /* 32 bytes: the wave's loop history, copied likewise */
+    ALDMAproc dma;   /* this voice's sample DMA, from the game's dmaproc */
+    void *dmaState;
 };
 
 struct N64cSynth {
     ALHeap *heap;
-    ALDMAproc dma;
-    void *dmaState;
     s32 outputRate;
     s32 numVoices;
     N64cVoice *voices;
@@ -266,9 +266,10 @@ void alInit(ALGlobals *g, ALSynConfig *c)
         syn->voices[i].mixState = st + 48;
         syn->voices[i].book = st + 128;
         syn->voices[i].loopState = st + 128 + BOOK_MAX;
+        /* As alSynNew: each physical voice asks the game's dmaproc for its own DMA routine and state. */
+        if (c->dmaproc) syn->voices[i].dma = c->dmaproc(&syn->voices[i].dmaState);
     }
     if (c->fxType == 6 && c->params) syn->fx = fx_new(c->heap, (const s32 *)c->params);
-    if (c->dmaproc) syn->dma = c->dmaproc(&syn->dmaState);
     g->drvr = syn;
     g_synth = syn;
 }
@@ -320,6 +321,8 @@ N64cVoice *n64c_voice_alloc(N64cSynth *syn, void *tag, s32 priority)
     pick->mixState = keep.mixState;
     pick->book = keep.book;
     pick->loopState = keep.loopState;
+    pick->dma = keep.dma;
+    pick->dmaState = keep.dmaState;
     pick->state = V_ALLOC;
     pick->tag = tag;
     pick->priority = priority;
@@ -403,7 +406,7 @@ static u32 pitch_q16(const N64cVoice *v) { return v->pitchField << 1; }
 
 static Acmd *dma_load(N64cVoice *v, Acmd *c, u32 romAddr, u32 bytes, u32 dmem, u32 *off)
 {
-    u32 pa = v->syn->dma ? (u32)v->syn->dma((s32)romAddr, (s32)bytes, v->syn->dmaState) : 0;
+    u32 pa = v->dma ? (u32)v->dma((s32)romAddr, (s32)bytes, v->dmaState) : 0;
     *off = 0;
     c = buffers(c, dmem, 0, bytes);
     return loadraw(c, pa);

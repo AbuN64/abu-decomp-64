@@ -22,15 +22,16 @@ static void put8(u32 a, u8 v) { ram[a] = v; }
 static void put_pcm(u32 a, s16 v) { ram[a] = (u8)((u16)v >> 8); ram[a + 1] = (u8)v; }
 static s16 get16(u32 a) { return n64a_ram_s16(ram, a); }
 
+static s32 dma_states[8], dma_news, dma_misses;
 static s32 rom_dma(s32 addr, s32 len, void *state)
 {
     (void)len;
-    (void)state;
+    if (state < (void *)dma_states || state >= (void *)(dma_states + 8)) dma_misses++;
     return ROM_OFF + addr;
 }
 static ALDMAproc rom_dma_new(void **state)
 {
-    *state = NULL;
+    *state = &dma_states[dma_news++ % 8];
     return rom_dma;
 }
 
@@ -40,6 +41,7 @@ static ALGlobals globals;
 static void start_synth(s32 voices)
 {
     alHeapInit(&heap, ram + HEAP_OFF, HEAP_LEN);
+    dma_news = 0;
     ALSynConfig c = {.maxVVoices = voices, .maxPVoices = voices, .maxUpdates = 0x100, .dmaproc = rom_dma_new,
                      .heap = &heap, .outputRate = 22050};
     alInit(&globals, &c);
@@ -153,6 +155,7 @@ static void test_sound_player_raw(void)
     start_synth(4);
     N64cSynth *syn = n64c_syn_global();
     CHECK(syn != NULL && globals.drvr == syn);
+    CHECK(dma_news == 4); /* as alSynNew: the game's dmaproc once per physical voice, each with its own state */
     ALSndPlayer sp;
     ALSndpConfig sc = {.maxSounds = 3, .maxEvents = 16, .heap = &heap};
     alSndpNew(&sp, &sc);
@@ -635,6 +638,7 @@ int main(void)
     test_csp(22050);
     test_csp(44100);
     test_csp_loop();
+    CHECK(dma_misses == 0); /* every sample DMA went through a voice's own state */
     printf("n64c_al: %s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;
 }
