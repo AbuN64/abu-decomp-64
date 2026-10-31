@@ -360,7 +360,7 @@ class BuildScriptTests(ScriptCase):
 
     def run_build(self):
         return self.bash(
-            deploy_rig.BUILD, SHA, str(self.toolkit), env=sh_env(BUILD=str(self.build), HOME=str(self.root))
+            deploy_rig.BUILD, SHA, str(self.toolkit), env=sh_env(BUILD=str(self.build))
         )
 
     def test_the_build_links_build_to_the_stage_venv_and_never_touches_the_live_link(self):

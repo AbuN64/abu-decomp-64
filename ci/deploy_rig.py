@@ -52,8 +52,9 @@ Read = Callable[[str], str]
 # BUILD runs inside the activation job with BUILD (<toolkit>.<sha12>) set by Job Invoke: `decomp tools deploy` builds
 # `<toolkit>-stage.<sha12>` (or -N when that name is taken) and swaps only the private stage link; BUILD becomes a
 # link to that venv, so a failed gate leaves the live and previous links unchanged and Job Invoke's switch is the only
-# way a venv goes live. Arguments: SHA TOOLKIT.
+# way a venv goes live. Dos starts a job without HOME, which pip, git and the engine need. Arguments: SHA TOOLKIT.
 BUILD = r"""set -u
+HOME=$(getent passwd "$(id -un)" | cut -d: -f6) && export HOME || exit 9  # Dos starts a job with no HOME
 sha=$1 toolkit=$2
 : "${BUILD:?Job Invoke sets BUILD for an activation}"
 stage=$toolkit-stage
