@@ -11,7 +11,7 @@ const PAD = [[0, "A"], [1, "B"], [2, "B"], [3, "CUP"], [4, "L"], [5, "R"], [6, "
 const STICK = 80, DEADZONE = 0.15, HEARTBEAT_MS = 500;
 const RUN_KINDS = ["run.progress:tas", "run.progress:tas-target", "run.queued", "run.ended"];
 
-const el = (tag, attrs = {}, ...kids) => {
+const node = (tag, attrs = {}, ...kids) => {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) if (v != null) k === "class" ? (n.className = v) : n.setAttribute(k, v);
   n.append(...kids.filter(k => k != null));
@@ -56,21 +56,21 @@ export function framer(onFrame) {
 
 let current = null;  // the mounted view; a handler of an older mount sees it is no longer current and does nothing
 
-export function mount(root, ctx) {
+export function mount(el, ctx) {
   current?.stop();
   const S = { run: ctx.route.arg || null, status: null, poll: 0, keys: new Set(), last: "", lastAt: 0, seq: 0, abort: null, frame: 0, flags: new Map() };
   const view = { stop: () => { S.abort?.abort(); cancelAnimationFrame(S.frame); removeEventListener("keydown", down); removeEventListener("keyup", up); } };
   current = view;
   const live = () => current === view;
 
-  const start = el("button", { class: "btn", type: "button", id: "play-start" }, "New run");
-  const flag = el("button", { class: "btn", type: "button", id: "play-flag", disabled: "" }, "Flag");
-  const stop = el("button", { class: "btn alt", type: "button", id: "play-stop", disabled: "" }, "Stop");
-  const tag = el("span", { class: "mono", id: "play-run" });
-  const canvas = el("canvas", { id: "play-stage", width: "640", height: "480" });
-  const list = el("ul", { class: "feed", id: "play-flags" });
+  const start = node("button", { class: "btn", type: "button", id: "play-start" }, "New run");
+  const flag = node("button", { class: "btn", type: "button", id: "play-flag", disabled: "" }, "Flag");
+  const stop = node("button", { class: "btn alt", type: "button", id: "play-stop", disabled: "" }, "Stop");
+  const tag = node("span", { class: "mono", id: "play-run" });
+  const canvas = node("canvas", { id: "play-stage", width: "640", height: "480" });
+  const list = node("ul", { class: "feed", id: "play-flags" });
   const dialog = flagDialog(ctx, S, () => live());
-  root.replaceChildren(el("h2", {}, "Play"), el("div", { class: "playbar" }, start, flag, stop, tag), canvas, el("h2", {}, "Flags"), list, dialog);
+  el.replaceChildren(node("h2", {}, "Play"), node("div", { class: "playbar" }, start, flag, stop, tag), canvas, node("h2", {}, "Flags"), list, dialog);
   addStyle();
 
   const refresh = () => {
@@ -122,27 +122,27 @@ export function mount(root, ctx) {
 
 // One typed row per flag: category, run, poll, input count, frames present.
 function flagRow(rec) {
-  return el("li", { class: "ev", "data-id": rec.id },
-    el("time", {}, new Date(rec.at * 1000).toLocaleTimeString("en-GB", { hour12: false })),
-    el("b", { class: "cat", "data-category": rec.category }, rec.category),
-    el("span", { class: "mono" }, `${rec.run} · poll ${rec.poll.toLocaleString("en-US")} · ${rec.inputs.length} inputs · ${Object.values(rec.frames).filter(Boolean).length} frames`),
-    el("span", { class: "k" }, rec.text || ""));
+  return node("li", { class: "ev", "data-id": rec.id },
+    node("time", {}, new Date(rec.at * 1000).toLocaleTimeString("en-GB", { hour12: false })),
+    node("b", { class: "cat", "data-category": rec.category }, rec.category),
+    node("span", { class: "mono" }, `${rec.run} · poll ${rec.poll.toLocaleString("en-US")} · ${rec.inputs.length} inputs · ${Object.values(rec.frames).filter(Boolean).length} frames`),
+    node("span", { class: "k" }, rec.text || ""));
 }
 
 // The flag dialog: category radios from the contract, a text field, the poll it is filed at.
 function flagDialog(ctx, S, live) {
-  const dialog = el("dialog", { id: "play-dialog" });
-  const poll = el("input", { type: "number", min: "0", id: "flag-poll", name: "poll" });
-  const text = el("textarea", { id: "flag-text", name: "text", rows: "3", maxlength: "2000" });
-  const status = el("span", { class: "dim", id: "flag-status" });
-  const form = el("form", { method: "dialog" },
-    el("h2", {}, "Flag"),
-    el("label", {}, "poll ", poll),
-    el("div", { class: "cats" }, ...ctx.contract.feedback_categories.map((c, i) =>
-      el("label", { class: "cat" }, el("input", { type: "radio", name: "category", value: c, ...(i === 0 ? { checked: "" } : {}) }), c))),
+  const dialog = node("dialog", { id: "play-dialog" });
+  const poll = node("input", { type: "number", min: "0", id: "flag-poll", name: "poll" });
+  const text = node("textarea", { id: "flag-text", name: "text", rows: "3", maxlength: "2000" });
+  const status = node("span", { class: "dim", id: "flag-status" });
+  const form = node("form", { method: "dialog" },
+    node("h2", {}, "Flag"),
+    node("label", {}, "poll ", poll),
+    node("div", { class: "cats" }, ...ctx.contract.feedback_categories.map((c, i) =>
+      node("label", { class: "cat" }, node("input", { type: "radio", name: "category", value: c, ...(i === 0 ? { checked: "" } : {}) }), c))),
     text,
-    el("div", { class: "row" }, el("button", { class: "btn", type: "submit", id: "flag-file" }, "File"),
-      el("button", { class: "btn alt", type: "button", id: "flag-cancel" }, "Cancel"), status));
+    node("div", { class: "row" }, node("button", { class: "btn", type: "submit", id: "flag-file" }, "File"),
+      node("button", { class: "btn alt", type: "button", id: "flag-cancel" }, "Cancel"), status));
   dialog.append(form);
   form.addEventListener("submit", async e => {
     e.preventDefault();
@@ -177,7 +177,7 @@ async function video(id, signal, canvas) {
 
 function addStyle() {
   if (document.getElementById("play-style")) return;
-  document.head.append(el("style", { id: "play-style" }, `
+  document.head.append(node("style", { id: "play-style" }, `
 .playbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .btn.alt { background: var(--raised); color: var(--text); }
 .btn[disabled] { opacity: .4; cursor: default; }

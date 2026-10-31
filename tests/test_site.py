@@ -158,13 +158,8 @@ class EndpointTest(unittest.TestCase):
     def test_unbuilt_regions_answer_501_with_their_card(self):
         for path, card in (
             ("/api/stream/r1", "RUNNER-STREAM"),
-            ("/api/feedback", "RUNNER-PLAY"),
         ):
             self.assertEqual(self.get(path), (501, {"error": self.get(path)[1]["error"], "card": card}), path)
-        request = urllib.request.Request(self.base + "/api/feedback", data=b"{}", method="POST")
-        with self.assertRaises(urllib.error.HTTPError) as caught:
-            urllib.request.urlopen(request)
-        self.assertEqual(caught.exception.code, 501)
 
     def test_the_stream_says_hello_replays_what_it_holds_then_pushes_a_changed_event(self):
         with urllib.request.urlopen(self.base + "/api/feed/stream") as reply:
