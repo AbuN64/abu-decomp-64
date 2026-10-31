@@ -2,7 +2,10 @@
 """Deploys the landed AbuDecomp64 commit to the rig through Job Invoke. Run from a run's AbuDecomp64 worktree, whose
 card has a live run (Job Invoke pushes the commit from there):
 
-  LANDED_Projects_AbuN64_AbuDecomp64=SHA ci/deploy_rig.py --board BOARD --card CARD --toolkit /abs/live/venv
+  LANDED_Projects_AbuN64_AbuDecomp64=SHA ci/deploy_rig.py --Subject.Board BOARD --Subject.Card CARD
+
+ButlerMaster's close appends the two Subject arguments (the landing card) to the .deploy argv; they go straight to
+Job Invoke, so the deploy's jobs run as the landing card's jobs. The card identity is never read from the environment.
 
 Any refusal or failed step prints one line on stderr and exits 1. Every rig step is one `mo-butlermaster Job Invoke`
 at the exact SHA in a Worktree (the job runs in <Root>/<board>.<card>/<repo> with JOBS set to Dos's width):
@@ -36,6 +39,7 @@ from pathlib import Path, PurePosixPath
 ENV = "LANDED_Projects_AbuN64_AbuDecomp64"
 REPOSITORY = "Projects/AbuN64/AbuDecomp64"
 HOST = "rig"
+TOOLKIT = "/home/abu/venv-decomp"
 REMOTES = {
     "gitea": "http://10.10.10.130:18556/Projects/AbuDecomp64.git",
     "github": "https://github.com/AbuN64/abu-decomp-64.git",
@@ -358,14 +362,12 @@ def deploy(sha: str, board: str, card: str, toolkit: str, job: Job, git: Seam, r
 
 def main(argv: list[str] | None = None, environ: dict[str, str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Deploy the landed AbuDecomp64 commit to the rig through Job Invoke.")
-    for name in ("board", "card", "toolkit"):
-        parser.add_argument(f"--{name}", required=True)
+    parser.add_argument("--Subject.Board", dest="board", required=True)
+    parser.add_argument("--Subject.Card", dest="card", required=True)
     args = parser.parse_args(argv)
     try:
         sha = landed_sha(dict(os.environ) if environ is None else environ)
-        if not os.path.isabs(args.toolkit) or os.path.normpath(args.toolkit) != args.toolkit:
-            raise Refused(f"--toolkit must be a clean absolute path: {args.toolkit!r}")
-        for line in deploy(sha, args.board, args.card, args.toolkit, job_invoke, git, read_log):
+        for line in deploy(sha, args.board, args.card, TOOLKIT, job_invoke, git, read_log):
             print(line, flush=True)
     except Refused as refusal:
         print(f"deploy refused: {refusal}", file=sys.stderr)

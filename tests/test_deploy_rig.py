@@ -17,10 +17,10 @@ spec.loader.exec_module(deploy_rig)
 
 SHA = "a" * 12 + "b" * 28
 NEWER = "d" * 12 + "e" * 28
-TOOLKIT = "/opt/example/venv-decomp"
+TOOLKIT = deploy_rig.TOOLKIT
 BUILD = f"{TOOLKIT}.{SHA[:12]}"
 ENVIRON = {deploy_rig.ENV: SHA}
-ARGS = ["--board", "board1", "--card", "card1", "--toolkit", TOOLKIT]
+ARGS = ["--Subject.Board", "board1", "--Subject.Card", "card1"]
 CHECKOUT = "/srv/runs/board1.card1/Projects/AbuN64/AbuDecomp64"
 SUMMARY = "1767 passed, 0 failed, 5 skipped in 204 s"
 
@@ -202,10 +202,32 @@ class DeployTests(unittest.TestCase):
         fetched.deploy()
         self.assertTrue(any(call[:2] == ("fetch", "-q") for call in fetched.git_calls))
 
-    def test_a_bad_toolkit_or_sha_refuses_before_any_call(self):
+    def test_the_landing_card_comes_from_the_two_subject_arguments_into_every_job(self):
+        rig = Rig()
+        code, out, _ = run_main(rig, ["--Subject.Board", "boardX", "--Subject.Card", "cardY"])
+        self.assertEqual(code, 0)
+        self.assertEqual([r["Subject"] for r in rig.requests], [{"Board": "boardX", "Card": "cardY"}] * 2)
+        self.assertEqual(rig.requests[0]["Activation"]["Toolkit"], deploy_rig.TOOLKIT)
+        self.assertIn(f"deployed {SHA}", out)
+
+    def test_the_card_identity_is_never_read_from_the_environment(self):
+        rig = Rig()
+        environ = {**ENVIRON, "BUTLERMASTER_RUN_BOARD": "envboard", "BUTLERMASTER_RUN_CARD": "envcard"}
+        code, _, _ = run_main(rig, ARGS, environ)
+        self.assertEqual(code, 0)
+        self.assertEqual(rig.requests[0]["Subject"], {"Board": "board1", "Card": "card1"})
+        self.assertNotIn("BUTLERMASTER", Path(deploy_rig.__file__).read_text())
+
+    def test_a_missing_subject_argument_exits_before_any_call(self):
+        for argv in (["--Subject.Board", "b"], ["--Subject.Card", "c"], []):
+            rig = Rig()
+            with self.subTest(argv=argv), self.assertRaises(SystemExit) as stop:
+                run_main(rig, argv)
+            self.assertEqual(stop.exception.code, 2)
+            self.assertEqual((rig.git_calls, rig.requests), ([], []))
+
+    def test_a_bad_sha_refuses_before_any_call(self):
         for argv, environ in (
-            (["--board", "b", "--card", "c", "--toolkit", "venv"], ENVIRON),
-            (["--board", "b", "--card", "c", "--toolkit", "/a/../venv"], ENVIRON),
             (ARGS, {}),
             (ARGS, {deploy_rig.ENV: "main"}),
         ):
