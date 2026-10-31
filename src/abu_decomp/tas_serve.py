@@ -1280,16 +1280,18 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 return
 
         def feed_stream(self) -> None:
-            """Server-Sent Events: a `hello` with the feed's version, then one `feed` event per new or changed event,
-            sent when the feed changes (the Live watch's signal); a comment every FEED_KEEPALIVE_SECONDS when idle."""
+            """Server-Sent Events: a `hello` with the feed's version and a `feed` event for every event it holds (a page
+            that read /api/feed before Live's first publish misses nothing), then one `feed` event per new or changed
+            event when the feed changes (the Live watch's signal); a comment every FEED_KEEPALIVE_SECONDS when idle."""
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
             self.close_connection = True
-            version, _ = server.feed.snapshot()
+            version, held = server.feed.snapshot()
             self.wfile.write(site_core.sse("hello", {"version": version}))
+            self.wfile.write(b"".join(site_core.sse("feed", item) for item in held))
             self.wfile.flush()
             while True:
                 version, items = server.feed.since(version, FEED_KEEPALIVE_SECONDS)

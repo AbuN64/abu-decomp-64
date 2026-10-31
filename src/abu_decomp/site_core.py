@@ -216,7 +216,7 @@ def answer(server: Any, method: str, path: str, query: str, body: bytes) -> tupl
     head, _, rest = path.removeprefix("/api/").partition("/")
     if not path.startswith("/api/") or head not in REGIONS:
         return None
-    module, card = REGIONS[head]
+    module = REGIONS[head][0]
     region = importlib.import_module(f"abu_decomp.{module}")
     return region.answer(server, method, rest, query, body)
 

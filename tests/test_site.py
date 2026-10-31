@@ -11,10 +11,28 @@ from pathlib import Path
 from abu_decomp import site_core, tas_serve
 
 ROOT = Path(__file__).resolve().parents[1] / "src" / "abu_decomp"
-RUNNING = {"id": "r1", "movie": "boot-idle", "status": "running", "poll": 1200, "polls": 3000, "started": 10.0,
-           "label": "LANE-A", "input": "movie", "oracle": {"every": 25}}
-DONE = {"id": "r2", "movie": "menu", "status": "done", "poll": 1401, "polls": 1101, "outcome": "ok", "started": 1.0,
-        "ended": 2.0, "input": "human"}
+RUNNING = {
+    "id": "r1",
+    "movie": "boot-idle",
+    "status": "running",
+    "poll": 1200,
+    "polls": 3000,
+    "started": 10.0,
+    "label": "LANE-A",
+    "input": "movie",
+    "oracle": {"every": 25},
+}
+DONE = {
+    "id": "r2",
+    "movie": "menu",
+    "status": "done",
+    "poll": 1401,
+    "polls": 1101,
+    "outcome": "ok",
+    "started": 1.0,
+    "ended": 2.0,
+    "input": "human",
+}
 
 
 class ContractTest(unittest.TestCase):
@@ -55,8 +73,10 @@ class RecordTest(unittest.TestCase):
 
         self.assertEqual(render(RUNNING), ["LANE-A is playing boot-idle (poll 1,200 of 3,000)"])
         self.assertEqual(render({**RUNNING, "target": "Fn_A"}), ["LANE-A is playing toward Fn_A (poll 1,200 of 3,000)"])
-        self.assertEqual(render({**RUNNING, "kind": "unit", "target": "Fn_A", "equal": 41, "cases": 50}),
-                         ["LANE-A is matching function Fn_A: 41/50 cases equal"])
+        self.assertEqual(
+            render({**RUNNING, "kind": "unit", "target": "Fn_A", "equal": 41, "cases": 50}),
+            ["LANE-A is matching function Fn_A: 41/50 cases equal"],
+        )
         self.assertEqual(render(DONE), ["owner finished menu: ok at poll 1,401 of 1,101"])
         self.assertEqual(render({**DONE, "error": "stale binary"}), ["owner was refused menu: stale binary"])
         self.assertEqual(render({**RUNNING, "status": "queued"}), ["LANE-A queued boot-idle"])
@@ -136,20 +156,28 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual((status, [e["subject"] for e in body["events"]]), (200, ["r1", "r2"]))
 
     def test_unbuilt_regions_answer_501_with_their_card(self):
-        for path, card in (("/api/map", "RUNNER-MAP"), ("/api/fn/Fn_A", "RUNNER-FN"),
-                           ("/api/stream/r1", "RUNNER-STREAM"), ("/api/feedback", "RUNNER-PLAY")):
+        for path, card in (
+            ("/api/map", "RUNNER-MAP"),
+            ("/api/fn/Fn_A", "RUNNER-FN"),
+            ("/api/stream/r1", "RUNNER-STREAM"),
+            ("/api/feedback", "RUNNER-PLAY"),
+        ):
             self.assertEqual(self.get(path), (501, {"error": self.get(path)[1]["error"], "card": card}), path)
         request = urllib.request.Request(self.base + "/api/feedback", data=b"{}", method="POST")
         with self.assertRaises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(request)
         self.assertEqual(caught.exception.code, 501)
 
-    def test_the_stream_says_hello_then_pushes_a_changed_event(self):
+    def test_the_stream_says_hello_replays_what_it_holds_then_pushes_a_changed_event(self):
         with urllib.request.urlopen(self.base + "/api/feed/stream") as reply:
             self.assertEqual(reply.headers["Content-Type"], "text/event-stream")
             self.assertEqual(reply.readline(), b"event: hello\n")
             self.assertEqual(json.loads(reply.readline().removeprefix(b"data: ")), {"version": 1})
             reply.readline()
+            for subject in ("r1", "r2"):
+                self.assertEqual(reply.readline(), b"event: feed\n")
+                self.assertEqual(json.loads(reply.readline().removeprefix(b"data: "))["subject"], subject)
+                reply.readline()
             self.server.feed.publish_runs([{**RUNNING, "poll": 1500}])
             self.assertEqual(reply.readline(), b"event: feed\n")
             self.assertEqual(json.loads(reply.readline().removeprefix(b"data: "))["fields"]["poll"], 1500)
