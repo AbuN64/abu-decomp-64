@@ -101,7 +101,8 @@ static void drain(OSSched *sc)
  * The port runs this scheduler in place of the sample scheduler the ROM links as its own code, so each step charges the
  * entries of the sample's functions it stands in for (RUNTIME.md "Virtual guest time"): a pass over the lists is
  * __scSchedule, entered once more after each pass that took a unit; a task started is __scExec; a unit reporting done
- * is __scTaskComplete. */
+ * is __scTaskComplete; the original also enters the game's SetN64_OnFrameComplete once per frame, between the
+ * RSP's completion and the RDP's, so the RSP finishing a frame's last graphics task charges that entry too. */
 static void charge(unsigned entries)
 {
     while (entries--)
@@ -178,6 +179,7 @@ static void unit_done(OSSched *sc, OSScTask **owner, u32 unit)
     OSScTask *t = *owner;
     if (!t)
         return;
+    int frame_rsp_done = unit == OS_SC_NEEDS_RSP && t->list.type == M_GFXTASK && (t->flags & OS_SC_LAST_TASK);
     *owner = NULL;
     t->state &= ~unit;
     charge(1);
@@ -185,6 +187,8 @@ static void unit_done(OSSched *sc, OSScTask **owner, u32 unit)
         task_hook(sc, t, unit == OS_SC_NEEDS_RSP ? N64C_SC_RSP_DONE : N64C_SC_RDP_DONE);
     finish(sc, t);
     schedule(sc);
+    if (frame_rsp_done)
+        charge(1);
 }
 
 void n64c_sc_retrace(OSSched *sc)

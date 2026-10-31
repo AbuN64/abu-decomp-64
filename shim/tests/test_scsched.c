@@ -36,7 +36,7 @@ static void gfx_handler(OSTask *t, void *u) { (void)t; (void)u; L("g"); }
 static void aud_handler(OSTask *t, void *u) { (void)t; (void)u; L("a"); }
 static void hook(void) { hooks++; }
 /* Guest work: the clock when a retrace step begins, ends and starts a task. */
-static OSTime retrace_at, retraced_at, started_at;
+static OSTime retrace_at, retraced_at, started_at, rsp_done_at, rdp_done_at;
 static int pre_retrace(void) { retrace_at = n64c_clock_now(); return 0; }
 static void retraced(void) { retraced_at = n64c_clock_now(); }
 static void started(OSSched *s, OSScTask *t, N64cScTaskEvent e)
@@ -44,6 +44,10 @@ static void started(OSSched *s, OSScTask *t, N64cScTaskEvent e)
     (void)s, (void)t;
     if (e == N64C_SC_TASK_START)
         started_at = n64c_clock_now();
+    else if (e == N64C_SC_RSP_DONE)
+        rsp_done_at = n64c_clock_now();
+    else if (e == N64C_SC_RDP_DONE)
+        rdp_done_at = n64c_clock_now();
 }
 static OSScTask task(u32 type, u32 flags, void *fb)
 {
@@ -193,6 +197,10 @@ int main(void)
     osSendMesg(&sc.commandQueue, (OSMesg){.ptr = &g4}, OS_MESG_NOBLOCK);
     n64c_frame();
     check("retrace_start_charges_two_passes_and_exec", started_at - retrace_at == 9);
+    /* A frame's last graphics task: the RSP's completion, a pass over the lists, the game's SetN64_OnFrameComplete,
+     * then the RDP's completion. */
+    settle();
+    check("frame_complete_entered_between_units", rdp_done_at - rsp_done_at == 9);
     n64c_shutdown();
     return fails ? 1 : 0;
 }
