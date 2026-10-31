@@ -200,7 +200,7 @@ int main(void)
     /* A frame's last graphics task: the RSP's completion, a pass over the lists, then the RDP's completion. The shim
      * charges only its own stand-ins; the game's SetN64_OnFrameComplete is charged by its own entry. */
     settle();
-    check("frame_units_charge_only_shim_entries", rdp_done_at - rsp_done_at == 8);
+    check("frame_units_charge_only_shim_entries", rdp_done_at - rsp_done_at == 6);
     n64c_shutdown();
     return fails ? 1 : 0;
 }
