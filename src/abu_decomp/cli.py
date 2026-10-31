@@ -363,6 +363,9 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     bake.add_argument("--movie", help="with --what movie: bake only this movie")
     bake.add_argument("--union", type=Path, help="the gcovr union JSON (default: <tas.runs>/coverage/union.json)")
     actions.add_parser("serve", help="serve the TAS page: every replay's picture, sound, log and the cycle state")
+    feedback = actions.add_parser("feedback", help="the human flags filed from the Runner page: list them or show one")
+    feedback.add_argument("verb", choices=("list", "show"))
+    feedback.add_argument("id", nargs="?", help="with show: the feedback id")
     triage = actions.add_parser(
         "triage", help="the findings of batch runs, sweeps and checks grouped by root cause, strongest bucket first"
     )
@@ -580,6 +583,10 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         from abu_decomp import tas_serve
 
         return tas_serve.serve(profile), 0, []
+    if args.action == "feedback":
+        from abu_decomp import site_feedback
+
+        return site_feedback.command(tas.settings(profile)["runs"], args.verb, args.id), 0, []
     if args.action == "bake":
         from abu_decomp import tas_bake
 
