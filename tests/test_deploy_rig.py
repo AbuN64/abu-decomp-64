@@ -379,6 +379,17 @@ class BuildScriptTests(ScriptCase):
         self.assertEqual(self.toolkit.resolve(), live.resolve())
         self.assertIn(f"deploy-build: {built}", done.stdout)
 
+    def test_a_job_without_home_or_path_gets_both_before_the_engine_runs(self):
+        live = self.root / "live-target"
+        wrapper(
+            live / "bin/decomp",
+            'test -d "$HOME" || exit 7\ncase $PATH in */usr/bin*) ;; *) exit 8 ;; esac\n'
+            f'dir="$6.{SHA[:12]}"; mkdir -p "$dir/bin" && ln -sfn "$dir" "$6"',
+        )
+        self.toolkit.symlink_to(live)
+        done = self.bash(deploy_rig.BUILD, SHA, str(self.toolkit), env={"BUILD": str(self.build)})
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
     def test_a_failing_engine_exits_1_and_links_nothing(self):
         live = self.root / "live-target"
         wrapper(live / "bin/decomp", "echo engine said no >&2; exit 3")
