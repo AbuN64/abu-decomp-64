@@ -1,111 +1,132 @@
 #!/usr/bin/env python3
-"""Deploys the landed AbuDecomp64 commit to the rig: `.deploy` runs this after Land, from a clean checkout, with the
-landed SHA in LANDED_Projects_AbuN64_AbuDecomp64. Any refusal or failed step prints one line on stderr and exits 1.
+"""Deploys the landed AbuDecomp64 commit to the rig through Job Invoke. Run from a run's AbuDecomp64 worktree, whose
+card has a live run (Job Invoke pushes the commit from there):
 
-  0. one rig-side flock per repo (~/finish/deploy-decomp.lock), taken before anything else and held until
-     the readback ends (or the deploy dies), so deploys of this repo never overlap. Under it gitea main is fetched:
-     when main has moved past the landed SHA to a descendant, main's head is deployed instead and the log says the
-     older deploy deferred; when main is not a descendant of the landed SHA, the deploy refuses;
-  1. the SHA to deploy must be on gitea main and on github main (else nothing touches the rig);
-  2. `decomp tools deploy --sha SHA --venv ~/venv-decomp-stage` through the rig's build slot installs the pins of
-     AbuDecomp64's pyproject at SHA (no --unbake, --recipe or --taste) into a fresh ~/venv-decomp-stage.<sha12> and
-     swaps the stage link. The engine builds `<live>.<sha12>` itself, so one deploy gives one directory for both links;
-  3. the suite gate, always, between the build and the swap: the full test suite (pytest over tests/, unittest and
-     pytest modules) runs through ~/finish/slot on a clean checkout of exactly SHA, with the freshly built venv's
-     python and the checkout's src first on the import path. The imported abu_decomp path is printed and must lie
-     inside the checkout. Any failure refuses (one line naming the first failing test) before ~/venv-decomp moves;
-     the summary line, the SHA and the imported path go into the deploy log and into <venv>/suite.txt. Each run has its
-     own checkout, log, slots dir and tmp dir, so no state is shared between runs;
-  4. ~/venv-decomp is repointed to the same directory by rename. Previous venv directories stay; when both links
-     already read that directory, the build and the repoint are skipped (the suite gate still runs);
-  5. readback, always: both links resolve to the directory, and `make check` on a fresh RageWars worktree at gitea main
-     exits 0 (the 5 ROMs are built and their SHA-1 asserted), set up as ~/finish/maincheck.sh does."""
+  LANDED_Projects_AbuN64_AbuDecomp64=SHA ci/deploy_rig.py --board BOARD --card CARD --toolkit /abs/live/venv
 
-import contextlib
+Any refusal or failed step prints one line on stderr and exits 1. Every rig step is one `mo-butlermaster Job Invoke`
+at the exact SHA in a Worktree (the job runs in <Root>/<board>.<card>/<repo> with JOBS set to Dos's width):
+
+  1. the SHA to deploy must be on gitea main and on github main (else nothing touches the rig); when gitea main has
+     moved past it to a descendant, main's head is deployed instead and the log says the older deploy deferred;
+  2. the activation job (Toolkit = the live link, Revision = the SHA's first 12 digits, so BUILD is <toolkit>.<sha12>):
+     `decomp tools deploy --sha SHA` installs the pins of AbuDecomp64's pyproject at SHA into a fresh venv (through a
+     private `<toolkit>-stage` link the engine swaps; the activation's single per-host permit keeps it race free),
+     BUILD is linked to that venv, and the full test suite (pytest over tests/, unittest and pytest modules) runs
+     in the Worktree with BUILD's python and the Worktree's src first on the import path. The imported abu_decomp
+     path must lie inside the Worktree. A failing suite exits non-zero: Job Invoke leaves the live and previous links
+     alone and the deploy refuses with one line naming the first failing test. On exit 0 Job Invoke switches the
+     live link to BUILD and keeps the replaced venv as <toolkit>.previous;
+  3. the readback job: the live link resolves to BUILD, and the installed commit of AbuDecomp64 and of every direct
+     git pin of its pyproject at SHA equals the pinned one. Any mismatch refuses (the live link stays as switched:
+     fix forward, no rollback).
+The deploy's answer is the deployed SHA with each job's Exit and Log."""
+
+import argparse
+import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager
-from pathlib import PurePosixPath
+from collections.abc import Callable
+from pathlib import Path, PurePosixPath
 
 ENV = "LANDED_Projects_AbuN64_AbuDecomp64"
-RIG = "abu@192.168.0.101"
-RIG_HOME = "/home/abu"
+REPOSITORY = "Projects/AbuN64/AbuDecomp64"
+HOST = "rig"
 REMOTES = {
     "gitea": "http://10.10.10.130:18556/Projects/AbuDecomp64.git",
     "github": "https://github.com/AbuN64/abu-decomp-64.git",
 }
-LINKS = ("venv-decomp", "venv-decomp-stage")
 PACKAGE = "abu_decomp"
 SHA = re.compile(r"[0-9a-f]{40}")
 
-# ssh(command) runs one shell line on the rig and git(args) runs git here; both return (exit code, output).
+# git(args) runs git here and returns (exit code, output); job(request) is `mo-butlermaster Job Invoke` and returns its
+# answer; read(path) reads a job's Log, which lives on this machine.
 Seam = Callable[..., "tuple[int, str]"]
-Lock = Callable[[], AbstractContextManager[list[str]]]  # rig_lock(): holds the flock for its with-block
+Job = Callable[[dict], "Answer"]
+Read = Callable[[str], str]
 
-# The per-repo rig lock: one ssh session takes the flock on its file and holds it while its stdin stays open, so the
-# lock lives exactly as long as the deploy (a killed deploy closes the pipe and frees it). It prints `waiting` when
-# another deploy holds the lock and `locked` once this one has it.
-LOCK = "deploy-decomp.lock"
-HOLD = r"""exec 7>>"$HOME/finish/$1" || exit 9
-flock -n 7 || echo waiting
-flock 7 || exit 9
-echo locked
-exec cat
+# BUILD runs inside the activation job with BUILD (<toolkit>.<sha12>) set by Job Invoke: `decomp tools deploy` builds
+# `<toolkit>-stage.<sha12>` (or -N when that name is taken) and swaps only the private stage link; BUILD becomes a
+# link to that venv, so a failed gate leaves the live and previous links unchanged and Job Invoke's switch is the only
+# way a venv goes live. Arguments: SHA TOOLKIT.
+BUILD = r"""set -u
+sha=$1 toolkit=$2
+: "${BUILD:?Job Invoke sets BUILD for an activation}"
+stage=$toolkit-stage
+(cd "$HOME" && "$toolkit/bin/decomp" tools deploy --sha "$sha" --venv "$stage") \
+  || { echo "deploy-error: decomp tools deploy exit $?" >&2; exit 1; }
+built=$(readlink -f "$stage")
+case $built in
+  "$stage.${sha:0:12}" | "$stage.${sha:0:12}"-[0-9]*) ;;
+  *) echo "deploy-error: $stage reads $built, not a build of $sha" >&2; exit 1 ;;
+esac
+ln -sfn "$built" "$BUILD" || exit 1
+echo "deploy-build: $built"
 """
 
-READBACK = r"""set -u
-repo=$HOME/code/ragewars-decomp
-wt=$(mktemp -d "$HOME/code/wt/DEPLOY-READBACK.XXXXXX") || exit 9
-trap 'git -C "$repo" worktree remove --force "$wt" 2>/dev/null; rmdir "$wt" 2>/dev/null' EXIT
-git -C "$repo" fetch -q gitea main || exit 9
-sha=$(git -C "$repo" rev-parse FETCH_HEAD) || exit 9
-git -C "$repo" worktree add -q --detach "$wt" "$sha" || exit 9
-cd "$wt" || exit 9
-ln -s "$repo/roms" roms
-export PATH=$HOME/venv-decomp/bin:$PATH
-step() {
-  name=$1; shift
-  "$@" > "$name.log" 2>&1 || { echo "readback: $* failed at RageWars $sha:"; tail -n 5 "$name.log"; exit 1; }
-}
-step setup unbake setup --no-make
-step extract make extract
-step check make -k -j8 check
-echo "readback: make check exit 0 at RageWars gitea main $sha"
-"""
-
-# suite SHA URL PYTHON DEST: a clean checkout of exactly SHA, the suite run in it, one `suite-KEY: value` line per fact.
+# SUITE runs in the Worktree after BUILD, with built and BUILD set: one `suite-KEY: value` line per fact, then the
+# suite's own output.
 SUITE = r"""set -u
-sha=$1 url=$2 py=$3 dest=$4
-work=$(mktemp -d "$HOME/finish/DEPLOY-SUITE.XXXXXX") || exit 9
+work=$(mktemp -d) || exit 9
 trap 'rm -rf "$work"' EXIT
-log=$(mktemp "$HOME/finish/deploy-suite-${sha:0:12}.XXXXXX.log") || exit 9
-git -c init.templateDir= init -q "$work/checkout" || exit 9
-cd "$work/checkout" || exit 9
-git fetch -q "$url" main || { echo "suite-error: cannot fetch main from $url" >&2; exit 9; }
-git checkout -q --detach "$sha" || { echo "suite-error: cannot check out $sha" >&2; exit 9; }
 echo "suite-checkout: $(pwd -P)"
 echo "suite-sha: $(git rev-parse HEAD)"
 cat > "$work/runner.py" <<'PY'
 __RUNNER__
 PY
-mkdir .tmp
+rm -rf .tmp && mkdir .tmp
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.templateDir GIT_CONFIG_VALUE_0=
 export TMPDIR=$PWD/.tmp ABU_SLOTS_DIR=$(mktemp -d "$work/slots.XXXXXX")
 export PYTHONPATH=$PWD/src PYTHONDONTWRITEBYTECODE=1
 rc=0
-"$py" "$work/runner.py" > "$log" 2>&1 || rc=$?
-grep '^suite-' "$log"
-echo "suite-log: $log"
+"$BUILD/bin/python" "$work/runner.py" > "$work/suite.log" 2>&1 || rc=$?
+cat "$work/suite.log"
 if [ "$rc" = 0 ]; then
-  { echo "suite-sha: $(git rev-parse HEAD)"; grep '^suite-\(summary\|import\)' "$log"; } > "$dest/suite.txt" || exit 9
+  { echo "suite-sha: $(git rev-parse HEAD)"; grep '^suite-\(summary\|import\)' "$work/suite.log"; } \
+    > "$built/suite.txt" || exit 9
 fi
 exit "$rc"
+"""
+
+# READBACK runs in the Worktree after the switch. Arguments: SHA TOOLKIT BUILD.
+READBACK = r"""set -u
+sha=$1 toolkit=$2 build=$3
+live=$(readlink -f "$toolkit") || exit 9
+want=$(readlink -f "$build") || exit 9
+[ "$live" = "$want" ] || { echo "readback: $toolkit reads $live, not $build ($want)" >&2; exit 1; }
+"$toolkit/bin/python" - "$sha" <<'PY'
+import importlib.metadata
+import json
+import re
+import sys
+import tomllib
+
+sha = sys.argv[1]
+PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)\s*@\s*git\+(?P<url>https://[^@\s]+)@(?P<commit>[0-9a-f]{40})$")
+with open("pyproject.toml", "rb") as handle:
+    project = tomllib.load(handle)["project"]
+pins = {project["name"]: sha}
+for row in project.get("dependencies", []):
+    match = PIN.match(row.strip())
+    if match:
+        pins[match["name"]] = match["commit"]
+bad = []
+for name, commit in sorted(pins.items()):
+    try:
+        direct = json.loads(importlib.metadata.distribution(name).read_text("direct_url.json") or "{}")
+        installed = direct.get("vcs_info", {}).get("commit_id", "none")
+    except importlib.metadata.PackageNotFoundError:
+        installed = "not installed"
+    print(f"readback-pin: {name} {installed}", flush=True)
+    if installed != commit:
+        bad.append(f"{name} is {installed}, the pin is {commit}")
+if bad:
+    sys.exit("readback: " + "; ".join(bad))
+PY
 """
 
 # The runner: puts the checkout's src first, proves the package comes from there, runs pytest over tests/ and reports.
@@ -183,47 +204,52 @@ class Refused(Exception):
     """One line cause of a refusal or failed step."""
 
 
-def run(argv: list[str]) -> tuple[int, str]:
-    done = subprocess.run(argv, capture_output=True, text=True, check=False)
+class Answer(dict):
+    """The Response of one Job Invoke: Exit, Log, Width, Host and Subject."""
+
+
+def run(argv: list[str], stdin: str | None = None) -> tuple[int, str]:
+    done = subprocess.run(argv, input=stdin, capture_output=True, text=True, check=False)
     return done.returncode, (done.stdout + done.stderr).strip()
-
-
-def ssh(command: str) -> tuple[int, str]:
-    return run(["ssh", "-o", "BatchMode=yes", RIG, command])
 
 
 def git(*args: str) -> tuple[int, str]:
     return run(["git", *args])
 
 
-def suite_command(sha: str, python: str, dest: str, url: str = REMOTES["gitea"]) -> str:
-    script = shlex.quote(SUITE.replace("__RUNNER__", RUNNER))
-    return f"~/finish/slot bash -c {script} suite {sha} {url} {python} {dest}"
-
-
-@contextlib.contextmanager
-def rig_lock() -> Iterator[list[str]]:
-    """Holds the rig flock for the with-block; yields the log lines about the wait (empty when the lock was free)."""
-    holder = subprocess.Popen(
-        ["ssh", "-o", "BatchMode=yes", RIG, f"bash -c {shlex.quote(HOLD)} hold {LOCK}"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    notes = []
+def read_log(path: str) -> str:
     try:
-        for line in holder.stdout:
-            if line.strip() == "locked":
-                break
-            if line.strip() == "waiting":
-                notes.append(f"another deploy holds ~/finish/{LOCK}, waiting for it")
-        else:
-            raise Refused(f"cannot take ~/finish/{LOCK} on the rig (ssh exit {holder.wait()})")
-        yield notes
-    finally:
-        holder.stdin.close()  # the rig side reads its stdin until EOF, then exits and frees the lock
-        holder.wait()
+        return Path(path).read_text(errors="replace")
+    except OSError as error:
+        raise Refused(f"cannot read the job log {path}: {error}") from error
+
+
+def last_line(text: str, default: object) -> str:
+    return text.strip().splitlines()[-1] if text.strip() else str(default)
+
+
+def answer_of(code: int, out: str) -> Answer:
+    """Parses `Job Invoke --output=json`: the Response, or Refused with the refusal's Code, Message and NextStep."""
+    try:
+        response = json.loads(out)["Response"]
+    except (ValueError, KeyError, TypeError):
+        raise Refused(f"Job Invoke answered no Response (exit {code}): {last_line(out, 'no output')}") from None
+    error = response.get("Error") if isinstance(response, dict) else None
+    if error or code:
+        error = error or {}
+        raise Refused(
+            f"Job Invoke refused {error.get('Code', 'Fault')} (exit {code}): {error.get('Message', 'no message')}"
+            + (f"; next: {error['NextStep']}" if error.get("NextStep") else "")
+        )
+    if not isinstance(response.get("Exit"), int) or not isinstance(response.get("Log"), str):
+        raise Refused(f"Job Invoke answered no Exit and Log: {json.dumps(response)[:200]}")
+    return Answer(response)
+
+
+def job_invoke(body: dict) -> Answer:
+    """The public CLI: `mo-butlermaster Job Invoke --input=json` with the request on stdin."""
+    stdin = json.dumps({"Metadata": {}, "Request": body})
+    return answer_of(*run(["mo-butlermaster", "Job", "Invoke", "--input=json", "--output=json"], stdin))
 
 
 def landed_sha(environ: dict[str, str]) -> str:
@@ -231,10 +257,6 @@ def landed_sha(environ: dict[str, str]) -> str:
     if not SHA.fullmatch(sha):
         raise Refused(f"{ENV} is not a 40-hex SHA: {sha!r}")
     return sha
-
-
-def last_line(text: str, default: object) -> str:
-    return text.splitlines()[-1] if text else str(default)
 
 
 def newest_main(sha: str, git: Seam) -> str:
@@ -264,16 +286,17 @@ def newest_main(sha: str, git: Seam) -> str:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def read_links(ssh: Seam) -> dict[str, str]:
-    code, out = ssh("readlink -f " + " ".join(f"~/{link}" for link in LINKS))
-    paths = out.splitlines()
-    if code or len(paths) != len(LINKS):
-        raise Refused(f"cannot read the rig venv links: {last_line(out, code)}")
-    return dict(zip(LINKS, paths, strict=True))
+def have_commit(sha: str, git: Seam) -> None:
+    """Job Invoke pushes the commit from this repository: fetch gitea main when the commit is not here yet."""
+    if git("cat-file", "-e", f"{sha}^{{commit}}")[0]:
+        git("fetch", "-q", "gitea", "main")
+    if git("cat-file", "-e", f"{sha}^{{commit}}")[0]:
+        raise Refused(f"{sha[:12]} is not in this repository, so Job Invoke cannot push it to the rig")
 
 
-def deploy_command(sha: str) -> str:
-    return f"~/finish/slot decomp tools deploy --sha {sha} --venv ~/venv-decomp-stage"
+def request(board: str, card: str, sha: str, argv: list[str], activation: dict[str, str] | None = None) -> dict:
+    body = {"Subject": {"Board": board, "Card": card}, "Host": HOST, "Worktree": f"{REPOSITORY}@{sha}", "Argv": argv}
+    return {**body, "Activation": activation} if activation else body
 
 
 def suite_facts(out: str) -> dict[str, str]:
@@ -285,23 +308,20 @@ def suite_facts(out: str) -> dict[str, str]:
     return facts
 
 
-def suite(sha: str, target: str, ssh: Seam) -> list[str]:
-    """The full suite at exactly sha on a clean rig checkout; returns the log lines, raises Refused on any failure."""
-    code, out = ssh(suite_command(sha, f"{target}/bin/python", target))
-    facts = suite_facts(out)
-    for key in ("suite-checkout", "suite-sha", "suite-import"):
+def suite(sha: str, log: str, text: str) -> list[str]:
+    """The suite facts of the activation job's log; returns the log lines, raises Refused when any is wrong."""
+    facts = suite_facts(text)
+    for key in ("suite-checkout", "suite-sha", "suite-import", "suite-summary"):
         if key not in facts:
-            raise Refused(f"suite gate did not start at {sha[:12]} (exit {code}): {last_line(out, 'no output')}")
+            raise Refused(f"suite gate did not finish at {sha[:12]} ({log}): {last_line(text, 'no output')}")
     if facts["suite-sha"] != sha:
         raise Refused(f"suite ran at {facts['suite-sha']}, not the landed {sha}")
     if not PurePosixPath(facts["suite-import"]).is_relative_to(facts["suite-checkout"]):
         raise Refused(
             f"suite imported {PACKAGE} from {facts['suite-import']}, outside its checkout {facts['suite-checkout']}"
         )
-    if code or "suite-first-failure" in facts or "suite-summary" not in facts:
-        first = facts.get("suite-first-failure") or f"no summary, exit {code}: {last_line(out, 'no output')}"
-        summary, log = facts.get("suite-summary", "no summary"), facts.get("suite-log", "no log")
-        raise Refused(f"suite failed at {first}: {summary} ({log})")
+    if "suite-first-failure" in facts:
+        raise Refused(f"suite failed at {facts['suite-first-failure']}: {facts['suite-summary']} ({log})")
     return [
         f"{sha[:12]}: suite {facts['suite-summary']}",
         f"{sha[:12]}: suite sha {facts['suite-sha']}",
@@ -309,48 +329,43 @@ def suite(sha: str, target: str, ssh: Seam) -> list[str]:
     ]
 
 
-def deploy(sha: str, ssh: Seam, git: Seam, lock: Lock) -> list[str]:
-    """Takes the rig lock, then deploys the newest landed main; returns the log lines to print."""
-    with lock() as waited:
-        return [*waited, *deploy_locked(sha, ssh, git)]
-
-
-def deploy_locked(sha: str, ssh: Seam, git: Seam) -> list[str]:
-    """The mechanism under the lock. Raises Refused on the first failed step."""
+def deploy(sha: str, board: str, card: str, toolkit: str, job: Job, git: Seam, read: Read) -> list[str]:
+    """Deploys the newest landed main; returns the log lines to print. Raises Refused on the first failed step."""
     lines = []
     head = newest_main(sha, git)
     if head != sha:
         lines.append(f"{sha[:12]}: main has moved to {head[:12]}, deploying main's head; the older deploy deferred")
         sha = head
-    target = f"{RIG_HOME}/venv-decomp-stage.{sha[:12]}"
-    links = read_links(ssh)
-    skipped = all(path == target for path in links.values())
-    if skipped:
-        lines.append(f"{sha[:12]}: both links already read {target}, build and swap skipped")
-    elif links["venv-decomp-stage"] != target:
-        code, out = ssh(deploy_command(sha))
-        if code:
-            raise Refused(f"decomp tools deploy exit {code}: {last_line(out, 'no output')}")
-    lines += suite(sha, target, ssh)
-    if not skipped:
-        code, out = ssh(
-            f"test -x {target}/bin/python && ln -sfn {target} ~/.venv-decomp.new"
-            " && mv -T ~/.venv-decomp.new ~/venv-decomp"
-        )
-        if code:
-            raise Refused(f"cannot repoint ~/venv-decomp to {target}: {last_line(out, code)}")
-    wrong = {link: path for link, path in read_links(ssh).items() if path != target}
-    if wrong:
-        raise Refused(f"readback: {wrong} must read {target}")
-    code, out = ssh(f"~/finish/slot bash -c {shlex.quote(READBACK)}")
-    if code:
-        raise Refused(out.splitlines()[0] if out else f"readback: make check exit {code}")
-    return [*lines, f"{sha[:12]}: both links read {target}; {last_line(out, '')}"]
+    have_commit(sha, git)
+    revision = sha[:12]
+    build = f"{toolkit}.{revision}"
+    script = BUILD + SUITE.replace("__RUNNER__", RUNNER)
+    argv = ["bash", "-c", script, "deploy", sha, toolkit]
+    activation = job(request(board, card, sha, argv, {"Toolkit": toolkit, "Revision": revision}))
+    log = activation["Log"]
+    lines.append(f"{revision}: activation job Exit {activation['Exit']}, Log {log}")
+    text = read(log)
+    if activation["Exit"]:
+        raise Refused(f"activation exit {activation['Exit']}, links unchanged: {last_line(text, 'no output')} ({log})")
+    lines += suite(sha, log, text)
+    readback = job(request(board, card, sha, ["bash", "-c", READBACK, "readback", sha, toolkit, build]))
+    lines.append(f"{revision}: readback job Exit {readback['Exit']}, Log {readback['Log']}")
+    final = read(readback["Log"])
+    if readback["Exit"]:
+        raise Refused(f"readback exit {readback['Exit']}: {last_line(final, 'no output')} ({readback['Log']})")
+    return [*lines, f"{revision}: {toolkit} reads {build}; {last_line(final, '')}", f"deployed {sha}"]
 
 
-def main(environ: dict[str, str] | None = None) -> int:
+def main(argv: list[str] | None = None, environ: dict[str, str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Deploy the landed AbuDecomp64 commit to the rig through Job Invoke.")
+    for name in ("board", "card", "toolkit"):
+        parser.add_argument(f"--{name}", required=True)
+    args = parser.parse_args(argv)
     try:
-        for line in deploy(landed_sha(dict(os.environ) if environ is None else environ), ssh, git, rig_lock):
+        sha = landed_sha(dict(os.environ) if environ is None else environ)
+        if not os.path.isabs(args.toolkit) or os.path.normpath(args.toolkit) != args.toolkit:
+            raise Refused(f"--toolkit must be a clean absolute path: {args.toolkit!r}")
+        for line in deploy(sha, args.board, args.card, args.toolkit, job_invoke, git, read_log):
             print(line, flush=True)
     except Refused as refusal:
         print(f"deploy refused: {refusal}", file=sys.stderr)

@@ -1,12 +1,12 @@
 import importlib.util
 import io
+import json
 import os
-import re
 import site
+import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path, PurePosixPath
@@ -16,333 +16,281 @@ deploy_rig = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deploy_rig)
 
 SHA = "a" * 12 + "b" * 28
-NEW = f"/home/abu/venv-decomp-stage.{SHA[:12]}"
-OLD = "/home/abu/venv-decomp-stage.0123456789ab"
+NEWER = "d" * 12 + "e" * 28
+TOOLKIT = "/opt/example/venv-decomp"
+BUILD = f"{TOOLKIT}.{SHA[:12]}"
 ENVIRON = {deploy_rig.ENV: SHA}
-CHECKOUT = "/home/abu/finish/DEPLOY-SUITE.AbCdEf/checkout"
+ARGS = ["--board", "board1", "--card", "card1", "--toolkit", TOOLKIT]
+CHECKOUT = "/srv/runs/board1.card1/Projects/AbuN64/AbuDecomp64"
 SUMMARY = "1767 passed, 0 failed, 5 skipped in 204 s"
 
 
-def suite_output(sha=SHA, imported=f"{CHECKOUT}/src/abu_decomp/__init__.py", failed=None):
-    lines = [f"suite-checkout: {CHECKOUT}", f"suite-sha: {sha}", f"suite-import: {imported}"]
+def suite_log(sha=SHA, imported=f"{CHECKOUT}/src/abu_decomp/__init__.py", failed=None, summary=True):
+    lines = [f"deploy-build: {TOOLKIT}-stage.{sha[:12]}", f"suite-checkout: {CHECKOUT}", f"suite-sha: {sha}"]
+    lines.append(f"suite-import: {imported}")
     if failed:
         lines += ["suite-summary: 1766 passed, 1 failed, 5 skipped in 204 s", f"suite-first-failure: {failed}"]
-    else:
+    elif summary:
         lines.append(f"suite-summary: {SUMMARY}")
-    return "\n".join([*lines, "suite-log: /home/abu/finish/deploy-suite-aaaaaaaaaaaa.log"])
+    return "\n".join(lines) + "\n"
 
 
-class FakeLock:
-    """The rig lock seam: records `lock` and `unlock` in `events` (shared with the fake rig to prove ordering)."""
-
-    def __init__(self, events=None, notes=()):
-        self.events = [] if events is None else events
-        self.notes = list(notes)
-
-    def __call__(self):
-        return self
-
-    def __enter__(self):
-        self.events.append("lock")
-        return list(self.notes)
-
-    def __exit__(self, *exc):
-        self.events.append("unlock")
-        return False
+def answer(exit_code=0, log="/runs/.tmp/job-rig-1.log"):
+    return deploy_rig.Answer({"Exit": exit_code, "Log": log, "Width": 16, "Host": "rig"})
 
 
-NEWER = "d" * 12 + "e" * 28
+class Rig:
+    """The seams: Job Invoke answers by call order (activation, readback), git knows the two mains, logs are text."""
 
+    def __init__(self, gitea=True, github=True, head=None, activation=0, readback=0, suite=None, refuse_at=None):
+        self.head, self.on = head, {"gitea": gitea, "github": github}
+        self.exits = [activation, readback]
+        self.logs = {
+            "/runs/.tmp/job-rig-1.log": suite if suite is not None else suite_log(head or SHA),
+            "/runs/.tmp/job-rig-2.log": f"readback-pin: abu-decomp-64 {head or SHA}\n",
+        }
+        self.refuse_at = refuse_at
+        self.requests, self.git_calls, self.fetched = [], [], None
+        self.have = True
 
-class Seams:
-    """A fake rig and fake git: the rig keeps the two links, `decomp tools deploy` moves the stage link."""
+    def job(self, body):
+        self.requests.append(body)
+        n = len(self.requests)
+        if self.refuse_at == n:
+            raise deploy_rig.Refused("Job Invoke refused Conflict (exit 1): the build or gate exited 1")
+        return answer(self.exits[n - 1], f"/runs/.tmp/job-rig-{n}.log")
 
-    def __init__(
-        self,
-        gitea=True,
-        github=True,
-        links=(OLD, OLD),
-        deploy_code=0,
-        readback_code=0,
-        repoint_code=0,
-        suite_code=0,
-        suite_out=None,
-        head=None,
-        notes=(),
-    ):
-        self.head = head
-        self.events = []
-        self.lock = FakeLock(self.events, notes)
-        self.on = {"gitea": gitea, "github": github}
-        self.suite_code, self.suite_out = suite_code, suite_out
-        self.links = dict(zip(deploy_rig.LINKS, links, strict=True))
-        self.deploy_code, self.readback_code, self.repoint_code = deploy_code, readback_code, repoint_code
-        self.ssh_calls, self.git_calls = [], []
-        self.fetched = None
+    def read(self, path):
+        return self.logs[path]
 
     def git(self, *args):
         self.git_calls.append(args)
-        self.events.append("git")
         if "rev-parse" in args:
             return 0, self.head or ""
-        if "fetch" in args:
+        if "fetch" in args and "-C" in args:
             self.fetched = next(name for name, url in deploy_rig.REMOTES.items() if url in args)
+            return 0, ""
+        if "fetch" in args:
+            self.have = True
             return 0, ""
         if "merge-base" in args:
             return (0 if self.on[self.fetched] else 1), ""
+        if "cat-file" in args:
+            return (0 if self.have else 1), ""
         return 0, ""
 
-    def ssh(self, command):
-        self.ssh_calls.append(command)
-        self.events.append("ssh")
-        if command.startswith("readlink"):
-            return 0, "\n".join(self.links.values())
-        if "decomp tools deploy" in command:
-            if not self.deploy_code:
-                self.links["venv-decomp-stage"] = f"/home/abu/venv-decomp-stage.{command.split('--sha ')[1][:12]}"
-            return self.deploy_code, "engine said no" if self.deploy_code else "deployed"
-        if "DEPLOY-SUITE" in command:
-            if self.suite_out is not None:
-                return self.suite_code, self.suite_out
-            sha = re.search(r" suite ([0-9a-f]{40}) ", command).group(1)
-            failed = "tests/test_x.py::Case::test_y" if self.suite_code else None
-            return self.suite_code, suite_output(sha=sha, failed=failed)
-        if "mv -T" in command:
-            if not self.repoint_code:
-                self.links["venv-decomp"] = re.search(r"ln -sfn (\S+)", command).group(1)
-            return self.repoint_code, ""
-        if "make -k -j8 check" in command:
-            if self.readback_code:
-                return self.readback_code, "readback: make check failed at RageWars abc:\nboom"
-            return 0, f"readback: make check exit 0 at RageWars gitea main {'c' * 40}"
-        raise AssertionError(command)
-
-    def commands(self, needle):
-        return [c for c in self.ssh_calls if needle in c]
+    def deploy(self, sha=SHA):
+        return deploy_rig.deploy(sha, "board1", "card1", TOOLKIT, self.job, self.git, self.read)
 
 
-def run_main(seams, environ):
-    saved = deploy_rig.ssh, deploy_rig.git, deploy_rig.rig_lock
-    deploy_rig.ssh, deploy_rig.git, deploy_rig.rig_lock = seams.ssh, seams.git, seams.lock
+def run_main(rig, argv=ARGS, environ=ENVIRON):
+    saved = deploy_rig.job_invoke, deploy_rig.git, deploy_rig.read_log
+    deploy_rig.job_invoke, deploy_rig.git, deploy_rig.read_log = rig.job, rig.git, rig.read
     out, err = io.StringIO(), io.StringIO()
     try:
         with redirect_stdout(out), redirect_stderr(err):
-            code = deploy_rig.main(environ)
+            code = deploy_rig.main(argv, environ)
     finally:
-        deploy_rig.ssh, deploy_rig.git, deploy_rig.rig_lock = saved
+        deploy_rig.job_invoke, deploy_rig.git, deploy_rig.read_log = saved
     return code, out.getvalue(), err.getvalue()
 
 
-class RefusalTests(unittest.TestCase):
-    def test_a_missing_or_malformed_sha_exits_1_before_any_call(self):
-        for environ in ({}, {deploy_rig.ENV: "main"}, {deploy_rig.ENV: SHA[:12]}):
-            seams = Seams()
-            code, _, err = run_main(seams, environ)
-            self.assertEqual(code, 1)
-            self.assertEqual(len(err.strip().splitlines()), 1)
-            self.assertEqual((seams.git_calls, seams.ssh_calls), ([], []))
+class JobInvokeAnswerTests(unittest.TestCase):
+    def test_a_success_answer_carries_exit_log_and_width(self):
+        body = {"Metadata": {"Result": "Success"}, "Response": {"Exit": 0, "Log": "/x.log", "Width": 16, "Host": "rig"}}
+        got = deploy_rig.answer_of(0, json.dumps(body))
+        self.assertEqual((got["Exit"], got["Log"], got["Width"]), (0, "/x.log", 16))
 
-    def test_a_sha_not_on_either_main_exits_1_with_one_line_and_leaves_the_rig_alone(self):
-        for missing in ("gitea", "github"):
-            seams = Seams(**{missing: False})
-            code, out, err = run_main(seams, ENVIRON)
-            self.assertEqual(code, 1)
-            self.assertEqual(err.strip(), f"deploy refused: {SHA[:12]} is not on {missing} main")
-            self.assertEqual((out, seams.ssh_calls), ("", []))
+    def test_a_nonzero_job_exit_is_an_answer_not_a_refusal(self):
+        got = deploy_rig.answer_of(0, json.dumps({"Response": {"Exit": 2, "Log": "/x.log"}}))
+        self.assertEqual(got["Exit"], 2)
 
-    def test_an_unreachable_remote_is_a_refusal_not_a_pass(self):
-        seams = Seams()
-        seams.git = lambda *args: (128, "fatal: unable to access\nfatal: no route") if "fetch" in args else (0, "")
-        code, _, err = run_main(seams, ENVIRON)
-        self.assertEqual(code, 1)
-        self.assertIn("cannot fetch gitea main", err)
-        self.assertEqual(len(err.strip().splitlines()), 1)
+    def test_a_refusal_names_its_code_message_and_next_step(self):
+        error = {"Code": "Conflict", "Message": "the build or gate exited 1", "NextStep": "read the log", "Status": 409}
+        with self.assertRaises(deploy_rig.Refused) as caught:
+            deploy_rig.answer_of(1, json.dumps({"Response": {"Error": error}}))
+        self.assertEqual(
+            str(caught.exception),
+            "Job Invoke refused Conflict (exit 1): the build or gate exited 1; next: read the log",
+        )
+
+    def test_unparseable_output_or_a_fault_exit_or_a_missing_log_is_refused(self):
+        for code, out in (
+            (2, "panic: no socket"),
+            (0, ""),
+            (0, json.dumps({"Metadata": {}})),
+            (2, json.dumps({"Response": {"Exit": 0, "Log": "/x.log"}})),
+            (0, json.dumps({"Response": {"Exit": 0}})),
+            (0, json.dumps({"Response": {"Exit": "0", "Log": "/x.log"}})),
+        ):
+            with self.subTest(code=code, out=out), self.assertRaises(deploy_rig.Refused):
+                deploy_rig.answer_of(code, out)
+
+    def test_job_invoke_calls_the_public_cli_with_the_request_on_stdin(self):
+        calls = []
+
+        def fake(argv, stdin=None):
+            calls.append((argv, stdin))
+            return 0, json.dumps({"Response": {"Exit": 0, "Log": "/x.log"}})
+
+        saved, deploy_rig.run = deploy_rig.run, fake
+        try:
+            deploy_rig.job_invoke({"Host": "rig"})
+        finally:
+            deploy_rig.run = saved
+        argv, stdin = calls[0]
+        self.assertEqual(argv, ["mo-butlermaster", "Job", "Invoke", "--input=json", "--output=json"])
+        self.assertEqual(json.loads(stdin), {"Metadata": {}, "Request": {"Host": "rig"}})
 
 
 class DeployTests(unittest.TestCase):
-    def test_a_new_sha_deploys_through_the_slot_with_no_overrides_and_both_links_move(self):
-        seams = Seams()
-        code, out, err = run_main(seams, ENVIRON)
+    def test_the_activation_job_names_the_worktree_toolkit_and_revision_and_the_readback_job_has_no_activation(self):
+        rig = Rig()
+        rig.deploy()
+        activation, readback = rig.requests
+        for body in rig.requests:
+            self.assertEqual(body["Host"], "rig")
+            self.assertEqual(body["Subject"], {"Board": "board1", "Card": "card1"})
+            self.assertEqual(body["Worktree"], f"Projects/AbuN64/AbuDecomp64@{SHA}")
+            self.assertIsInstance(body["Argv"], list)
+        self.assertEqual(activation["Activation"], {"Toolkit": TOOLKIT, "Revision": SHA[:12]})
+        self.assertEqual(activation["Argv"][-2:], [SHA, TOOLKIT])
+        self.assertNotIn("Activation", readback)
+        self.assertEqual(readback["Argv"][-3:], [SHA, TOOLKIT, BUILD])
+
+    def test_main_prints_the_deployed_sha_with_each_jobs_exit_and_log(self):
+        code, out, err = run_main(Rig())
         self.assertEqual((code, err), (0, ""))
-        (command,) = seams.commands("decomp tools deploy")
-        self.assertEqual(command, f"~/finish/slot decomp tools deploy --sha {SHA} --venv ~/venv-decomp-stage")
-        for flag in ("--unbake", "--recipe", "--taste", "--project-sha"):
-            self.assertNotIn(flag, command)
-        self.assertEqual(set(seams.links.values()), {NEW})
-        self.assertIn(NEW, out)
-        self.assertEqual(len(seams.commands("make -k -j8 check")), 1)
+        self.assertIn(f"deployed {SHA}", out.splitlines())
+        self.assertIn(f"{SHA[:12]}: activation job Exit 0, Log /runs/.tmp/job-rig-1.log", out)
+        self.assertIn(f"{SHA[:12]}: readback job Exit 0, Log /runs/.tmp/job-rig-2.log", out)
+        self.assertIn(f"{SHA[:12]}: suite {SUMMARY}", out)
 
-    def test_the_readback_worktree_is_gitea_main_run_in_a_slot_and_no_venv_is_removed(self):
-        seams = Seams()
-        run_main(seams, ENVIRON)
-        (readback,) = seams.commands("make -k -j8 check")
-        self.assertTrue(readback.startswith("~/finish/slot bash -c "))
-        self.assertIn("fetch -q gitea main", readback)
-        self.assertIn("unbake setup --no-make", readback)
-        for command in seams.ssh_calls:
-            if "venv" in command and "make -k" not in command and "DEPLOY-SUITE" not in command:
-                self.assertNotIn("rm ", command)
+    def test_the_deploy_never_takes_the_old_ssh_slot_flock_or_waitfor_path(self):
+        source = (Path(__file__).parent.parent / "ci" / "deploy_rig.py").read_text()
+        code = source.split('"""', 2)[2]
+        for word in ("ssh", "flock", "finish/slot", "waitfor", "deploy-decomp.lock", "mv -T"):
+            self.assertNotIn(word, code)
 
-    def test_the_suite_script_removes_only_its_own_scratch_checkout(self):
-        removals = [line for line in deploy_rig.SUITE.splitlines() if "rm " in line]
-        self.assertEqual(len(removals), 1)
-        self.assertIn('rm -rf "$work"', removals[0])
-
-    def test_the_engine_failing_exits_1_and_skips_the_repoint_and_readback(self):
-        seams = Seams(deploy_code=3)
-        code, _, err = run_main(seams, ENVIRON)
-        self.assertEqual(code, 1)
-        self.assertEqual(err.strip(), "deploy refused: decomp tools deploy exit 3: engine said no")
-        self.assertEqual(seams.commands("mv -T") + seams.commands("make -k") + seams.commands("DEPLOY-SUITE"), [])
-
-    def test_a_failed_repoint_exits_1(self):
-        code, _, err = run_main(Seams(repoint_code=1), ENVIRON)
-        self.assertEqual(code, 1)
-        self.assertIn("cannot repoint ~/venv-decomp", err)
-
-
-class IdempotenceTests(unittest.TestCase):
-    def test_links_already_at_the_sha_skip_the_install_and_still_run_the_readback(self):
-        seams = Seams(links=(NEW, NEW))
-        code, out, err = run_main(seams, ENVIRON)
-        self.assertEqual((code, err), (0, ""))
-        self.assertIn("build and swap skipped", out)
-        self.assertEqual(seams.commands("decomp tools deploy") + seams.commands("mv -T"), [])
-        self.assertEqual(len(seams.commands("DEPLOY-SUITE")), 1)
-        self.assertEqual(len(seams.commands("make -k -j8 check")), 1)
-
-    def test_only_the_decomp_link_behind_is_repointed_without_a_second_install(self):
-        seams = Seams(links=(OLD, NEW))
-        code, _, _ = run_main(seams, ENVIRON)
-        self.assertEqual(code, 0)
-        self.assertEqual(seams.commands("decomp tools deploy"), [])
-        self.assertEqual(len(seams.commands("mv -T")), 1)
-        self.assertEqual(set(seams.links.values()), {NEW})
-
-    def test_a_second_run_after_a_deploy_is_a_skip(self):
-        seams = Seams()
-        run_main(seams, ENVIRON)
-        seams.ssh_calls.clear()
-        code, out, _ = run_main(seams, ENVIRON)
-        self.assertEqual(code, 0)
-        self.assertIn("build and swap skipped", out)
-        self.assertEqual(seams.commands("decomp tools deploy"), [])
-
-
-class ReadbackTests(unittest.TestCase):
-    def test_make_check_failing_exits_1_with_the_first_line_of_the_cause(self):
-        for links in ((OLD, OLD), (NEW, NEW)):
-            code, _, err = run_main(Seams(links=links, readback_code=1), ENVIRON)
+    def test_a_sha_not_on_either_main_refuses_before_any_job(self):
+        for missing in ("gitea", "github"):
+            rig = Rig(**{missing: False})
+            code, out, err = run_main(rig)
             self.assertEqual(code, 1)
-            self.assertEqual(err.strip(), "deploy refused: readback: make check failed at RageWars abc:")
+            self.assertEqual(err.strip(), f"deploy refused: {SHA[:12]} is not on {missing} main")
+            self.assertEqual((out, rig.requests), ("", []))
 
-    def test_a_link_that_does_not_read_back_to_the_new_directory_exits_1_before_make(self):
-        seams = Seams()
-        original = seams.ssh
+    def test_main_moved_to_a_descendant_deploys_the_head(self):
+        rig = Rig(head=NEWER)
+        lines = rig.deploy()
+        moved = f"{SHA[:12]}: main has moved to {NEWER[:12]}, deploying main's head; the older deploy deferred"
+        self.assertIn(moved, lines)
+        self.assertEqual(rig.requests[0]["Worktree"], f"Projects/AbuN64/AbuDecomp64@{NEWER}")
+        self.assertEqual(rig.requests[0]["Activation"]["Revision"], NEWER[:12])
+        self.assertIn(f"deployed {NEWER}", lines)
 
-        def drifting(command):
-            code, out = original(command)
-            if "mv -T" in command:
-                seams.links["venv-decomp"] = OLD
-            return code, out
+    def test_a_commit_missing_here_is_fetched_and_still_missing_is_refused(self):
+        rig = Rig()
+        rig.have = False
+        rig.git = lambda *args, _git=rig.git: (1, "") if "cat-file" in args else _git(*args)
+        with self.assertRaises(deploy_rig.Refused) as caught:
+            rig.deploy()
+        self.assertIn("cannot push it to the rig", str(caught.exception))
+        self.assertEqual(rig.requests, [])
+        fetched = Rig()
+        fetched.have = False
+        fetched.deploy()
+        self.assertTrue(any(call[:2] == ("fetch", "-q") for call in fetched.git_calls))
 
-        seams.ssh = drifting
-        code, _, err = run_main(seams, ENVIRON)
-        self.assertEqual(code, 1)
-        self.assertIn("readback:", err)
-        self.assertIn("venv-decomp", err)
-        self.assertEqual(seams.commands("make -k"), [])
-
-    def test_unreadable_links_exit_1(self):
-        seams = Seams()
-        seams.ssh = lambda command: (255, "ssh: connect to host 192.168.0.101 port 22: No route to host")
-        code, _, err = run_main(seams, ENVIRON)
-        self.assertEqual(code, 1)
-        self.assertIn("cannot read the rig venv links", err)
-
-
-class SuiteGateTests(unittest.TestCase):
-    """The full suite at exactly the landed SHA, after the build and before ~/venv-decomp moves."""
-
-    def test_a_failing_suite_exits_1_naming_the_first_failing_test_and_keeps_the_old_live_build(self):
-        seams = Seams(suite_code=1)
-        code, out, err = run_main(seams, ENVIRON)
-        self.assertEqual(code, 1)
-        self.assertEqual(len(err.strip().splitlines()), 1)
-        self.assertIn("deploy refused: suite failed at tests/test_x.py::Case::test_y: 1766 passed, 1 failed", err)
-        self.assertEqual(seams.links["venv-decomp"], OLD)
-        self.assertEqual((seams.commands("mv -T"), seams.commands("make -k"), out), ([], [], ""))
-
-    def test_the_suite_runs_after_the_build_and_before_the_repoint(self):
-        seams = Seams()
-        run_main(seams, ENVIRON)
-        order = [
-            "build"
-            if "decomp tools deploy" in c
-            else "suite"
-            if "DEPLOY-SUITE" in c
-            else "repoint"
-            if "mv -T" in c
-            else "readback"
-            if "make -k" in c
-            else "links"
-            for c in seams.ssh_calls
-        ]
-        self.assertEqual(order, ["links", "build", "suite", "repoint", "links", "readback"])
-
-    def test_the_suite_runs_in_a_slot_at_the_landed_sha_with_the_new_venv_python(self):
-        seams = Seams()
-        run_main(seams, ENVIRON)
-        (command,) = seams.commands("DEPLOY-SUITE")
-        self.assertTrue(command.startswith("~/finish/slot bash -c "))
-        self.assertTrue(command.endswith(f" suite {SHA} {deploy_rig.REMOTES['gitea']} {NEW}/bin/python {NEW}"))
-
-    def test_a_failing_suite_refuses_even_when_both_links_already_read_the_sha(self):
-        seams = Seams(links=(NEW, NEW), suite_code=1)
-        code, _, err = run_main(seams, ENVIRON)
-        self.assertEqual(code, 1)
-        self.assertIn("suite failed at tests/test_x.py::Case::test_y", err)
-        self.assertEqual(seams.commands("make -k"), [])
-
-    def test_an_import_outside_the_checkout_refuses_even_when_every_test_passed(self):
-        installed = f"{NEW}/lib/python3.13/site-packages/abu_decomp/__init__.py"
-        seams = Seams(suite_out=suite_output(imported=installed))
-        code, _, err = run_main(seams, ENVIRON)
-        self.assertEqual(code, 1)
-        self.assertIn(f"abu_decomp from {installed}, outside its checkout", err)
-        self.assertEqual(seams.commands("mv -T"), [])
-
-    def test_a_sibling_directory_sharing_the_checkout_prefix_is_outside(self):
-        seams = Seams(suite_out=suite_output(imported=f"{CHECKOUT}-old/src/abu_decomp/__init__.py"))
-        code, _, err = run_main(seams, ENVIRON)
-        self.assertEqual(code, 1)
-        self.assertIn("outside its checkout", err)
-
-    def test_a_suite_at_another_sha_or_with_no_facts_refuses(self):
-        for out in (suite_output(sha="c" * 40), "fatal: unable to access gitea", ""):
-            seams = Seams(suite_out=out)
-            code, _, err = run_main(seams, ENVIRON)
+    def test_a_bad_toolkit_or_sha_refuses_before_any_call(self):
+        for argv, environ in (
+            (["--board", "b", "--card", "c", "--toolkit", "venv"], ENVIRON),
+            (["--board", "b", "--card", "c", "--toolkit", "/a/../venv"], ENVIRON),
+            (ARGS, {}),
+            (ARGS, {deploy_rig.ENV: "main"}),
+        ):
+            rig = Rig()
+            code, _, err = run_main(rig, argv, environ)
             self.assertEqual(code, 1)
             self.assertEqual(len(err.strip().splitlines()), 1)
-            self.assertEqual(seams.commands("mv -T"), [])
+            self.assertEqual((rig.git_calls, rig.requests), ([], []))
 
-    def test_a_suite_exiting_nonzero_without_a_named_failure_still_refuses(self):
-        seams = Seams(suite_code=1, suite_out=suite_output())
-        code, _, err = run_main(seams, ENVIRON)
+
+class RefusalTests(unittest.TestCase):
+    def test_a_failed_gate_refuses_with_the_job_log_line_and_runs_no_readback(self):
+        rig = Rig(activation=1, suite=suite_log(failed="tests/test_x.py::Case::test_y"))
+        code, _, err = run_main(rig)
         self.assertEqual(code, 1)
-        self.assertIn("suite failed at", err)
-        self.assertEqual(seams.commands("mv -T"), [])
+        self.assertEqual(len(err.strip().splitlines()), 1)
+        self.assertIn("activation exit 1, links unchanged", err)
+        self.assertIn("/runs/.tmp/job-rig-1.log", err)
+        self.assertEqual(len(rig.requests), 1)
 
-    def test_the_log_carries_the_summary_the_sha_and_the_imported_path(self):
-        code, out, _ = run_main(Seams(), ENVIRON)
-        self.assertEqual(code, 0)
-        self.assertIn(f"{SHA[:12]}: suite {SUMMARY}", out)
-        self.assertIn(f"{SHA[:12]}: suite sha {SHA}", out)
-        self.assertIn(f"{SHA[:12]}: suite imported {CHECKOUT}/src/abu_decomp/__init__.py", out)
+    def test_a_job_invoke_refusal_stops_the_deploy(self):
+        for refuse_at, jobs in ((1, 1), (2, 2)):
+            rig = Rig(refuse_at=refuse_at)
+            code, _, err = run_main(rig)
+            self.assertEqual(code, 1)
+            self.assertIn("Job Invoke refused Conflict", err)
+            self.assertEqual(len(rig.requests), jobs)
 
-    def test_the_remote_suite_script_parses(self):
-        script = deploy_rig.SUITE.replace("__RUNNER__", deploy_rig.RUNNER)
-        self.assertEqual(subprocess.run(["bash", "-n"], input=script, text=True, check=False).returncode, 0)
+    def test_a_passing_job_whose_log_names_a_failing_test_or_no_summary_is_refused(self):
+        failed = suite_log(failed="tests/test_x.py::test_y")
+        with self.assertRaisesRegex(deploy_rig.Refused, r"suite failed at tests/test_x.py::test_y: 1766 passed"):
+            Rig(suite=failed).deploy()
+        with self.assertRaisesRegex(deploy_rig.Refused, "suite gate did not finish"):
+            Rig(suite=suite_log(summary=False)).deploy()
+        with self.assertRaisesRegex(deploy_rig.Refused, "suite gate did not finish"):
+            Rig(suite="killed\n").deploy()
+
+    def test_a_suite_at_another_sha_or_importing_outside_its_worktree_is_refused(self):
+        with self.assertRaisesRegex(deploy_rig.Refused, f"suite ran at {NEWER}, not the landed {SHA}"):
+            Rig(suite=suite_log(sha=NEWER)).deploy()
+        outside = suite_log(imported="/home/abu/venv/lib/abu_decomp/__init__.py")
+        with self.assertRaisesRegex(deploy_rig.Refused, "outside its checkout"):
+            Rig(suite=outside).deploy()
+        sibling = suite_log(imported=f"{CHECKOUT}-other/src/abu_decomp/__init__.py")
+        with self.assertRaisesRegex(deploy_rig.Refused, "outside its checkout"):
+            Rig(suite=sibling).deploy()
+
+    def test_a_readback_mismatch_refuses_with_the_readback_line(self):
+        rig = Rig(readback=1)
+        rig.logs["/runs/.tmp/job-rig-2.log"] = "readback: unbake is none, the pin is " + "c" * 40 + "\n"
+        code, _, err = run_main(rig)
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            err.strip(),
+            f"deploy refused: readback exit 1: readback: unbake is none, the pin is {'c' * 40} "
+            "(/runs/.tmp/job-rig-2.log)",
+        )
+
+
+def wrapper(path, body):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\n{body}\n")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+def sh_env(**extra):
+    return {"PATH": os.environ["PATH"], "PYTHONUSERBASE": site.getuserbase(), **extra}
+
+
+class ScriptCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def bash(self, script, *args, cwd=None, env=None):
+        return subprocess.run(
+            ["bash", "-c", script, "job", *args],
+            cwd=cwd,
+            env=env or sh_env(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
 
 def git(*args, cwd):
@@ -350,302 +298,160 @@ def git(*args, cwd):
     subprocess.run(["git", *identity, *args], cwd=cwd, check=True, capture_output=True)
 
 
-class SuiteScriptTests(unittest.TestCase):
-    """The remote SUITE script and RUNNER, run for real against a tiny local repository."""
+class SuiteScriptTests(ScriptCase):
+    """The SUITE script and RUNNER, run for real in a tiny worktree with a stand-in BUILD venv."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        # the deploy layout: the checkout sits under a directory that has a pyproject of its own (the outer repo's .tmp)
-        base = Path(self.tmp.name) / "outer"
-        self.repo, self.home, self.dest = base / "repo", base / "home", base / "dest"
-        for path in (self.repo / "src/abu_decomp", self.repo / "tests", self.home / "finish", self.dest):
+        super().setUp()
+        self.repo, self.built = self.root / "outer" / "repo", self.root / "built"
+        for path in (self.repo / "src/abu_decomp", self.repo / "tests"):
             path.mkdir(parents=True)
-        (base / "pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')
-        (self.repo / "pyproject.toml").write_text('[project]\nname = "tiny"\n')  # no pytest section
+        (self.root / "outer/pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')
+        (self.repo / "pyproject.toml").write_text('[project]\nname = "tiny"\n')
         (self.repo / "src/abu_decomp/__init__.py").write_text("VALUE = 1\n")
         self.write_test("assert abu_decomp.VALUE == 1")
+        wrapper(self.built / "bin/python", f'exec "{sys.executable}" "$@"')
         git("init", "-q", "-b", "main", cwd=self.repo)
-        self.commit()
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-q", "-m", "c", cwd=self.repo)
 
     def write_test(self, body):
         (self.repo / "tests/test_it.py").write_text(
             f"import abu_decomp\n\n\ndef test_it():\n    {body}\n\n\ndef test_other():\n    pass\n"
         )
 
-    def sha(self):
-        done = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True, text=True, check=True)
-        return done.stdout.strip()
-
-    def commit(self):
-        git("add", "-A", cwd=self.repo)
-        git("commit", "-q", "-m", "c", cwd=self.repo)
-        return self.sha()
-
-    def run_suite(self, sha, env=None):
-        command = deploy_rig.suite_command(sha, sys.executable, str(self.dest), str(self.repo))
-        done = subprocess.run(
-            ["bash", "-c", command.removeprefix("~/finish/slot ")],
-            env={
-                "PATH": os.environ["PATH"],
-                "HOME": str(self.home),
-                "PYTHONUSERBASE": site.getuserbase(),  # the interpreter under test keeps finding pytest
-                **(env or {}),
-            },
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+    def suite(self):
+        script = deploy_rig.SUITE.replace("__RUNNER__", deploy_rig.RUNNER)
+        done = self.bash(script, cwd=self.repo, env=sh_env(BUILD=str(self.built), built=str(self.built)))
         return done, deploy_rig.suite_facts(done.stdout)
 
-    def test_a_passing_suite_reports_the_import_from_the_checkout_and_writes_suite_txt(self):
-        sha = self.sha()
-        done, facts = self.run_suite(sha)
+    def test_a_passing_suite_reports_the_import_from_the_worktree_and_writes_suite_txt(self):
+        done, facts = self.suite()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True, text=True).stdout.strip()
         self.assertEqual(facts["suite-sha"], sha)
+        self.assertEqual(facts["suite-checkout"], str(self.repo.resolve()))
         self.assertTrue(facts["suite-summary"].startswith("2 passed, 0 failed, 0 skipped in "))
         self.assertTrue(PurePosixPath(facts["suite-import"]).is_relative_to(facts["suite-checkout"]))
-        text = (self.dest / "suite.txt").read_text()
-        self.assertIn(f"suite-sha: {sha}", text)
-        self.assertIn("suite-import: ", text)
-        self.assertEqual(list((self.home / "finish").glob("DEPLOY-SUITE.*")), [])  # the checkout is removed
+        self.assertEqual(deploy_rig.suite(sha, "log", done.stdout)[0], f"{sha[:12]}: suite {facts['suite-summary']}")
+        self.assertIn(f"suite-sha: {sha}", (self.built / "suite.txt").read_text())
 
     def test_a_failing_test_exits_1_names_the_first_failure_and_writes_no_suite_txt(self):
         self.write_test("assert abu_decomp.VALUE == 2")
-        done, facts = self.run_suite(self.commit())
+        done, facts = self.suite()
         self.assertEqual(done.returncode, 1)
         self.assertEqual(facts["suite-first-failure"], "tests/test_it.py::test_it")
-        self.assertTrue(facts["suite-summary"].startswith("1 passed, 1 failed, 0 skipped in "))
-        self.assertFalse((self.dest / "suite.txt").exists())
+        self.assertFalse((self.built / "suite.txt").exists())
+        with self.assertRaisesRegex(deploy_rig.Refused, "suite failed at tests/test_it.py::test_it"):
+            deploy_rig.suite(facts["suite-sha"], "log", done.stdout)
 
-    def test_a_test_printing_without_a_newline_does_not_swallow_the_facts(self):
-        self.write_test("import sys; sys.stdout.write('kept-by-default')")
-        done, facts = self.run_suite(self.commit())
-        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertTrue(facts["suite-summary"].startswith("2 passed, 0 failed, 0 skipped in "))
 
-    def test_subtests_are_not_counted_as_tests_and_a_failing_one_is_named(self):
-        body = (
-            "import unittest\n\n\nclass Case(unittest.TestCase):\n    def test_many(self):\n"
-            "        for n in range(3):\n            with self.subTest(n=n):\n"
-            "                self.assertNotEqual(n, %s)\n"
+class BuildScriptTests(ScriptCase):
+    """The BUILD script with a stand-in `decomp` that builds `<stage>.<sha12>` and swaps the stage link."""
+
+    def setUp(self):
+        super().setUp()
+        self.toolkit = self.root / "venv-decomp"
+        self.build = self.root / f"venv-decomp.{SHA[:12]}"
+        self.stage = self.root / "venv-decomp-stage"
+
+    def decomp(self, body):
+        wrapper(self.toolkit / "bin/decomp", body)
+
+    def run_build(self):
+        return self.bash(
+            deploy_rig.BUILD, SHA, str(self.toolkit), env=sh_env(BUILD=str(self.build), HOME=str(self.root))
         )
-        (self.repo / "tests/test_it.py").write_text(body % 9)
-        done, facts = self.run_suite(self.commit())
+
+    def test_the_build_links_build_to_the_stage_venv_and_never_touches_the_live_link(self):
+        live = self.root / "live-target"
+        wrapper(
+            live / "bin/decomp",
+            'test "$1 $2 $3 $4 $5" = "tools deploy --sha ' + SHA + ' --venv" || exit 7\n'
+            f'dir="$6.{SHA[:12]}"; mkdir -p "$dir/bin" && ln -sfn "$dir" "$6"',
+        )
+        self.toolkit.symlink_to(live)
+        done = self.run_build()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertTrue(facts["suite-summary"].startswith("1 passed, 0 failed, 0 skipped in "))
-        (self.repo / "tests/test_it.py").write_text(body % 1)
-        done, facts = self.run_suite(self.commit())
+        built = self.root / f"venv-decomp-stage.{SHA[:12]}"
+        self.assertEqual(self.build.resolve(), built.resolve())
+        self.assertEqual(self.stage.resolve(), built.resolve())
+        self.assertEqual(self.toolkit.resolve(), live.resolve())
+        self.assertIn(f"deploy-build: {built}", done.stdout)
+
+    def test_a_failing_engine_exits_1_and_links_nothing(self):
+        live = self.root / "live-target"
+        wrapper(live / "bin/decomp", "echo engine said no >&2; exit 3")
+        self.toolkit.symlink_to(live)
+        done = self.run_build()
         self.assertEqual(done.returncode, 1)
-        self.assertIn("test_many", facts["suite-first-failure"])
+        self.assertIn("deploy-error: decomp tools deploy exit 3", done.stderr)
+        self.assertFalse(self.build.is_symlink())
 
-    def test_zero_collected_tests_is_a_failure_not_a_pass(self):
-        (self.repo / "tests/test_it.py").unlink()
-        done, facts = self.run_suite(self.commit())
+    def test_a_stage_link_that_reads_another_build_exits_1(self):
+        live = self.root / "live-target"
+        wrapper(live / "bin/decomp", f'mkdir -p "{self.root}/other" && ln -sfn "{self.root}/other" "$6"')
+        self.toolkit.symlink_to(live)
+        done = self.run_build()
         self.assertEqual(done.returncode, 1)
-        self.assertIn("suite-first-failure", facts)
+        self.assertIn("not a build of", done.stderr)
 
-    def test_the_suite_runs_exactly_the_landed_sha_not_the_branch_tip(self):
-        landed = self.sha()
-        self.write_test("assert False, 'a later commit'")
-        self.commit()
-        done, facts = self.run_suite(landed)
-        self.assertEqual((done.returncode, facts["suite-sha"]), (0, landed))
 
-    def test_an_unknown_sha_fails_before_any_test_runs(self):
-        done, facts = self.run_suite("f" * 40)
-        self.assertNotEqual(done.returncode, 0)
-        self.assertNotIn("suite-import", facts)
+class ReadbackScriptTests(ScriptCase):
+    """The READBACK script against a stand-in venv: a link check, then the installed commit of each pin."""
 
-    def test_an_installed_copy_ahead_on_the_path_is_never_imported(self):
-        installed = Path(self.tmp.name) / "site/abu_decomp"
-        installed.mkdir(parents=True)
-        (installed / "__init__.py").write_text("VALUE = 99\n")
-        done, facts = self.run_suite(self.sha(), env={"PYTHONPATH": str(installed.parent)})
+    PIN = "c" * 40
+
+    def setUp(self):
+        super().setUp()
+        self.repo = self.root / "worktree"
+        self.repo.mkdir()
+        (self.repo / "pyproject.toml").write_text(
+            '[project]\nname = "tiny-decomp"\n'
+            f'dependencies = ["textual==8.2.8", "tool-one @ git+https://example.lan/tool-one@{self.PIN}"]\n'
+        )
+        self.site = self.root / "site"
+        self.venv = self.root / "venv.build"
+        wrapper(self.venv / "bin/python", f'PYTHONPATH="{self.site}" exec "{sys.executable}" "$@"')
+        self.toolkit = self.root / "venv-live"
+        self.toolkit.symlink_to(self.venv)
+        self.dist("tiny-decomp", SHA)
+        self.dist("tool-one", self.PIN)
+
+    def dist(self, name, commit):
+        info = self.site / f"{name.replace('-', '_')}-1.0.dist-info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
+        direct = {"url": "https://example.lan/x", "vcs_info": {"vcs": "git", "commit_id": commit}}
+        (info / "direct_url.json").write_text(json.dumps(direct))
+
+    def readback(self, build=None):
+        return self.bash(deploy_rig.READBACK, SHA, str(self.toolkit), str(build or self.venv), cwd=self.repo)
+
+    def test_matching_pins_and_link_exit_0_and_print_each_installed_commit(self):
+        done = self.readback()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertTrue(PurePosixPath(facts["suite-import"]).is_relative_to(facts["suite-checkout"]))
+        self.assertIn(f"readback-pin: tiny-decomp {SHA}", done.stdout)
+        self.assertIn(f"readback-pin: tool-one {self.PIN}", done.stdout)
 
+    def test_a_pin_installed_at_another_commit_or_missing_exits_1_naming_it(self):
+        self.dist("tool-one", "9" * 40)
+        done = self.readback()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn(f"tool-one is {'9' * 40}, the pin is {self.PIN}", done.stderr)
+        for path in (self.site / "tiny_decomp-1.0.dist-info").iterdir():
+            path.unlink()
+        (self.site / "tiny_decomp-1.0.dist-info").rmdir()
+        done = self.readback()
+        self.assertIn("tiny-decomp is not installed", done.stderr)
 
-class DeployFileTests(unittest.TestCase):
-    """ButlerMaster executes `.deploy` as one repository-relative executable path, not as a shell line."""
-
-    def test_the_deploy_file_names_one_existing_executable_script_with_no_spaces(self):
-        root = Path(__file__).parent.parent
-        lines = (root / ".deploy").read_text().splitlines()
-        self.assertEqual(len(lines), 1)
-        path = lines[0]
-        self.assertEqual(path, path.strip())
-        self.assertNotRegex(path, r"\s")
-        self.assertFalse(path.startswith("/"))
-        self.assertTrue((root / path).is_file())
-        self.assertTrue(os.access(root / path, os.X_OK))
-        self.assertEqual((root / path).read_text().splitlines()[0], "#!/usr/bin/env python3")
-
-
-class SerializedTests(unittest.TestCase):
-    """One rig lock per deploy: taken before any seam, held through the readback, freed on every ending."""
-
-    def test_the_lock_wraps_every_git_and_ssh_call_from_the_first_to_the_readback(self):
-        seams = Seams()
-        deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
-        self.assertEqual(seams.events[0], "lock")
-        self.assertEqual(seams.events[-1], "unlock")
-        self.assertEqual(seams.events.count("lock") + seams.events.count("unlock"), 2)
-        self.assertIn("make -k -j8 check", seams.ssh_calls[-1])
-
-    def test_the_lock_is_freed_when_the_deploy_refuses(self):
-        for seams in (Seams(github=False), Seams(suite_code=1), Seams(deploy_code=3)):
-            with self.assertRaises(deploy_rig.Refused):
-                deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
-            self.assertEqual(seams.events[0], "lock")
-            self.assertEqual(seams.events[-1], "unlock")
-
-    def test_the_wait_note_leads_the_log(self):
-        seams = Seams(notes=["another deploy holds it"])
-        self.assertEqual(deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)[0], "another deploy holds it")
-
-    def test_main_takes_the_rig_lock_seam(self):
-        seams = Seams()
-        code, _, _ = run_main(seams, ENVIRON)
-        self.assertEqual((code, seams.events[0], seams.events[-1]), (0, "lock", "unlock"))
-
-    def test_two_deploys_through_one_lock_never_interleave_and_the_second_skips(self):
-        mutex, events, seams, logs = threading.Lock(), [], Seams(), {}
-
-        class Shared(FakeLock):
-            def __enter__(self):
-                mutex.acquire()
-                events.append(("lock", threading.current_thread().name))
-                return []
-
-            def __exit__(self, *exc):
-                events.append(("unlock", threading.current_thread().name))
-                mutex.release()
-                return False
-
-        def seam(kind, inner):
-            def call(*args):
-                events.append((kind, threading.current_thread().name))
-                return inner(*args)
-
-            return call
-
-        def work():
-            logs[threading.current_thread().name] = deploy_rig.deploy(
-                SHA, seam("ssh", seams.ssh), seam("git", seams.git), Shared()
-            )
-
-        threads = [threading.Thread(target=work, name=name) for name in ("a", "b")]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        first = events[0][1]
-        held = {who for _, who in events[: events.index(("unlock", first))]}
-        self.assertEqual(held, {first})
-        self.assertEqual(len(seams.commands("decomp tools deploy")), 1)
-        self.assertTrue(any("build and swap skipped" in line for lines in logs.values() for line in lines))
-
-    def test_the_hold_script_parses_and_prints_waiting_then_locked(self):
-        self.assertEqual(subprocess.run(["bash", "-n"], input=deploy_rig.HOLD, text=True, check=False).returncode, 0)
-        self.assertLess(deploy_rig.HOLD.index("waiting"), deploy_rig.HOLD.index("locked"))
-        self.assertIn("flock 7", deploy_rig.HOLD)
-        self.assertEqual(deploy_rig.LOCK, "deploy-decomp.lock")
-
-
-class PromotionTests(unittest.TestCase):
-    """Under the lock the deploy builds the newest landed main, never an older one."""
-
-    def test_a_descendant_main_head_is_deployed_instead_and_the_log_says_the_older_deploy_deferred(self):
-        seams = Seams(head=NEWER)
-        lines = deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
-        self.assertEqual(seams.commands("decomp tools deploy"), [deploy_rig.deploy_command(NEWER)])
-        self.assertNotIn(SHA, " ".join(seams.ssh_calls))
-        moved = f"{SHA[:12]}: main has moved to {NEWER[:12]}, deploying main's head; the older deploy deferred"
-        self.assertIn(moved, lines)
-        self.assertEqual(set(seams.links.values()), {f"/home/abu/venv-decomp-stage.{NEWER[:12]}"})
-
-    def test_an_older_deploy_after_the_newer_one_ends_on_the_newer_directory_without_a_build(self):
-        newer = f"/home/abu/venv-decomp-stage.{NEWER[:12]}"
-        seams = Seams(head=NEWER, links=(newer, newer))
-        lines = deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
-        self.assertEqual(seams.commands("decomp tools deploy") + seams.commands("mv -T"), [])
-        self.assertEqual(set(seams.links.values()), {newer})
-        self.assertTrue(any("deferred" in line for line in lines))
-
-    def test_the_head_itself_is_deployed_without_a_promotion_line(self):
-        seams = Seams(head=SHA)
-        lines = deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
-        self.assertFalse(any("deferred" in line for line in lines))
-
-    def test_a_main_that_is_not_a_descendant_refuses_before_any_rig_command(self):
-        seams = Seams(gitea=False, head=NEWER)
-        with self.assertRaisesRegex(deploy_rig.Refused, "is not on gitea main"):
-            deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
-        self.assertEqual(seams.ssh_calls, [])
-
-    def test_a_head_that_github_main_lacks_refuses_and_names_the_head(self):
-        seams = Seams(github=False, head=NEWER)
-        with self.assertRaisesRegex(deploy_rig.Refused, f"{NEWER[:12]} is not on github main"):
-            deploy_rig.deploy(SHA, seams.ssh, seams.git, seams.lock)
-        self.assertEqual(seams.ssh_calls, [])
-
-
-class SuiteIsolationTests(unittest.TestCase):
-    """Two suite runs of the same SHA at once (the real SUITE script and runner) each import only their own checkout."""
-
-    def test_concurrent_runs_of_one_sha_use_their_own_checkout_log_and_slots(self):
-        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as tmp:
-            tmp = Path(tmp)
-            (tmp / "home/finish").mkdir(parents=True)
-            repo = tmp / "repo"
-            files = {
-                "src/abu_decomp/__init__.py": "",
-                "tests/test_ok.py": "def test_ok():\n    pass\n",
-                "pyproject.toml": "[tool.pytest.ini_options]\ntestpaths = ['tests']\n",
-            }
-            for name, body in files.items():
-                (repo / name).parent.mkdir(parents=True, exist_ok=True)
-                (repo / name).write_text(body)
-            git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
-            subprocess.run(["git", "-c", "init.templateDir=", "init", "-q", "-b", "main", str(repo)], check=True)
-            subprocess.run([*git, "add", "-A"], check=True)
-            subprocess.run([*git, "commit", "-q", "-m", "x"], check=True)
-            sha = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-            script = deploy_rig.SUITE.replace("__RUNNER__", deploy_rig.RUNNER)
-            procs = []
-            for n in (1, 2):
-                dest = tmp / f"dest{n}"
-                dest.mkdir()
-                procs.append(
-                    subprocess.Popen(
-                        ["bash", "-c", script, "suite", sha, str(repo), sys.executable, str(dest)],
-                        env={**os.environ, "HOME": str(tmp / "home"), "PYTHONUSERBASE": site.getuserbase()},
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                    )
-                )
-            facts = []
-            for proc in procs:
-                out = proc.communicate()[0]
-                self.assertEqual(proc.returncode, 0, out)
-                facts.append(deploy_rig.suite_facts(out))
-            for fact in facts:
-                self.assertTrue(PurePosixPath(fact["suite-import"]).is_relative_to(fact["suite-checkout"]), fact)
-            self.assertNotEqual(facts[0]["suite-checkout"], facts[1]["suite-checkout"])
-            self.assertNotEqual(facts[0]["suite-log"], facts[1]["suite-log"])
-            for fact in facts:
-                self.assertIn(fact["suite-checkout"], Path(fact["suite-log"]).read_text())
-
-    def test_the_suite_script_names_no_path_that_two_runs_of_one_sha_share(self):
-        self.assertIn('log=$(mktemp "$HOME/finish/deploy-suite-', deploy_rig.SUITE)
-        self.assertIn("ABU_SLOTS_DIR=$(mktemp -d", deploy_rig.SUITE)
-        self.assertIn("TMPDIR=$PWD/.tmp", deploy_rig.SUITE)
-        self.assertIn("PYTHONPATH=$PWD/src", deploy_rig.SUITE)
-
-    def test_the_readback_worktree_is_unique_per_run(self):
-        self.assertIn('wt=$(mktemp -d "$HOME/code/wt/DEPLOY-READBACK.XXXXXX")', deploy_rig.READBACK)
+    def test_a_live_link_that_does_not_resolve_to_the_build_exits_1(self):
+        other = self.root / "other"
+        other.mkdir()
+        done = self.readback(build=other)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("reads", done.stderr)
+        self.assertNotIn("readback-pin", done.stdout)
 
 
 if __name__ == "__main__":
