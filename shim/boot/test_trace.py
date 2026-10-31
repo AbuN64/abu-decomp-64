@@ -171,12 +171,17 @@ void *n64c_memory_ram(unsigned physical, unsigned bytes) {
 unsigned n64c_memory_physical(const void *p) { return (unsigned)(uintptr_t)p; }
 void n64c_fpu_thread_start(void) {}
 void n64c_vi_interrupt(void) {}
+/* n64c_sched.c is linked for the scheduler half of the entry charge, so its baton holder is charged: the charged
+ * table (n64c_charge.c) is not linked, and an empty one stands in. */
+static const void *const no_functions[1];
+const void *const *n64c_charged_fns = no_functions;
+unsigned n64c_charged_mask;
 extern int real_main(void);
 int main(void) { n64c_trace_init(); return real_main(); }
 """)
         objects = []
         for source, extra in [(self.path / "game.c", ["-finstrument-functions", "-fno-omit-frame-pointer"]),
-                              (self.path / "driver.c", []), (ROOT / "trace.c", []), (ROOT / "test_charge_stub.c", []),
+                              (self.path / "driver.c", []), (ROOT / "trace.c", []),
                               (ROOT.parent / "n64c_sched.c", []), (ROOT.parent / "os/os_posix_proc.c", []),
                               (self.path / "out/trace_table.c", [])]:
             obj = self.path / (source.stem + ".o")
