@@ -9,7 +9,15 @@ from types import SimpleNamespace
 
 from abu_decomp import DecompError, site_core, site_feedback
 
-ROW = {"id": "r1", "movie": "boot-idle", "status": "running", "poll": 90, "polls": 600, "started": 5.0, "input": "human"}
+ROW = {
+    "id": "r1",
+    "movie": "boot-idle",
+    "status": "running",
+    "poll": 90,
+    "polls": 600,
+    "started": 5.0,
+    "input": "human",
+}
 
 
 def raw(count: int) -> str:
@@ -83,7 +91,9 @@ class InputsAndFramesTest(Fixture):
     def test_newest_at_takes_the_highest_poll_not_after_the_flag(self):
         for poll in (0, 25, 50, 75):
             self.shot("port", poll)
-        self.assertEqual(site_feedback.newest_at(self.run / "shots" / "port", 60, ".ppm", "poll-").name, "poll-000050.ppm")
+        self.assertEqual(
+            site_feedback.newest_at(self.run / "shots" / "port", 60, ".ppm", "poll-").name, "poll-000050.ppm"
+        )
         self.assertIsNone(site_feedback.newest_at(self.run / "shots" / "none", 60, ".ppm", "poll-"))
 
     def test_frame_path_prefers_the_packed_stream_then_shots_then_the_live_view(self):
@@ -114,7 +124,15 @@ class FileTest(Fixture):
         self.assertEqual(json.loads((where / "feedback.json").read_text()), record)
         self.assertEqual(
             {k: record[k] for k in ("run", "poll", "category", "text", "at", "lane", "movie")},
-            {"run": "r1", "poll": 60, "category": "glitch", "text": "floor flickers", "at": 1000.5, "lane": "owner", "movie": "boot-idle"},
+            {
+                "run": "r1",
+                "poll": 60,
+                "category": "glitch",
+                "text": "floor flickers",
+                "at": 1000.5,
+                "lane": "owner",
+                "movie": "boot-idle",
+            },
         )
         self.assertEqual(record["frames"], {"port": "port.jpg", "original": "original.jpg"})
         self.assertEqual((where / "port.jpg").read_bytes(), b"JPEG:poll-000050.ppm")
@@ -130,7 +148,12 @@ class FileTest(Fixture):
     def test_the_id_is_stable_for_the_same_filing_and_differs_by_poll_and_time(self):
         self.assertEqual(self.file()["id"], self.file()["id"])
         self.assertNotEqual(self.file()["id"], self.file(poll=61)["id"])
-        self.assertNotEqual(self.file()["id"], site_feedback.file(self.server, {"run": "r1", "poll": 60, "category": "glitch", "text": "floor flickers"}, at=2.0)["id"])
+        self.assertNotEqual(
+            self.file()["id"],
+            site_feedback.file(
+                self.server, {"run": "r1", "poll": 60, "category": "glitch", "text": "floor flickers"}, at=2.0
+            )["id"],
+        )
 
     def test_an_unknown_run_is_refused_and_nothing_is_written(self):
         with self.assertRaisesRegex(ValueError, "^run: no run nope"):
@@ -154,9 +177,13 @@ class FileTest(Fixture):
 
 class AnswerTest(Fixture):
     def test_post_creates_get_lists_newest_first_and_get_one_returns_the_record(self):
-        first = site_feedback.answer(self.server, "POST", "", "", json.dumps({"run": "r1", "poll": 5, "category": "ui"}).encode())
+        first = site_feedback.answer(
+            self.server, "POST", "", "", json.dumps({"run": "r1", "poll": 5, "category": "ui"}).encode()
+        )
         self.assertEqual(first[0], HTTPStatus.CREATED)
-        later = site_feedback.file(self.server, {"run": "r1", "poll": 9, "category": "other", "text": "t"}, at=first[1]["at"] + 5)
+        later = site_feedback.file(
+            self.server, {"run": "r1", "poll": 9, "category": "other", "text": "t"}, at=first[1]["at"] + 5
+        )
         status, body = site_feedback.answer(self.server, "GET", "", "", b"")
         self.assertEqual((status, [r["id"] for r in body["feedback"]]), (HTTPStatus.OK, [later["id"], first[1]["id"]]))
         self.assertEqual(site_feedback.answer(self.server, "GET", first[1]["id"], "", b"")[1], first[1])
@@ -185,7 +212,18 @@ class CommandTest(Fixture):
         record = site_feedback.file(self.server, {"run": "r1", "poll": 3, "category": "crashed", "text": "x"}, at=7.0)
         listed = site_feedback.command(self.runs, "list", None)
         self.assertEqual(listed["total"], 1)
-        self.assertEqual(listed["feedback"][0], {"id": record["id"], "at": 7.0, "run": "r1", "poll": 3, "category": "crashed", "lane": "owner", "movie": "boot-idle"})
+        self.assertEqual(
+            listed["feedback"][0],
+            {
+                "id": record["id"],
+                "at": 7.0,
+                "run": "r1",
+                "poll": 3,
+                "category": "crashed",
+                "lane": "owner",
+                "movie": "boot-idle",
+            },
+        )
         shown = site_feedback.command(self.runs, "show", record["id"])
         self.assertEqual({k: v for k, v in shown.items() if k != "folder"}, record)
         self.assertEqual(shown["folder"], str(self.runs / "feedback" / record["id"]))
@@ -207,4 +245,6 @@ class RegionFilesTest(unittest.TestCase):
             self.assertNotIn(name, text.lower())
 
     def test_the_dialog_categories_are_the_contracts(self):
-        self.assertEqual(site_core.contract()["feedback_categories"], ["crashed", "ui", "glitch", "audio", "input", "other"])
+        self.assertEqual(
+            site_core.contract()["feedback_categories"], ["crashed", "ui", "glitch", "audio", "input", "other"]
+        )
