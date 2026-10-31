@@ -74,7 +74,7 @@ class InputsAndFramesTest(Fixture):
 
     def test_inputs_near_the_start_and_past_the_end_are_clipped(self):
         self.assertEqual([r["poll"] for r in site_feedback.inputs_at(self.run, 2)], [0, 1, 2])
-        self.assertEqual(site_feedback.inputs_at(self.run, 999)[-1]["poll"], 299)
+        self.assertEqual(site_feedback.inputs_at(self.run, 310)[-1]["poll"], 299)
 
     def test_a_run_without_recorded_inputs_has_none(self):
         (self.run / "polls.raw").unlink()
