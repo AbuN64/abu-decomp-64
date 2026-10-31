@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "f3d_window.h"
+#include "f3d_mesa_bundle.h"
 #include "n64c_input.h"
 #include <SDL3/SDL_opengl.h>
 #include <cstdio>
@@ -7,8 +8,37 @@
 #include <cstdlib>
 #include <utility>
 #include <vector>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace N64c {
+// An SDL GL call that returns false leaves only SDL's error string: name the call (the first few per run).
+static void gl_call_failed(const char* call)
+{
+    static int budget = 8;
+    if (budget > 0) {
+        budget--;
+        std::fprintf(stderr, "boot-gl: %s failed: %s\n", call, SDL_GetError());
+    }
+}
+#ifdef _WIN32
+static bool file_exists(const std::string &path) { return GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES; }
+
+// Mesa's D3D12 driver _exit()s at the first draw when its sibling DLLs are absent: refuse before that, naming the file.
+static void require_mesa_bundle()
+{
+    HMODULE gallium = GetModuleHandleA("libgallium_wgl.dll");
+    char path[MAX_PATH];
+    if (!gallium || !GetModuleFileNameA(gallium, path, sizeof path))
+        return;
+    if (const char *missing = f3d_mesa_missing_dll(path, file_exists)) {
+        std::fprintf(stderr, "boot-gl: %s is missing beside %s; Mesa's D3D12 driver cannot create pipeline states without it\n",
+                     missing, path);
+        std::exit(1);
+    }
+}
+#endif
 F3dWindow::~F3dWindow() { Destroy(); }
 
 void F3dWindow::Init(const char* gameName, const char*, bool startFullScreen, uint32_t width, uint32_t height,
@@ -37,11 +67,15 @@ void F3dWindow::Init(const char* gameName, const char*, bool startFullScreen, ui
         std::fprintf(stderr, "f3d window: %s\n", SDL_GetError());
         std::exit(1);
     }
+#ifdef _WIN32
+    require_mesa_bundle();
+#endif
     if (!n64c_input_start(mWindow)) {
         std::fprintf(stderr, "f3d input: %s\n", SDL_GetError());
         std::exit(1);
     }
-    SDL_GL_MakeCurrent(mWindow, mContext);
+    if (!SDL_GL_MakeCurrent(mWindow, mContext))
+        gl_call_failed("SDL_GL_MakeCurrent");
     // Which GPU or software rasterizer serves the picture is part of every run log (perf and bug reports need it).
     if (auto getString = reinterpret_cast<decltype(&glGetString)>(SDL_GL_GetProcAddress("glGetString"))) {
         const char *renderer = reinterpret_cast<const char *>(getString(0x1F01));
@@ -50,7 +84,8 @@ void F3dWindow::Init(const char* gameName, const char*, bool startFullScreen, ui
     }
     // The port's VI paces presentation; a vsync wait per flip would hold back the guest clock.
     mVsyncEnabled = false;
-    SDL_GL_SetSwapInterval(0);
+    if (!SDL_GL_SetSwapInterval(0))
+        gl_call_failed("SDL_GL_SetSwapInterval");
     mWidth = width;
     mHeight = height;
     mMode = startFullScreen ? 1 : 0;
@@ -240,8 +275,8 @@ bool F3dWindow::IsFrameReady() { return true; } // the port's VI paces frames
 void F3dWindow::SwapBuffersBegin()
 {
     DrawControlsOverlay(mWindow);
-    if (mWindow)
-        SDL_GL_SwapWindow(mWindow);
+    if (mWindow && !SDL_GL_SwapWindow(mWindow))
+        gl_call_failed("SDL_GL_SwapWindow");
 }
 void F3dWindow::SwapBuffersEnd() {}
 double F3dWindow::GetTime() { return (double)SDL_GetTicksNS() / 1e9; }

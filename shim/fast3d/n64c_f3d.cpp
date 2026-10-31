@@ -210,6 +210,18 @@ struct SubPlan {
     float alpha;
 };
 static MtxF lerp_matrix(const MtxF& a, const MtxF& b, float t);
+// A failed GL call leaves only its error flag: name the stage that raised it (the first few per run, never one per frame).
+static void gl_check(const char* stage)
+{
+    static int budget = 16;
+    GLenum error;
+    for (int drained = 0; drained < 8 && (error = glGetError()) != GL_NO_ERROR; drained++) {
+        if (budget > 0) {
+            budget--;
+            std::fprintf(stderr, "boot-gl: %s raised glGetError 0x%04x\n", stage, (unsigned)error);
+        }
+    }
+}
 static void check_textures(N64cF3d* f3d, const N64cGfxMem* mem, bool after);
 static int render(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N64cDlArena* arena, N64cDlStats* stats,
                   const SubPlan* plan)
@@ -236,10 +248,14 @@ static int render(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N64cDlArena*
     f3d->wrapper[4] = (uintptr_t)0xDF << 24; // G_ENDDL
     auto& gfx = *f3d->interpreter;
     gfx.StartFrame();
+    gl_check("interpreter StartFrame");
     gfx.Run((Gfx*)f3d->wrapper, replacements);
+    gl_check("interpreter Run");
     // No flip here: a task draws into the game's colour images; the window shows what the VI presents.
     f3d->renderer->EndFrame();
+    gl_check("renderer EndFrame");
     f3d->renderer->FinishRender();
+    gl_check("renderer FinishRender");
     return (int)stats->commands;
 }
 extern "C" int n64c_f3d_run(N64cF3d* f3d, const N64cGfxMem* mem, uint32_t dl, N64cDlStats* stats)
@@ -621,6 +637,7 @@ static void write_window_shot(const char* path, uint32_t w, uint32_t h)
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    gl_check("window shot glReadPixels");
     FILE* f = fopen(path, "wb");
     if (!f)
         return;
@@ -668,9 +685,11 @@ static int present(N64cF3d* f3d, const std::map<uint32_t, int>& surfaces, uint32
         status_text(ww, wh, f3d->overlay.c_str(), f3d->overlay_selected, f3d->overlay_scale, f3d->overlay_selected >= 0);
     }
     f3d->renderer->EndFrame();
+    gl_check("present EndFrame");
     if (!f3d->window_shot.empty())
         write_window_shot(f3d->window_shot.c_str(), ww, wh), f3d->window_shot.clear();
     f3d->window->SwapBuffersBegin();
+    gl_check("present SwapBuffers");
     return f3d->window->IsRunning() ? 1 : 0;
 }
 extern "C" int n64c_f3d_present(N64cF3d* f3d, uint32_t phys)
