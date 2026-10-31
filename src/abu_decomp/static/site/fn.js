@@ -66,7 +66,7 @@ export function groupRuns(runs, kinds) {
   return kinds.map(kind => ({ kind, runs: runs.filter(r => r.kind === kind) })).filter(g => g.runs.length);
 }
 
-// A run's link: its stream at its first poll of the function, else the stream's start.
+// A TAS run's link: its stream at its first poll of the function, else the stream's start.
 export function runHref(run) {
   const base = `#/stream/${encodeURIComponent(run.id)}`;
   return run.first === null || run.first === undefined ? base : `${base}?poll=${run.first}`;
@@ -101,7 +101,7 @@ function runCard(run) {
     h("b", { class: "mono" }, run.movie),
     h("div", { class: "meta" }, h("span", {}, `${text(run.poll)} / ${text(run.polls)}`), h("span", {}, text(run.outcome))),
   ];
-  if (run.kind === "tas" && run.stream) return h("a", { class: "run", href: runHref(run) }, ...previews(run), ...body);
+  if (run.kind === "tas") return h("a", { class: "run", href: runHref(run) }, ...(run.stream ? previews(run) : []), ...body);
   return h("div", { class: "run" }, ...body);
 }
 
