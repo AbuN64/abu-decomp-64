@@ -98,7 +98,7 @@ class StreamTests(unittest.TestCase):
         run.mkdir(parents=True)
         with self.assertRaises(DecompError) as refused:
             tas_stream.pack(run)
-        assert refused.value.key == "tas.stream"
+        assert refused.exception.key == "tas.stream"
 
 
     def test_pack_all_names_runs_or_takes_every_run_with_shots(self):
@@ -151,7 +151,7 @@ class StreamTests(unittest.TestCase):
 
 
     def test_a_run_id_cannot_leave_the_runs_folder(self):
-        server, tmp_path = self.server, self.tmp
+        server = self.server
         assert site_stream.frame(server, "../x/port/0.jpg")[2] == "application/json"
         assert site_stream.answer(server, "GET", "..", "", b"")[0] == HTTPStatus.NOT_FOUND
 
