@@ -44,7 +44,9 @@ backend, `os/os_win32.c` and `os/os_win32_proc.c` the Windows one (mingw-w64, i6
 call. Windows maps views at 64 KiB granularity, so a guest TLB page the host cannot alias (4 KiB, or not 64 KiB
 aligned) is kept coherent in software (see the head of `os/os_win32.c`); the Windows build also needs the process
 start (`n64c_host_process_start`) to claim the guest's virtual range `0x00400000..0x01000000` before the loader's
-stack and heap take it, and the game image at 0x10000000 (`--image-base`). The boot tools read the target's object
+stack and heap take it: the ranges the game uses are reserved as 64 KiB placeholders (`os/win_space.c`, tested against a
+model of the Win32 rules in `tests/test_win_space.c`), a TLB mapping replaces the placeholders it covers and an unmap
+restores them, and a mapping that fails prints what occupies the range. The game image at 0x10000000 (`--image-base`). The boot tools read the target's object
 conventions from `boot/hostabi.py` (the leading underscore of PE symbols, the target's nm and ar).
 
 Native address windows: `n64c_memory_open` supports Linux/i386 and Windows/i386 and refuses
