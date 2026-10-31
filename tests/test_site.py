@@ -157,7 +157,6 @@ class EndpointTest(unittest.TestCase):
 
     def test_unbuilt_regions_answer_501_with_their_card(self):
         for path, card in (
-            ("/api/map", "RUNNER-MAP"),
             ("/api/stream/r1", "RUNNER-STREAM"),
             ("/api/feedback", "RUNNER-PLAY"),
         ):
