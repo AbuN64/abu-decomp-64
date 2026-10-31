@@ -39,6 +39,7 @@ int main(void)
     osCreateThread(&worker_thread, 2, worker, 0, 0, 10);
     osStartThread(&worker_thread);
     n64c_run_idle();
+    fprintf(stderr, "charged %llu uncharged %llu rb %u ra %u two %llu\n", (unsigned long long)after_charged, (unsigned long long)after_uncharged, retraces_before, retraces_after, (unsigned long long)retrace_two_at);
     CHECK(after_charged == 4687);                    /* 100 entries of 1000 ns: 100000 ns of 46.875 Count ticks per us */
     CHECK(after_uncharged == after_charged);         /* a function outside the charged table costs nothing */
     CHECK(retraces_before == 1 && retraces_after == 2); /* 16666 entries into the second frame: not yet; the next: due */
