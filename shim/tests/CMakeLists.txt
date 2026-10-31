@@ -1,11 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Shim tests live beside the shim: N64 names are allowed here and nowhere else outside the shim and the port's boundary directory.
-foreach(t sched scsched interrupts si_timing clock gu pi_cont si_pfs cpak dl audio vi_dp rnc memory memory_win pi_relocate pi_resources pi_packed system fpu fpu_thread al albnk tas reach menu)
+# The stand-in for a project's generated charged table (charged.py): n64c_init refuses a link without one.
+add_library(n64c_test_charged OBJECT test_charged_table.c)
+foreach(t sched scsched interrupts si_timing clock charge gu pi_cont si_pfs cpak dl audio vi_dp rnc memory memory_win pi_relocate pi_resources pi_packed system fpu fpu_thread al albnk tas reach menu)
     add_executable(n64c_test_${t} test_${t}.c)
-    target_link_libraries(n64c_test_${t} PRIVATE n64compat)
+    target_link_libraries(n64c_test_${t} PRIVATE n64compat $<TARGET_OBJECTS:n64c_test_charged>)
     target_compile_options(n64c_test_${t} PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)
     add_test(NAME n64c_${t} COMMAND n64c_test_${t})
 endforeach()
+add_executable(n64c_test_charge_refuse test_charge_refuse.c)
+target_link_libraries(n64c_test_charge_refuse PRIVATE n64compat)
+target_compile_options(n64c_test_charge_refuse PRIVATE -Wall -Wextra -Werror)
+add_test(NAME n64c_charge_refuse COMMAND n64c_test_charge_refuse)
 if(N64C_M32)
     add_executable(n64c_test_guest_imports test_guest_imports.c)
     target_link_libraries(n64c_test_guest_imports PRIVATE n64compat)

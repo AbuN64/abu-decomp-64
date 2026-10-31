@@ -9,9 +9,7 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import policy  # noqa: E402
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir  # noqa: E402
+from charged import native_functions, symbol_table  # noqa: E402
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 MAX_NAMES = 4
@@ -38,13 +36,7 @@ def generate(trace, manifest, source, output):
     # CMake passes the effective manifest that produced bindings.ld. Re-running
     # SDK policy here can replace an explicit native adapter with a different API.
     project = json.loads(manifest.read_text())
-    by_address, functions = {}, {}
-    for line in (source / "versions" / project["version"] / "symbol_addrs.txt").read_text().splitlines():
-        match = re.match(r"\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)\s*;(.*)", line)
-        if match:
-            by_address.setdefault(int(match[2], 16), []).append(match[1])
-            if "type:func" in match[3]:
-                functions[match[1]] = int(match[2], 16)
+    _, by_address = symbol_table(source, project["version"])
     native_names = native_functions()
     native_bindings = {symbol: target for symbol, target in project["bindings"].items()
                        if target in native_names}
@@ -75,28 +67,10 @@ def generate(trace, manifest, source, output):
     if not native:
         lines.append("    {0, 0},")
     lines += ["};", f"const unsigned n64c_shim_count = {len(native)};", ""]
-    # Guest work (RUNTIME.md "Virtual guest time"): one tick per entry of an original function the port compiles, so
-    # never of the SDK range (policy) or of a function the port runs natively (bound, or defined by the shim under its
-    # original name); both sides charge this same set (the oracle's cpu.native_code fact lists the same vrams).
-    native_addresses = {functions[name] for name in bound | (native_names & set(functions)) if name in functions}
-    charged = sorted(name for name, address in functions.items()
-                     if not policy.SDK_LO <= address < policy.SDK_HI and address not in native_addresses)
-    if not all(IDENT.fullmatch(name) for name in charged):
-        raise ValueError("unusable function name in symbol_addrs.txt")
-    lines.append("const char *const n64c_trace_charged[] = {")
-    lines += [f'    "{name}",' for name in charged] or ["    0,"]
-    lines += ["};", f"const unsigned n64c_trace_charged_count = {len(charged)};", ""]
     output.mkdir(parents=True, exist_ok=True)
     temporary = output / "trace_table.c.tmp"
     temporary.write_text("\n".join(lines))
     temporary.replace(output / "trace_table.c")
-
-
-def native_functions():
-    """Definitions at the native adapter boundary, excluding original game aliases."""
-    here = pathlib.Path(__file__).resolve().parent
-    files = sorted(here.parent.glob("n64c_*.[ch]")) + [portdir.fact("sched_glue.c")]
-    return {name for path in files for name in policy.functions(path.read_text())}
 
 
 if __name__ == "__main__":

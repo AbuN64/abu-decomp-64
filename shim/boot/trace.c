@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include "trace.h"
 #include "reach.h"
+#include "../n64c_charge.h"
 #include <elf.h>
 #include <link.h>
 #include <fcntl.h>
@@ -561,7 +562,6 @@ typedef struct {
     Slot *census;       /* the census entry of this function, NULL when it has none */
     unsigned row;       /* reach row + 1, 0 for none */
     unsigned shim_left; /* shim binds of this function not yet announced; 0 skips the shim probe */
-    int charged;        /* an original function whose entry charges guest work (n64c_trace_charged) */
 } HookSlot;
 static HookSlot *hooks;
 static unsigned hook_mask;
@@ -731,36 +731,13 @@ NOINST static HookSlot *hook_slot(void *fn)
 /* False when the table cannot be allocated: the trace then stays unarmed. */
 NOINST static int hooks_build(void)
 {
-    unsigned count = n64c_shim_count + n64c_trace_count + n64c_trace_charged_count + (row_slots ? row_mask + 1 : 0);
-    unsigned size = 1024, names = 1024;
+    unsigned count = n64c_shim_count + n64c_trace_count + (row_slots ? row_mask + 1 : 0);
+    unsigned size = 1024;
     while (size < count * 2)
         size <<= 1;
-    while (names < n64c_trace_charged_count * 2)
-        names <<= 1;
-    unsigned *charged = calloc(names, sizeof *charged); /* name hash table: charged index + 1 */
-    if (!charged || !(hooks = calloc(size, sizeof *hooks))) {
-        free(charged);
+    if (!(hooks = calloc(size, sizeof *hooks)))
         return 0;
-    }
     hook_mask = size - 1;
-    /* The charged functions by name, in one pass over the image's symbol table. */
-    for (unsigned i = 0; i < n64c_trace_charged_count; i++) {
-        unsigned s = row_hash(n64c_trace_charged[i]) & (names - 1);
-        while (charged[s])
-            s = (s + 1) & (names - 1);
-        charged[s] = i + 1;
-    }
-    for (unsigned i = 0; i < sym_count; i++) {
-        if (ELF32_ST_TYPE(syms[i].st_info) != STT_FUNC || !syms[i].st_value)
-            continue;
-        const char *name = strings + syms[i].st_name;
-        unsigned s = row_hash(name) & (names - 1);
-        while (charged[s] && strcmp(n64c_trace_charged[charged[s] - 1], name))
-            s = (s + 1) & (names - 1);
-        if (charged[s])
-            hook_slot((void *)(uintptr_t)syms[i].st_value)->charged = 1;
-    }
-    free(charged);
     for (unsigned s = 0; s <= shim_mask; s++)
         if (shim_slots[s].index)
             hook_slot(shim_slots[s].fn)->shim_left++;
@@ -891,12 +868,9 @@ NOINST RAWSTACK static void push_frame(void *fn, void *call_site, const unsigned
     mine->depth++;
     last_stack = mine;
 }
-/* The work measure both sides charge guest time by (RUNTIME.md "Virtual guest time"): one tick per entry of an original
- * function the port compiles, never of the shim's own instrumented code (n64c_sched.c; a build without the scheduler
- * links none and charges nothing). */
-void n64c_clock_work(void) __attribute__((weak));
 NOINST RAWSTACK static void trace_enter(void *fn, void *call_site, const unsigned long *regs)
 {
+    n64c_charge_entry(fn); /* the guest work measure, traced or not (n64c_charge.h) */
     if (!__atomic_load_n(&armed, __ATOMIC_ACQUIRE))
         return;
     HookSlot *h = &hooks[slot_of(fn) & hook_mask];
@@ -904,8 +878,6 @@ NOINST RAWSTACK static void trace_enter(void *fn, void *call_site, const unsigne
         h = &hooks[(unsigned)(h + 1 - hooks) & hook_mask];
     if (!h->fn)
         h = NULL; /* none of the three tables knows this function */
-    if (h && h->charged && n64c_clock_work)
-        n64c_clock_work();
     if (h && h->shim_left) {
         for (unsigned s = slot_of(fn) & shim_mask; shim_slots[s].index; s = (s + 1) & shim_mask) {
             if (shim_slots[s].fn != fn || __atomic_load_n(&shim_slots[s].entered, __ATOMIC_RELAXED))

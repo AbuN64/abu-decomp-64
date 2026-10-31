@@ -10,6 +10,7 @@
 #include "os/n64c_host.h"
 #include "n64c_hook.h"
 #include "n64c_si.h"
+#include "n64c_charge.h"
 #include <pthread.h>
 #include <errno.h>
 #include <setjmp.h>
@@ -28,6 +29,7 @@ typedef struct HostThread {
     int faulted;                /* stopped by a CPU fault until osStartThread resumes it */
     int idle;                   /* the running thread set its own priority to 0: parked off the run queue */
     int slot;                   /* index in all_threads and of its fixed stack */
+    char *mark;                 /* this thread's n64c_tls_mark: how the entry hook knows it holds the baton */
     struct HostThread *runnext; /* run queue link */
 } HostThread;
 
@@ -83,7 +85,18 @@ static unsigned long dev_seq;
  * which osGetFpcCsr reports as a fault. */
 #define WORK_FRAC N64C_WORK_FRAC
 static unsigned long long work_fx, work_carry;
+/* Charged entries are counted, not clocked one by one: the entry hook (n64c_charge.h) decrements n64c_work_budget, the
+ * number of entries that cannot yet reach the next event (a device, a timer, Compare). Every read of the clock first
+ * folds the entries spent so far into it (work_sync); the entry that reaches the next event calls n64c_work_due,
+ * which fires what is due on that thread, as a charge per entry would. Any change that can move the next event
+ * nearer, or the clock past entries not yet folded in, ends in work_arm. */
+enum { WORK_IDLE = 1 << 30 };      /* no event in reach (or no work scale): the budget never runs out */
+int n64c_work_budget = WORK_IDLE;
+char *volatile n64c_runner;        /* the baton holder's n64c_tls_mark: only its entries are charged */
+_Thread_local char n64c_tls_mark;
+static int work_base = WORK_IDLE;  /* the budget when the clock last folded the spent entries in */
 static _Thread_local int in_clock; /* this thread is inside n64c_clock_advance_to: no nested charge */
+static void work_sync(void), work_arm(void);
 /* A guest thread that keeps reading the clock without giving up the CPU is waiting on it (a delay or a fault
  * handler's watchdog loop). On the console Count runs on regardless; here it moves only when the host advances
  * it, and the spinning thread keeps the host from running by holding the baton, so the loop would never end.
@@ -139,9 +152,11 @@ static void dispatch(void)
         runq = n->runnext;
         n->os->state = OS_STATE_RUNNING;
         baton = n;
+        n64c_runner = n->mark;
         pthread_cond_signal(&n->cv);
     } else {
         baton = NULL;
+        n64c_runner = NULL;
         pthread_cond_signal(&host_cv);
     }
 }
@@ -166,7 +181,9 @@ static void *thread_main(void *p)
     if (setjmp(h->exit))
         return NULL;
     pthread_mutex_lock(&big);
+    h->mark = &n64c_tls_mark;
     wait_baton(h);
+    if (baton == h) n64c_runner = h->mark; /* the baton came before the mark did */
     pthread_mutex_unlock(&big);
     n64c_fpu_thread_start();
     h->entry(h->arg);
@@ -304,6 +321,7 @@ static void deliver_pending(void)
         pending_events &= ~(1u << event);
         OSMesgQueue *mq = events[event].mq;
         OSMesg msg = events[event].msg;
+        work_sync();
         OSTime now = clock_now;
         pthread_mutex_unlock(&big);
         if (event == OS_EVENT_VI) n64c_vi_interrupt();
@@ -516,6 +534,7 @@ void osYieldThread(void)
 void osSetTimer(OSTimer *t, OSTime countdown, OSTime interval, OSMesgQueue *mq, OSMesg msg)
 {
     pthread_mutex_lock(&big);
+    work_sync();
     t->interval = interval;
     t->value = clock_now + countdown;
     t->mq = mq;
@@ -547,11 +566,92 @@ static void clock_jump(OSTime t)
         clock_sub = 0;
     }
 }
+/* The clock after n more charged entries, in integers (no FPU flags): the new time and sub-tick, work_carry advanced. */
+static OSTime work_span(long long n, unsigned *sub)
+{
+    work_carry += (unsigned long long)n * work_fx;
+    unsigned long long whole = work_carry >> WORK_FRAC;
+    work_carry &= (1ull << WORK_FRAC) - 1;
+    unsigned long long units = clock_sub + whole * 3;
+    *sub = (unsigned)(units & 63);
+    return clock_now + (OSTime)(units >> 6);
+}
+/* Fold the entries spent since the last fold into the clock. No event is due in that span (the budget said so). */
+static void work_sync(void)
+{
+    int cur = __atomic_load_n(&n64c_work_budget, __ATOMIC_RELAXED);
+    long long used = (long long)work_base - cur;
+    work_base = cur;
+    if (used > 0 && work_fx) {
+        unsigned sub;
+        clock_now = work_span(used, &sub);
+        clock_sub = sub;
+    }
+}
+/* Entries until the clock reaches the nearest event: the n-th is the first whose cumulative work makes it so. */
+static int work_horizon(void)
+{
+    if (!work_fx) return WORK_IDLE;
+    int found = 0;
+    OSTime next = 0;
+    for (int i = 0; i < DEV_SLOTS; i++)
+        if (devs[i].armed && (!found || devs[i].at < next)) { next = devs[i].at; found = 1; }
+    if (timers && (!found || timers->value < next)) { next = timers->value; found = 1; }
+    if (compare_armed && (!found || compare_deadline < next)) { next = compare_deadline; found = 1; }
+    if (!found) return WORK_IDLE;
+    if (next <= clock_now) return 1;
+    OSTime ticks = next - clock_now;
+    if (ticks > 1u << 24) ticks = 1u << 24; /* a nearer horizon than the event's own: only an earlier look */
+    unsigned long long units = (unsigned long long)ticks * 64 - clock_sub; /* work units (3 per ns) to reach it */
+    unsigned long long need = ((units + 2) / 3) << WORK_FRAC;
+    unsigned long long n = (need - work_carry + work_fx - 1) / work_fx;
+    return n < 1 ? 1 : n >= WORK_IDLE ? WORK_IDLE : (int)n;
+}
+/* Fold in, then set the budget for the events as they now stand. Lock held. Entries counted while it runs are kept. */
+static void work_arm(void)
+{
+    int cur = __atomic_exchange_n(&n64c_work_budget, WORK_IDLE, __ATOMIC_RELAXED);
+    long long used = (long long)work_base - cur;
+    if (used > 0 && work_fx) {
+        unsigned sub;
+        clock_now = work_span(used, &sub);
+        clock_sub = sub;
+    }
+    int n = work_horizon();
+    __atomic_fetch_add(&n64c_work_budget, n - WORK_IDLE, __ATOMIC_RELAXED);
+    work_base = n;
+}
+/* The charged entry that reached the next event: the time the entries used runs the clock. Devices that fall due in
+ * that span fire in time order on this thread (a message to a higher-priority thread moves the baton there). */
+void n64c_work_due(void)
+{
+    HostThread *h = self();
+    pthread_mutex_lock(&big);
+    if (!h || in_clock || baton != h) {
+        work_arm();
+        pthread_mutex_unlock(&big);
+        return;
+    }
+    int cur = __atomic_load_n(&n64c_work_budget, __ATOMIC_RELAXED);
+    long long used = (long long)work_base - cur;
+    work_base = cur;
+    unsigned sub;
+    OSTime t = work_span(used > 0 ? used : 0, &sub);
+    pthread_mutex_unlock(&big);
+    in_clock = 1;
+    n64c_clock_advance_to(t);
+    in_clock = 0;
+    pthread_mutex_lock(&big);
+    if (clock_now == t) clock_sub = sub;
+    work_arm();
+    pthread_mutex_unlock(&big);
+}
 static OSTime clock_read(void)
 {
     HostThread *h = self();
     if (h) {
         pthread_mutex_lock(&big);
+        work_sync();
         int spinning = baton == h && ++clock_polls > SPIN_POLLS;
         OSTime t = clock_now + SPIN_TICKS;
         pthread_mutex_unlock(&big);
@@ -559,30 +659,41 @@ static OSTime clock_read(void)
             n64c_clock_advance_to(t);
     }
     pthread_mutex_lock(&big);
+    work_sync();
     OSTime now = clock_now;
     pthread_mutex_unlock(&big);
     return now;
 }
 OSTime osGetTime(void) { return clock_read(); }
 u32 osGetCount(void) { return (u32)clock_read(); }
-OSTime n64c_clock_now(void) { return clock_now; }
+OSTime n64c_clock_now(void)
+{
+    pthread_mutex_lock(&big);
+    work_sync();
+    OSTime now = clock_now;
+    pthread_mutex_unlock(&big);
+    return now;
+}
 /* R4000 User's Manual, Compare register(11): Count equality raises IP7;
  * writing Compare clears that interrupt. Use the existing virtual Count and
  * interrupt delivery; no wall clock or original timer-manager code. */
 void __osSetCompare(u32 value)
 {
     pthread_mutex_lock(&big);
+    work_sync();
     compare_deadline = clock_now + (u32)(value - (u32)clock_now);
     compare_armed = 1;
     pending_events &= ~(1u << OS_EVENT_COUNTER);
     /* Native software timers are independent of the guest Compare register. */
     if (timers && timers->value <= clock_now) pending_events |= 1u << OS_EVENT_COUNTER;
+    work_arm();
     pthread_mutex_unlock(&big);
 }
 static void dev_arm(int slot, OSTime t, void (*due)(void), void (*due_arg)(void *), void *arg)
 {
     pthread_mutex_lock(&big);
     devs[slot] = (DevEvent){1, t, dev_seq++, due, due_arg, arg};
+    work_arm();
     pthread_mutex_unlock(&big);
 }
 void n64c_clock_arm_ai(OSTime t, void (*due)(void)) { dev_arm(DEV_AI, t, due, NULL, NULL); }
@@ -594,6 +705,7 @@ void n64c_clock_schedule(OSTime t, void (*due)(void *), void *arg)
     for (int i = DEV_FIXED; i < DEV_SLOTS; i++)
         if (!devs[i].armed) {
             devs[i] = (DevEvent){1, t, dev_seq++, NULL, due, arg};
+            work_arm();
             pthread_mutex_unlock(&big);
             return;
         }
@@ -611,8 +723,10 @@ int n64c_clock_si_armed(void)
 void n64c_clock_set_work(unsigned long long fx)
 {
     pthread_mutex_lock(&big);
+    work_sync();
     work_fx = fx;
     work_carry = 0;
+    work_arm();
     pthread_mutex_unlock(&big);
 }
 /* "4702.010109321735" -> round(ns * 2^WORK_FRAC), in integers. Decimals past the twelfth are below the unit. */
@@ -637,39 +751,22 @@ unsigned long long n64c_clock_parse_work(const char *ns)
 OSTime n64c_clock_now_ns(void)
 {
     pthread_mutex_lock(&big);
+    work_sync();
     OSTime ns = (clock_now * 64 + clock_sub) / 3;
     pthread_mutex_unlock(&big);
     return ns;
 }
-/* A guest thread entered a function of the original game: the time it used runs the clock. Devices that fall due
- * in that span fire in time order on this thread (a message to a higher-priority thread moves the baton there). */
+/* A scheduler stand-in charges one entry as the original function it replaces would: the same counter the entry hook uses. */
 __attribute__((no_instrument_function)) void n64c_clock_work(void)
 {
-    HostThread *h = self();
-    if (!h || in_clock) return;
-    pthread_mutex_lock(&big);
-    if (!work_fx || baton != h) {
-        pthread_mutex_unlock(&big);
-        return;
-    }
-    work_carry += work_fx;
-    unsigned long long whole = work_carry >> WORK_FRAC;
-    work_carry &= (1ull << WORK_FRAC) - 1;
-    unsigned long long units = clock_sub + whole * 3;
-    OSTime t = clock_now + (units >> 6);
-    unsigned sub = (unsigned)(units & 63);
-    pthread_mutex_unlock(&big);
-    in_clock = 1;
-    n64c_clock_advance_to(t);
-    in_clock = 0;
-    pthread_mutex_lock(&big);
-    if (clock_now == t) clock_sub = sub;
-    pthread_mutex_unlock(&big);
+    if (&n64c_tls_mark == n64c_runner && __atomic_sub_fetch(&n64c_work_budget, 1, __ATOMIC_RELAXED) <= 0)
+        n64c_work_due();
 }
 void n64c_clock_advance_to(OSTime t)
 {
     for (;;) {
         pthread_mutex_lock(&big);
+        work_sync();
         OSTimer *due = timers && timers->value <= t ? timers : NULL;
         /* A device event is due, earliest first. It runs before any timer or Compare that falls due at the same time
          * or later, so a completion reaches the game's queue ahead of the retrace it precedes. */
@@ -699,6 +796,7 @@ void n64c_clock_advance_to(OSTime t)
         if (due && !interrupt_enabled(OS_EVENT_COUNTER)) {
             pending_events |= 1u << OS_EVENT_COUNTER;
             clock_jump(t);
+            work_arm();
             pthread_mutex_unlock(&big);
             return;
         }
@@ -721,6 +819,7 @@ void n64c_clock_advance_to(OSTime t)
             continue;
         }
         clock_jump(t);
+        work_arm();
         pthread_mutex_unlock(&big);
         return;
     }
@@ -749,6 +848,7 @@ void n64c_sched_halt(void)
     h->os->state = OS_STATE_STOPPED;
     trace("halt", h->os);
     baton = NULL;
+    n64c_runner = NULL;
     pthread_cond_signal(&host_cv);
     wait_baton(h); /* quitting returns through the host entry boundary */
     abort();
@@ -803,6 +903,7 @@ void n64c_sched_reset(void)
     halted = 0;
     runq = NULL;
     baton = NULL;
+    n64c_runner = NULL;
     timers = NULL;
     clock_now = 0;
     clock_sub = 0;
@@ -810,6 +911,7 @@ void n64c_sched_reset(void)
     compare_armed = 0;
     memset(devs, 0, sizeof devs);
     work_fx = work_carry = 0;
+    n64c_work_budget = work_base = WORK_IDLE;
     interrupt_mask = OS_IM_ALL;
     pending_events = 0;
     memset(events, 0, sizeof events);

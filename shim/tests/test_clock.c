@@ -134,6 +134,7 @@ int main(void)
     n64c_shutdown();
     N64cConfig cfg = {0};
     n64c_init(&cfg);
+    n64c_clock_set_work(0);
     osCreateThread(&worker_thread, 2, worker, 0, 0, 10);
     osStartThread(&worker_thread);
     n64c_run_idle();

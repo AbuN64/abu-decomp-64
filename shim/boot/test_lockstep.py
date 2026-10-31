@@ -437,8 +437,6 @@ const unsigned n64c_trace_count = 9;
 /* This fixture executes original bodies only; no native bindings. */
 const N64cShimEntry n64c_shim_entries[] = {{0, 0}};
 const unsigned n64c_shim_count = 0;
-const char *const n64c_trace_charged[] = {0};
-const unsigned n64c_trace_charged_count = 0;
 """
 FIXTURE_DRIVER = r"""#include <stdio.h>
 #include <string.h>
@@ -464,7 +462,7 @@ class PortRecorderTests(unittest.TestCase):
             objects = []
             game = ["-O2", "-finstrument-functions", "-fno-omit-frame-pointer", "-fno-optimize-sibling-calls",
                     "-msse2", "-mfpmath=sse"]
-            for source, extra in [(path / "game.c", game), (ROOT / "trace.c", ["-O2"]), (path / "table.c", []),
+            for source, extra in [(path / "game.c", game), (ROOT / "trace.c", ["-O2"]), (ROOT / "test_charge_stub.c", ["-O2"]), (path / "table.c", []),
                                   (path / "driver.c", [])]:
                 obj = path / (source.stem + ".o")
                 subprocess.run([args.compiler, "-m32", "-Wall", "-Werror", *extra, "-I" + str(ROOT), "-c",

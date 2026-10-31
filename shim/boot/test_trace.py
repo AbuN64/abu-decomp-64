@@ -78,15 +78,6 @@ class TraceTests(unittest.TestCase):
         self.assertIn("n64c_shim_count = 3;", table)
         self.assertIn('{8, 0x80000080u, 1, {"native_api"}}', table)
         self.assertNotIn('"game_alias"', table)
-    def test_charged_set_is_original_code_the_port_compiles(self):
-        # One tick per entry of an original function, never of the SDK range (osLib), of a bound function (shimmed)
-        # or of one the shim defines under its original name (native_api); data symbols are not functions.
-        table = self.generate()
-        charged = table[table.index("n64c_trace_charged[]"):]
-        self.assertIn('    "alpha",\n    "beta",\n};', charged)
-        self.assertIn("n64c_trace_charged_count = 2;", charged)
-        for name in ("shimmed", "native_api", "osLib", "D_data"):
-            self.assertNotIn(f'"{name}"', charged)
     def test_bad_trace_is_refused(self):
         for text in ["order\taddress\tsymbol\n2\t0x80000010\talpha\n", "order\taddress\tsymbol\n1\t0x80000010\n",
                      "order\taddress\tsymbol\n1\t0x80000010\tbad name\n", "order\taddress\tsymbol\n"]:
@@ -99,7 +90,8 @@ class TraceTests(unittest.TestCase):
         flags = ["-m32"] if args.m32 else []
         objects = []
         for source, extra in [(self.path / "game.c", ["-finstrument-functions"]),
-                              (ROOT / "trace.c", []), (self.path / "out/trace_table.c", [])]:
+                              (ROOT / "trace.c", []), (self.path / "out/trace_table.c", []),
+                              (ROOT / "test_charge_stub.c", [])]:
             obj = self.path / (source.stem + ".o")
             subprocess.run([args.compiler, *flags, *extra, "-I" + str(ROOT), "-c", str(source), "-o", str(obj)],
                            check=True, capture_output=True, text=True)
@@ -184,7 +176,7 @@ int main(void) { n64c_trace_init(); return real_main(); }
 """)
         objects = []
         for source, extra in [(self.path / "game.c", ["-finstrument-functions", "-fno-omit-frame-pointer"]),
-                              (self.path / "driver.c", []), (ROOT / "trace.c", []),
+                              (self.path / "driver.c", []), (ROOT / "trace.c", []), (ROOT / "test_charge_stub.c", []),
                               (ROOT.parent / "n64c_sched.c", []), (ROOT.parent / "os/os_posix_proc.c", []),
                               (self.path / "out/trace_table.c", [])]:
             obj = self.path / (source.stem + ".o")
@@ -212,13 +204,12 @@ int main(void) { n64c_trace_init(); return real_main(); }
             '#include "trace.h"\nconst N64cTraceEntry n64c_trace_entries[] = {\n'
             '    {1, 0x80000010u, 0, {"keep"}}, {2, 0x80000020u, 0, {"crash"}}, {3, 0x80000030u, 0, {"spin"}},\n'
             '    {4, 0x80000040u, 0, {"never"}}};\nconst unsigned n64c_trace_count = 4;\n'
-            'const N64cShimEntry n64c_shim_entries[] = {{0, 0}};\nconst unsigned n64c_shim_count = 0;\n'
-            'const char *const n64c_trace_charged[] = {0};\nconst unsigned n64c_trace_charged_count = 0;\n')
+            'const N64cShimEntry n64c_shim_entries[] = {{0, 0}};\nconst unsigned n64c_shim_count = 0;\n')
         (self.path / "shim.c").write_text(RUN_ON_SHIM)
         shim = ROOT.parent
         objects = []
         game = ["-O2", "-finstrument-functions", "-fno-omit-frame-pointer"]
-        for source, extra in [(self.path / "game.c", game), (self.path / "stub.c", game), (ROOT / "trace.c", ["-O2"]),
+        for source, extra in [(self.path / "game.c", game), (self.path / "stub.c", game), (ROOT / "trace.c", ["-O2"]), (ROOT / "test_charge_stub.c", ["-O2"]),
                               (ROOT / "runon.c", ["-O2"]), (ROOT / "missing.c", ["-O2"]),
                               (self.path / "table.c", []), (self.path / "shim.c", [])]:
             obj = self.path / (source.stem + ".o")

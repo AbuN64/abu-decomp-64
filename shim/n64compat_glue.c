@@ -3,6 +3,7 @@
  * adapters together (sched, vi, pi, cont, gfx); every function is a ledger-tracked adapter, no framework. */
 #include "n64c_prof.h"
 #include "n64c_internal.h"
+#include "n64c_charge.h"
 #include "n64c_diag.h"
 #include "n64c_audio.h"
 #include "n64c_memory.h"
@@ -80,19 +81,6 @@ s32 osDpSetNextBuffer(void *buffer, u64 size)
     fflush(stderr);
     _Exit(78);
 }
-/* N64C_GUEST_NS_PER_ENTRY: guest nanoseconds one function entry of the original game costs, the oracle's
- * HOST_GUEST_NS_PER_ENTRY (cpu.calibration of the project profile). Unset: no work is charged. */
-static unsigned long long guest_work_per_entry(void)
-{
-    const char *text = getenv("N64C_GUEST_NS_PER_ENTRY");
-    if (!text || !*text) return 0;
-    unsigned long long fx = n64c_clock_parse_work(text);
-    if (!fx) {
-        fprintf(stderr, "boot-missing: N64C_GUEST_NS_PER_ENTRY must be a positive decimal number, got %s\n", text);
-        _Exit(78);
-    }
-    return fx;
-}
 void n64c_init(const N64cConfig *cfg)
 {
     n64c_sched_reset();
@@ -102,7 +90,7 @@ void n64c_init(const N64cConfig *cfg)
     n64c_vi_reset();
     n64c_pi_close();
     n64c_cont_reset(cfg);
-    n64c_clock_set_work(guest_work_per_entry());
+    n64c_clock_set_work(n64c_charge_init()); /* the project's declared work scale; a build without one refuses */
     memset(handlers, 0, sizeof handlers);
     present_fn = NULL;
     rendered_output = NULL;
