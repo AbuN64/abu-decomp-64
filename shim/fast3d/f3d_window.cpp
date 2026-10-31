@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "f3d_window.h"
 #include "f3d_mesa_bundle.h"
+#include "f3d_teardown.h"
 #include "n64c_input.h"
 #include <SDL3/SDL_opengl.h>
 #include <cstdio>
@@ -48,6 +49,7 @@ void F3dWindow::Init(const char* gameName, const char*, bool startFullScreen, ui
         std::fprintf(stderr, "f3d window: SDL_Init: %s\n", SDL_GetError());
         std::exit(1);
     }
+    mVideo = true;
     // Default (compatibility) context: the OpenGL backend draws without a vertex array object
     // outside Apple/GLES builds, which a core profile rejects. Depth for the game's z-buffer.
 #ifdef __ANDROID__
@@ -289,12 +291,15 @@ bool F3dWindow::IsRunning() { return mIsRunning; }
 void F3dWindow::Destroy()
 {
     n64c_input_stop();
-    if (mContext)
-        SDL_GL_DestroyContext(mContext);
-    if (mWindow)
-        SDL_DestroyWindow(mWindow);
+#ifdef _WIN32
+    const bool unloadDriver = mVideo; // Mesa's D3D12 driver must release its device before the process ends
+#else
+    const bool unloadDriver = false;
+#endif
+    F3dReleaseDisplay(mWindow, mContext, unloadDriver);
     mContext = nullptr;
     mWindow = nullptr;
+    mVideo = false;
 }
 bool F3dWindow::IsFullscreen() { return mFullScreen; }
 } // namespace N64c

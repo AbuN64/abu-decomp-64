@@ -66,6 +66,7 @@ class F3dWindow final : public Fast::GfxWindowBackend {
     uint32_t mModeWidth = 0, mModeHeight = 0;     // the size chosen for windowed / fullscreen mode
     SDL_Window* mWindow = nullptr;
     SDL_GLContext mContext = nullptr;
+    bool mVideo = false;                          // Init started SDL's video subsystem
     uint32_t mWidth = 0, mHeight = 0;
 };
 } // namespace N64c

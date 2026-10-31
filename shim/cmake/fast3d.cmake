@@ -277,6 +277,14 @@ target_link_libraries(n64c_test_f3d_context PRIVATE SDL3::SDL3-static)
 target_compile_options(n64c_test_f3d_context PRIVATE -Wall -Wextra -Werror)
 add_test(NAME n64c_f3d_context COMMAND n64c_test_f3d_context)
 
+# Window teardown order is tested with SDL calls mocked (host-only: it forks).
+if(NOT WIN32)
+    add_executable(n64c_test_f3d_teardown "${fast3d_dir}/../tests/test_f3d_teardown.cpp")
+    target_link_libraries(n64c_test_f3d_teardown PRIVATE SDL3::SDL3-static)
+    target_compile_options(n64c_test_f3d_teardown PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME n64c_f3d_teardown COMMAND n64c_test_f3d_teardown)
+endif()
+
 # The display apply on a real window and render target (SDL's offscreen video driver, software GL): a change resizes both,
 # a refused one rolls both back with its reason, and the options screen shows that reason. Fast3D's shader archive sits
 # beside the executable as for the replay tool.
