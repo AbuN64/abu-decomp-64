@@ -1,0 +1,51 @@
+#!/bin/sh
+# One owner per cache, slot, pool, executor and timing path: AbuCache64 (abucache.compile, store, slots, pool, stages).
+# A file outside OWNED that starts one is refused. OWNED is the CACHE-CONSOLIDATE census: each file moves to its
+# abucache owner and leaves the list; nothing joins it.
+set -eu
+cd "$(dirname "$0")/.."
+OWNED='ci/deploy_rig.py
+shim/boot/gates.py
+shim/boot/lockstep.py
+shim/boot/sweep.py
+src/abu_decomp/behave/hits.py
+src/abu_decomp/behave/precapture.py
+src/abu_decomp/behave/rekey.py
+src/abu_decomp/behave/replay.py
+src/abu_decomp/behave/run.py
+src/abu_decomp/cli.py
+src/abu_decomp/cycle.py
+src/abu_decomp/data/check.py
+src/abu_decomp/data/stampbuild.py
+src/abu_decomp/data/trial.py
+src/abu_decomp/evidence_gate.py
+src/abu_decomp/gates.py
+src/abu_decomp/gitrefs.py
+src/abu_decomp/inotify.py
+src/abu_decomp/land.py
+src/abu_decomp/meter.py
+src/abu_decomp/preflight.py
+src/abu_decomp/proof.py
+src/abu_decomp/ship.py
+src/abu_decomp/shipproof.py
+src/abu_decomp/slots.py
+src/abu_decomp/sweep.py
+src/abu_decomp/tas.py
+src/abu_decomp/tas_bake.py
+src/abu_decomp/tas_corpus.py
+src/abu_decomp/tas_coverage.py
+src/abu_decomp/tas_findings.py
+src/abu_decomp/tas_health.py
+src/abu_decomp/tas_sanitize.py
+src/abu_decomp/tas_serve.py
+src/abu_decomp/tas_statediff.py
+src/abu_decomp/tools.py
+src/abu_decomp/worktree.py'
+new="$(grep -rlEi --include='*.py' --include='*.sh' --include='*.mk' --include=Makefile --exclude='test_*.py' \
+    --exclude-dir=tests --exclude-dir=.git --exclude-dir=build --exclude-dir=.venv \
+    -e 'ProcessPoolExecutor|ThreadPoolExecutor|multiprocessing\.Pool|\bccache\b|functools\.(lru_)?cache\b|@(lru_)?cache\b' \
+    -e 'fcntl\.flock|\bflock\b|os\.cpu_count|sched_getaffinity|time\.perf_counter|time\.monotonic' . \
+    | sed 's#^\./##' | grep -vxF "$OWNED" || true)"
+[ -z "$new" ] && exit 0
+echo "$new" | sed 's/$/: a cache, slot, pool, executor or timing path outside AbuCache64: use its owner abucache (compile, store, slots, pool, stages)/' >&2
+exit 1

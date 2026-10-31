@@ -7,6 +7,7 @@
 # python3 and $ABU_VENV/bin/python (default ~/venv-decomp, the seat venv made by `pip install -e '.[dev]'`) that imports them.
 set -eu
 cd "$(dirname "$0")/.."
+ci/abucache-audit
 mode=full
 [ "${1:-}" = "--changed" ] && mode=changed
 if [ -z "${ABU_PYTHON:-}" ]; then
