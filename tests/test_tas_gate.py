@@ -53,16 +53,16 @@ class SupervisorTests(unittest.TestCase):
         run = Path(directory.name)
         (run / tas.GATED).write_text("hold\n")
         process = mock.Mock(pid=4242)
-        ticks = iter([0.0, 5.0, 10.0, 15.0, 20.0, 25.0])
+        clock = [0.0]  # moves only when the supervisor sleeps: 5 s of held time per pass, against a 1 s timeout
         waits = iter([(0, 0, None), (0, 0, None), (4242, 0, mock.Mock(ru_utime=1.0, ru_stime=0.5))])
         with (
-            mock.patch.object(tas.time, "monotonic", lambda: next(ticks)),
-            mock.patch.object(tas.time, "sleep"),
+            mock.patch.object(tas.time, "monotonic", lambda: clock[0]),
+            mock.patch.object(tas.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + 5.0)),
             mock.patch.object(tas.os, "wait4", lambda pid, flags: next(waits)),
             mock.patch.object(tas.os, "killpg", side_effect=AssertionError("a gated run is never killed")),
             mock.patch.object(tas, "_check_play_signal"),
         ):
-            code, cpu = tas._wait(process, 1.0, run)  # 1 s timeout, 25 s of held time
+            code, cpu = tas._wait(process, 1.0, run)
         self.assertEqual((code, cpu), (0, 1.5))
 
 
