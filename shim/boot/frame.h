@@ -19,9 +19,12 @@ void n64c_boot_frame_unlock(int on);
  * or 120, whichever is more (a window on a faster screen gets its rate; an offscreen run, which has no display, 120).
  * n64c_unlock_rate returns 0 for text that is none of these. */
 int n64c_unlock_rate(const char *text,u32 refresh_hz,u32 *hz);
-/* The options screen's starting state (n64c_menu.h) after n64c_boot_frame_start of a live run: applies the saved window mode
- * and render scale, learns the display's sizes and configures the screen to save to save_path (NULL or "": nowhere). */
-void n64c_boot_frame_options(const N64cOptions *now,const char *save_path);
+/* The options screen's starting state (n64c_menu.h) after n64c_boot_frame_start of a live run: applies the starting window
+ * mode and render scale, learns the display's sizes and configures the screen with the options in force. */
+void n64c_boot_frame_options(const N64cOptions *now);
+/* The real window and render target: mode, size and render scale together. On success *effective holds what is in force
+ * (the render scale the target really has); on failure false with the reason in error and the window back as it was. */
+bool n64c_display_apply(const N64cDisplaySettings *requested,N64cDisplaySettings *effective,char *error,size_t capacity);
 int n64c_boot_frame_start(u32 width,u32 height,u32 ram_bytes,int audio_abi,u32 window_width,u32 window_height);
 /* Run the original threads at the VI rate, showing every presentation, until the window closes (1) or
  * no original thread is left (0). Original stops exit the process. */

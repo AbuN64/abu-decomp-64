@@ -703,13 +703,42 @@ extern "C" void n64c_f3d_overlay(N64cF3d* f3d, const char* text, int selected_li
     f3d->overlay_scale = max_scale < 1 ? 1 : max_scale > 4 ? 4 : max_scale;
 }
 extern "C" void n64c_f3d_window_shot(N64cF3d* f3d, const char* path) { f3d->window_shot = path ? path : ""; }
-extern "C" void n64c_f3d_window_mode(N64cF3d* f3d, int mode, uint32_t width, uint32_t height)
+static int report(bool ok, const std::string& reason, char* error, size_t capacity)
+{
+    if (!ok && error && capacity)
+        std::snprintf(error, capacity, "%s", reason.c_str());
+    return ok;
+}
+extern "C" int n64c_f3d_window_mode(N64cF3d* f3d, int mode, uint32_t width, uint32_t height, char* error, size_t capacity)
 {
     FpMasked fp_masked;
     auto context = f3d->window->UseContext();
-    f3d->window->SetMode(mode, width, height);
+    std::string reason;
+    return report(f3d->window->SetMode(mode, width, height, reason), reason, error, capacity);
 }
-extern "C" void n64c_f3d_render_scale(N64cF3d* f3d, int percent) { f3d->window->SetRenderScale(percent); }
+extern "C" int n64c_f3d_render_scale(N64cF3d* f3d, int percent, char* error, size_t capacity)
+{
+    std::string reason;
+    return report(f3d->window->SetRenderScale(percent, reason), reason, error, capacity);
+}
+extern "C" int n64c_f3d_display(N64cF3d* f3d, int mode, uint32_t width, uint32_t height, int percent, int* effective_scale,
+                                char* error, size_t capacity)
+{
+    FpMasked fp_masked;
+    auto context = f3d->window->UseContext();
+    std::string reason;
+    const bool ok = f3d->window->SetDisplay(mode, width, height, percent, reason);
+    if (ok && effective_scale)
+        *effective_scale = f3d->window->EffectiveRenderScale();
+    return report(ok, reason, error, capacity);
+}
+extern "C" void n64c_f3d_sizes(const N64cF3d* f3d, uint32_t* window_w, uint32_t* window_h, uint32_t* render_w,
+                               uint32_t* render_h)
+{
+    int32_t x, y;
+    f3d->window->GetOutputDimensions(window_w, window_h);
+    f3d->window->GetDimensions(render_w, render_h, &x, &y);
+}
 extern "C" size_t n64c_f3d_display_sizes(N64cF3d* f3d, uint32_t (*sizes)[2], size_t max)
 {
     return f3d->window->DisplaySizes(sizes, max);

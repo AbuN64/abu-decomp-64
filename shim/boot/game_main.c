@@ -58,8 +58,8 @@ static void usage(FILE *out, const char *name)
             "  --fb WxH          the game's framebuffer size (default 284x222)\n"
             "  --capture F --retrace N   run offscreen to retrace N and write the presented frame to F\n"
             "  --offscreen       run without a visible window\n"
-            "  (the options screen, opened with L+R or F1 in the game's main and pause menus, keeps window mode, size, frame-rate unlock and\n"
-            "   render scale in config/options.cfg of the user folder; the flags above override it for the run)\n"
+            "  (the options screen, opened with L+R or F1 in the game's main and pause menus, changes window mode, size, frame-rate unlock and\n"
+            "   render scale for the run; nothing is kept between runs)\n"
             "  --fps-unlock      draw extra pictures between game frames (matrices interpolated) and present as fast as the host\n"
             "                    allows; the game's timing, audio and input are unchanged (also N64C_FPS_UNLOCK=1)\n"
             "  --cpak off|PATH   Controller Pak card file (32 KiB .mpk, made formatted when missing); default is controller-pak.mpk in the user folder (no Pak in a --capture run), off is no Pak\n"
@@ -159,6 +159,19 @@ static void tee_log(const char *user,const char *name)
         return;
     inst_log_rotate(logs,name,5);
     n64c_host_tee_stderr(path);
+}
+
+/* The seam's host side for this program: no archive, so no stored options (the flags and environment seed them) and a
+ * request that only takes the display to the window. */
+static bool boot_settings_load(void *context,N64cOptions *options)
+{
+    (void)context;(void)options;
+    return false;
+}
+static bool boot_settings_request(void *context,const N64cOptions *requested,N64cDisplaySettings *effective,char *error,size_t capacity)
+{
+    (void)context;
+    return n64c_display_apply(&requested->display,effective,error,capacity);
 }
 
 static int boot(const Options *o,const char *cart_path,const char *base,const char *user)
@@ -298,27 +311,26 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
     const int live=!o->capture;
     n64c_input_set_config_path(controls); /* the Controls page keeps its binds here; the window loads them */
     n64c_boot_frame_host(shaders,settings,o->offscreen);
-    /* The options screen's file in the user folder gives the starting window and frame rate; a flag (or the
-     * environment) given on the command line wins for this run. */
-    char options_path[INST_PATH];
+    /* This host keeps no options archive: the flags and the environment give the starting window and frame rate, and what
+     * the options screen changes holds for this run (the settings seam takes it to the window). */
+    (void)n64c_settings_bind(NULL,boot_settings_load,boot_settings_request);
     N64cOptions options;
     n64c_options_default(&options);
-    options.width=o->out_w;options.height=o->out_h;
-    if (snprintf(options_path,sizeof options_path,"%s/config/options.cfg",user)>=(int)sizeof options_path) options_path[0]=0;
-    (void)n64c_options_load(options_path,&options);
-    if (o->window_set) { options.width=o->out_w;options.height=o->out_h;options.window_mode=N64C_WIN_WINDOWED; }
+    options.display.width=o->out_w;options.display.height=o->out_h;
+    (void)n64c_settings_load(&options);
+    if (o->window_set) { options.display.width=o->out_w;options.display.height=o->out_h;options.display.fullscreen=N64C_WIN_WINDOWED; }
     {
         const char *env=getenv("N64C_FPS_UNLOCK");
         if (o->fps_unlock || (env && *env && strcmp(env,"0"))) options.fps_unlock=1;
         n64c_boot_frame_unlock(options.fps_unlock);
     }
     if (!n64c_boot_frame_start(o->fb_w,o->fb_h,ram_bytes,n64c_boot_audio_abi,
-                               live ? options.width : 0,live ? options.height : 0)) {
+                               live ? options.display.width : 0,live ? options.display.height : 0)) {
         fprintf(stderr,"boot-input: cannot configure native frame capture\n");
         n64c_shutdown();
         return EXIT_RUNTIME;
     }
-    if (live && !o->offscreen) n64c_boot_frame_options(&options,options_path);
+    if (live && !o->offscreen) n64c_boot_frame_options(&options);
     n64c_game_scheduler_attach();
     if (n64c_trace_init) n64c_trace_init();
     if (n64c_runon_init) n64c_runon_init();

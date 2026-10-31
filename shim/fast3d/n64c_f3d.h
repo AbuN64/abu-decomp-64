@@ -56,10 +56,17 @@ int n64c_f3d_events(N64cF3d *f3d);
  * the highlighted line (-1 none) and the largest letter scale; the window mode (N64C_WIN_*) and size; the render scale in
  * percent; the display's sizes, largest first; a request to end the run as if the window were closed. */
 void n64c_f3d_overlay(N64cF3d *f3d, const char *text, int selected_line, int max_scale);
-void n64c_f3d_window_mode(N64cF3d *f3d, int mode, uint32_t width, uint32_t height);
+/* Each setter returns 1 on success; 0 with the reason in error (capacity bytes) and the window as it was. */
+int n64c_f3d_window_mode(N64cF3d *f3d, int mode, uint32_t width, uint32_t height, char *error, size_t capacity);
 /* Writes the next presented window picture, overlay included, to path as a PPM (evidence). */
 void n64c_f3d_window_shot(N64cF3d *f3d, const char *path);
-void n64c_f3d_render_scale(N64cF3d *f3d, int percent);
+int n64c_f3d_render_scale(N64cF3d *f3d, int percent, char *error, size_t capacity);
+/* Mode, size and scale together: all take, or the window is back at the mode, size and scale it had. On success
+ * *effective_scale is the scale the render target really has against the window's pixels. */
+int n64c_f3d_display(N64cF3d *f3d, int mode, uint32_t width, uint32_t height, int percent, int *effective_scale, char *error,
+                     size_t capacity);
+/* The window's own pixels and the size the game renders at (the window's pixels scaled). */
+void n64c_f3d_sizes(const N64cF3d *f3d, uint32_t *window_w, uint32_t *window_h, uint32_t *render_w, uint32_t *render_h);
 size_t n64c_f3d_display_sizes(N64cF3d *f3d, uint32_t (*sizes)[2], size_t max);
 void n64c_f3d_quit(N64cF3d *f3d);
 void n64c_f3d_open_controls(N64cF3d *f3d); /* the Controls page, from the options screen */

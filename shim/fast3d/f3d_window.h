@@ -8,6 +8,7 @@
 #include "f3d_context.h"
 #include "f3d_controls_overlay.h"
 #include <SDL3/SDL.h>
+#include <string>
 
 namespace N64c {
 class F3dWindow final : public Fast::GfxWindowBackend {
@@ -47,13 +48,22 @@ class F3dWindow final : public Fast::GfxWindowBackend {
     void Destroy() override;
     bool IsFullscreen() override;
     // The options screen: N64C_WIN_* (n64c_menu.h), the display's sizes (largest first), the render scale in percent.
-    void SetMode(int mode, uint32_t width, uint32_t height);
+    // The setters return false with the reason in error and leave the window as it was.
+    bool SetMode(int mode, uint32_t width, uint32_t height, std::string& error);
+    bool SetRenderScale(int percent, std::string& error); // 25..100
+    // Mode and scale together: both take, or the window is back at its prior mode, size and scale.
+    bool SetDisplay(int mode, uint32_t width, uint32_t height, int percent, std::string& error);
+    int RenderScale() const { return mRenderScale; }
+    // The scale the render target really has against the window's pixels (whole pixels, at least one).
+    int EffectiveRenderScale() const;
     size_t DisplaySizes(uint32_t (*sizes)[2], size_t max) const;
-    void SetRenderScale(int percent) { mRenderScale = percent < 25 ? 25 : percent > 100 ? 100 : percent; }
     void GetOutputDimensions(uint32_t* width, uint32_t* height) const; // the window's own pixels, whatever the scale
 
   private:
+    bool ApplyMode(int mode, uint32_t width, uint32_t height, std::string& error);
     int mRenderScale = 100;
+    int mMode = 0;                                // N64C_WIN_* in force
+    uint32_t mModeWidth = 0, mModeHeight = 0;     // the size chosen for windowed / fullscreen mode
     SDL_Window* mWindow = nullptr;
     SDL_GLContext mContext = nullptr;
     uint32_t mWidth = 0, mHeight = 0;

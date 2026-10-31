@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* The options screen: settings file round trip, opening only inside a game menu, the pad the game sees while it is open
- * (neutral), navigation and the changes it asks the host for, and the two-step quit. */
+/* The options screen: opening only inside a game menu, the pad the game sees while it is open (neutral), navigation, and
+ * the settings seam: the host's load at startup, its request for every change (recorded by the host only when it succeeds; a
+ * refusal leaves the options as they were and is shown on the screen), no options file, and the two-step quit. */
 #include "../n64c_menu.h"
 #include "test_check.h"
 #include <string.h>
+#include <unistd.h>
 
 enum { A = 0x8000, B = 0x4000, UP = 0x0800, DOWN = 0x0400, LEFT = 0x0200, RIGHT = 0x0100, L = 0x0020, R = 0x0010 };
 
@@ -19,41 +21,138 @@ static void tap(unsigned button)
     (void)sample(button, 0);
     (void)sample(0, 0);
 }
-static void start(const char *path, int mobile)
+static void start(int mobile)
 {
     static const u32 sizes[3][2] = {{1920, 1080}, {1280, 720}, {640, 480}};
     N64cOptions o;
     n64c_options_default(&o);
-    n64c_menu_configure(&o, path, sizes, 3, mobile);
+    n64c_menu_configure(&o, sizes, 3, mobile);
+}
+
+/* The host: its own config (recorded only by a successful request), and a way to refuse or to get a different scale. */
+typedef struct {
+    N64cOptions stored;
+    int has_config, loads, applies, records;
+    bool refuse;
+    int effective_scale;   /* nonzero: the scale the render target really got */
+} Host;
+static bool host_load(void *context, N64cOptions *options)
+{
+    Host *h = context;
+    h->loads++;
+    if (!h->has_config) return false;
+    *options = h->stored;
+    return true;
+}
+static bool host_request(void *context, const N64cOptions *requested, N64cDisplaySettings *effective, char *error, size_t capacity)
+{
+    Host *h = context;
+    h->applies++;
+    if (h->refuse) {
+        snprintf(error, capacity, "the display refused %ux%u", requested->display.width, requested->display.height);
+        return false;
+    }
+    if (h->effective_scale) effective->render_scale = h->effective_scale;
+    h->stored = *requested;
+    h->stored.display = *effective;
+    h->has_config = 1;
+    h->records++;
+    return true;
+}
+static Host host;
+
+static void open_screen(void)
+{
+    n64c_menu_context(N64C_MENU_PAUSE);
+    (void)sample(L | R, 0);
+    (void)sample(0, 0);
+}
+
+/* The seam: startup load, a successful request is recorded by the host, a refusal keeps the prior options and shows why. */
+static void seam_tests(void)
+{
+    N64cOptions o, back, now;
+    char text[640];
+    int line, scale;
+    remove("options.cfg");
+
+    n64c_settings_unbind();
+    n64c_options_default(&o);
+    Test_Check(!n64c_settings_load(&o), "without a host nothing is loaded");
+    Test_Check(!n64c_settings_bind(&host, host_load, NULL), "a host without a request callback is refused");
+    host = (Host){0};
+    Test_Check(n64c_settings_bind(&host, host_load, host_request), "the host binds");
+    n64c_options_default(&back);
+    Test_Check(!n64c_settings_load(&back) && host.loads == 1 && !memcmp(&back, &o, sizeof o),
+               "the load callback is used at startup, and may have no config");
+    host.stored = o;
+    host.stored.display = (N64cDisplaySettings){N64C_WIN_BORDERLESS, 1280, 720, 50};
+    host.stored.fps_unlock = 1;
+    host.has_config = 1;
+    Test_Check(n64c_settings_load(&back) && host.loads == 2 && !memcmp(&back, &host.stored, sizeof back),
+               "the startup options are what the host's load gave");
+
+    /* success: nothing is applied before the take; the apply's save is the host's */
+    host = (Host){0};
+    start(0);
+    open_screen();
+    tap(DOWN);
+    tap(RIGHT);
+    Test_Check(host.applies == 0 && host.records == 0, "nothing is applied or saved before the take");
+    unsigned what = n64c_menu_take(&now);
+    Test_Check(host.applies == 1 && host.records == 1 && host.stored.display.fullscreen == N64C_WIN_BORDERLESS,
+               "a successful request is recorded by the host");
+    Test_Check((what & N64C_DO_WINDOW) && now.display.fullscreen == N64C_WIN_BORDERLESS, "and the change is in force");
+
+    /* refusal: the prior options stay, the host records nothing, the screen shows why */
+    host.refuse = true;
+    tap(DOWN);
+    tap(RIGHT);
+    what = n64c_menu_take(&now);
+    Test_Check(host.applies == 2 && host.records == 1 && !(what & N64C_DO_WINDOW), "a refused request records nothing and is not reported done");
+    Test_Check(now.display.width == 640 && now.display.height == 480 && now.display.fullscreen == N64C_WIN_BORDERLESS,
+               "the prior display settings are kept");
+    Test_Check(n64c_menu_text(text, sizeof text, &line, &scale) > 0 && strstr(text, "DISPLAY REFUSED 1920X1080") != NULL,
+               "the error is shown");
+    Test_Check(strstr(text, "< 640x480 >") != NULL, "and so is the prior resolution, not the refused one");
+    host.refuse = false;
+    tap(RIGHT);
+    Test_Check((n64c_menu_take(&now) & N64C_DO_WINDOW) && now.display.width == 1920 && host.records == 2, "the next change applies again");
+    Test_Check(n64c_menu_text(text, sizeof text, &line, &scale) > 0 && strstr(text, "NOT APPLIED") == NULL, "and clears the error");
+
+    /* the scale the render target really got is what is kept */
+    start(1);
+    host.effective_scale = 50;
+    open_screen();
+    tap(DOWN);
+    tap(LEFT);
+    Test_Check((n64c_menu_take(&now) & N64C_DO_SCALE) && now.display.render_scale == 50 && host.stored.display.render_scale == 50,
+               "the effective render scale is kept, not the request");
+    Test_Check(n64c_menu_text(text, sizeof text, &line, &scale) > 0 && strstr(text, "< 50% >") != NULL, "and shown");
+    host.effective_scale = 0;
+
+    /* no host: the screen refuses and says so; whatever happened, no options file */
+    n64c_settings_unbind();
+    start(0);
+    open_screen();
+    tap(DOWN);
+    tap(RIGHT);
+    int applies = host.applies;
+    what = n64c_menu_take(&now);
+    Test_Check(host.applies == applies && !(what & N64C_DO_WINDOW) && now.display.fullscreen == N64C_WIN_WINDOWED,
+               "without a host a change is refused");
+    Test_Check(n64c_menu_text(text, sizeof text, &line, &scale) > 0 && strstr(text, "NO OPTIONS HOST") != NULL, "and the screen says why");
+    Test_Check(access("options.cfg", F_OK) != 0, "no options.cfg is written, with a host or without");
+    (void)n64c_settings_bind(&host, host_load, host_request);
 }
 
 int main(void)
 {
-    const char *path = "n64c_test_menu.cfg";
-    remove(path);
-
-    /* file: defaults, round trip, bad values keep the default */
-    N64cOptions o, back;
-    n64c_options_default(&o);
-    Test_Check(!n64c_options_load(path, &o), "no file is not an error and changes nothing");
-    o.window_mode = N64C_WIN_FULLSCREEN; o.width = 1280; o.height = 720; o.fps_unlock = 1; o.render_scale = 50;
-    Test_Check(n64c_options_save(path, &o), "save");
-    n64c_options_default(&back);
-    Test_Check(n64c_options_load(path, &back), "load");
-    Test_Check(!memcmp(&o, &back, sizeof o), "the file keeps every option");
-    FILE *f = fopen(path, "w");
-    Test_Check(f != NULL, "write the bad file");
-    fputs("window_mode=sideways\nwidth=7\nheight=abc\nfps_unlock=1\nrender_scale=500\n", f);
-    fclose(f);
-    n64c_options_default(&back);
-    (void)n64c_options_load(path, &back);
-    Test_Check(back.window_mode == N64C_WIN_WINDOWED && back.width == 640 && back.height == 480 && back.render_scale == 100,
-               "invalid values are ignored");
-    Test_Check(back.fps_unlock == 1, "a valid line beside invalid ones still applies");
-
+    host = (Host){0};
+    Test_Check(n64c_settings_bind(&host, host_load, host_request), "the host binds");
+    N64cOptions now;
     /* the screen opens only inside a game menu */
-    remove(path);
-    start(path, 0);
+    start(0);
     OSContPad pad = sample(L | R, 0);
     Test_Check(!n64c_menu_is_open() && pad.button == (L | R), "L+R outside a game menu belongs to the game");
     (void)sample(0, 0);
@@ -77,25 +176,39 @@ int main(void)
     (void)sample(0, 0);
     Test_Check(n64c_menu_is_open(), "and it stays open when the fingers lift");
 
-    /* navigation: rows are resume, window mode, resolution, unlock, controls, quit (desktop) */
+    /* navigation: rows are resume, window mode, resolution, render scale, unlock, controls, quit (desktop) */
     Test_Check(n64c_menu_text(text, sizeof text, &line, &scale) > 0 && line == 2, "resume is highlighted first");
     tap(DOWN);
     tap(RIGHT);
-    N64cOptions now;
     unsigned what = n64c_menu_take(&now);
-    Test_Check((what & N64C_DO_WINDOW) && now.window_mode == N64C_WIN_BORDERLESS, "right on window mode asks for borderless");
+    Test_Check((what & N64C_DO_WINDOW) && now.display.fullscreen == N64C_WIN_BORDERLESS, "right on window mode asks for borderless");
     tap(DOWN);
     tap(RIGHT);
     what = n64c_menu_take(&now);
-    Test_Check((what & N64C_DO_WINDOW) && now.width == 1920 && now.height == 1080, "right on resolution takes the next display size");
+    Test_Check((what & N64C_DO_WINDOW) && now.display.width == 1920 && now.display.height == 1080, "right on resolution takes the next display size");
+    tap(DOWN);
+    tap(RIGHT);
+    what = n64c_menu_take(&now);
+    Test_Check((what & N64C_DO_SCALE) && now.display.render_scale == 100, "right on render scale at its top stays there");
+    tap(LEFT);
+    what = n64c_menu_take(&now);
+    Test_Check((what & N64C_DO_SCALE) && now.display.render_scale == 75, "left on render scale lowers it a step on the desktop too");
     tap(DOWN);
     tap(A);
     what = n64c_menu_take(&now);
     Test_Check((what & N64C_DO_UNLOCK) && now.fps_unlock == 1, "A on the unlock row switches it on");
     Test_Check(n64c_menu_take(&now) == 0, "a change is reported once");
-    n64c_options_default(&back);
-    Test_Check(n64c_options_load(path, &back) && back.fps_unlock == 1 && back.window_mode == N64C_WIN_BORDERLESS,
-               "every change is saved to the file at once");
+    Test_Check(host.stored.fps_unlock == 1 && host.stored.display.fullscreen == N64C_WIN_BORDERLESS,
+               "every change reaches the host's apply, which holds the options");
+    /* a request is applied AND saved or it is nothing: the host fails its save, answers false, the unlock stays as it was */
+    host.refuse = true;
+    tap(A);
+    what = n64c_menu_take(&now);
+    Test_Check(!(what & N64C_DO_UNLOCK) && now.fps_unlock == 1 && host.stored.fps_unlock == 1,
+               "a request whose save failed leaves the unlock, the screen and the host's archive as they were");
+    Test_Check(n64c_menu_text(text, sizeof text, &line, &scale) > 0 && strstr(text, "FRAMERATE UNLOCK  < ON >") != NULL,
+               "and the screen still shows it on");
+    host.refuse = false;
 
     /* controls opens the page and closes the screen */
     tap(DOWN);
@@ -104,7 +217,7 @@ int main(void)
     (void)sample(L | R, 0);
     (void)sample(0, 0);
     Test_Check(n64c_menu_is_open(), "the screen opens again");
-    for (int i = 0; i < 4; i++) tap(DOWN); /* resume, window, resolution, unlock, controls, quit */
+    for (int i = 0; i < 5; i++) tap(DOWN); /* resume, window, resolution, scale, unlock, controls, quit */
     tap(DOWN);
     tap(A);
     Test_Check(n64c_menu_take(&now) == 0, "the first A on quit only arms it");
@@ -113,7 +226,7 @@ int main(void)
     Test_Check((n64c_menu_take(&now) & N64C_DO_QUIT) && !n64c_menu_is_open(), "the second A quits");
 
     /* closing: a button held through the close is not seen by the game until released */
-    start(path, 0);
+    start(0);
     n64c_menu_context(N64C_MENU_MAIN);
     (void)sample(0, 1); /* the keyboard hotkey opens too */
     Test_Check(n64c_menu_is_open(), "the hotkey opens it");
@@ -127,20 +240,20 @@ int main(void)
     Test_Check(pad.button == B, "a new B press reaches the game");
 
     /* a phone has render scale instead of window mode and resolution */
-    start(path, 1);
+    start(1);
     n64c_menu_context(N64C_MENU_MAIN);
     (void)sample(L | R, 0);
     (void)sample(0, 0);
     tap(DOWN);
     tap(LEFT);
     what = n64c_menu_take(&now);
-    Test_Check((what & N64C_DO_SCALE) && now.render_scale == 75, "left on render scale lowers it a step");
+    Test_Check((what & N64C_DO_SCALE) && now.display.render_scale == 75, "left on render scale lowers it a step");
 
     /* leaving the game menu closes the screen and a closed screen passes the pad */
     n64c_menu_context(0);
     pad = sample(L | R, 0);
     (void)pad;
-    remove(path);
+    seam_tests();
     puts("menu ok");
     return 0;
 }

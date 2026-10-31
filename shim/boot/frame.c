@@ -202,12 +202,10 @@ static void menu_update(void)
 {
     N64cOptions now;
     const unsigned what=n64c_menu_take(&now);
-    if (what&N64C_DO_WINDOW) n64c_f3d_window_mode(frame.f3d,now.window_mode,now.width,now.height);
-    if (what&N64C_DO_SCALE) n64c_f3d_render_scale(frame.f3d,now.render_scale);
     if (what&N64C_DO_UNLOCK) unlock_request=now.fps_unlock;
     if (what&N64C_DO_CONTROLS) n64c_f3d_open_controls(frame.f3d);
     if (what&N64C_DO_QUIT) { fprintf(stderr,"boot-frame: quit from the options screen\n");n64c_f3d_quit(frame.f3d); }
-    char text[512];
+    char text[640];
     int selected,scale;
     const size_t n=n64c_menu_text(text,sizeof text,&selected,&scale);
     n64c_f3d_overlay(frame.f3d,n ? text : NULL,selected,scale);
@@ -300,7 +298,18 @@ int n64c_boot_frame_start(u32 width,u32 height,u32 ram_bytes,int audio_abi,u32 w
     if (live) n64c_boot_stop_hook=live_stop;
     return 1;
 }
-void n64c_boot_frame_options(const N64cOptions *now,const char *save_path)
+/* The window the display settings last took (what a failed apply goes back to is the window's own, in n64c_f3d_display). */
+bool n64c_display_apply(const N64cDisplaySettings *requested,N64cDisplaySettings *effective,char *error,size_t capacity)
+{
+    if (!frame.f3d) { snprintf(error,capacity,"the window is not open");return false; }
+    int scale=requested->render_scale;
+    if (!n64c_f3d_display(frame.f3d,requested->fullscreen,requested->width,requested->height,requested->render_scale,&scale,error,capacity))
+        return false;
+    *effective=*requested;
+    effective->render_scale=scale;
+    return true;
+}
+void n64c_boot_frame_options(const N64cOptions *now)
 {
     u32 sizes[64][2];
 #ifdef __ANDROID__
@@ -311,10 +320,20 @@ void n64c_boot_frame_options(const N64cOptions *now,const char *save_path)
     const size_t count=n64c_f3d_display_sizes(frame.f3d,sizes,64);
 #endif
     static const char *const modes[]={"windowed","borderless","fullscreen"};
-    fprintf(stderr,"boot-options: start window=%s %ux%u unlock=%d scale=%d%%\n",modes[now->window_mode%3],now->width,now->height,now->fps_unlock,now->render_scale);
-    n64c_menu_configure(now,save_path,(const u32 (*)[2])sizes,count,mobile);
-    if (now->render_scale!=100) n64c_f3d_render_scale(frame.f3d,now->render_scale);
-    if (!mobile && now->window_mode!=N64C_WIN_WINDOWED) n64c_f3d_window_mode(frame.f3d,now->window_mode,now->width,now->height);
+    fprintf(stderr,"boot-options: start window=%s %ux%u unlock=%d scale=%d%%\n",modes[now->display.fullscreen%3],now->display.width,now->display.height,now->fps_unlock,now->display.render_scale);
+    N64cOptions start=*now;
+    if (now->display.render_scale!=100 || (!mobile && now->display.fullscreen!=N64C_WIN_WINDOWED)) {
+        char error[256];
+        N64cDisplaySettings effective;
+        if (n64c_display_apply(&now->display,&effective,error,sizeof error)) start.display=effective;
+        else {
+            fprintf(stderr,"boot-options: start display refused: %s\n",error);
+            n64c_options_default(&start);
+            start.display.width=now->display.width;start.display.height=now->display.height;
+            start.fps_unlock=now->fps_unlock;
+        }
+    }
+    n64c_menu_configure(&start,(const u32 (*)[2])sizes,count,mobile);
 }
 /* The VI shows whichever color image it was given; double buffering presents an earlier rendered surface,
  * never the last one by assumption. Reads it back scaled to width x height (caller frees), NULL when never rendered. */

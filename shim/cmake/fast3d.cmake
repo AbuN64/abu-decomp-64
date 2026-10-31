@@ -277,6 +277,16 @@ target_link_libraries(n64c_test_f3d_context PRIVATE SDL3::SDL3-static)
 target_compile_options(n64c_test_f3d_context PRIVATE -Wall -Wextra -Werror)
 add_test(NAME n64c_f3d_context COMMAND n64c_test_f3d_context)
 
+# The display apply on a real window and render target (SDL's offscreen video driver, software GL): a change resizes both,
+# a refused one rolls both back with its reason, and the options screen shows that reason. Fast3D's shader archive sits
+# beside the executable as for the replay tool.
+add_executable(n64c_test_display "${fast3d_dir}/../tests/test_display.cpp" "${CMAKE_CURRENT_BINARY_DIR}/fast3d-shaders.o2r")
+target_include_directories(n64c_test_display PRIVATE "${fast3d_dir}/..")
+target_link_libraries(n64c_test_display PRIVATE n64c_fast3d)
+target_compile_options(n64c_test_display PRIVATE -Wall -Wextra -Werror)
+add_test(NAME n64c_display COMMAND n64c_test_display "${CMAKE_CURRENT_BINARY_DIR}/f3d-display.json")
+set_tests_properties(n64c_display PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=offscreen" TIMEOUT 60)
+
 # The Controls page and touch zones drawn into a real desktop-GL and a real OpenGL ES context on SDL's offscreen
 # video driver (software GL), pixels read back and GL state checked.
 add_executable(n64c_test_controls_overlay "${fast3d_dir}/../tests/test_controls_overlay.cpp" "${fast3d_dir}/f3d_controls_overlay.cpp")

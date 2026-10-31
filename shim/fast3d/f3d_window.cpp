@@ -53,6 +53,9 @@ void F3dWindow::Init(const char* gameName, const char*, bool startFullScreen, ui
     SDL_GL_SetSwapInterval(0);
     mWidth = width;
     mHeight = height;
+    mMode = startFullScreen ? 1 : 0;
+    mModeWidth = width;
+    mModeHeight = height;
 }
 
 void F3dWindow::Close() { mIsRunning = false; }
@@ -64,8 +67,10 @@ void F3dWindow::SetFullscreenChangedCallback(void (*onFullscreenChanged)(bool))
 }
 void F3dWindow::SetFullscreen(bool fullscreen)
 {
-    if (mWindow && SDL_SetWindowFullscreen(mWindow, fullscreen))
+    if (mWindow && SDL_SetWindowFullscreen(mWindow, fullscreen)) {
         mFullScreen = fullscreen;
+        mMode = fullscreen ? 1 : 0;
+    }
 }
 void F3dWindow::GetActiveWindowRefreshRate(uint32_t* refreshRate)
 {
@@ -96,28 +101,91 @@ void F3dWindow::GetDimensions(uint32_t* width, uint32_t* height, int32_t* posX, 
     *height = std::max<uint32_t>(1, *height * (uint32_t)mRenderScale / 100);
     *posX = *posY = 0;
 }
-void F3dWindow::SetMode(int mode, uint32_t width, uint32_t height)
+static bool Step(bool ok, const char* what, std::string& error)
 {
-    if (!mWindow)
-        return;
+    if (!ok)
+        error = std::string(what) + ": " + SDL_GetError();
+    return ok;
+}
+bool F3dWindow::ApplyMode(int mode, uint32_t width, uint32_t height, std::string& error)
+{
     const SDL_DisplayID display = SDL_GetDisplayForWindow(mWindow);
     if (mode == 0) { // windowed: bordered, the chosen size
-        SDL_SetWindowFullscreen(mWindow, false);
+        if (!Step(SDL_SetWindowFullscreen(mWindow, false), "leave fullscreen", error))
+            return false;
         SDL_SyncWindow(mWindow);
-        SDL_SetWindowBordered(mWindow, true);
-        SDL_SetWindowSize(mWindow, (int)width, (int)height);
-        SDL_SetWindowPosition(mWindow, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        if (!Step(SDL_SetWindowBordered(mWindow, true), "set the border", error) ||
+            !Step(SDL_SetWindowSize(mWindow, (int)width, (int)height), "set the window size", error))
+            return false;
+        SDL_SetWindowPosition(mWindow, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED); // placement only: some platforms (Wayland, offscreen) have none
     } else if (mode == 1) { // borderless: the desktop's own mode, the window covers the display
-        SDL_SetWindowFullscreenMode(mWindow, nullptr);
-        SDL_SetWindowFullscreen(mWindow, true);
+        if (!Step(SDL_SetWindowFullscreenMode(mWindow, nullptr), "use the desktop mode", error) ||
+            !Step(SDL_SetWindowFullscreen(mWindow, true), "enter borderless fullscreen", error))
+            return false;
     } else { // fullscreen: the display mode closest to the chosen size
         SDL_DisplayMode closest;
-        if (SDL_GetClosestFullscreenDisplayMode(display, (int)width, (int)height, 0.0f, true, &closest))
-            SDL_SetWindowFullscreenMode(mWindow, &closest);
-        SDL_SetWindowFullscreen(mWindow, true);
+        if (!Step(SDL_GetClosestFullscreenDisplayMode(display, (int)width, (int)height, 0.0f, true, &closest),
+                  "find a display mode", error) ||
+            !Step(SDL_SetWindowFullscreenMode(mWindow, &closest), "use the display mode", error) ||
+            !Step(SDL_SetWindowFullscreen(mWindow, true), "enter fullscreen", error))
+            return false;
     }
     SDL_SyncWindow(mWindow);
-    mFullScreen = mode != 0;
+    return true;
+}
+bool F3dWindow::SetMode(int mode, uint32_t width, uint32_t height, std::string& error)
+{
+    if (!mWindow) {
+        error = "the window is not open";
+        return false;
+    }
+    if (mode < 0 || mode > 2) {
+        error = "window mode " + std::to_string(mode) + " is not 0, 1 or 2";
+        return false;
+    }
+    if (width == 0 || height == 0) {
+        error = "window size " + std::to_string(width) + "x" + std::to_string(height) + " is empty";
+        return false;
+    }
+    if (ApplyMode(mode, width, height, error)) {
+        mMode = mode;
+        mModeWidth = width;
+        mModeHeight = height;
+        mFullScreen = mode != 0;
+        return true;
+    }
+    std::string ignored; // back to the mode and size it had
+    ApplyMode(mMode, mModeWidth, mModeHeight, ignored);
+    return false;
+}
+bool F3dWindow::SetRenderScale(int percent, std::string& error)
+{
+    if (percent < 25 || percent > 100) {
+        error = "render scale " + std::to_string(percent) + "% is outside 25..100";
+        return false;
+    }
+    mRenderScale = percent;
+    return true;
+}
+bool F3dWindow::SetDisplay(int mode, uint32_t width, uint32_t height, int percent, std::string& error)
+{
+    const int priorMode = mMode, priorScale = mRenderScale;
+    const uint32_t priorWidth = mModeWidth, priorHeight = mModeHeight;
+    if (!SetMode(mode, width, height, error))
+        return false;
+    if (SetRenderScale(percent, error))
+        return true;
+    std::string ignored;
+    SetMode(priorMode, priorWidth, priorHeight, ignored);
+    mRenderScale = priorScale;
+    return false;
+}
+int F3dWindow::EffectiveRenderScale() const
+{
+    uint32_t outW, outH;
+    GetOutputDimensions(&outW, &outH);
+    const uint32_t w = std::max<uint32_t>(1, outW * (uint32_t)mRenderScale / 100); // as GetDimensions
+    return outW ? std::min(100, std::max(1, (int)(((uint64_t)w * 100 + outW / 2) / outW))) : mRenderScale;
 }
 size_t F3dWindow::DisplaySizes(uint32_t (*sizes)[2], size_t max) const
 {
