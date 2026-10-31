@@ -61,13 +61,11 @@ class StreamTests(unittest.TestCase):
         for side in tas_stream.SIDES:
             assert (run / "stream" / side / "2.jpg").read_bytes()[:2] == b"\xff\xd8"
 
-
     def test_a_poll_pictured_on_one_side_only_is_not_in_the_stream(self):
         tmp_path = self.tmp
         run = make_run(tmp_path, polls=(0, 25, 50), original=(0, 50))
         tas_stream.pack(run)
         assert json.loads((run / "stream" / "index.json").read_text())["polls"] == [0, 50]
-
 
     def test_pack_only_adds_so_pruned_shots_keep_their_frames(self):
         tmp_path = self.tmp
@@ -82,7 +80,6 @@ class StreamTests(unittest.TestCase):
         assert out["polls"] == 3 and out["added"] == 2
         assert json.loads((run / "stream" / "index.json").read_text())["polls"] == [0, 25, 50]
 
-
     def test_inputs_are_null_past_the_movie_and_the_shot_interval_falls_back_to_the_smallest_gap(self):
         tmp_path = self.tmp
         run = make_run(tmp_path, polls=(0, 40, 100), every=0, raw="0001 1 2\n")
@@ -91,7 +88,6 @@ class StreamTests(unittest.TestCase):
         index = json.loads((run / "stream" / "index.json").read_text())
         assert index["inputs"] == [[1, 1, 2], None, None] and index["every"] == 40
 
-
     def test_a_run_without_pictures_refuses(self):
         tmp_path = self.tmp
         run = tmp_path / "plays" / "bare"
@@ -99,7 +95,6 @@ class StreamTests(unittest.TestCase):
         with self.assertRaises(DecompError) as refused:
             tas_stream.pack(run)
         assert refused.exception.key == "tas.stream"
-
 
     def test_pack_all_names_runs_or_takes_every_run_with_shots(self):
         tmp_path = self.tmp
@@ -112,14 +107,12 @@ class StreamTests(unittest.TestCase):
         with self.assertRaises(DecompError):
             tas_stream.pack_all(cfg, ["missing"])
 
-
     def test_the_index_endpoint_packs_then_answers(self):
         server, tmp_path = self.server, self.tmp
         make_run(tmp_path)
         status, body = site_core.answer(server, "GET", "/api/stream/r1", "", b"")
         assert status == HTTPStatus.OK
         assert body["run"] == "r1" and body["polls"] == [0, 25, 50] and body["every"] == 25 and len(body["inputs"]) == 3
-
 
     def test_an_unknown_run_or_a_run_without_a_stream_refuses_typed(self):
         server, tmp_path = self.server, self.tmp
@@ -131,7 +124,6 @@ class StreamTests(unittest.TestCase):
         status, body = site_stream.answer(server, "GET", "bare", "", b"")
         assert (status, body["code"]) == (HTTPStatus.NOT_FOUND, "stream.empty")
         assert site_stream.answer(server, "POST", "bare", "", b"")[0] == HTTPStatus.METHOD_NOT_ALLOWED
-
 
     def test_a_frame_is_served_and_a_bad_run_side_or_poll_refuses_typed(self):
         server, tmp_path = self.server, self.tmp
@@ -149,7 +141,6 @@ class StreamTests(unittest.TestCase):
             status, body, kind = site_stream.frame(server, rest)
             assert (status, kind, body["code"]) == (HTTPStatus.NOT_FOUND, "application/json", code), rest
 
-
     def test_a_run_id_cannot_leave_the_runs_folder(self):
         server = self.server
         assert site_stream.frame(server, "../x/port/0.jpg")[2] == "application/json"
@@ -161,7 +152,6 @@ class StreamTests(unittest.TestCase):
             60,
             ["1/8x", "1/4x", "1/2x", "1x", "2x", "4x", "8x", "16x"],
         ]
-
 
     def test_advance_moves_by_speed_times_sixty_polls_per_second_and_pauses_at_the_ends(self):
         assert clock(
@@ -178,11 +168,9 @@ class StreamTests(unittest.TestCase):
             0,
         ]
 
-
     def test_the_shown_poll_is_the_latest_recorded_one_at_or_before_the_clock(self):
         polls = "const p = [10, 25, 50]; return [-5, 10, 24.9, 25, 49, 50, 99].map(x => c.indexAt(p, x));"
         assert clock(polls) == [0, 0, 0, 1, 1, 2, 2]
-
 
     def test_step_seek_and_start_snap_to_recorded_polls_and_pause(self):
         assert clock(
@@ -202,13 +190,11 @@ class StreamTests(unittest.TestCase):
             10,
         ]
 
-
     def test_input_fields_are_typed_and_absent_inputs_stay_absent(self):
         assert clock("return [c.inputFields([32768, 5, -5]), c.inputFields(null)];") == [
             {"buttons": "8000", "x": 5, "y": -5},
             None,
         ]
-
 
     def test_the_region_holds_no_game_names_prose_or_timers(self):
         source = JS.read_text() + Path(site_stream.__file__).read_text() + Path(tas_stream.__file__).read_text()
