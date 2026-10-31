@@ -146,6 +146,57 @@ static void seam_tests(void)
     (void)n64c_settings_bind(&host, host_load, host_request);
 }
 
+/* The registration's lifetime. The embedding host binds before n64c_game_main; boot's call is the same bind with its own
+ * flags-only host, kept only when it returned true (the boot's own unbind at its exit is then its to make). A binding is
+ * never replaced: a bind while bound is refused and changes nothing; only an explicit unbind removes it. */
+static void lifetime_tests(void)
+{
+    Host pre = {0}, own = {0};
+    N64cOptions back, now;
+    N64cOptions o;
+    n64c_options_default(&o);
+    o.display.width = 1280;
+    o.display.height = 720;
+    pre.stored = o;
+    pre.has_config = 1;
+    own.stored = o;
+    own.has_config = 1;
+    n64c_settings_unbind();
+
+    /* a host bound before the boot survives it and gets the load and the requests */
+    Test_Check(n64c_settings_bind(&pre, host_load, host_request), "the host binds before the game's entry");
+    Test_Check(!n64c_settings_bind(&own, host_load, host_request), "boot's own bind is refused while a host is bound");
+    n64c_options_default(&back);
+    Test_Check(n64c_settings_load(&back) && pre.loads == 1 && own.loads == 0 && back.display.width == 1280,
+               "the boot's load reaches the pre-entry host");
+    start(0);
+    open_screen();
+    tap(DOWN);
+    tap(RIGHT);
+    (void)n64c_menu_take(&now);
+    Test_Check(pre.applies == 1 && pre.records == 1 && own.applies == 0, "and so does the request");
+    Test_Check(n64c_settings_load(&back) && pre.loads == 2 && own.loads == 0, "the host is still bound after the game's main returns");
+
+    /* rebinding while bound is refused, even for the same host or with missing callbacks; the binding stays */
+    Test_Check(!n64c_settings_bind(&pre, host_load, host_request), "rebinding the bound host is refused");
+    Test_Check(!n64c_settings_bind(&own, NULL, NULL), "a bind without callbacks is refused");
+    Test_Check(n64c_settings_load(&back) && pre.loads == 3 && own.loads == 0, "a refused bind leaves the host as it was");
+
+    /* only an explicit unbind removes it; then load refuses and a bind is accepted again */
+    n64c_settings_unbind();
+    n64c_options_default(&back);
+    Test_Check(!n64c_settings_load(&back) && pre.loads == 3 && own.loads == 0, "after unbind the load refuses and calls nobody");
+
+    /* no host bound: boot's own host is the one used, and it unbinds what it bound */
+    Test_Check(n64c_settings_bind(&own, host_load, host_request), "boot's own bind is accepted when none is bound");
+    Test_Check(n64c_settings_load(&back) && own.loads == 1 && pre.loads == 3, "the load reaches boot's own host");
+    Test_Check(!n64c_settings_bind(&pre, host_load, host_request), "a host binding late does not replace it");
+    n64c_settings_unbind();
+    Test_Check(!n64c_settings_load(&back) && own.loads == 1, "boot's unbind at its exit leaves nothing bound");
+    Test_Check(n64c_settings_bind(&pre, host_load, host_request), "so the next host binds");
+    n64c_settings_unbind();
+}
+
 int main(void)
 {
     host = (Host){0};
@@ -254,6 +305,7 @@ int main(void)
     pad = sample(L | R, 0);
     (void)pad;
     seam_tests();
+    lifetime_tests();
     puts("menu ok");
     return 0;
 }

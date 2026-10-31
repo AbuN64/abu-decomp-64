@@ -47,12 +47,17 @@ void n64c_options_default(N64cOptions *o);
  *            supplied by the shim) and leaves the prior display unchanged: the screen shows the message and keeps the
  *            options it had. The screen never applies a second time and n64c_display_apply never calls back into it.
  *            Called from the thread that calls n64c_menu_take, with no shim lock held.
- * The context is borrowed: the host keeps it alive from bind until n64c_settings_unbind. */
+ * The context is borrowed: the host keeps it alive from bind until n64c_settings_unbind.
+ * The registration is the host's and outlives n64c_game_main: the host binds before calling it, the game's boot binds its
+ * own flags-only host only when none is bound, and only n64c_settings_unbind removes a binding (the one who bound it
+ * unbinds it). There is one public name for it, this one; no other store is consulted. */
 typedef bool (*N64cSettingsLoadFn)(void *context, N64cOptions *options);
 typedef bool (*N64cSettingsRequestFn)(void *context, const N64cOptions *requested, N64cDisplaySettings *effective, char *error,
                                       size_t capacity);
-/* Binds the host (both callbacks required, else false and nothing changes); replaces any earlier binding. */
+/* Binds the host. False, with nothing changed, when a callback is missing or a host is already bound: a binding is never
+ * replaced, it is removed by n64c_settings_unbind first. */
 bool n64c_settings_bind(void *context, N64cSettingsLoadFn load, N64cSettingsRequestFn request);
+/* Removes the binding (none: no effect). Afterwards n64c_settings_load is false and the screen refuses every change. */
 void n64c_settings_unbind(void);
 /* The starting options: *o as the bound load callback leaves it. False when nothing is bound or it has no config. */
 bool n64c_settings_load(N64cOptions *o);

@@ -41,11 +41,10 @@ bool n64c_settings_bind(void *context, N64cSettingsLoadFn load, N64cSettingsRequ
 {
     if (!load || !request) return false;
     pthread_mutex_lock(&lock);
-    host.context = context;
-    host.load = load;
-    host.request = request;
+    const bool vacant = host.request == NULL;
+    if (vacant) host = (Host){context, load, request};
     pthread_mutex_unlock(&lock);
-    return true;
+    return vacant;
 }
 
 void n64c_settings_unbind(void)

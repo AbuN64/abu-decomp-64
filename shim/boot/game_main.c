@@ -161,8 +161,8 @@ static void tee_log(const char *user,const char *name)
     n64c_host_tee_stderr(path);
 }
 
-/* The seam's host side for this program: no archive, so no stored options (the flags and environment seed them) and a
- * request that only takes the display to the window. */
+/* The seam's host side for this program when the embedding host bound none: no archive, so no stored options (the flags and
+ * environment seed them) and a request that only takes the display to the window. */
 static bool boot_settings_load(void *context,N64cOptions *options)
 {
     (void)context;(void)options;
@@ -311,9 +311,6 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
     const int live=!o->capture;
     n64c_input_set_config_path(controls); /* the Controls page keeps its binds here; the window loads them */
     n64c_boot_frame_host(shaders,settings,o->offscreen);
-    /* This host keeps no options archive: the flags and the environment give the starting window and frame rate, and what
-     * the options screen changes holds for this run (the settings seam takes it to the window). */
-    (void)n64c_settings_bind(NULL,boot_settings_load,boot_settings_request);
     N64cOptions options;
     n64c_options_default(&options);
     options.display.width=o->out_w;options.display.height=o->out_h;
@@ -435,7 +432,12 @@ static int program(int argc,char **argv)
         fprintf(stderr,"assets: ok %s %s\n",assets.dump->id,assets.dir);
         return 0;
     }
-    return boot(&o,assets.cart,base,user);
+    /* A host bound before n64c_game_main keeps its binding through the run and after it; only when none is bound does this
+     * program bind its flags-only host, for this run, and unbind what it bound. */
+    const bool own_host=n64c_settings_bind(NULL,boot_settings_load,boot_settings_request);
+    const int rc=boot(&o,assets.cart,base,user);
+    if (own_host) n64c_settings_unbind();
+    return rc;
 }
 
 int main(int argc,char **argv)
