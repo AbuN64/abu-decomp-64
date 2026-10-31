@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import replace
 
 from abu_decomp import worktree
@@ -690,11 +691,17 @@ def test_a_header_diff_reports_the_closure_it_rebuilt():
 
 
 def clock(monkeypatch, links):
-    """meter.cpu() as a counter the fake link advances by the next of LINKS seconds; the order of link and apply."""
+    """meter.cpu() as a counter the fake link advances by the next of LINKS seconds; the order of link and apply.
+
+    The wall clock the phases read (stampbuild's `time`) is a counter too, held still: the phase lines read wall=0s by
+    construction, whatever the host load."""
+    from types import SimpleNamespace
+
     from abu_decomp import meter
 
     now, order = [0.0], []
     monkeypatch.setattr(meter, "cpu", lambda: now[0])
+    monkeypatch.setattr(stampbuild, "time", SimpleNamespace(monotonic=lambda: 0.0, time=time.time, sleep=time.sleep))
 
     def link(self):
         order.append("link")
