@@ -174,30 +174,12 @@ def required(profile: Profile, fresh: bool = True) -> dict[str, Any]:
     return oracle
 
 
-_ENTRY_NS = re.compile(r"^#define HOST_GUEST_NS_PER_ENTRY\s+(\S+)\s*$", re.MULTILINE)
-
-
-def guest_ns_per_entry(oracle: dict[str, Any]) -> str:
-    """The guest nanoseconds the oracle charges per charged function entry, read from the
-    `cpu_profile.h` its build rendered from the profile's CPU calibration (`tas.oracle.cpu_profile`, else `gen/`
-    beside the host): the work measure the port's clock shares, so both sides charge guest time alike."""
-    header = oracle["cpu_profile"] or oracle["host"].parent / "gen" / "cpu_profile.h"
-    try:
-        found = _ENTRY_NS.search(header.read_text())
-    except OSError as error:
-        raise DecompError("tas.oracle", f"cannot read the oracle's CPU timing {header}: {error}") from error
-    if not found or not float(found.group(1)) > 0:
-        raise DecompError("tas.oracle", f"{header} has no positive HOST_GUEST_NS_PER_ENTRY")
-    return found.group(1)
-
-
 def port_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
     """What the port adds to its environment so its poll timing lines up with the oracle's and, when `pictures` is on,
     its pictures too. Without pictures no frame is dumped (a monkey batch wrote ~650 .ppm per run and filled the rig
     disk twice, 10-23): only the trace, the run's latest picture (view.bmp) and a fault's own capture remain."""
     env = {
         "N64C_TAS_TRACE": str(run / PORT_TRACE),
-        "N64C_GUEST_NS_PER_ENTRY": guest_ns_per_entry(oracle),  # the oracle's work charge: one guest clock
     }
     if oracle.get("pictures"):
         shots = run / SHOTS / "port"

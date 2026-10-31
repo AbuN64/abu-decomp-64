@@ -256,10 +256,6 @@ class PlayTests(unittest.TestCase):
         self.host = self.root / "n64host"
         self.host.write_text("")
         self.host.chmod(0o755)
-        (self.root / "gen").mkdir()
-        (self.root / "gen" / "cpu_profile.h").write_text(
-            "#pragma once\n#define HOST_NATIVE_CPU_SCALE 4.37\n#define HOST_GUEST_NS_PER_ENTRY 4702.01\n"
-        )
         (self.root / "movies").mkdir()
         sha = hashlib.sha1(b"rom").hexdigest()
         (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA *50\n")
@@ -270,22 +266,6 @@ class PlayTests(unittest.TestCase):
     def load(self, **extra):
         self.seat.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": {**self.tas, **extra}}))
         return load_profile(self.seat)
-
-    def test_the_port_is_given_the_oracles_work_charge(self):
-        oracle = tas_oracle.settings(self.profile)
-        self.assertEqual(tas_oracle.guest_ns_per_entry(oracle), "4702.01")
-        (self.root / "gen" / "cpu_profile.h").write_text("#define HOST_GUEST_NS_PER_ENTRY 0\n")
-        with self.assertRaises(DecompError):
-            tas_oracle.guest_ns_per_entry(oracle)
-        (self.root / "gen" / "cpu_profile.h").unlink()
-        with self.assertRaises(DecompError):
-            tas_oracle.guest_ns_per_entry(oracle)
-
-    def test_the_work_charge_comes_from_the_named_cpu_profile(self):
-        named = self.root / "named.h"
-        named.write_text("#define HOST_GUEST_NS_PER_ENTRY 12.5\n")
-        oracle = tas_oracle.settings(self.load(oracle={"host": "n64host", "cpu_profile": "named.h"}))
-        self.assertEqual(tas_oracle.guest_ns_per_entry(oracle), "12.5")
 
     def test_settings(self):
         self.assertIsNone(tas_oracle.settings(self.load()))
@@ -370,7 +350,7 @@ class PlayTests(unittest.TestCase):
         self.assertEqual(port_env["N64C_TAS_SHOT_DIR"], str(run / "shots" / "port"))
         self.assertEqual(port_env["GCOV_PREFIX"], str(run / "gcov"))  # counters stay in the run, not the build tree
         self.assertEqual(port_env["N64C_TAS_TRACE"], str(run / "port-trace.txt"))
-        self.assertEqual(port_env["N64C_GUEST_NS_PER_ENTRY"], "4702.01")  # the port charges work as the oracle does
+        self.assertNotIn("N64C_GUEST_NS_PER_ENTRY", port_env)  # the work scale is compiled into the port
         oracle = result["oracle"]
         self.assertEqual((oracle["outcome"], oracle["polls_reached"], oracle["status"]), ("ok", 57, "done"))
         self.assertEqual((oracle["max_diff"], oracle["max_poll"], oracle["vi_drift"]), (0.25, 50, -2))
