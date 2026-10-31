@@ -1,4 +1,8 @@
-"""`decomp tas serve`: the Runner page's server (orch plans/GAME-RUNNER.md, sections 7 and 10a).
+"""`decomp tas serve`: the Runner site's server (orch plans/GAME-RUNNER.md, sections 7 and 10a; lanes/RUNNER-REDO).
+The page (runner.html) is the site shell: header, function map sidebar, and the routes feed / function / stream, each
+region a module under static/site. The record contract, the live feed and the region endpoints are module site_core
+(`/api/contract`, `/api/feed`, `/api/feed/stream` Server-Sent Events, `/api/map|fn|stream|feedback/...`); the feed
+is fed from the same run rows live.json holds, at the moment Live writes them.
 Section `tas.serve`: {"listen": "HOST:PORT", "jobs": N, "inbox": path, "states": path, "pin": path, "keep_days": days,
 "phase_frame_minutes": m, "port_source": path}; `lanes`, `invocations` and `claims` are still accepted (the bake reads
 the last two). Every run (started here, by `tas play` in a shell, or by `play --all`) is a folder under `runs/plays`
@@ -54,6 +58,7 @@ from abu_decomp import (
     DecompError,
     evidence,
     inotify,
+    site_core,
     tas,
     tas_board,
     tas_corpus,
@@ -94,13 +99,14 @@ VIDEO_FPS = 30  # latest frame sampled at wall pace; no backlog or replay of mis
 VIDEO_HEADER = struct.Struct(">IQI")  # JPEG length, capture stamp (microseconds), input sequence
 AUDIO_LEAD_SECONDS = 0.25  # a listener joins this far behind the live end of the sound
 PAGE = Path(__file__).with_name("runner.html").read_text  # the page file
-STATIC = Path(__file__).with_name("static")  # files of the page (uFuzzy, the icon sprite), served at /static/NAME
+STATIC = Path(__file__).with_name("static")  # files of the page (the icon sprite, the region modules under site/), served at /static/NAME
 REACH_FLAG = 0x80000000  # set in a /video header's length field: the body is a reach record, not a JPEG
 WALL_TABLE = REACH_FLAG  # set in a /wall header's length field: the body is JSON {"id": run id} naming run index `seq`
 WALL_KEEPALIVE_INDEX = 0xFFFFFFFF  # a flagged, empty /wall record: nothing to show, but a closed client is noticed
 WALL_FPS = 4
 WALL_WIDTH = 192
 WALL_KEEPALIVE_SECONDS = 10.0
+FEED_KEEPALIVE_SECONDS = 15.0  # an idle /api/feed/stream sends a comment this often, so a closed client is noticed
 LIVE_SECONDS = 0.5  # while a run goes, live.json is refreshed at least this often (poll ticks)
 LIVE_GAP_SECONDS = 0.2  # live.json is rewritten at most this often: a change shows well inside 0.5 s
 LIVE_IDLE_SECONDS = 60.0  # with nothing running, live.json is refreshed this often (its clock, an abandoned run)
@@ -224,6 +230,7 @@ class Server:
         self.site = self.cfg["runs"] / "site"  # the baked site (module tas_bake) and live.json
         self.live = Live(self)
         self.reach = Reach()
+        self.feed = site_core.Feed()  # the site's typed events, fed by Live from the run rows
 
     # --- cached facts ---
 
@@ -875,6 +882,7 @@ class Live:
     def write(self) -> bool:
         """Write live.json if its content changed (not just `now`); True when it did. Atomic: temp file + rename."""
         doc = self.server.state()
+        self.server.feed.publish_runs(doc["runs"])  # the feed sees every run change Live sees
         self.running = [self.server.cfg["runs"] / "plays" / r["id"] for r in doc["runs"] if r["status"] == "running"]
         body = json.dumps({**doc, "now": 0}, separators=(",", ":")).encode()
         if body == self.last and self.path.is_file():
@@ -1226,6 +1234,10 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             try:
                 if path == "/":
                     self.reply(PAGE().encode(), "text/html; charset=utf-8")
+                elif path == "/api/feed/stream":
+                    self.feed_stream()
+                elif (site := site_core.answer(server, "GET", path, query, b"")) is not None:
+                    self.json(site[1], site[0])
                 elif path == "/api/coverage":
                     self.json(server.coverage())
                 elif path == "/api/pool":
@@ -1266,6 +1278,23 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.missing()
             except (BrokenPipeError, ConnectionResetError):
                 return
+
+        def feed_stream(self) -> None:
+            """Server-Sent Events: a `hello` with the feed's version, then one `feed` event per new or changed event,
+            sent when the feed changes (the Live watch's signal); a comment every FEED_KEEPALIVE_SECONDS when idle."""
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            self.close_connection = True
+            version, _ = server.feed.snapshot()
+            self.wfile.write(site_core.sse("hello", {"version": version}))
+            self.wfile.flush()
+            while True:
+                version, items = server.feed.since(version, FEED_KEEPALIVE_SECONDS)
+                self.wfile.write(b"".join(site_core.sse("feed", item) for item in items) or b": keepalive\n\n")
+                self.wfile.flush()
 
         def phase_shot(self, query: str) -> None:
             platform = dict(p.partition("=")[::2] for p in query.split("&") if p).get("platform") or ""
@@ -1553,7 +1582,11 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
             try:
-                body = json.loads(self.rfile.read(length) or b"{}")
+                raw = self.rfile.read(length)
+                path, _, query = self.path.partition("?")
+                if (site := site_core.answer(server, "POST", path, query, raw)) is not None:
+                    return self.json(site[1], site[0])
+                body = json.loads(raw or b"{}")
                 if self.path == "/api/play":
                     self.json(
                         server.play(

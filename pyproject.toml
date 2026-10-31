@@ -35,7 +35,7 @@ include = ["abu_decomp", "abu_decomp.*"]
 # The port template (dot-dirs and .gitkeep included) ships through MANIFEST.in: setuptools package-data globs skip dot-files.
 [tool.setuptools.package-data]
 "abu_decomp.build" = ["SCHEMA.md"]
-"abu_decomp" = ["runner.html", "static/*"]
+"abu_decomp" = ["runner.html", "static/*", "static/site/*"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]  # a bare pytest imports this tree, never the venv copy
 testpaths = ["tests"]  # shim/boot/test_*.py are scripts that parse argv on import: a bare pytest must not collect them

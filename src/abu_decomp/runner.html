@@ -2,1383 +2,184 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Runner</title>
-<link rel="icon" href="data:,">
-<meta name="description" content="Runner: watch every TAS run, a per-function coverage grid and decomp C in one view.">
+<!-- The Runner site shell (lanes/RUNNER-REDO/PLAN.md): header, map sidebar, routes feed / fn / stream / play.
+     Every feed line is one typed event from /api/feed rendered by its kind's template from /api/contract; new and
+     changed events arrive on /api/feed/stream (Server-Sent Events). Regions are modules under /static/site. -->
 <style>
 :root {
   --bg: #0d0e12; --surface: #15171d; --raised: #1e2129; --line: #2a2e38; --text: #eceef3; --dim: #969cab; --faint: #5d6372;
-  --accent: #9d8cff; --accent-ink: #0d0e12; --good: #3fc35a; --bad: #ff5c5c; --warn: #d9a400;
-  --hot: #ffe27a;
-  --hit: rgba(63, 195, 90, .16); --miss: rgba(255, 92, 92, .13); --part: rgba(217, 164, 0, .16);
-  --s-unassigned: #222222; --s-data: #6b7280; --s-unmapped: #555555; --s-fuzzy: #d9a400; --s-exact: #3b7ddd; --s-named: #1aa7a1; --s-covered: #3fc35a;
-  --src0: #3a4052; --src1: #5b86d6; --src2: #a9c8ff; --rt0: #3a4052; --rt1: #2f9e4f; --rt2: #86f0a3; --orc: #e0a040; --b-ok: #3fc35a; --b-diff: #ff6b5c;
+  --accent: #9d8cff; --accent-ink: #0d0e12; --good: #3fc35a; --bad: #ff5c5c; --warn: #d9a400; --hot: #ffe27a;
+  --s-asm: #555555; --s-exact: #3b7ddd; --s-named: #1aa7a1; --b-ok: #3fc35a; --b-diff: #ff6b5c;
   --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --radius: 10px; --gutter: 16px;
+  --radius: 10px; --gutter: 16px; --side: 340px;
   color-scheme: dark;
 }
-@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+@media (prefers-color-scheme: light) { :root {
   --bg: #f7f7fa; --surface: #ffffff; --raised: #eef0f4; --line: #dde0e7; --text: #13151b; --dim: #5b6070; --faint: #a3a8b5;
-  --accent: #5b43d6; --accent-ink: #ffffff; --s-unassigned: #e8e8e8; --src0: #cdd2dd; --src1: #7ea2e6; --src2: #1f4fb8; --rt0: #cdd2dd; --rt1: #5fbf7c; --rt2: #12793a; --orc: #c27c10; --b-ok: #12793a; --b-diff: #d93a2b; --hot: #ff8a00; color-scheme: light; } }
-:root[data-theme="light"] { --bg: #f7f7fa; --surface: #ffffff; --raised: #eef0f4; --line: #dde0e7; --text: #13151b; --dim: #5b6070;
-  --faint: #a3a8b5; --accent: #5b43d6; --accent-ink: #ffffff; --s-unassigned: #e8e8e8; --src0: #cdd2dd; --src1: #7ea2e6; --src2: #1f4fb8; --rt0: #cdd2dd; --rt1: #5fbf7c; --rt2: #12793a; --orc: #c27c10; --b-ok: #12793a; --b-diff: #d93a2b; --hot: #ff8a00; color-scheme: light; }
+  --accent: #5b43d6; --accent-ink: #ffffff; --b-ok: #12793a; --b-diff: #d93a2b; --hot: #ff8a00; color-scheme: light; } }
 * { box-sizing: border-box; }
-html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 var(--sans); }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.4 var(--sans); }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
-svg.i { width: 20px; height: 20px; flex: none; }
-.ib { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 7px; color: var(--dim); }
-.ib:hover { background: var(--raised); color: var(--text); }
-.ib svg.i { width: 18px; height: 18px; }
-.ib[disabled] { opacity: .35; pointer-events: none; }
-.ib.on { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+a { color: inherit; }
+svg.i { width: 18px; height: 18px; flex: none; }
 .mono { font-family: var(--mono); }
 .dim { color: var(--dim); }
 
 /* header */
-header { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 8px; height: 56px; padding: 0 var(--gutter);
-  background: var(--bg); }
-.logo { display: flex; align-items: center; gap: 8px; font: 700 16px var(--mono); letter-spacing: -.01em; text-decoration: none; color: var(--text); }
-.logo .mark { width: 20px; height: 20px; display: block; }
-.search { position: relative; flex: 1; max-width: 600px; margin: 0 auto; }
-.search input { width: 100%; height: 38px; padding: 0 16px 0 40px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface);
-  color: var(--text); font: 15px var(--sans); outline: none; }
+header { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 var(--gutter);
+  background: var(--bg); border-bottom: 1px solid var(--line); }
+.logo { display: flex; align-items: center; gap: 8px; font: 700 16px var(--mono); letter-spacing: -.01em; text-decoration: none; }
+.logo svg { width: 20px; height: 20px; color: var(--accent); }
+.search { position: relative; flex: 0 1 420px; }
+.search input { width: 100%; height: 36px; padding: 0 12px 0 36px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface);
+  color: var(--text); font: 14px var(--sans); outline: none; }
 .search input:focus { border-color: var(--accent); }
-.search > svg { position: absolute; left: 12px; top: 10px; width: 18px; height: 18px; color: var(--dim); }
-.search kbd { position: absolute; right: 10px; top: 9px; font: 12px var(--mono); color: var(--faint); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
-.results { position: absolute; left: 0; right: 0; top: 46px; max-height: min(70vh, 520px); overflow: auto; background: var(--surface);
-  border: 1px solid var(--line); border-radius: 8px; padding: 6px 0; display: none; box-shadow: 0 12px 32px rgba(0,0,0,.35); }
-.results.open { display: block; }
-.res { display: flex; align-items: center; gap: 10px; padding: 7px 14px; cursor: pointer; }
-.res.sel, .res:hover { background: var(--raised); }
-.res .nm { font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.res .nm mark { background: none; color: var(--accent); font-weight: 700; }
-.res .rt { margin-left: auto; color: var(--faint); font-size: 12px; white-space: nowrap; }
-.dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
-.chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 6px; background: var(--raised); white-space: nowrap; font-size: 13px; }
-.ctl { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); font-weight: 600; }
-.ctl:hover { border-color: var(--accent); }
-.ctl.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-.ctl .lbl { font-size: 13px; }
-.hdr-right { display: flex; align-items: center; gap: 4px; }
-#searchOpen { display: none; }
+.search svg { position: absolute; left: 10px; top: 9px; color: var(--dim); }
+.chips { display: flex; gap: 6px; overflow-x: auto; flex: 1; scrollbar-width: none; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 14px; background: var(--raised);
+  font: 12px var(--mono); white-space: nowrap; text-decoration: none; }
+.chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
+.chip.queued .dot { background: var(--warn); }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 8px; background: var(--accent);
+  color: var(--accent-ink); font-weight: 600; text-decoration: none; }
+.live { display: inline-flex; align-items: center; gap: 6px; font: 12px var(--mono); color: var(--dim); }
+.live i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.live.on i { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent); }
 
-/* grid */
-main { padding: 0 var(--gutter) 40px; min-width: 0; }
-.shell { display: grid; grid-template-columns: minmax(0, 1fr) 440px; gap: 0 24px; padding-right: var(--gutter); align-items: start; }
-.shell > .side { position: sticky; top: 64px; max-height: calc(100vh - 72px); overflow-y: auto; padding-top: 4px; }
-.row-h { display: flex; align-items: center; gap: 8px; margin: 22px 0 12px; font: 600 12px var(--mono); text-transform: uppercase; letter-spacing: .09em; color: var(--dim); }
-.row-h svg.i { width: 16px; height: 16px; }
-.row-h .count { color: var(--faint); }
-.filters { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin-left: auto; }
-.filters .chip { cursor: pointer; }
-.filters .chip { height: 28px; } .filters .chip.on { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 24px 16px; }
-.tile { cursor: pointer; min-width: 0; }
-.thumb { position: relative; aspect-ratio: 4 / 3; border-radius: 6px; overflow: hidden; background: #000; outline: 1px solid var(--line); outline-offset: -1px; }
-.tile:hover .thumb { outline-color: var(--accent); }
-.thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.thumb .ph { position: absolute; inset: 0; display: grid; place-items: center; color: var(--faint); }
-.thumb .ph svg { width: 36px; height: 36px; }
-.badge { position: absolute; display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 6px; border-radius: 3px;
-  background: rgba(10,11,15,.82); color: #e8eaf0; font: 600 11px var(--mono); letter-spacing: .02em; }
-.badge svg { width: 13px; height: 13px; }
-.badge.br { right: 6px; bottom: 8px; } .badge.tl { left: 6px; top: 6px; } .badge.bl { left: 6px; bottom: 8px; }
-.rdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
-.badge.live { color: #b9adff; text-transform: uppercase; }
-.pulse { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; animation: pulse 1.6s infinite; }
-@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 70%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
-@media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
-.prog { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgba(255,255,255,.18); }
-.prog i { display: block; height: 100%; background: var(--accent); }
-.meta { display: flex; gap: 10px; padding-top: 10px; }
-.meta .t { font: 600 13px var(--mono); line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
-.meta .s { color: var(--dim); font-size: 13px; margin-top: 2px; }
-.more { display: block; margin: 20px auto 0; }
+/* layout */
+.frame { display: grid; grid-template-columns: var(--side) 1fr; height: calc(100% - 56px); }
+aside { border-right: 1px solid var(--line); overflow: auto; padding: var(--gutter); }
+main { overflow: auto; padding: var(--gutter) calc(var(--gutter) * 1.5); }
+h2 { margin: 0 0 12px; font: 600 13px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+  display: flex; align-items: center; gap: 10px; }
+.stub { border: 1px dashed var(--line); border-radius: var(--radius); padding: 18px; color: var(--dim); background: var(--surface); }
+.stub b { color: var(--text); font-family: var(--mono); }
 
-/* watch */
-.watch { padding-top: 4px; }
-.main-col { min-width: 0; }
-.player { position: relative; aspect-ratio: 4 / 3; max-height: calc(100vh - 220px); margin: 0 auto; background: #000; border-radius: 8px; overflow: hidden; width: 100%; }
-.player img, .player canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
-.player.split { aspect-ratio: 8 / 3; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; }
-.player .osd { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px; }
-.player .osd .badge { position: static; }
-.player .lsl { left: 8px; bottom: 8px; } .player .lsl.o { left: calc(50% + 9px); }
-.scrub { position: relative; height: 18px; margin-top: 8px; cursor: pointer; }
-.scrub .bar { position: absolute; left: 0; right: 0; top: 8px; height: 2px; background: var(--line); }
-.scrub .bar::after { content: ""; position: absolute; inset: -3px 0; background: repeating-linear-gradient(90deg, var(--faint) 0 1px, transparent 1px 10%); opacity: .7; }
-.scrub .fill { position: absolute; left: 0; top: 7px; height: 4px; border-radius: 1px; background: var(--accent); }
-.scrub .mk { position: absolute; top: 3px; width: 3px; height: 12px; border-radius: 1px; background: var(--warn); }
-.wtitle { display: flex; align-items: center; gap: 12px; margin: 10px 0 4px; flex-wrap: wrap; }
-.wtitle h1 { font: 700 18px var(--mono); margin: 0; word-break: break-word; }
-.bar-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
-.bar-actions .sep { width: 1px; height: 20px; background: var(--line); margin: 0 3px; }
-.wsub { color: var(--dim); font-size: 13px; display: flex; gap: 12px; flex-wrap: wrap; }
-.side { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
-.tabs { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
-.tabs button { flex: 1; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 7px; font-size: 13px; font-weight: 600; color: var(--dim); white-space: nowrap; overflow: hidden; }
-.tabs button svg.i { width: 16px; height: 16px; }
-.tabs button.on { background: var(--raised); color: var(--text); } .tabs button.on svg { color: var(--accent); }
-.tabs button[disabled] { opacity: .4; }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
-.upnext { margin-top: 18px; }
-.upnext .grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px 12px; }
-
-/* map */
-.ladder { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; margin-top: 8px; }
-.ladder .chip { height: 24px; padding: 0 8px; font: 12px var(--mono); } .ladder .chip svg { width: 13px; height: 13px; }
-.ladder .gap { color: var(--bad); }
-.mzlive { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.mapwrap { position: relative; margin-top: 8px; }
-canvas#map { display: block; touch-action: manipulation; }
-.hc { position: absolute; z-index: 5; pointer-events: none; width: 250px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
-  padding: 9px 11px; box-shadow: 0 10px 28px rgba(0,0,0,.45); font-size: 12px; }
-.hc[hidden], .peek[hidden] { display: none; }
-.hn { font: 700 13px var(--mono); word-break: break-all; margin-bottom: 4px; }
-.hr { display: flex; align-items: center; gap: 6px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hr svg { width: 13px; height: 13px; color: var(--accent); flex: none; }
-.hg { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 2px 8px; margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--line); }
-.hg span { color: var(--dim); } .hg b { font: 600 12px var(--mono); }
-.hf { display: flex; align-items: center; gap: 5px; margin-top: 8px; color: var(--accent); font-size: 11px; } .hf svg { width: 13px; height: 13px; }
-.hbar { height: 6px; border-radius: 3px; background: var(--raised); overflow: hidden; margin-top: 6px; } .hbar i { display: block; height: 100%; background: var(--accent); }
-.tag { font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--raised); color: var(--dim); }
-.sq { display: inline-block; width: 10px; height: 10px; border-radius: 2px; flex: none; }
-.sq.hollow { box-shadow: inset 0 0 0 1.5px var(--faint); }
-.peek { display: flex; gap: 10px; align-items: flex-end; margin-top: 10px; padding: 10px; border: 1px solid var(--accent); border-radius: 8px; font-size: 12px; }
-.peek .pk { flex: 1; min-width: 0; }
-.tip { position: fixed; z-index: 60; pointer-events: none; max-width: 240px; padding: 4px 8px; border-radius: 6px; background: var(--raised); color: var(--text);
-  border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0,0,0,.4); font: 12px/1.35 system-ui, sans-serif; }
-.tip[hidden] { display: none; }
-.bars { display: grid; gap: 12px; }
-.bar .bh { display: flex; align-items: baseline; gap: 8px; }
-.bar .bn { font-weight: 700; font-size: 13px; } .bar .bd { font-size: 12px; color: var(--dim); }
-.bar .big { font: 700 24px/1 var(--mono); font-variant-numeric: tabular-nums; }
-.seg { display: flex; gap: 2px; height: 24px; margin-top: 6px; }
-.sg { min-width: 14px; border-radius: 4px; border: 1px solid transparent; padding: 0; cursor: pointer; }
-.sg:not(.on) { background: transparent !important; border-color: var(--line); background-image: repeating-linear-gradient(135deg, var(--line) 0 2px, transparent 2px 6px) !important; }
-.lgds { display: flex; flex-wrap: wrap; gap: 2px 4px; margin-top: 4px; }
-.lg { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 7px; border-radius: 6px; border: 1px solid transparent; color: var(--dim); font-size: 12px; cursor: pointer; }
-.lg i { width: 10px; height: 10px; border-radius: 2px; flex: none; } .lg b { font: 600 11px var(--mono); color: var(--faint); }
-.lg:hover { background: var(--raised); color: var(--text); } .lg.on { border-color: var(--accent); color: var(--text); } .lg:not(.on) i { opacity: .3; }
-.c-dec-asm { background: var(--src0); } .c-dec-fuzzy { background: var(--src1); } .c-dec-exact { background: var(--src2); }
-.c-exe-never { background: var(--rt0); } .c-exe-port { background: var(--rt1); } .c-exe-both { background: var(--rt2); } .c-exe-oracle { background: var(--orc); }
-.c-beh-behaves { background: var(--b-ok); } .c-beh-differs { background: var(--b-diff); } .c-beh-pending { background: var(--rt0); }
-.mapctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; }
-.mapctl .shown { font-size: 13px; color: var(--dim); margin-right: auto; } .mapctl .shown b { font: 700 15px var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
-.mapctl .chip { height: 28px; font-size: 12px; } .mapctl .chip.on { outline: 1px solid var(--accent); }
-.foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--dim); }
-.foot b { font: 700 13px var(--mono); color: var(--text); font-variant-numeric: tabular-nums; } .foot .chip { height: 24px; padding: 0 8px; font: 12px var(--mono); }
-.toggle { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--line); font-size: 12px; color: var(--dim); }
-.toggle svg { width: 14px; height: 14px; }
-.feedtxt { font: 600 12px var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
-.toggle.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
-
-/* function */
-.fnh { display: flex; align-items: center; gap: 4px; }
-.fnh h2 { margin: 0 4px; font: 700 16px var(--mono); word-break: break-all; }
-.facts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
-.facts .chip { height: 26px; font-size: 12px; padding: 0 9px; }
-.calls { display: grid; grid-template-columns: 52px 1fr 64px; gap: 6px 8px; align-items: center; font-size: 12px; margin-top: 10px; }
-.calls .b { height: 10px; border-radius: 5px; background: var(--raised); overflow: hidden; }
-.calls .b i { display: block; height: 100%; }
-.calls .v { text-align: right; font-variant-numeric: tabular-nums; color: var(--dim); }
-.xref { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
-.xref h4 { margin: 0 0 6px; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); font-weight: 600; }
-.xref h4 svg { width: 16px; height: 16px; }
-.hop { display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px 6px; border-radius: 6px; font: 12px var(--mono); text-align: left; }
-.hop:hover { background: var(--raised); }
-.hop span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.code { margin-top: 10px; border-radius: 8px; background: var(--bg); overflow: auto; max-height: 56vh; font: 12.5px/1.55 var(--mono); }
-.code table { border-collapse: collapse; width: 100%; }
-.code td { padding: 0 10px 0 0; white-space: pre; vertical-align: top; }
-.code td.ln { color: var(--faint); text-align: right; padding: 0 8px; user-select: none; position: sticky; left: 0; background: var(--bg); }
-.code td.ct { color: var(--dim); text-align: right; padding: 0 8px; font-size: 11px; user-select: none; min-width: 52px; }
-.code tr.h td.ct { background: var(--hit); color: var(--good); } .code tr.m td.ct { background: var(--miss); color: var(--bad); }
-.code tr.p td.ct { background: var(--part); color: var(--warn); }
-.code tr.m td.src { background: var(--miss); }
-.code .k, .code .kt, .code .kr { color: #c792ea; } .code .nf { color: #82aaff; } .code .mi, .code .mh, .code .mf, .code .mo, .code .il { color: #f78c6c; }
-.code .s, .code .s1, .code .s2, .code .sc { color: #c3e88d; } .code .c1, .code .cm, .code .c { color: var(--faint); font-style: italic; }
-.code .cp, .code .cpf { color: #89ddff; } .code .o { color: #89ddff; }
-@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .code .k, :root:not([data-theme="dark"]) .code .kt { color: #7c3aed; }
-  :root:not([data-theme="dark"]) .code .nf { color: #1d4ed8; } :root:not([data-theme="dark"]) .code .mi, :root:not([data-theme="dark"]) .code .mh { color: #c2410c; }
-  :root:not([data-theme="dark"]) .code .cp, :root:not([data-theme="dark"]) .code .o { color: #0e7490; } }
-.movies { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-.movies .chip { height: 28px; font-size: 12px; cursor: pointer; }
-.movies .chip svg { width: 14px; height: 14px; }
-.sec { margin-top: 14px; font-size: 12px; font-weight: 700; color: var(--dim); display: flex; align-items: center; gap: 6px; }
-.sec svg { width: 16px; height: 16px; }
-.empty { display: flex; align-items: center; gap: 8px; color: var(--faint); font-size: 12px; padding: 8px 0; }
-.empty svg { width: 16px; height: 16px; }
-.claims { font: 11.5px var(--mono); color: var(--dim); margin: 6px 0 0; padding-left: 16px; }
-.claims li { margin: 2px 0; }
-.dv { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; } .dv th { text-align: left; color: var(--dim); font-weight: 600; padding: 2px 8px; } .dv td { padding: 2px 8px; border-top: 1px solid var(--line, #2a2a2a); } .dv tr.x td { background: color-mix(in srgb, var(--b-diff) 18%, transparent); }
-.cases { list-style: none; margin: 6px 0 0; padding: 0; font-size: 12px; }
-.case { display: flex; align-items: center; gap: 6px; padding: 2px 0; } .case .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.case .side { margin-left: auto; display: inline-flex; } .case .side + .side { margin-left: 0; } .case .side svg { width: 14px; height: 14px; }
-.case .side.ok { color: var(--good); } .case .side.bad { color: var(--bad); }
-
-.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px;
-  border-radius: 8px; display: none; align-items: center; gap: 8px; font-size: 13px; z-index: 50; }
-.toast.on { display: flex; }
-.pad { display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
-  background: color-mix(in srgb, var(--bg) 88%, transparent); justify-content: space-between; align-items: center; gap: 10px; user-select: none; -webkit-user-select: none; touch-action: none; }
-.pad.on { display: flex; }
-.stick { width: 132px; height: 132px; border-radius: 50%; background: var(--raised); border: 1px solid var(--line); position: relative; flex: none; }
-.stick i { position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px; border-radius: 50%; background: var(--faint); }
-.pbtns { display: grid; grid-template-columns: repeat(4, 48px); gap: 8px; }
-.pbtns button { height: 48px; padding: 0; border-radius: 50%; font-weight: 600; background: var(--raised); border: 1px solid var(--line); }
-.pbtns button.wide { border-radius: 10px; } .pbtns button.down { background: var(--accent); color: var(--accent-ink); }
-.thumb canvas { width: 100%; height: 100%; display: block; }
-.film header, .film .row-h.nofilm { display: none; }
-.film main { padding: 8px; } .film .grid { gap: 8px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
-.film .meta { display: none; }
-.err { color: var(--bad); }
-
-/* phone */
-@media (max-width: 1100px) {
-  .shell { grid-template-columns: minmax(0, 1fr); padding-right: 0; }
-  .shell > .side { position: fixed; left: 0; right: 0; bottom: 0; top: auto; z-index: 20; max-height: 38vh; padding: 6px var(--gutter) 8px; background: var(--bg); border-top: 1px solid var(--line); }
-  main { padding-bottom: 40vh; }
-  .player { max-height: none; }
-}
-@media (max-width: 640px) {
-  :root { --gutter: 12px; }
-  header { gap: 4px; }
-  .search { display: none; position: absolute; left: 8px; right: 8px; top: 8px; max-width: none; }
-  header.searching .search { display: block; }
-  header.searching .logo, header.searching .hdr-right { visibility: hidden; }
-  #searchOpen { display: inline-grid; margin-left: auto; }
-  .ctl .lbl, .hdr-right .chip { display: none; }
-  .grid { grid-template-columns: 1fr 1fr; gap: 16px 10px; }
-  .meta .t { font-size: 13px; } .meta .s { font-size: 12px; }
-  .watch-player { position: sticky; top: 56px; z-index: 10; background: var(--bg); margin: 0 calc(-1 * var(--gutter)); }
-  .player { border-radius: 0; }
-  .scrub { margin: 4px var(--gutter) 0; }
-  .wtitle h1 { font-size: 16px; }
-  .bar-actions { margin-left: 0; width: 100%; justify-content: space-between; }
-  .upnext .grid { grid-template-columns: 1fr 1fr; }
-  .bar-actions { border: 0; padding: 0; background: none; } .bar-actions .sep { display: none; }
-  .code { max-height: none; }
-}
+/* feed */
+.feed { list-style: none; margin: 0; padding: 0; max-width: 980px; }
+.ev { display: grid; grid-template-columns: 76px 22px 1fr auto; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; }
+.ev:nth-child(odd) { background: var(--surface); }
+.ev time { font: 12px var(--mono); color: var(--faint); }
+.ev .k { font: 11px var(--mono); color: var(--faint); }
+.ev b { font-weight: 600; }
+.ev a { color: var(--accent); text-decoration: none; }
+.ev a:hover { text-decoration: underline; }
+.ev .n { font-family: var(--mono); }
+.ev[data-family="run.progress"] svg { color: var(--good); }
+.ev[data-family="run.ended"] svg { color: var(--dim); }
+.ev[data-family="run.refused"] svg, .ev[data-family="feedback.filed"] svg { color: var(--bad); }
+.ev[data-family="function.matched"] svg { color: var(--s-named); }
+.ev[data-family="case.diffed"] svg { color: var(--warn); }
+.empty { color: var(--dim); padding: 24px 12px; }
+@media (max-width: 820px) { .frame { grid-template-columns: 1fr; } aside { display: none; } .chips { display: none; } }
 </style>
 </head>
 <body>
-<header id="hdr">
-  <a class="logo" href="#/" title="Runner"><svg class="mark" viewBox="0 0 20 20" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1.5" fill="var(--s-named)"/><rect x="11" y="1" width="8" height="8" rx="1.5" fill="var(--s-exact)"/><rect x="1" y="11" width="8" height="8" rx="1.5" fill="var(--accent)"/><rect x="11.75" y="11.75" width="6.5" height="6.5" rx="1.5" fill="none" stroke="var(--faint)" stroke-width="1.5"/></svg>runner</a>
-  <div class="search" id="search">
-    <svg class="i"><use href="#i-search"/></svg>
-    <input id="q" type="search" placeholder="Search functions and movies" autocomplete="off" spellcheck="false" aria-label="Search">
-    <kbd>/</kbd>
-    <div class="results" id="results" role="listbox"></div>
-  </div>
-  <button class="ib" id="searchOpen" title="Search" aria-label="Search"><svg class="i"><use href="#i-search"/></svg></button>
-  <div class="hdr-right">
-    <span class="chip mono" id="build" title="Port build"></span>
-    <button class="ctl" id="ctl" title="Take control (c)" aria-pressed="false"><svg class="i"><use href="#i-gamepad-2"/></svg><span class="lbl">Control</span></button>
-  </div>
+<header>
+  <a class="logo" href="#/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>runner</a>
+  <label class="search"><svg class="i"><use href="/static/icons.svg#i-search"/></svg><input id="q" placeholder="Filter the feed" autocomplete="off"></label>
+  <nav class="chips" id="chips" aria-label="live runs"></nav>
+  <span class="live" id="live"><i></i>offline</span>
+  <a class="btn" href="#/play"><svg class="i"><use href="/static/icons.svg#i-gamepad-2"/></svg>New run</a>
 </header>
-<div class="shell"><main id="view"></main><aside class="side" id="side"></aside></div>
-<div class="toast" id="toast"></div>
-<div class="pad" id="pad"></div>
-
-<script src="/static/uFuzzy.iife.min.js"></script>
-<script>
-"use strict";
-const $ = id => document.getElementById(id);
-const icon = (n, cls = "i") => `<svg class="${cls}"><use href="#i-${n}"/></svg>`;
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const STATE_VAR = { asm: "--s-unmapped", unmapped: "--s-unmapped", fuzzy: "--s-fuzzy", exact: "--s-exact", named: "--s-named", covered: "--s-covered" };
-const D = { skew: 0, live: { now: 0, runs: [], build: {} }, fns: null, movies: { rows: [] }, summary: null, man: {}, fnCache: new Map(), fnIndex: new Map(), pending: new Map() };
-const UI = { watching: null, fn: null, back: [], fwd: [], filter: "all", shown: 48, control: false, controlRun: null, sound: false, split: false, sel: null, pick: null };
-const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })
-  .then(r => r.json()).catch(() => ({ error: "server unreachable" }));
-const store = { get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (e) { return d; } },
-                set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
-
-/* pure:begin (unit-tested under node: tests/test_tas_page.py cuts this block out of the page) */
-// Frame stream framing (the /video and /wall wire format): u32 BE length (top bit set = a reach record), u64 BE capture stamp, u32 BE seq.
-function makeFramer(onRec) {
-  let buf = new Uint8Array(0);
-  return chunk => {
-    if (buf.length) { const j = new Uint8Array(buf.length + chunk.length); j.set(buf); j.set(chunk, buf.length); buf = j; } else buf = chunk;
-    let o = 0;
-    while (buf.length - o >= 16) {
-      const dv = new DataView(buf.buffer, buf.byteOffset + o, 16), raw = dv.getUint32(0), n = raw & 0x7fffffff;
-      if (n > 16 * 1024 * 1024) throw Error("invalid frame length");
-      if (buf.length - o < 16 + n) break;
-      onRec({ reach: !!(raw & 0x80000000), stamp: Number(dv.getBigUint64(4)), seq: dv.getUint32(12), body: buf.subarray(o + 16, o + 16 + n) });
-      o += 16 + n;
-    }
-    buf = buf.slice(o);
-  };
-}
-// Reach record (GAME-RUNNER 10a): u8 type (1 full bitset, 2 delta), u32 LE poll; full: bitset over fns rows; delta: varint n + delta-coded fresh rows, then the same for hot.
-function applyReach(F, u, t) {
-  const poll = (u[1] | u[2] << 8 | u[3] << 16 | u[4] << 24) >>> 0;
-  if (u[0] === 1) { F.bits = u.slice(5); F.n = 0; for (const x of F.bits) for (let v = x; v; v &= v - 1) F.n++; }
-  else if (u[0] === 2 && F.bits) {
-    let i = 5;
-    const rd = () => { let v = 0, s = 0, c; do { c = u[i++]; v |= (c & 127) << s; s += 7; } while (c & 128 && i <= u.length); return v >>> 0; };
-    for (let pass = 0; pass < 2; pass++) {
-      let n = rd(), p = 0;
-      while (n-- > 0 && i <= u.length) {
-        p += rd();
-        if (p >> 3 >= F.bits.length) continue;
-        if (pass === 0) { if (!(F.bits[p >> 3] & (1 << (p & 7)))) { F.bits[p >> 3] |= 1 << (p & 7); F.n++; } F.fresh.set(p, t); }
-        F.hot.set(p, t);
-      }
-    }
-  } else return false;
-  F.poll = poll; F.bytes += u.length; F.recs++; F.maxRec = Math.max(F.maxRec, u.length);
-  return true;
-}
-// A baked file's served path: manifest.json maps the logical name ("fns", "fnrows") to its content-hashed file; an unknown manifest falls back to the plain name.
-function dataPath(man, key, fallback) {
-  const m = man && typeof man === "object" ? man : {};
-  const pools = [m, m.files, m.data].filter(x => x && typeof x === "object" && !Array.isArray(x));
-  const strip = n => "/data/" + String(n).replace(/^\/?(data\/)?/, "");
-  for (const o of pools) if (typeof o[key] === "string") return strip(o[key]);
-  const re = new RegExp("^" + key + "\\.[0-9a-f]{6,}\\.(json|txt)$");
-  const names = pools.flatMap(o => Object.keys(o).concat(Object.values(o).filter(v => typeof v === "string"))).concat(Array.isArray(m.files) ? m.files : []);
-  const hit = names.find(n => typeof n === "string" && re.test(n.split("/").pop()));
-  return hit ? strip(hit) : strip(fallback);
-}
-// Pad state from keys, the Gamepad API and the touch pad (N64 button bits).
-const BT = { A: 0x8000, B: 0x4000, Z: 0x2000, START: 0x1000, UP: 0x0800, DOWN: 0x0400, LEFT: 0x0200, RIGHT: 0x0100,
-             L: 0x0020, R: 0x0010, CUP: 0x0008, CDOWN: 0x0004, CLEFT: 0x0002, CRIGHT: 0x0001 };
-const KEYS = [
-  ["ArrowUp", "stick up"], ["ArrowDown", "stick down"], ["ArrowLeft", "stick left"], ["ArrowRight", "stick right"],
-  ["KeyX", "A"], ["KeyC", "B"], ["KeyZ", "Z"], ["Enter", "START"], ["KeyA", "L"], ["KeyS", "R"],
-  ["KeyI", "CUP"], ["KeyK", "CDOWN"], ["KeyJ", "CLEFT"], ["KeyL", "CRIGHT"],
-  ["KeyT", "UP"], ["KeyG", "DOWN"], ["KeyF", "LEFT"], ["KeyH", "RIGHT"],
-];
-const PAD_BUTTONS = [[0, "A"], [1, "B"], [2, "B"], [3, "CUP"], [4, "L"], [5, "R"], [6, "Z"], [7, "Z"], [9, "START"], [12, "UP"], [13, "DOWN"], [14, "LEFT"], [15, "RIGHT"]];
-const STICK = 80, DEADZONE = 0.15;
-function padState(keys, touch, gamepads) {
-  let buttons = touch.buttons, x = touch.x, y = touch.y;
-  for (const [code, what] of KEYS) {
-    if (!keys.has(code)) continue;
-    if (what === "stick up") y += STICK; else if (what === "stick down") y -= STICK;
-    else if (what === "stick left") x -= STICK; else if (what === "stick right") x += STICK;
-    else buttons |= BT[what];
-  }
-  for (const g of gamepads) {
-    if (!g) continue;
-    for (const [i, what] of PAD_BUTTONS) if (g.buttons[i] && g.buttons[i].pressed) buttons |= BT[what];
-    const ax = v => Math.abs(v) < DEADZONE ? 0 : Math.round((v - Math.sign(v) * DEADZONE) / (1 - DEADZONE) * STICK);
-    if (g.axes.length >= 2) { x += ax(g.axes[0]); y -= ax(g.axes[1]); }
-    if (g.axes.length >= 4) {
-      if (g.axes[2] > 0.5) buttons |= BT.CRIGHT; if (g.axes[2] < -0.5) buttons |= BT.CLEFT;
-      if (g.axes[3] > 0.5) buttons |= BT.CDOWN; if (g.axes[3] < -0.5) buttons |= BT.CUP;
-    }
-  }
-  const c = v => Math.max(-STICK, Math.min(STICK, Math.round(v)));
-  return { buttons, x: c(x), y: c(y) };
-}
-// Port pixels that differ from the original's by more than `thr` (sum of RGB deltas) turn magenta; the rest dim. Returns the share.
-function diffPixels(d, o, thr) {
-  let n = 0;
-  for (let i = 0; i < d.length; i += 4) {
-    if (Math.abs(d[i] - o[i]) + Math.abs(d[i + 1] - o[i + 1]) + Math.abs(d[i + 2] - o[i + 2]) > thr) { d[i] = 255; d[i + 1] = 0; d[i + 2] = 200; n++; }
-    else { d[i] >>= 2; d[i + 1] >>= 2; d[i + 2] >>= 2; }
-  }
-  return n / Math.max(1, d.length / 4);
-}
-// ---------- the three bars: segments per bar and the include/exclude filter (pure) ----------
-// A function sits in exactly one segment of every bar. Within a bar the selected segments OR; across bars they AND.
-const BARS = [
-  { key: "dec", name: "Decomp", segs: [["asm", "asm"], ["fuzzy", "decompiled (fuzzy)"], ["exact", "exact"]] },
-  { key: "exe", name: "Exercised", segs: [["never", "never run"], ["port", "port only"], ["both", "both"], ["oracle", "original only"]] },
-  { key: "beh", name: "Behaviour", segs: [["behaves", "behaves"], ["differs", "differs"], ["pending", "not compared yet"]] },
-];
-const DEC_SEG = { asm: "asm", unmapped: "asm", fuzzy: "fuzzy", exact: "exact", named: "exact", covered: "exact" };  // named = exact C with a clean name
-const EXE_SEG = { none: "never", port: "port", both: "both", oracle: "oracle" };
-function rowSegs(row) {  // fns.json row -> [decomp seg, exercised seg, behaviour seg]; row[7] is the per-call verdict (behaves, differs-args, differs-result, missing, port-only, "" = not compared)
-  return [DEC_SEG[row[3]] || "asm", EXE_SEG[row[5]] || "never", row[7] === "behaves" ? "behaves" : row[7] ? "differs" : "pending"];
-}
-const defaultSel = () => ({ dec: new Set(["asm", "fuzzy", "exact"]), exe: new Set(["port", "both"]), beh: new Set(["differs"]) });
-const allSel = () => Object.fromEntries(BARS.map(b => [b.key, new Set(b.segs.map(s => s[0]))]));
-const passesSel = (sel, segs) => BARS.every((b, i) => sel[b.key].has(segs[i]));
-const sameSel = (a, b) => BARS.every(x => a[x.key].size === b[x.key].size && [...a[x.key]].every(k => b[x.key].has(k)));
-function toggleSeg(sel, bar, k) { const s = sel[bar]; s.has(k) ? s.delete(k) : s.add(k); }
-function barStats(rows) {  // per bar and segment [functions, bytes]; scope = exercised or compared code (the Behaviour big number's base)
-  const stat = Object.fromEntries(BARS.map(b => [b.key, Object.fromEntries(b.segs.map(s => [s[0], [0, 0]]))]));
-  const segs = rows.map(r => rowSegs(r)), scope = [0, 0], total = [0, 0];
-  rows.forEach((r, i) => {
-    BARS.forEach((b, a) => { const c = stat[b.key][segs[i][a]]; c[0]++; c[1] += r[2]; });
-    total[0]++; total[1] += r[2];
-    if (segs[i][1] !== "never" || segs[i][2] !== "pending") { scope[0]++; scope[1] += r[2]; }
-  });
-  return { segs, stat, scope, total };
-}
-function bigNumbers(st) {  // the three headline percents (of code bytes): exact decomp, exercised, behaves of exercised code
-  const pct = (a, b) => b ? 100 * a / b : 0;
-  return {
-    dec: pct(st.stat.dec.exact[1], st.total[1]),
-    exe: pct(st.total[1] - st.stat.exe.never[1], st.total[1]),
-    beh: pct(st.stat.beh.behaves[1], st.scope[1]),
-  };
-}
-/* pure:end */
-UI.sel = defaultSel();
-
-const now = () => Date.now() / 1000 + D.skew;
-function ago(t) { const s = Math.max(0, now() - t); return s < 60 ? `${s | 0}s` : s < 3600 ? `${s / 60 | 0}m` : s < 86400 ? `${s / 3600 | 0}h` : `${s / 86400 | 0}d`; }
-function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
-function toast(ic, text) { const t = $("toast"); t.innerHTML = icon(ic) + esc(text); t.classList.add("on"); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("on"), 2600); }
-const OUT_ICON = { ok: "circle-check", crash: "skull", hang: "hourglass", stop: "square", exit: "circle-alert", refused: "circle-alert" };
-const poster = m => `/data/posters/${encodeURIComponent(m)}.jpg`;
-
-async function getJson(path, opts) {
-  const r = await fetch(path, opts);
-  if (!r.ok) throw Error(`${path}: ${r.status}`);
+<div class="frame">
+  <aside id="side"></aside>
+  <main id="view"></main>
+</div>
+<script type="module">
+const $ = s => document.querySelector(s);
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) k === "class" ? (n.className = v) : n.setAttribute(k, v);
+  n.append(...kids.filter(k => k != null));
+  return n;
+};
+const icon = name => { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("class", "i");
+  const u = document.createElementNS("http://www.w3.org/2000/svg", "use"); u.setAttribute("href", `/static/icons.svg#i-${name}`); s.append(u); return s; };
+async function api(path, init) {
+  const r = await fetch(path, init);
   return r.json();
 }
+
+// ---------- the feed: events by id, rendered by their kind's template ----------
+const S = { contract: null, events: new Map(), listeners: new Map(), q: "" };
+const ICON = { "run.progress": "play", "run.queued": "hourglass", "run.ended": "circle-check", "run.refused": "circle-alert",
+  "case.diffed": "columns-2", "function.matched": "code-xml", "feedback.filed": "radio" };
+const family = kind => kind.split(":")[0];
+const fmt = v => typeof v === "number" && Number.isInteger(v) ? v.toLocaleString("en-US") : String(v);
+// One template -> nodes: the lane bold, a run's movie links to its stream, a target to its function, numbers in mono.
+function line(ev) {
+  const t = S.contract.templates[ev.kind], f = ev.fields, out = [];
+  let last = 0;
+  for (const m of t.matchAll(/\{(\w+)\}/g)) {
+    out.push(t.slice(last, m.index)); last = m.index + m[0].length;
+    const name = m[1], v = name === "lane" ? ev.lane : f[name];
+    if (name === "lane") out.push(el("b", {}, v));
+    else if (name === "movie" && f.run) out.push(el("a", { href: `#/stream/${encodeURIComponent(f.run)}` }, fmt(v)));
+    else if (name === "target") out.push(el("a", { href: `#/fn/${encodeURIComponent(v)}` }, fmt(v)));
+    else out.push(typeof v === "number" ? el("span", { class: "n" }, fmt(v)) : fmt(v));
+  }
+  out.push(t.slice(last));
+  return out;
+}
+function textOf(ev) { return [ev.lane, ...Object.values(ev.fields)].join(" ").toLowerCase(); }
+function renderFeed() {
+  const list = $("#feed");
+  const items = [...S.events.values()].sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1))
+    .filter(ev => !S.q || textOf(ev).includes(S.q));
+  if (list) list.replaceChildren(...(items.length ? items.map(ev => el("li", { class: "ev", "data-family": family(ev.kind), "data-id": ev.id },
+    el("time", { datetime: new Date(ev.at * 1000).toISOString() }, new Date(ev.at * 1000).toLocaleTimeString("en-GB", { hour12: false })),
+    icon(ICON[family(ev.kind)] || "list"), el("span", {}, ...line(ev)), el("span", { class: "k" }, ev.kind))) : [el("li", { class: "empty" }, "No events yet.")]));
+  const live = items.filter(ev => ev.kind.startsWith("run.progress") || ev.kind === "run.queued");
+  $("#chips").replaceChildren(...live.map(ev => el("a", { class: `chip ${ev.kind === "run.queued" ? "queued" : ""}`, href: `#/stream/${encodeURIComponent(ev.fields.run)}` },
+    el("i", { class: "dot" }), `${ev.lane} · ${ev.fields.movie} · ${fmt(ev.fields.poll)}`)));
+}
+function take(ev) { S.events.set(ev.id, ev); for (const fn of S.listeners.get(ev.kind) || []) fn(ev); }
+function connect() {
+  const src = new EventSource("/api/feed/stream");
+  src.addEventListener("hello", () => { $("#live").className = "live on"; $("#live").lastChild.textContent = "live"; });
+  src.addEventListener("feed", m => { take(JSON.parse(m.data)); renderFeed(); });
+  src.onerror = () => { $("#live").className = "live"; $("#live").lastChild.textContent = "reconnecting"; };
+}
+
+// ---------- routes and regions ----------
+const ctx = {
+  get contract() { return S.contract; },
+  api,
+  go: route => { location.hash = `#/${route}`; },
+  on: (kind, fn) => { if (!S.listeners.has(kind)) S.listeners.set(kind, []); S.listeners.get(kind).push(fn); },
+  stub: (what, card) => el("div", { class: "stub" }, `The ${what} is not built yet: card `, el("b", {}, card), " fills this region."),
+  route: null,
+};
+const REGION = { fn: "fn", stream: "stream", play: "play" };
+function parse() {
+  const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
+  const [name = "", ...rest] = path.split("/");
+  return { name, arg: decodeURIComponent(rest.join("/")), query: Object.fromEntries(new URLSearchParams(query)) };
+}
+async function show() {
+  const r = ctx.route = parse(), view = $("#view");
+  if (!REGION[r.name]) {
+    view.replaceChildren(el("h2", {}, "Feed"), el("ul", { class: "feed", id: "feed" }));
+    return renderFeed();
+  }
+  const mod = await import(`/static/site/${REGION[r.name]}.js`);
+  view.replaceChildren();
+  mod.mount(view, ctx);
+}
 async function boot() {
-  // First paint needs only the sprite, live.json and the manifest (5 requests with the page and uFuzzy); the big baked files follow.
-  const [sprite, live, man] = await Promise.all([
-    fetch("/static/icons.svg").then(r => r.text()), getJson("/data/live.json", { cache: "no-cache" }).catch(() => null), getJson("/data/manifest.json", { cache: "no-cache" }).catch(() => ({}))]);
-  document.body.insertAdjacentHTML("afterbegin", sprite);
-  D.man = man;
-  if (live) { D.live = live; D.skew = live.now - Date.now() / 1000; }
-  $("build").innerHTML = D.live.build && D.live.build.pin ? `${icon("git-branch")}${D.live.build.pin.slice(0, 8)}` : "";
-  $("ctl").onclick = toggleControl;
-  wireGlobal();
-  window.addEventListener("hashchange", route);
-  route();
-  setInterval(liveTick, 2000);
-  loadBaked();
+  S.contract = await api("/api/contract");
+  const first = await api("/api/feed");
+  for (const ev of first.events) S.events.set(ev.id, ev);
+  (await import("/static/site/map.js")).mount($("#side"), ctx);
+  $("#q").addEventListener("input", e => { S.q = e.target.value.trim().toLowerCase(); renderFeed(); });
+  addEventListener("hashchange", show);
+  await show();
+  connect();
 }
-async function loadBaked() {
-  try {
-    const [fns, movies, summary] = await Promise.all([getJson(dataPath(D.man, "fns", "fns.json")), getJson("/data/movies.json"), getJson("/data/summary.json")] );
-    Object.assign(D, { fns, movies, summary });
-    D.fnIndex = new Map(fns.rows.map((r, i) => [r[0], i]));
-    gridData();
-    initSearch();
-    dataReady();
-  } catch (e) { toast("circle-alert", "baked data unavailable: " + e.message); }
-}
-function dataReady() {
-  if (!UI.watching && !/^#\/f\//.test(location.hash) && location.hash !== "#/film") renderGrid();
-  else if (/^#\/f\//.test(location.hash) && !$("side")) route();
-  else if ($("side")) renderSide();
-  else if (location.hash === "#/film") route();
-}
-async function liveTick() {
-  if (document.hidden) return;
-  try {
-    const text = await fetch("/data/live.json", { cache: "no-cache" }).then(r => r.ok ? r.text() : Promise.reject());
-    if (text !== liveTick.last) { liveTick.last = text; applyLive(JSON.parse(text)); }
-  } catch (e) {}
-}
-const sigOf = l => l.runs.map(r => r.id + r.status + (r.input || "") + (r.pinned ? "p" : "") + (r.outcome || "")).join();
-function applyLive(next) {
-  const prev = D.live, was = UI.watching ? runById(UI.watching) : null;
-  D.live = next; D.skew = next.now - Date.now() / 1000;
-  for (const id of D.pending.keys()) if (runById(id)) D.pending.delete(id);
-  $("build").innerHTML = next.build && next.build.pin ? `${icon("git-branch")}${next.build.pin.slice(0, 8)}` : "";
-  const r = UI.watching ? runById(UI.watching) : null;
-  if (UI.control && UI.controlRun) {
-    const c = runById(UI.controlRun);
-    if (c && c.status !== "running") setControl(false, null);
-    else if (c && c.input === "human") UI.controlSeen = true;
-    else if (c && UI.controlSeen) setControl(false, null);
-  }
-  unionPrune();
-  if (location.hash === "#/film") return;
-  const changed = sigOf(prev) !== sigOf(next);
-  if (!UI.watching) { if (changed) renderGrid(); else patchTiles(); return; }
-  if (r && was && (was.status !== r.status || was.pinned !== r.pinned || (was.oracle ? 1 : 0) !== (r.oracle ? 1 : 0))) { renderWatch(); return; }
-  if (r) patchWatch(r);
-  if (changed) refreshOthers();
-}
-function patchTiles() {
-  for (const r of D.live.runs) {
-    const t = document.querySelector(`.tile[data-run="${CSS.escape(r.id)}"] .prog i`);
-    if (t) t.style.width = (r.polls ? Math.min(100, 100 * r.poll / r.polls) : 0) + "%";
-  }
-}
-function patchWatch(r) {
-  const pc = $("pollc"); if (pc) pc.textContent = `${r.poll}/${r.polls}`;
-  const f = document.querySelector("#scrub .fill"); if (f) f.style.width = (r.polls ? Math.min(100, 100 * r.poll / r.polls) : 100) + "%";
-}
-
-// ---------- routing ----------
-function route() {
-  const [, kind, arg] = location.hash.match(/^#\/(\w+)?\/?(.*)$/) || [];
-  const name = decodeURIComponent(arg || "");
-  document.body.classList.toggle("film", kind === "film");
-  if (kind === "w") { UI.watching = name; renderWatch(); }
-  else if (kind === "f") { openFn(name, false); }
-  else if (kind === "film") renderFilm();
-  else renderGrid();
-  window.scrollTo(0, 0);
-}
-// live.json `runs` holds the running, queued and newest finished runs (serve class Live); finished = recent.
-function recentRuns() { return D.live.runs.filter(r => r.status !== "running" && r.status !== "queued"); }
-function runById(id) { return D.live.runs.find(r => r.id === id) || D.pending.get(id); }
-function runForMovie(m) { return D.live.runs.find(r => r.movie === m); }
-
-// ---------- grid ----------
-const pic = (movie, wall) => `<div class="ph">${icon("clapperboard")}</div><img loading="lazy" ${wall ? `data-wall="${esc(wall)}" ` : ""}src="${poster(movie)}" alt="" onerror="this.remove()">`;
-function tile(r) {
-  const live = r.status === "running";
-  const pct = r.polls ? Math.min(100, 100 * r.poll / r.polls) : 0;
-  const sp = r.input === "human" ? `${icon("gamepad-2")}1×` : `${icon("fast-forward")}`;
-  const right = live ? `<span class="badge br">${sp}</span>` : `<span class="badge br">${icon(OUT_ICON[r.outcome] || "circle-alert")}${r.poll}</span>`;
-  return `<div class="tile" data-run="${esc(r.id)}"><div class="thumb">${pic(r.movie, live ? r.id : "")}${live ? `<span class="badge tl live"><i class="pulse"></i>live</span><span class="badge bl mono" data-lit="${esc(r.id)}"><i class="rdot" style="background:${runHue(r.id)}"></i>${UN.runs.get(r.id)?.n || 0}</span>` : ""}${right}
-    ${live ? `<div class="prog"><i style="width:${pct}%"></i></div>` : ""}</div>
-    <div class="meta"><div><div class="t">${esc(r.movie)}</div><div class="s">${esc(r.label || "")}${r.subject ? " · " + esc(r.subject) : ""} · ${live ? `${pct | 0}%` : ago(r.ended || r.started)}</div></div></div></div>`;
-}
-function movieTile(m) {
-  const [name, polls, outcome, fn, last] = m;
-  return `<div class="tile" data-movie="${esc(name)}"><div class="thumb">${pic(name)}
-    <span class="badge br">${icon(OUT_ICON[outcome] || "circle-alert")}${polls}</span></div>
-    <div class="meta"><div><div class="t">${esc(name)}</div><div class="s">${fn ? esc(fn) + " · " : ""}${last ? ago(last) : "never"}</div></div></div></div>`;
-}
-function renderGrid() {
-  UI.watching = null; stopStage();
-  const live = D.live.runs.filter(r => r.status === "running");
-  const mv = D.movies.rows.filter(m => UI.filter === "all" || m[2] === UI.filter);
-  const f = (k, ic, label) => `<button class="chip ${UI.filter === k ? "on" : ""}" data-filter="${k}" title="${label}">${icon(ic)}</button>`;
-  $("view").innerHTML = `
-    <div class="row-h"><i class="pulse"></i>Live <span class="count">${live.length}</span></div>
-    <div class="grid">${live.map(r => tile(r)).join("") || `<div class="empty">${icon("fast-forward")}nothing running</div>`}</div>
-    <div class="row-h">${icon("history")}Recent</div>
-    <div class="grid">${recentRuns().slice(0, 12).map(r => tile(r)).join("")}</div>
-    <div class="row-h">${icon("clapperboard")}Movies <span class="count">${mv.length}</span>
-      <div class="filters">${f("all", "layout-grid", "All")}${f("crash", "skull", "Crash")}${f("hang", "hourglass", "Hang")}${f("ok", "circle-check", "OK")}</div></div>
-    <div class="grid">${mv.slice(0, UI.shown).map(movieTile).join("")}</div>
-    ${mv.length > UI.shown ? `<button class="chip more" id="more" title="Show more">${icon("chevron-right")}${mv.length - UI.shown}</button>` : ""}`;
-  $("view").onclick = e => {
-    const t = e.target.closest("[data-run],[data-movie],[data-filter],#more");
-    if (!t) return;
-    if (t.dataset.run) location.hash = `#/w/${encodeURIComponent(t.dataset.run)}`;
-    else if (t.dataset.movie) playMovie(t.dataset.movie);
-    else if (t.dataset.filter) { UI.filter = t.dataset.filter; renderGrid(); }
-    else { UI.shown += 96; renderGrid(); }
-  };
-  $("view").onpointerover = e => { const t = e.target.closest(".tile[data-run]"), id = t && UN.runs.has(t.dataset.run) ? t.dataset.run : null; if (id !== UN.tile) { UN.tile = id; drawMaze(); feedText(); } };
-  $("view").onpointerleave = () => { if (UN.tile) { UN.tile = null; drawMaze(); feedText(); } };
-  renderSide(); wallSync();
-}
-async function playMovie(name) {
-  wake();
-  const res = await post("/api/play", { movie: name, speed: 0, oracle: UI.split, fps_unlock: false });
-  if (res.error || !res.id) return toast("circle-alert", res.error || "could not start " + name);
-  goRun(res.id, name);
-}
-function goRun(id, movie) {
-  D.pending.set(id, { id, movie: movie || id, status: "running", poll: 0, polls: 0, input: "movie", started: now(), outcome: null });
-  location.hash = `#/w/${encodeURIComponent(id)}`;
-  setTimeout(liveTick, 400); setTimeout(liveTick, 1200);
-}
-
-// ---------- the wall: one multiplexed stream of thumbs for every running run (/wall; the frame header's seq is the run's index among running runs) ----------
-const WALL = { abort: null, urls: new Map() };
-function wallSync() {
-  const want = !!document.querySelector("img[data-wall]");
-  if (want && !WALL.abort) wallLoop();
-  else if (!want && WALL.abort) { WALL.abort.abort(); WALL.abort = null; }
-}
-async function wallLoop() {
-  const ab = WALL.abort = new AbortController();
-  while (WALL.abort === ab && !ab.signal.aborted) {
-    try {
-      const r = await fetch("/wall", { cache: "no-store", signal: ab.signal });
-      if (!r.ok || !r.body) throw Error("no wall");
-      const ids = [], rd = r.body.getReader(), feed = makeFramer(rec => {
-        // A flagged body is the index table {"id"} when it starts with "{", else that run's reach record.
-        if (rec.reach && rec.body[0] === 0x7b) { ids[rec.seq] = JSON.parse(new TextDecoder().decode(rec.body)).id; return; }
-        const run = { id: ids[rec.seq] };
-        if (!run.id) return;
-        if (rec.reach) return onWallReach(run.id, rec.body.slice());
-        const url = URL.createObjectURL(new Blob([rec.body.slice()], { type: "image/jpeg" }));
-        for (const img of document.querySelectorAll(`img[data-wall="${CSS.escape(run.id)}"]`)) img.src = url;
-        const old = WALL.urls.get(run.id); if (old) setTimeout(() => URL.revokeObjectURL(old), 500);
-        WALL.urls.set(run.id, url);
-      });
-      for (;;) { const { value, done } = await rd.read(); if (done) break; feed(value); }
-    } catch (e) { if (ab.signal.aborted) return; }
-    await new Promise(ok => setTimeout(ok, 2000));
-  }
-}
-
-// ---------- stage: the watched run's picture (/video while it runs, /frame or /shot when done), sound, reach records ----------
-const ST = { gen: 0, abort: null };
-function stopStage() { ST.gen++; if (ST.abort) ST.abort.abort(); ST.abort = null; stopFeed(); stopAudio(); clearInterval(ST.orc); clearInterval(LS.play); LS.play = 0; }
-async function paintBlob(blob, gen, id = "scr") {
-  const bmp = await createImageBitmap(blob);
-  try {
-    const cv = $(id); if (!cv || gen !== ST.gen) return;
-    const g = cv.getContext("2d"); g.imageSmoothingEnabled = false; g.drawImage(bmp, 0, 0, cv.width, cv.height);
-  } finally { bmp.close(); }
-}
-async function startStage(r) {
-  stopStage();
-  const gen = ++ST.gen;
-  if (!r || !r.id) return;
-  if (r.status === "running") { FEED.run = r.id; videoLoop(r.id, gen); startAudio(r); }
-  if (UI.split) lockstepStart(r, gen);
-  else if (r.status !== "running") {
-    try { const res = await fetch(`/frame/${encodeURIComponent(r.id)}`, { cache: "no-store" }); if (res.ok) await paintBlob(await res.blob(), gen); } catch (e) {}
-  }
-}
-async function videoLoop(id, gen) {
-  while (gen === ST.gen && !document.hidden) {
-    const abort = new AbortController(); ST.abort = abort;
-    try {
-      const r = await fetch(`/video/${encodeURIComponent(id)}`, { cache: "no-store", signal: abort.signal });
-      if (!r.ok || !r.body) throw Error("picture unavailable");
-      const reader = r.body.getReader();
-      let newest = null;
-      const feed = makeFramer(rec => { if (rec.reach) onReach(rec.body.slice()); else newest = rec.body.slice(); });
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done || gen !== ST.gen) break;
-        feed(value);
-        // Coalesced network reads paint only the newest sample; missed pictures never replay as a burst.
-        if (newest && !UI.split) { const n = newest; newest = null; await paintBlob(new Blob([n], { type: "image/jpeg" }), gen); }
-      }
-    } catch (e) { if (abort.signal.aborted) return; }
-    finally { abort.abort(); }
-    if (gen !== ST.gen) return;
-    await new Promise(ok => setTimeout(ok, 400));
-  }
-}
-async function shotPair(r, poll) {
-  try { const res = await fetch(`/shot/${encodeURIComponent(r.id)}?side=port&poll=${poll}`, { cache: "no-store" }); if (res.ok) await paintBlob(await res.blob(), ST.gen); } catch (e) {}
-}
-// ---------- lockstep: the port and the original game on the same input poll ----------
-// Both sides replay the run's poll-keyed movie.raw on the deterministic clock and picture every N polls (tas_oracle), so a
-// pair of shots with one poll index is the same input frame on both; /diff lists the compared polls, /shot serves each side.
-// One scrubber and the step keys move both canvases together; the diff toggle paints the port's differing pixels.
-const LS = { run: null, rows: [], i: -1, diff: false, play: 0, playing: false, follow: true, share: null };
-async function lockstepStart(r, gen) {
-  // a re-render of the same run (diff, play, sound, pin) keeps the compared poll; only another run starts at the newest
-  if (LS.run !== r.id || LS.i < 0) Object.assign(LS, { run: r.id, rows: [], i: -1, follow: true, share: null, playing: false });
-  const tick = async (fresh = false) => {
-    if (gen !== ST.gen) return;
-    try { const res = await fetch(`/diff/${encodeURIComponent(r.id)}`, { cache: "no-store" }); if (res.ok) LS.rows = (await res.json()).rows || []; } catch (e) {}
-    if (gen === ST.gen && LS.follow && LS.rows.length && (fresh || LS.i !== LS.rows.length - 1)) await lockstepShow(LS.rows.length - 1, gen);
-    else if (gen === ST.gen && fresh && LS.i >= 0) await lockstepShow(LS.i, gen);
-    else lockstepInfo();
-  };
-  await tick(true);
-  if (gen === ST.gen && LS.playing) lockstepPlay(true);
-  if (r.status === "running") { clearInterval(ST.orc); ST.orc = setInterval(tick, 2000); }
-}
-async function lockstepShow(i, gen = ST.gen) {
-  const r = runById(LS.run), row = LS.rows[i]; if (!r || !row) return;
-  LS.i = i;
-  const pics = await Promise.all(["port", "oracle"].map(side => fetch(`/shot/${encodeURIComponent(r.id)}?side=${side}&poll=${row.poll}`, { cache: "force-cache" }).then(x => x.ok ? x.blob() : null).catch(() => null)));
-  if (gen !== ST.gen || LS.i !== i) return;
-  await Promise.all([[0, "scr"], [1, "orc"]].map(([k, id]) => pics[k] && paintBlob(pics[k], gen, id)));
-  LS.share = LS.diff ? diffPaint() : null;
-  lockstepInfo();
-}
-function lockstepInfo() {
-  const row = LS.rows[LS.i], r = runById(LS.run);
-  for (const id of ["lsp", "lso"]) { const t = $(id); if (t) t.textContent = row ? `${id === "lsp" ? "port" : "original"} · poll ${row.poll}` : "waiting for paired shots"; }
-  const d = $("lsd"); if (d) d.textContent = row ? `${LS.i + 1}/${LS.rows.length}${row.diff != null ? ` · diff ${(100 * row.diff).toFixed(1)}%` : ""}${LS.share != null ? ` · ${(100 * LS.share).toFixed(1)}% px` : ""}` : "";
-  const m = $("pk"), sc = $("scrub");
-  if (row && r && sc) { const k = m || sc.appendChild(Object.assign(document.createElement("div"), { id: "pk", className: "mk" })); k.style.cssText = `left:${100 * row.poll / Math.max(r.polls, 1)}%;background:var(--accent)`; }
-}
-function lockstepStep(d) { LS.follow = false; const i = Math.max(0, Math.min(LS.rows.length - 1, LS.i + d)); if (i !== LS.i) lockstepShow(i); }
-function lockstepPick(poll) {  // the compared poll nearest the scrubbed one
-  if (!LS.rows.length) return;
-  let i = 0; for (let k = 1; k < LS.rows.length; k++) if (Math.abs(LS.rows[k].poll - poll) < Math.abs(LS.rows[i].poll - poll)) i = k;
-  LS.follow = i === LS.rows.length - 1; if (i !== LS.i) lockstepShow(i);
-}
-function lockstepPlay(on) {
-  clearInterval(LS.play); LS.play = 0; LS.playing = on;
-  if (on) { LS.follow = false; LS.play = setInterval(() => { if (LS.i < LS.rows.length - 1) lockstepShow(LS.i + 1); else { lockstepPlay(false); renderWatch(); } }, 200); }
-}
-function diffPaint() {
-  const a = $("scr"), b = $("orc"); if (!a || !b) return null;
-  const g = a.getContext("2d"), pa = g.getImageData(0, 0, a.width, a.height), share = diffPixels(pa.data, b.getContext("2d").getImageData(0, 0, b.width, b.height).data, 48);
-  g.putImageData(pa, 0, 0);
-  return share;
-}
-document.addEventListener("visibilitychange", () => { if (UI.watching) { const r = runById(UI.watching); if (r && !document.hidden) startStage(r); else if (document.hidden) stopStage(); } });
-
-// ---------- sound: one icon, off by default, unmuted on the first interaction; only a realtime run (a human one) has audible sound ----------
-const AU = { ctx: null, st: null };
-function wake() {
-  if (!UI.sound) return;
-  try { if (!AU.ctx) AU.ctx = new AudioContext({ latencyHint: "playback" }); if (AU.ctx.state === "suspended") AU.ctx.resume().catch(() => {}); } catch (e) {}
-}
-function startAudio(r) { stopAudio(); if (UI.sound && r && r.status === "running" && r.realtime === true) { wake(); streamAudio(r.id); } }
-function stopAudio() { if (AU.st) { AU.st.abort.abort(); for (const s of AU.st.sources) { try { s.stop(); } catch (e) {} s.disconnect(); } AU.st.sources.clear(); AU.st = null; } }
-async function streamAudio(id) {
-  const st = AU.st = { abort: new AbortController(), head: 0, sources: new Set() };
-  try {
-    const r = await fetch(`/audio/${encodeURIComponent(id)}`, { signal: st.abort.signal });
-    if (!r.ok || r.status === 204 || !r.body) return;
-    const reader = r.body.getReader();
-    let buf = new Uint8Array(0), fmt = null;
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done || st.abort.signal.aborted) break;
-      const joined = new Uint8Array(buf.length + value.length); joined.set(buf); joined.set(value, buf.length); buf = joined;
-      if (!fmt) { const h = wavHeader(buf); if (!h) continue; fmt = h; buf = buf.slice(h.data); }
-      const n = Math.floor(buf.length / fmt.align);
-      if (!n) continue;
-      await pcm(st, buf.subarray(0, n * fmt.align), fmt, n);
-      buf = buf.slice(n * fmt.align);
-    }
-  } catch (e) {}
-}
-function wavHeader(b) {
-  if (b.length < 12) return null;
-  const v = new DataView(b.buffer, b.byteOffset, b.length);
-  let p = 12, fmt = null;
-  while (p + 8 <= b.length) {
-    const id = String.fromCharCode(b[p], b[p + 1], b[p + 2], b[p + 3]), size = v.getUint32(p + 4, true);
-    if (id === "fmt ") { if (p + 24 > b.length) return null; fmt = { channels: v.getUint16(p + 10, true), rate: v.getUint32(p + 12, true), align: v.getUint16(p + 20, true) }; }
-    else if (id === "data") return fmt ? Object.assign(fmt, { data: p + 8 }) : null;
-    p += 8 + size + (size & 1);
-  }
-  return null;
-}
-async function pcm(st, bytes, fmt, n) {
-  const c = AU.ctx;
-  if (!c || c.state !== "running" || st.abort.signal.aborted) return;
-  if (fmt.channels !== 2 || fmt.align !== 4 || fmt.rate < 8000 || fmt.rate > 192000) throw Error("invalid PCM format");
-  const block = Math.floor(fmt.rate * .1);
-  for (let offset = 0; offset < n; offset += block) {
-    const count = Math.min(block, n - offset);
-    while (st.head + count / fmt.rate > c.currentTime + 2 && st.sources.size) {
-      await new Promise(resolve => {
-        const source = st.sources.values().next().value;
-        const done = () => { source.removeEventListener("ended", done); st.abort.signal.removeEventListener("abort", done); resolve(); };
-        source.addEventListener("ended", done, { once: true }); st.abort.signal.addEventListener("abort", done, { once: true });
-      });
-      if (st.abort.signal.aborted) return;
-    }
-    if (st.abort.signal.aborted) return;
-    if (st.head && st.head < c.currentTime) st.head = 0;
-    if (!st.head) st.head = c.currentTime + 0.5;
-    const v = new DataView(bytes.buffer, bytes.byteOffset + offset * fmt.align, count * fmt.align);
-    const ab = c.createBuffer(fmt.channels, count, fmt.rate);
-    for (let ch = 0; ch < fmt.channels; ch++) { const out = ab.getChannelData(ch); for (let i = 0; i < count; i++) out[i] = v.getInt16(i * fmt.align + ch * 2, true) / 32768; }
-    const src = c.createBufferSource(); src.buffer = ab; src.connect(c.destination); st.sources.add(src);
-    src.onended = () => { st.sources.delete(src); src.disconnect(); };
-    src.start(st.head); st.head += ab.duration;
-  }
-}
-
-// ---------- film: the live wall and the grid on screen with no chrome (#/film) ----------
-function renderFilm() {
-  stopStage();
-  const live = D.live.runs.filter(r => r.status === "running");
-  UI.watching = null;
-  $("view").innerHTML = `<div class="grid">${(live.length ? live : recentRuns().slice(0, 12)).map(r => tile(r)).join("")}</div>`;
-  $("view").onclick = null;
-  renderSide(); wallSync();
-}
-
-// ---------- watch ----------
-const NO_RUN = { id: "", movie: "no runs yet", status: "done", poll: 0, polls: 0, input: "movie", started: 0 };
-function watchedRun() { return runById(UI.watching) || D.live.runs.find(x => x.status === "running") || recentRuns()[0] || NO_RUN; }
-function othersOf(r) { return D.live.runs.filter(x => x.status === "running" && x.id !== r.id).concat(recentRuns().filter(x => x.id !== r.id)).slice(0, 8); }
-function renderWatch() {
-  const r = watchedRun();
-  UI.watching = r.id;
-  const live = r.status === "running";
-  const pct = r.polls ? Math.min(100, 100 * Math.min(r.poll, r.polls) / r.polls) : 100;
-  const mine = UI.control && UI.controlRun === r.id;
-  const picked = UI.pick && UI.pick.run === r.id ? UI.pick.poll : null;
-  $("view").innerHTML = `<div class="watch">
-    <div class="main-col">
-      <div class="watch-player">
-        <div class="player ${UI.split ? "split" : ""}" id="player">
-          <canvas id="scr" width="320" height="240"></canvas>
-          ${UI.split ? `<canvas id="orc" width="320" height="240" title="original"></canvas><span class="badge mono lsl" id="lsp"></span><span class="badge mono lsl o" id="lso"></span>` : ""}
-          <div class="osd">${live ? `<span class="badge live"><i class="pulse"></i>live</span>` : ""}
-            <span class="badge" id="speedb">${mine ? icon("gamepad-2") + "1×" : icon("fast-forward") + (live ? "turbo" : "done")}</span>
-            <span class="badge mono" id="pollc">${r.poll}/${r.polls}</span>${UI.split ? `<span class="badge mono" id="lsd"></span>` : ""}</div>
-        </div>
-        <div class="scrub" id="scrub" title="Pick a poll"><div class="bar"></div><div class="fill" style="width:${pct}%"></div>
-          ${r.took_at && r.polls ? `<div class="mk" style="left:${100 * r.took_at / r.polls}%"></div>` : ""}
-          ${picked != null && r.polls ? `<div class="mk" id="pk" style="left:${100 * picked / r.polls}%;background:var(--accent)"></div>` : ""}</div>
-      </div>
-      <div class="wtitle"><h1>${esc(r.movie)}</h1>
-        <div class="bar-actions">
-          <button class="ib" title="Stop (x)" ${live ? "" : "disabled"} data-act="stop">${icon("square")}</button>
-          <button class="ib" title="Retry from the picked poll (r)" ${r.id ? "" : "disabled"} data-act="retry">${icon("rotate-ccw")}</button>
-          <button class="ib" title="Replay at turbo (space)" ${r.id ? "" : "disabled"} data-act="replay">${icon("play")}</button><i class="sep"></i>
-          <button class="ib ${UI.split ? "on" : ""}" title="Original beside the port (o)" data-act="split" ${r.oracle ? "" : "disabled"}>${icon("columns-2")}</button>
-          ${UI.split ? `<button class="ib" title="Previous compared poll (←)" data-act="lsprev">${icon("chevron-left")}</button><button class="ib" title="Play both sides in lockstep (k)" data-act="lsplay">${icon(LS.playing ? "square" : "play")}</button><button class="ib" title="Next compared poll (→)" data-act="lsnext">${icon("chevron-right")}</button><button class="ib ${LS.diff ? "on" : ""}" title="Highlight the port's pixels that differ from the original (d)" data-act="diff">${icon("zoom-in")}</button>` : ""}
-          <button class="ib" title="Sound (m)" data-act="sound">${icon(UI.sound ? "volume-2" : "volume-x")}</button><i class="sep"></i>
-          <button class="ib ${r.pinned ? "on" : ""}" title="Pin (p)" ${r.id ? "" : "disabled"} data-act="pin">${icon("pin")}</button>
-          <button class="ib" title="Full screen (f)" data-act="full">${icon("maximize")}</button>
-        </div></div>
-      <div class="wsub"><span>${esc(r.label || "")}</span><span>${r.id ? (live ? "started " + ago(r.started) : "ended " + ago(r.ended || r.started)) : ""}</span>
-        ${r.outcome ? `<span>${icon(OUT_ICON[r.outcome] || "circle-alert", "i")} ${esc(r.stopped ? "stopped" : r.outcome)}</span>` : ""}</div>
-    </div>
-    <div class="upnext"><div class="row-h" style="font-size:15px">${icon("layout-grid")}Other runs</div><div class="grid" id="others">${othersOf(r).map(x => tile(x)).join("")}</div></div></div>`;
-  $("view").onclick = e => {
-    const t = e.target.closest("[data-run],[data-act]");
-    if (!t) return;
-    if (t.dataset.run) location.hash = `#/w/${encodeURIComponent(t.dataset.run)}`;
-    else action(t.dataset.act, watchedRun());
-  };
-  wireScrub(r);
-  renderSide();
-  startStage(r);
-  wallSync();
-  syncControl();
-}
-function refreshOthers() {
-  const o = $("others"); if (!o) return;
-  o.innerHTML = othersOf(watchedRun()).map(x => tile(x)).join("");
-  wallSync();
-}
-function wireScrub(r) {
-  const sc = $("scrub"); if (!sc) return;
-  const at = e => { const b = sc.getBoundingClientRect(), p = Math.round(Math.max(0, Math.min(1, (e.clientX - b.left) / b.width)) * Math.max(r.polls, 1)); UI.pick = { run: r.id, poll: p };
-    const m = $("pk") || sc.appendChild(Object.assign(document.createElement("div"), { id: "pk", className: "mk" })); m.style.cssText = `left:${100 * p / Math.max(r.polls, 1)}%;background:var(--accent)`; return p; };
-  sc.onpointerdown = e => { sc.setPointerCapture(e.pointerId); at(e); };
-  sc.onpointermove = e => { if (sc.hasPointerCapture(e.pointerId)) at(e); };
-  sc.onpointerup = e => { const p = at(e); if (UI.split) lockstepPick(p); else if (r.status !== "running" && r.id) shotPair(r, p); };
-}
-async function action(a, r) {
-  wake();
-  if (a === "split") { UI.split = !UI.split; renderWatch(); }
-  else if (a === "lsprev") lockstepStep(-1);
-  else if (a === "lsnext") lockstepStep(1);
-  else if (a === "lsplay") { lockstepPlay(!LS.playing); renderWatch(); }
-  else if (a === "diff") { LS.diff = !LS.diff; renderWatch(); }
-  else if (a === "sound") { UI.sound = !UI.sound; wake(); if (!UI.sound) stopAudio(); else startAudio(r); renderWatch(); }
-  else if (a === "full") $("player").requestFullscreen?.();
-  else if (a === "stop") { const res = await post("/api/stop", { id: r.id }); if (res.error) toast("circle-alert", res.error); setTimeout(liveTick, 300); }
-  else if (a === "pin") { const res = await post("/api/pin", { id: r.id, pinned: !r.pinned }); if (res.error) return toast("circle-alert", res.error); r.pinned = res.pinned; renderWatch(); setTimeout(liveTick, 300); }
-  else if (a === "replay") playMovie(r.movie);
-  else if (a === "retry") {
-    const at = UI.pick && UI.pick.run === r.id ? UI.pick.poll : (r.took_at != null ? r.took_at : r.poll);
-    const res = await post("/api/play", { from: r.id, at, label: "owner", fps_unlock: true });
-    if (res.error || !res.id) return toast("circle-alert", res.error || "could not retry");
-    setControl(true, res.id); goRun(res.id, res.movie);
-  }
-}
-
-// ---------- the one control button: take, release; keyboard, Gamepad API and the touch pad drive the run ----------
-function setControl(on, id) {
-  UI.control = on; UI.controlRun = on ? id : null; UI.controlSeen = false;
-  P.keys.clear(); P.touch = { buttons: 0, x: 0, y: 0 }; P.last = "";
-  syncControl();
-}
-function syncControl() {
-  const b = $("ctl"); if (!b) return;
-  b.classList.toggle("on", UI.control); b.setAttribute("aria-pressed", UI.control);
-  b.title = UI.control ? "Release control (Esc)" : "Take control (c)";
-  const sb = $("speedb"); const r = UI.watching ? runById(UI.watching) : null;
-  if (sb && r) sb.innerHTML = UI.control && UI.controlRun === r.id ? icon("gamepad-2") + "1×" : icon("fast-forward") + (r.status === "running" ? "turbo" : "done");
-  renderPad();
-}
-async function toggleControl() {
-  wake();
-  if (UI.control) {
-    const id = UI.controlRun;
-    await sendPad(true);  // the neutral pad lands before the release datagram
-    // Release: the run goes back to turbo with neutral input and keeps recording. A server without release stops and saves the run instead.
-    const res = await post("/api/input", { id, release: true });
-    if (!(res && res.released)) await post("/api/stop", { id });
-    setControl(false, null); toast("fast-forward", res && res.released ? "turbo" : "stopped and saved");
-    setTimeout(liveTick, 300);
-    return;
-  }
-  const r = UI.watching ? runById(UI.watching) : null;
-  if (r && r.status === "running") {
-    if (r.input !== "human") { const res = await post("/api/take", { id: r.id }); if (!res.taken) return toast("circle-alert", res.error || "could not take this run"); }
-    setControl(true, r.id); toast("gamepad-2", `poll ${r.poll} · 1×`);
-  } else {
-    const res = await post("/api/play", { label: "owner", fps_unlock: true });
-    if (res.error || !res.id) return toast("circle-alert", res.error || "could not start a run");
-    setControl(true, res.id); toast("gamepad-2", "power-on · 1×"); goRun(res.id, res.movie);
-  }
-  setTimeout(liveTick, 300);
-}
-const P = { seq: 0, keys: new Set(), last: "", lastAt: 0, touch: { buttons: 0, x: 0, y: 0 }, built: false };
-const touchWanted = () => { const v = store.get("runner.touchpad", ""); return v ? v === "on" : matchMedia("(pointer: coarse)").matches; };
-function controlling() { const r = UI.controlRun && runById(UI.controlRun); return !!(UI.control && r && r.status === "running" && UI.controlRun === UI.watching); }
-function sendPad(force) {
-  if (!controlling()) return;
-  const pad = padState(P.keys, P.touch, navigator.getGamepads ? navigator.getGamepads() : []), key = `${pad.buttons} ${pad.x} ${pad.y}`, t = performance.now();
-  if (key === P.last && !(force || t - P.lastAt > 500)) return;
-  P.last = key; P.lastAt = t; P.seq++;
-  return post("/api/input", { id: UI.controlRun, seq: P.seq, buttons: pad.buttons, x: pad.x, y: pad.y, pad: 0 });
-}
-function inputLoop() { sendPad(false); requestAnimationFrame(inputLoop); }
-function renderPad() {
-  const box = $("pad"); if (!box) return;
-  box.classList.toggle("on", controlling() && touchWanted());
-  if (P.built) return;
-  P.built = true;
-  const stick = document.createElement("div"), knob = document.createElement("i");
-  stick.className = "stick"; stick.append(knob);
-  const move = e => {
-    const b = stick.getBoundingClientRect(), dx = (e.clientX - b.left - b.width / 2) / (b.width / 2), dy = (e.clientY - b.top - b.height / 2) / (b.height / 2);
-    const m = Math.min(1, Math.hypot(dx, dy)), a = Math.atan2(dy, dx);
-    P.touch.x = Math.cos(a) * m * STICK; P.touch.y = -Math.sin(a) * m * STICK;
-    knob.style.transform = `translate(${Math.cos(a) * m * 42}px, ${Math.sin(a) * m * 42}px)`; sendPad(true);
-  };
-  const end = () => { P.touch.x = 0; P.touch.y = 0; knob.style.transform = ""; sendPad(true); };
-  stick.addEventListener("pointerdown", e => { e.preventDefault(); stick.setPointerCapture(e.pointerId); move(e); });
-  stick.addEventListener("pointermove", e => { if (stick.hasPointerCapture(e.pointerId)) move(e); });
-  stick.addEventListener("pointerup", end); stick.addEventListener("pointercancel", end);
-  const grid = document.createElement("div"); grid.className = "pbtns";
-  for (const [what, label] of [["A", "A"], ["B", "B"], ["Z", "Z"], ["START", "S"], ["L", "L"], ["R", "R"], ["CUP", "C↑"], ["CDOWN", "C↓"], ["CLEFT", "C←"], ["CRIGHT", "C→"]]) {
-    const b = document.createElement("button"); b.textContent = label; if (what === "START") b.className = "wide";
-    const on = e => { e.preventDefault(); b.setPointerCapture(e.pointerId); P.touch.buttons |= BT[what]; b.classList.add("down"); sendPad(true); };
-    const off = () => { P.touch.buttons &= ~BT[what]; b.classList.remove("down"); sendPad(true); };
-    b.addEventListener("pointerdown", on); b.addEventListener("pointerup", off); b.addEventListener("pointercancel", off);
-    grid.append(b);
-  }
-  box.append(stick, grid);
-}
-function wireGlobal() {
-  requestAnimationFrame(inputLoop);
-  window.addEventListener("blur", () => { P.keys.clear(); P.touch = { buttons: 0, x: 0, y: 0 }; sendPad(true); });
-  document.addEventListener("pointerdown", wake, true);
-  document.addEventListener("keydown", e => {
-    if (e.target.tagName === "INPUT" || e.ctrlKey || e.metaKey || e.altKey) return;
-    if (controlling()) {  // while driving, the keys belong to the game; Esc releases
-      if (e.key === "Escape") { toggleControl(); return; }
-      if (KEYS.some(k => k[0] === e.code)) { e.preventDefault(); P.keys.add(e.code); sendPad(true); }
-      return;
-    }
-    const r = UI.watching ? watchedRun() : null;
-    if (e.key === "/") { e.preventDefault(); $("q").focus(); }
-    else if (e.key === "c") toggleControl();
-    else if (e.key === "Escape" && UI.watching) location.hash = "#/";
-    else if (r && r.id && e.key === "x" && r.status === "running") action("stop", r);
-    else if (r && r.id && e.key === "r") action("retry", r);
-    else if (r && r.id && e.key === " ") { e.preventDefault(); action("replay", r); }
-    else if (r && e.key === "o" && r.oracle) action("split", r);
-    else if (r && e.key === "m") action("sound", r);
-    else if (r && UI.split && (e.key === "ArrowLeft" || e.key === "ArrowRight")) lockstepStep(e.key === "ArrowLeft" ? -1 : 1);
-    else if (r && UI.split && e.key === "d") action("diff", r);
-    else if (r && UI.split && e.key === "k") action("lsplay", r);
-    else if (r && r.id && e.key === "p") action("pin", r);
-    else if (r && e.key === "f") action("full", r);
-  });
-  document.addEventListener("keyup", e => { if (P.keys.delete(e.code)) { e.preventDefault(); sendPad(true); } }, true);
-}
-
-// ---------- side panel: map | code ----------
-function renderSide() {
-  const side = $("side");
-  if (!side) return;
-  side.innerHTML = `<div id="mapp"></div>${UI.fn ? `<div class="tabs"><button class="on" disabled>${icon("code-xml")}${esc(short(UI.fn))}</button><button data-close title="Close the function">${icon("x")}</button></div><div id="panel"></div>` : ""}`;
-  if (UI.fn) side.querySelector("[data-close]").onclick = () => { UI.fn = null; if (/^#\/f\//.test(location.hash)) history.replaceState(null, "", UI.watching ? `#/w/${encodeURIComponent(UI.watching)}` : "#/"); renderSide(); };
-  renderMap(); if (UI.fn) renderFn();
-}
-const short = n => n.length > 22 ? n.slice(0, 21) + "…" : n;
-
-// ---------- three bars + grid: one square per function, grouped in module blocks (from baked fns.json) ----------
-// The bars (BARS, above in the pure block) are the legend and the filter: every segment is a toggle. The grid lights a function only when
-// it passes all three bars and fades the rest; square size grows as the shown set shrinks.
-const REACH_TXT = { both: "port + original", port: "port only", oracle: "original only", none: "not reached" };
-const segLabel = (bar, k) => BARS.find(b => b.key === bar).segs.find(s => s[0] === k)[1];
-function gridData() {  // D.segs per row, D.stat (BARS counts), D.pass/D.nShown from the current selection
-  const st = barStats(D.fns.rows);
-  Object.assign(D, { segs: st.segs, stat: st.stat, big: bigNumbers(st), total: st.total });
-  refilter();
-}
-function refilter() {
-  D.pass = Uint8Array.from(D.segs, s => passesSel(UI.sel, s) ? 1 : 0);
-  D.nShown = D.pass.reduce((a, x) => a + x, 0);
-}
-const MZ = { hover: -1, peek: -1, layout: null, touch: false, lastE: null };
-function modOf(file) { const p = file.split("/"); return (p[1] === "game" ? p.slice(1, 3).join("/") : p[1]).replace(/_\d+$/, ""); }  // RENDER_2..4 fold into RENDER
-function mazeBlocks() {
-  if (D.mz) return D.mz;
-  const mods = new Map();
-  D.fns.rows.forEach((r, i) => { const m = modOf(D.fns.files[r[4]]); if (!mods.has(m)) mods.set(m, []); mods.get(m).push(i); });
-  return (D.mz = [...mods].map(([name, fns]) => ({ name, label: name.replace(/^game\//, ""), fns })).sort((x, y) => x.name < y.name ? -1 : 1));
-}
-function mzLayout(width) {  // shown functions in module blocks (masonry, biggest cell that fits), then the faded rest as one small run
-  const mods = mazeBlocks().map(b => ({ b, fns: b.fns.filter(i => D.pass[i]) })).filter(m => m.fns.length).sort((x, y) => y.fns.length - x.fns.length || (x.b.name < y.b.name ? -1 : 1));
-  const N = D.nShown, K = width >= 520 ? 4 : width >= 340 ? 3 : 2, lh = 13, gx = 10, gy = 9, hmax = Math.max(380, Math.round(innerHeight * 0.7));
-  const place = cs => {
-    const cw = Math.floor((width - gx * (K - 1)) / K), cols = Math.max(1, Math.floor(cw / cs)), H = new Array(K).fill(0), pos = new Map(), blocks = [];
-    for (const m of mods) {
-      const k = H.indexOf(Math.min(...H)), x = k * (cw + gx), y = H[k];
-      blocks.push({ label: m.b.label, x, y, w: cols * cs });
-      m.fns.forEach((fi, i) => pos.set(fi, [x + (i % cols) * cs, y + lh + Math.floor(i / cols) * cs, cs - 1]));
-      H[k] += lh + Math.ceil(m.fns.length / cols) * cs + gy;
-    }
-    return { pos, blocks, h: N ? Math.max(...H) - gy : 0, cs };
-  };
-  let cs = Math.max(6, Math.min(28, Math.floor(Math.sqrt(width * hmax / Math.max(N, 1) / 1.25)))), Lo = place(cs);
-  while (Lo.h > hmax && cs > 6) Lo = place(--cs);
-  const rest = [], fcs = 4, fcols = Math.floor(width / fcs);
-  for (const b of mazeBlocks()) for (const fi of b.fns) if (!D.pass[fi]) rest.push(fi);
-  const y0 = Lo.h + (N ? 14 : 0);
-  rest.forEach((fi, i) => Lo.pos.set(fi, [(i % fcols) * fcs, y0 + lh + Math.floor(i / fcols) * fcs, fcs - 1]));
-  Lo.rest = rest.length ? { y: y0, n: rest.length } : null;
-  Lo.height = rest.length ? y0 + lh + Math.ceil(rest.length / fcols) * fcs + 2 : Lo.h + 2;
-  Lo.lh = lh; Lo.width = width;
-  return Lo;
-}
-function barsHtml() {
-  return BARS.map(b => {
-    const st = D.stat[b.key], segs = b.segs.filter(([k]) => k !== "oracle" || st.oracle[0]), big = D.big[b.key];
-    const what = { dec: "exact, of code bytes", exe: "run, of code bytes", beh: "behave, of exercised code" }[b.key];
-    const tip = ([k, label]) => `${b.name} · ${label}: ${st[k][0]} functions · ${st[k][1]} B (${(100 * st[k][1] / D.total[1]).toFixed(1)}% of code bytes)${k === "pending" ? ` · ${D.stat.exe.never[0]} never run, so no verdict` : ""}`;
-    return `<div class="bar"><div class="bh"><span class="bn">${b.name}</span><b class="big">${big > 0 && big < 1 ? "<1" : Math.round(big)}%</b><span class="bd">${what}</span></div>
-      <div class="seg">${segs.map(s => `<button class="sg c-${b.key}-${s[0]} ${UI.sel[b.key].has(s[0]) ? "on" : ""}" style="flex:${Math.max(st[s[0]][1], 1)} 1 0" data-bar="${b.key}" data-seg="${s[0]}" title="${esc(tip(s))}"></button>`).join("")}</div>
-      <div class="lgds">${segs.map(s => `<button class="lg ${UI.sel[b.key].has(s[0]) ? "on" : ""}" data-bar="${b.key}" data-seg="${s[0]}" title="${esc(tip(s))}"><i class="c-${b.key}-${s[0]}"></i>${s[1]}<b>${st[s[0]][0]}</b></button>`).join("")}</div></div>`;
-  }).join("");
-}
-function renderMap() {
-  if (!D.fns || !D.summary || !D.segs) { $("mapp").innerHTML = `<div class="card"><div class="empty">${icon("grid-3x3")}loading coverage…</div></div>`; return; }
-  const s = D.summary, ns = s.next_stage || { failing: [] }, r = runById(UI.watching);
-  const live = r ? r.status === "running" : D.live.runs.some(x => x.status === "running");
-  $("mapp").innerHTML = `<div class="card">
-    <div class="bars" id="bars">${barsHtml()}</div>
-    <div class="mapctl"><span class="shown" id="shown"><b>${D.nShown}</b> functions shown</span>
-      <button class="chip ${sameSel(UI.sel, defaultSel()) ? "on" : ""}" id="fdef" title="Back to the default view: run code that differs">${icon("rotate-ccw")}reset</button>
-      <button class="chip ${sameSel(UI.sel, allSel()) ? "on" : ""}" id="fall" title="Turn every segment on">all</button>
-      ${live ? `<button class="toggle ${FEED.on ? "on" : ""}" id="liveTg" title="${r ? "Light up what this run executes" : "Light up what every running run executes"}"><i class="pulse"></i>live</button>` : ""}
-      ${feedLive() || unionLive() ? `<span class="lg"><i style="background:var(--hot)"></i>now</span><span class="lg"><i style="box-shadow:inset 0 0 0 1.5px var(--text)"></i>new</span>` : ""}</div>
-    ${live && FEED.on ? `<div class="mzlive"><span class="feedtxt" id="feedtxt"></span></div>` : ""}
-    <div class="mapwrap" id="mapwrap"><canvas id="map"></canvas><div class="hc" id="hc" hidden></div></div>
-    <div class="foot" title="${esc(s.since ? `counted since ${new Date(s.since * 1000).toISOString().slice(0, 16).replace("T", " ")}Z${s.runs ? `, ${s.runs} runs` : ", no run yet"}` : "")}">
-      <span class="chip" title="${esc(`stage ${s.stage || "R0"} to ${ns.stage || ""}${(ns.failing || []).map(f => `; ${f.key} ${f.value}/${f.threshold}`).join("")}`)}">${esc(s.stage || "R0")}${icon("chevron-right")}${esc(ns.stage || "")}</span></div>
-    <div class="peek" id="peek" hidden></div></div>`;
-  if ($("liveTg")) $("liveTg").onclick = () => { FEED.on = !FEED.on; renderMap(); };
-  const set = sel => { UI.sel = sel; MZ.peek = -1; refilter(); renderMap(); };
-  $("fdef").onclick = () => set(defaultSel());
-  $("fall").onclick = () => set(allSel());
-  $("bars").onclick = e => { const b = e.target.closest("[data-seg]"); if (b) { toggleSeg(UI.sel, b.dataset.bar, b.dataset.seg); MZ.peek = -1; refilter(); renderMap(); } };
-  drawMaze(); wireMaze(); feedText();
-  if (MZ.peek >= 0) showCard(MZ.peek, null);
-}
-function drawMaze() {
-  const cv = $("map"); if (!cv) return;
-  const w = Math.max(200, Math.floor(cv.parentElement.clientWidth));
-  const L = MZ.layout = mzLayout(w), dpr = devicePixelRatio || 1;
-  cv.style.width = w + "px"; cv.style.height = L.height + "px"; cv.width = Math.round(w * dpr); cv.height = Math.round(L.height * dpr);
-  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const bcol = { behaves: css("--b-ok"), differs: css("--b-diff"), pending: css("--rt0") }, dcol = { asm: css("--src0"), fuzzy: css("--src1"), exact: css("--src2") };
-  const dim = css("--dim");
-  g.font = "600 10px " + css("--mono"); g.textBaseline = "top"; g.textAlign = "left"; g.fillStyle = dim;
-  for (const b of L.blocks) { g.save(); g.beginPath(); g.rect(b.x, b.y, b.w, L.lh); g.clip(); g.fillText(b.label, b.x, b.y + 1); g.restore(); }
-  if (L.rest) g.fillText(`faded · ${L.rest.n} functions`, 0, L.rest.y + 1);
-  for (const [fi, q] of L.pos) {
-    const ok = D.pass[fi], s = q[2], sg = D.segs[fi];
-    g.globalAlpha = ok ? 1 : 0.14;
-    g.fillStyle = bcol[sg[2]]; g.fillRect(q[0], q[1], s, s);
-    if (ok && s >= 10) { g.fillStyle = dcol[sg[0]]; g.fillRect(q[0], q[1] + s - Math.round(s / 3), s, Math.round(s / 3)); }
-  }
-  g.globalAlpha = 1;
-  for (const [id, F] of feedLive() ? [[null, FEED]] : unionLive() ? unionFeeds() : []) {  // hot = entered in the last record(s), fading; fresh = first entry this run, a ring that fades slower
-    const now = performance.now(), hot = id ? runHue(id) : css("--hot"), txt = css("--text");
-    g.fillStyle = hot;
-    for (const [fi, t] of F.hot) {
-      const a = 1 - (now - t) / 700, q = L.pos.get(fi);
-      if (a <= 0) { F.hot.delete(fi); continue; }
-      if (q) { g.globalAlpha = 0.25 * a; g.fillRect(q[0] - 2, q[1] - 2, q[2] + 4, q[2] + 4); g.globalAlpha = a; g.fillRect(q[0], q[1], q[2], q[2]); }
-    }
-    g.strokeStyle = id ? hot : txt; g.lineWidth = 1;
-    for (const [fi, t] of F.fresh) {
-      const a = 1 - (now - t) / 1600, q = L.pos.get(fi);
-      if (a <= 0) { F.fresh.delete(fi); continue; }
-      if (q) { g.globalAlpha = a; g.strokeRect(q[0] - 1.5, q[1] - 1.5, q[2] + 3, q[2] + 3); }
-    }
-    g.globalAlpha = 1;
-  }
-  const ring = (fi, c, lw) => { const p = L.pos.get(fi); if (!p) return; g.strokeStyle = c; g.lineWidth = lw; g.strokeRect(p[0] - 1.5, p[1] - 1.5, p[2] + 3, p[2] + 3); };
-  const sel = UI.fn ? D.fnIndex.get(UI.fn) : -1;
-  if (sel >= 0) ring(sel, css("--text"), 1.5);
-  if (MZ.peek >= 0) ring(MZ.peek, css("--accent"), 2);
-  if (MZ.hover >= 0) ring(MZ.hover, css("--accent"), 2);
-}
-function mzHit(e) {  // function index of the square under the pointer (shown squares first), else -1
-  const b = $("map").getBoundingClientRect(), x = e.clientX - b.left, y = e.clientY - b.top;
-  let best = -1;
-  for (const [fi, q] of MZ.layout.pos) if (x >= q[0] && x < q[0] + q[2] + 1 && y >= q[1] && y < q[1] + q[2] + 1) { best = fi; if (D.pass[fi]) break; }
-  return best;
-}
-function wireMaze() {
-  const cv = $("map"), hc = $("hc");
-  cv.onpointerdown = e => { MZ.touch = e.pointerType !== "mouse"; };
-  cv.onpointermove = e => {
-    if (e.pointerType !== "mouse") return;
-    MZ.touch = false;
-    const fi = mzHit(e);
-    cv.style.cursor = fi >= 0 ? "pointer" : "default";
-    if (fi !== MZ.hover) { MZ.hover = fi; drawMaze(); }
-    if (fi >= 0) showCard(fi, e); else hc.hidden = true;
-  };
-  cv.onpointerleave = () => { if (MZ.hover >= 0) { MZ.hover = -1; drawMaze(); } hc.hidden = true; };
-  cv.onclick = e => {
-    const fi = mzHit(e); if (fi < 0) return;
-    hc.hidden = true;
-    if (MZ.touch && MZ.peek !== fi) { MZ.peek = fi; drawMaze(); showCard(fi, null); return; }  // touch: first tap peeks, a second tap opens
-    MZ.peek = -1; openFn(D.fns.rows[fi][0], true);
-  };
-}
-function fnCard(fi) {
-  const row = D.fns.rows[fi], f = D.fnCache.get(row[0]), file = D.fns.files[row[4]];
-  let more = "";
-  if (f) {
-    const exe = (f.lines || []).filter(Boolean), hit = exe.filter(x => x[0] > 0).length;
-    more = `<div class="hg"><span>lines</span><b>${exe.length ? hit + "/" + exe.length : "–"}</b><span>movies</span><b>${f.movies_total ?? (f.movies || []).length}</b>
-      <span>callers</span><b>${(f.callers || []).length}</b><span>callees</span><b>${(f.callees || []).length}</b>
-      ${f.behaviour ? `<span>behave</span><b>${esc(f.behaviour)}${f.call && f.call.cause ? " · " + (f.call.cause === "input" ? "fix upstream" : "own fault") : ""}</b>` : ""}<span>port</span><b>${f.port ? f.port.count : 0}</b></div>`;
-  } else more = `<div class="hr dim">…</div>`;
-  return `<div class="hn">${esc(row[0])}</div>
-    <div class="hr">${segLabel("dec", D.segs[fi][0])} · ${row[2]} B${row[6] ? ` <span class="tag">foundation</span>` : ""}</div>
-    <div class="hr">${segLabel("exe", D.segs[fi][1])} · ${segLabel("beh", D.segs[fi][2])} · ${REACH_TXT[row[5]]}</div>
-    <div class="hr dim mono" title="${esc(file)}">${esc(file.split("/").slice(-2).join("/"))} · ${row[1].toString(16).toUpperCase()}</div>${more}
-    ${unionLive() ? `<div class="hr">${icon("radio")}${reachers(fi).map(id => `<span class="rn"><i class="rdot" style="background:${runHue(id)}"></i>${esc(runById(id)?.movie || id)}</span>`).join(" ") || "no live run reaches it yet"}</div>` : ""}`;
-}
-let cardTimer = 0;
-function showCard(fi, e) {
-  const name = D.fns.rows[fi][0];
-  if (!D.fnCache.has(name)) {  // the fn file is ~1.2 KB gz, so hover prefetches it and the card fills in
-    clearTimeout(cardTimer);
-    cardTimer = setTimeout(() => fnData(name).then(() => { if (MZ.hover === fi) showCard(fi, MZ.lastE); else if (MZ.peek === fi) showCard(fi, null); }), 120);
-  }
-  if (e) {
-    MZ.lastE = e;
-    const hc = $("hc"); if (!hc) return;
-    hc.innerHTML = fnCard(fi) + `<div class="hf">${icon("code-xml")}click to open</div>`; hc.hidden = false; placeCard(e);
-  } else {
-    const p = $("peek"); if (!p) return;
-    p.innerHTML = `<div class="pk">${fnCard(fi)}</div><button class="ctl on" data-open="${esc(name)}">${icon("code-xml")}<span>Open</span></button>`;
-    p.hidden = false;
-    p.querySelector("[data-open]").onclick = () => { MZ.peek = -1; openFn(name, true); };
-  }
-}
-function placeCard(e) {
-  const hc = $("hc"), b = $("mapwrap").getBoundingClientRect(), x = e.clientX - b.left, y = e.clientY - b.top;
-  const w = hc.offsetWidth, h = hc.offsetHeight;
-  hc.style.left = Math.max(0, Math.min(b.width - w, x + 14)) + "px";
-  hc.style.top = (y + 18 + h > b.height && y - h - 10 > 0 ? y - h - 10 : y + 18) + "px";
-}
-addEventListener("resize", () => { if ($("map")) drawMaze(); });
-
-// ---------- tips: one instant tooltip style for every [title] / [data-tip]; the title moves to data-tip so the browser's delayed tip stays off ----------
-const TIP = { el: null, on: null };
-function tipHide() { if (TIP.el) TIP.el.hidden = true; TIP.on = null; }
-function tipShow(t) {
-  if (t.hasAttribute("title")) { t.dataset.tip = t.getAttribute("title"); t.removeAttribute("title"); }
-  const text = t.dataset.tip; if (!text) return tipHide();
-  if (!TIP.el) { TIP.el = document.createElement("div"); TIP.el.className = "tip"; TIP.el.setAttribute("role", "tooltip"); document.body.appendChild(TIP.el); }
-  const el = TIP.el; el.textContent = text; el.hidden = false; TIP.on = t;
-  const b = t.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
-  el.style.left = Math.max(4, Math.min(innerWidth - w - 4, b.left + b.width / 2 - w / 2)) + "px";
-  el.style.top = (b.top - h - 6 >= 4 ? b.top - h - 6 : b.bottom + 6) + "px";
-}
-const tipOf = e => e.target.closest ? e.target.closest("[title],[data-tip]") : null;
-document.addEventListener("pointerover", e => { if (e.pointerType === "touch") return; const t = tipOf(e); if (t) { if (t !== TIP.on) tipShow(t); } else tipHide(); });
-document.addEventListener("focusin", e => { const t = tipOf(e); if (t && e.target.matches(":focus-visible")) tipShow(t); });
-document.addEventListener("focusout", tipHide);
-document.addEventListener("pointerdown", tipHide); document.addEventListener("keydown", tipHide); addEventListener("scroll", tipHide, true);
-
-// ---------- live lighting: reach records of the watched run (GAME-RUNNER section 10a) ----------
-// Records arrive in-band on the run's /video stream (frame-synced); applyReach (above, unit-tested) decodes them.
-const FEED = { run: null, on: true, bits: null, n: 0, poll: 0, hot: new Map(), fresh: new Map(), bytes: 0, recs: 0, maxRec: 0, drawMs: 0, timer: 0 };
-function onReach(u) {
-  if (FEED.run !== UI.watching) return;
-  if (!applyReach(FEED, u, performance.now())) return;
-  scheduleDraw();
-}
-function scheduleDraw() {
-  if (FEED.timer) return;
-  FEED.timer = requestAnimationFrame(() => {
-    FEED.timer = 0;
-    const un = unionLive();
-    if (!$("map") || !(feedLive() || un)) return;
-    const t = performance.now(); drawMaze(); FEED.drawMs = performance.now() - t; feedText();
-    if ((un ? [...UN.runs.values()] : [FEED]).some(F => F.hot.size || F.fresh.size)) setTimeout(scheduleDraw, 60);  // let the flashes and rings fade between records
-  });
-}
-function feedLive() { return FEED.on && !!FEED.bits && FEED.run === UI.watching; }
-function feedText() {
-  const t = $("feedtxt"); if (!t) return;
-  const un = !UI.watching && unionBits(), tr = UN.tile && runById(UN.tile);
-  const lit = x => `${x} lit`, bits = a => a.reduce((n, x) => { for (let v = x; v; v &= v - 1) n++; return n; }, 0);
-  t.textContent = feedLive() ? lit(FEED.n) : un ? (tr ? `${lit(UN.runs.get(UN.tile).n)} · ${tr.movie}` : `${lit(bits(un))} · ${unionFeeds().length} live`) : "…";
-  t.title = `${FEED.recs} records, ${FEED.bytes} B so far (largest ${FEED.maxRec} B); last redraw ${FEED.drawMs.toFixed(1)} ms`;
-}
-function stopFeed() { if (FEED.timer) cancelAnimationFrame(FEED.timer); FEED.timer = 0; FEED.run = null; FEED.bits = null; FEED.n = 0; FEED.hot.clear(); FEED.fresh.clear(); FEED.bytes = FEED.recs = FEED.maxRec = 0; }
-// Union lighting (owner 10-26): off Watch, the grid shows what every running run reaches now. Their records ride the /wall
-// stream (seq = the run's index among running runs); each run keeps its own feed, the grid draws their OR, a run's flashes
-// take its colour, hovering a tile shows only that run, hovering a square names the runs that reach it.
-const UN = { runs: new Map(), tile: null };
-function onWallReach(id, u) {
-  let F = UN.runs.get(id);
-  if (!F) UN.runs.set(id, F = { bits: null, n: 0, poll: 0, hot: new Map(), fresh: new Map(), bytes: 0, recs: 0, maxRec: 0 });
-  if (!applyReach(F, u, performance.now())) return;
-  const b = document.querySelector(`[data-lit="${CSS.escape(id)}"]`); if (b) b.lastChild.textContent = F.n;
-  if (!UI.watching) scheduleDraw();
-}
-function unionPrune() {
-  const on = new Set(D.live.runs.filter(r => r.status === "running").map(r => r.id));
-  for (const id of UN.runs.keys()) if (!on.has(id)) UN.runs.delete(id);
-  if (UN.tile && !UN.runs.has(UN.tile)) UN.tile = null;
-}
-function unionLive() { return FEED.on && !UI.watching && [...UN.runs.values()].some(F => F.bits); }
-function unionFeeds() { return [...UN.runs].filter(([id, F]) => F.bits && (!UN.tile || UN.tile === id)); }
-function unionBits() {
-  const fs = unionFeeds(); if (!fs.length) return null;
-  const u = new Uint8Array(fs[0][1].bits.length); for (const [, F] of fs) for (let i = 0; i < u.length; i++) u[i] |= F.bits[i];
-  return u;
-}
-function reachers(fi) { return [...UN.runs].filter(([, F]) => F.bits && F.bits[fi >> 3] & (1 << (fi & 7))).map(([id]) => id); }
-function runHue(id) { const i = D.live.runs.findIndex(r => r.id === id); return `hsl(${(Math.max(i, 0) * 137.5) % 360} 80% 58%)`; }
-
-// ---------- function view ----------
-async function openFn(name, push) {
-  if (D.fns && !D.fnIndex.has(name)) { toast("circle-alert", name); return; }
-  if (UI.fn && UI.fn !== name && push !== "nav") { UI.back.push(UI.fn); UI.fwd = []; }
-  UI.fn = name;
-  if (!$("player")) { renderWatch(); return; }
-  if (location.hash !== `#/f/${encodeURIComponent(name)}` && UI.watching) history.replaceState(null, "", `#/f/${encodeURIComponent(name)}`);
-  renderSide();
-}
-async function fnData(name) {
-  if (D.fnCache.has(name)) return D.fnCache.get(name);
-  let v = null;
-  try { v = await getJson(`/data/fn/${encodeURIComponent(name)}.json`); } catch (e) {}
-  if (v) D.fnCache.set(name, v);
-  return v;
-}
-async function renderFn() {
-  const name = UI.fn;
-  if (!D.fns) { $("panel").innerHTML = `<div class="card"><div class="empty">${icon("code-xml")}loading…</div></div>`; return; }
-  const row = D.fns.rows[D.fnIndex.get(name)];
-  const f = await fnData(name);
-  if (UI.fn !== name) return;
-  const st = row[3], file = D.fns.files[row[4]];
-  const hop = n => `<button class="hop" data-fn="${esc(n)}" title="${esc(n)}">${D.fnIndex.has(n) ? `<i class="dot" style="background:var(${STATE_VAR[D.fns.rows[D.fnIndex.get(n)][3]] || "--faint"})"></i>` : `<i class="dot" style="background:var(--faint)"></i>`}<span>${esc(n)}</span></button>`;
-  const head = `<div class="fnh"><button class="ib" data-nav="back" ${UI.back.length ? "" : "disabled"} title="Back">${icon("arrow-left")}</button>
-    <button class="ib" data-nav="fwd" ${UI.fwd.length ? "" : "disabled"} title="Forward">${icon("chevron-right")}</button><h2>${esc(name)}</h2></div>
-    <div class="facts"><span class="chip"><i class="dot" style="background:var(${STATE_VAR[st] || "--faint"})"></i>${esc(st)}</span><span class="chip">${row[2]} B</span>
-      <span class="chip" title="reached by">${icon("locate-fixed")}${esc(row[5])}</span>${f && f.behaviour ? `<span class="chip">${icon(f.behaviour === "behaves" ? "circle-check" : "circle-alert")}${esc(f.behaviour)}</span>` : ""}
-      <span class="chip mono" title="${esc(file)}">${icon("file-code-2")}${esc(file.split("/").pop())}${f ? ":" + f.first : ""}</span></div>`;
-  if (!f) {
-    $("panel").innerHTML = `<div class="card">${head}<div class="empty">${icon("circle-alert")}no baked file for this function yet</div></div>`;
-    wireFn(); return;
-  }
-  const pc = f.port ? f.port.count : 0, oc = f.oracle ? f.oracle.count : 0, mx = Math.max(pc, oc, 1);
-  const lines = f.lines || [], callers = f.callers || [], callees = f.callees || [], movies = f.movies || [], claims = f.claims || [], behave = f.behave || [];
-  const rows = (f.html || []).map((h, i) => {
-    const g = lines[i];
-    let cls = "", ct = "";
-    if (g) { const [c, bt, bn] = g; cls = c > 0 ? (bn && bt < bn ? "p" : "h") : "m"; ct = (c > 0 ? (c > 9999 ? (c / 1000 | 0) + "k" : c) : "0") + (bn ? ` ${bt}/${bn}` : ""); }
-    return `<tr class="${cls}"><td class="ln">${f.first + i}</td><td class="ct">${ct}</td><td class="src">${h || " "}</td></tr>`;
-  }).join("");
-  const exe = lines.filter(Boolean), hit = exe.filter(g => g[0] > 0).length;
-  $("panel").innerHTML = `<div class="card">${head}
-    <div class="calls"><span class="dim">port</span><span class="b"><i style="width:${100 * pc / mx}%;background:var(--accent)"></i></span><span class="v">${pc}</span>
-      <span class="dim">original</span><span class="b"><i style="width:${100 * oc / mx}%;background:var(--s-named)"></i></span><span class="v">${oc}</span></div>
-    <div class="xref"><div><h4>${icon("arrow-up-left")}callers ${callers.length}</h4>${callers.map(hop).join("") || `<div class="empty">none static</div>`}</div>
-      <div><h4>${icon("arrow-down-right")}callees ${callees.length}</h4>${callees.map(hop).join("") || `<div class="empty">none</div>`}</div></div>
-    <div class="sec">${icon("code-xml")}C <span style="margin-left:auto;font-weight:400">${exe.length ? `${hit}/${exe.length} lines` : "no line counts yet"}</span></div>
-    ${rows ? `<div class="code"><table>${rows}</table></div>` : `<div class="empty">${icon("circle-alert")}no source slice</div>`}
-    <div class="sec">${icon("columns-2")}first diverging call, port vs original</div>
-    ${divergence(f.call) || `<div class="empty">${icon("circle-alert")}no per-call capture of this function yet</div>`}
-    <div class="sec">${icon("clapperboard")}reached by ${f.movies_total ?? movies.length}</div>
-    <div class="movies">${movies.slice(0, 12).map(m => `<span class="chip" data-movie="${esc(m)}">${icon("play")}${esc(m)}</span>`).join("") || `<div class="empty">${icon("clapperboard")}no movie yet</div>`}</div>
-    <div class="sec">${icon("columns-2")}inputs → outputs, port vs original</div>
-    ${behave.length ? `<ul class="cases">${behave.map(caseRow).join("")}</ul>` : `<div class="empty">${icon("circle-alert")}no captured cases yet</div>`}
-    ${claims.length ? `<ul class="claims">${claims.map(c => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
-  </div>`;
-  wireFn();
-}
-// The first diverging call (fns.json `call`, tas_coverage.call_behaviour): the differing arguments, then the call's raw words, return and the memory its pointer arguments name, port vs original.
-const CAUSE_TXT = { input: "input already differs: fix upstream", own: "same input, other output: fix here" };
-function divergence(c, line) {
-  if (!c) return "";
-  if (!c.first) return `<div class="empty">${icon("circle-check")}${c.compared} calls compared, none differ${c.unmatched_oracle || c.unmatched_port ? ` (${c.unmatched_oracle} only in the original, ${c.unmatched_port} only in the port)` : ""}</div>`;
-  const f = c.first, o = f.oracle || {}, p = f.port || {}, bad = new Set((f.diffs || []).map(d => d.field));
-  const hex = v => v == null ? "–" : Array.isArray(v) ? v.join(" ") : String(v);
-  const row = (what, pv, ov, x) => `<tr class="${x ? "x" : ""}"><td>${esc(what)}</td><td class="mono">${esc(hex(pv))}</td><td class="mono">${esc(hex(ov))}</td></tr>`;
-  const diffs = (f.diffs || []).map(d => row(`${d.field} (${d.kind})`, d.port, d.oracle, true)).join("");
-  const raw = [0, 1, 2, 3].map(i => row(`word a${i}`, (p.args || [])[i], (o.args || [])[i], (p.args || [])[i] !== (o.args || [])[i])).join("");
-  const who = c.cause ? ` · <span class="tag" title="${esc(CAUSE_TXT[c.cause] || "")}">${c.cause === "input" ? "fix upstream" : "own fault"}</span>` : "";
-  const at = f.frame ? `poll ${f.frame.port} (port) / ${f.frame.oracle} (original)` : "";
-  return `<div class="hr">${esc(c.verdict)} · ${c.compared} calls compared${who}</div>
-    <div class="dim mono">${esc(f.what || "")} · caller ${esc(f.caller)} · call #${f.ordinal} · ${esc(at)}</div>
-    <table class="dv"><tr><th>differs</th><th>port</th><th>original</th></tr>${diffs}</table>
-    <table class="dv"><tr><th>whole call</th><th>port</th><th>original</th></tr>${raw}${row("return", p.ret, o.ret, bad.has("return"))}${row("memory (pointer windows)", p.writes, o.writes, (f.diffs || []).some(d => d.kind === "memory"))}</table>`;
-}
-// A behave case row is a string, or {text|call, port, oracle} with one tick or cross per side (decoded by the bake).
-function caseRow(c) {
-  if (typeof c === "string") return `<li class="case"><span class="mono">${esc(c)}</span></li>`;
-  const mark = (side, v) => v == null ? "" : `<span class="side ${v ? "ok" : "bad"}" title="${side}">${icon(v ? "circle-check" : "circle-alert")}</span>`;
-  const text = c.text || c.call || JSON.stringify(c);
-  return `<li class="case"><span class="mono">${esc(text)}</span>${c.count > 1 ? `<span class="dim"> ×${c.count}</span>` : ""}${mark("port", c.port)}${mark("original", c.oracle)}</li>`;
-}
-function wireFn() {
-  $("panel").onclick = e => {
-    const t = e.target.closest("[data-fn],[data-nav],[data-movie]");
-    if (!t) return;
-    if (t.dataset.fn) openFn(t.dataset.fn, true);
-    else if (t.dataset.movie) playMovie(t.dataset.movie);
-    else if (t.dataset.nav === "back" && UI.back.length) { UI.fwd.push(UI.fn); openFn(UI.back.pop(), "nav"); }
-    else if (t.dataset.nav === "fwd" && UI.fwd.length) { UI.back.push(UI.fn); openFn(UI.fwd.pop(), "nav"); }
-  };
-}
-
-// ---------- search (prebuilt index, client-side, uFuzzy) ----------
-function initSearch() {
-  const names = D.fns.rows.map(r => r[0]), movies = D.movies.rows.map(m => m[0]);
-  const hay = names.concat(movies);
-  const uf = new uFuzzy({ intraMode: 1, intraIns: 1 });
-  const q = $("q"), out = $("results");
-  let sel = 0, list = [];
-  const show = () => {
-    const needle = q.value.trim();
-    if (!needle) { out.classList.remove("open"); return; }
-    const [idxs, info, order] = uf.search(hay, needle, 0, 1e3);
-    list = [];
-    if (idxs) {
-      const ord = order || idxs.map((_, i) => i);
-      for (const oi of ord.slice(0, 40)) {
-        const i = info ? info.idx[oi] : idxs[oi];
-        list.push({ i, ranges: info ? info.ranges[oi] : null });
-      }
-    }
-    sel = 0;
-    out.innerHTML = list.map((it, k) => {
-      const isFn = it.i < names.length, label = hay[it.i];
-      const marked = it.ranges ? uFuzzy.highlight(label, it.ranges, (p, m) => m ? `<mark>${esc(p)}</mark>` : esc(p)) : esc(label);
-      const row = isFn ? D.fns.rows[it.i] : D.movies.rows[it.i - names.length];
-      const lead = isFn ? `<i class="dot" style="background:var(${STATE_VAR[row[3]]})"></i>` : icon("clapperboard");
-      const right = isFn ? `${row[2]} B · ${esc(D.fns.files[row[4]].split("/").slice(-2).join("/"))}` : `${row[1]} polls`;
-      return `<div class="res ${k === sel ? "sel" : ""}" data-k="${k}" role="option">${lead}<span class="nm">${marked}</span><span class="rt">${right}</span></div>`;
-    }).join("") || `<div class="empty" style="padding:8px 14px">${icon("search")}no match</div>`;
-    out.classList.add("open");
-  };
-  const pick = k => {
-    const it = list[k]; if (!it) return;
-    out.classList.remove("open"); q.blur(); $("hdr").classList.remove("searching");
-    if (it.i < names.length) { if (!UI.watching) { UI.fn = hay[it.i]; location.hash = `#/f/${encodeURIComponent(hay[it.i])}`; } else openFn(hay[it.i], true); }
-    else playMovie(hay[it.i]);
-  };
-  q.addEventListener("input", show);
-  q.addEventListener("keydown", e => {
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(0, Math.min(list.length - 1, sel + (e.key === "ArrowDown" ? 1 : -1)));
-      out.querySelectorAll(".res").forEach((el, k) => el.classList.toggle("sel", k === sel)); out.querySelector(".res.sel")?.scrollIntoView({ block: "nearest" }); }
-    else if (e.key === "Enter") pick(sel);
-    else if (e.key === "Escape") { q.value = ""; out.classList.remove("open"); q.blur(); $("hdr").classList.remove("searching"); }
-  });
-  out.addEventListener("mousedown", e => { const r = e.target.closest("[data-k]"); if (r) { e.preventDefault(); pick(+r.dataset.k); } });
-  q.addEventListener("blur", () => setTimeout(() => out.classList.remove("open"), 120));
-  $("searchOpen").onclick = () => { $("hdr").classList.add("searching"); q.focus(); };
-}
-
 boot();
 </script>
 </body>
