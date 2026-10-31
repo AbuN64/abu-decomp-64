@@ -214,9 +214,9 @@ def start(
     pads: int = 1,
     movie: Path | None = None,
 ) -> subprocess.Popen:
-    """The oracle replaying `movie` (default the run's movie.raw) with the run's Expansion Pak setting (`N64R_PAK`) and Controller Pak
-    card (`N64R_CPAK`, its own copy of the card the port starts with; unset: an empty slot), in its own process
-    group, output in oracle.txt. `extra` adds host variables (the coverage run sets N64R_GOLDEN_DIR)."""
+    """The oracle replaying `movie` (default the run's movie.raw) with the run's Expansion Pak setting (`N64R_PAK`)
+    and Controller Pak card (`N64R_CPAK`, its own copy of the card the port starts with; unset: an empty slot), in its
+    own process group, output in oracle.txt. `extra` adds host variables (the coverage run sets N64R_GOLDEN_DIR)."""
     env = {
         **os.environ,
         "SDL_VIDEODRIVER": "offscreen",

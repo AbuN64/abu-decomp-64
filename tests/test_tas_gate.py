@@ -34,7 +34,9 @@ class HeldTests(unittest.TestCase):
         return run
 
     def test_held_is_the_newest_gate_line(self):
-        run = self.run_with("boot\nn64c-tas: held at poll 25\nn64c-tas: running from poll 25\nn64c-tas: held at poll 31\n")
+        run = self.run_with(
+            "boot\nn64c-tas: held at poll 25\nn64c-tas: running from poll 25\nn64c-tas: held at poll 31\n"
+        )
         self.assertEqual(tas.held_at(run), 31)
 
     def test_a_run_that_went_on_is_not_held(self):

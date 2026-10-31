@@ -755,7 +755,7 @@ def _wait(process: subprocess.Popen, timeout: float, run: Path | None = None) ->
 
 VIEW, HASH, AUDIO, RECORD = "view.bmp", "hash.txt", "audio.pcm", "run.json"
 TAKEN = "taken"  # present once live input drives the run
-GATED = "gated"  # present while the poll gate may hold the run (module docstring of shim/n64c_tas.c): no timeout applies
+GATED = "gated"  # present while the poll gate may hold the run (shim/n64c_tas.c): no timeout applies
 GATE_VERBS = ("hold", "step", "seek", "run")  # the gate's datagrams; step and seek take a poll count
 _HELD = re.compile(r"n64c-tas: (held at|running from) poll (\d+)")
 ORACLE_HOLD = "oracle-hold.raw"  # the movie prefix the original replays for a run held at a poll
