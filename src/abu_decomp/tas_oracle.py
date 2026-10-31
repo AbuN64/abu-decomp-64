@@ -289,8 +289,8 @@ _EVENT = re.compile(r"^EV\|([^|@]+)@(\d+)((?:\|[^|]*)*)$")
 
 class Event(NamedTuple):
     """One traced call: the function, the controller poll it ran after (the counter's value, so the change a state
-    sample sees at poll N was written by the events tagged N-1) and its arguments as printed (integers, or the `name=value` fields a
-    port-side gdb init prints)."""
+    sample sees at poll N was written by the events tagged N-1) and its arguments as printed (integers, or the
+    `name=value` fields a port-side gdb init prints)."""
 
     function: str
     poll: int
