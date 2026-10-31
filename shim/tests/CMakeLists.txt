@@ -21,11 +21,11 @@ set(plain_unit "${CMAKE_CURRENT_BINARY_DIR}/charge_plain_unit.o")
 add_custom_command(OUTPUT "${custom_unit}"
     COMMAND "${CMAKE_C_COMPILER}" $<TARGET_PROPERTY:n64compat,INTERFACE_COMPILE_OPTIONS> ${N64C_CHARGE_COMPILE_FLAGS}
         -c "${CMAKE_CURRENT_SOURCE_DIR}/test_charge_custom_unit.c" -o "${custom_unit}"
-    DEPENDS test_charge_custom_unit.c VERBATIM)
+    DEPENDS test_charge_custom_unit.c COMMAND_EXPAND_LISTS VERBATIM)
 add_custom_command(OUTPUT "${plain_unit}"
     COMMAND "${CMAKE_C_COMPILER}" $<TARGET_PROPERTY:n64compat,INTERFACE_COMPILE_OPTIONS>
         -c "${CMAKE_CURRENT_SOURCE_DIR}/test_charge_custom_unit.c" -o "${plain_unit}"
-    DEPENDS test_charge_custom_unit.c VERBATIM)
+    DEPENDS test_charge_custom_unit.c COMMAND_EXPAND_LISTS VERBATIM)
 set_source_files_properties("${custom_unit}" "${plain_unit}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
 add_executable(n64c_test_charge_custom test_charge_custom.c test_charge_custom_table.c "${custom_unit}")
 add_custom_target(n64c_charge_plain_unit ALL DEPENDS "${plain_unit}")

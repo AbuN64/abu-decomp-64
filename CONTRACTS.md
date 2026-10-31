@@ -81,7 +81,7 @@ The port runs on one logical clock and pays the original's cost (CakeTaste64 RUN
   add_custom_command(OUTPUT unit.o
       COMMAND ${CMAKE_C_COMPILER} $<TARGET_PROPERTY:n64compat,INTERFACE_COMPILE_OPTIONS>
               ${N64C_CHARGE_COMPILE_FLAGS} -c unit.c -o unit.o
-      DEPENDS unit.c VERBATIM)
+      DEPENDS unit.c COMMAND_EXPAND_LISTS VERBATIM)
   set_source_files_properties(unit.o PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
   target_sources(game PRIVATE unit.o)
   target_link_libraries(game PRIVATE ${N64C_CHARGE_HOOK_LIBRARY})

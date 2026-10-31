@@ -15,7 +15,7 @@
 #    on its compile line and link the produced object into a target that links ${N64C_CHARGE_HOOK_LIBRARY} (the hook):
 #        add_custom_command(OUTPUT unit.o
 #            COMMAND ${CMAKE_C_COMPILER} $<TARGET_PROPERTY:n64compat,INTERFACE_COMPILE_OPTIONS>
-#                    ${N64C_CHARGE_COMPILE_FLAGS} -c unit.c -o unit.o DEPENDS unit.c VERBATIM)
+#                    ${N64C_CHARGE_COMPILE_FLAGS} -c unit.c -o unit.o DEPENDS unit.c COMMAND_EXPAND_LISTS VERBATIM)
 #        set_source_files_properties(unit.o PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
 #        target_sources(game PRIVATE unit.o)
 #        target_link_libraries(game PRIVATE ${N64C_CHARGE_HOOK_LIBRARY})
