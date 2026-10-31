@@ -69,6 +69,9 @@ BAKED = {
 }
 
 
+RUN_FIELDS = {"lane": "l", "movie": "m", "status": "done", "poll": 5, "polls": 9, "outcome": "ok"}
+
+
 def run_row(rid, movie, started, kind="tas", target=None):
     return {"id": rid, "movie": movie, "started": started, "kind": kind, "target": target, "status": "done"}
 
@@ -226,6 +229,62 @@ class PageLogicTest(unittest.TestCase):
             ('{run:"r9",movie:"x",target:"G"}', False),
         ):
             self.assertIs(self.js(f"fn.concerns({{fields: {fields}}}, {rec})"), expected, fields)
+
+    def test_mount_renders_code_runs_by_kind_and_case_rows_then_refetches_on_a_concerning_event(self):
+        fake = """
+        class Node {
+          constructor(tag) { this.tag = tag; this.kids = []; this.attrs = {}; this.isConnected = true; }
+          setAttribute(k, v) { this.attrs[k] = v; }
+          append(...k) { this.kids.push(...k); }
+          replaceChildren(...k) { this.kids = k; }
+          set innerHTML(v) { this.html = v; this.content = new Node("#frag"); this.content.append(v); }
+          querySelectorAll() { return []; }
+          find(test, out = []) {
+            if (test(this)) out.push(this);
+            for (const k of this.kids) if (k instanceof Node) k.find(test, out);
+            return out;
+          }
+        }
+        globalThis.document = { createElement: t => new Node(t), getElementById: () => null, head: new Node("head") };
+        const rec = JSON.parse(process.argv[1]);
+        const calls = [], listeners = {};
+        const ctx = {
+          route: { arg: "Fn_A" }, contract: { run_kinds: ["unit", "set", "tas"], templates: { "run.ended": "" } },
+          api: async path => { calls.push(path); return rec; }, on: (kind, fn) => { listeners[kind] = fn; },
+        };
+        const root = new Node("div");
+        await fn.mount(root, ctx);
+        const rows = root.find(n => n.tag === "tr" && n.attrs["data-ordinal"] !== undefined).length;
+        const links = root.find(n => n.tag === "a").map(n => n.attrs.href);
+        const kinds = root.find(n => n.attrs["data-kind"]).map(n => n.attrs["data-kind"]);
+        listeners["run.ended"]({ fields: { run: "other", movie: "x" } });
+        listeners["run.ended"]({ fields: { run: "other", movie: "menu" } });
+        await new Promise(r => setImmediate(r));
+        process.stdout.write(JSON.stringify({ rows, links, kinds, calls }));
+        """
+        record = {
+            **{k: BAKED[k] for k in ("name", "file", "first", "size", "state", "movies", "html", "lines")},
+            "behaviour": "differs",
+            "cases": site_fn.cases_of(BAKED),
+            "runs": [
+                {**RUN_FIELDS, "id": "u1", "kind": "unit", "stream": False, "first": None, "sides": ["port"]},
+                {**RUN_FIELDS, "id": "t1", "kind": "tas", "movie": "menu", "stream": False, "first": 12,
+                 "sides": ["port", "original"]},
+            ],
+        }
+        script = f'import * as fn from "{FN_JS.as_uri()}"; {fake}'
+        done = subprocess.run(
+            ["node", "--input-type=module", "-e", script, json.dumps(record)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        got = json.loads(done.stdout)
+        self.assertEqual(got["rows"], 4)
+        self.assertEqual(got["links"], ["#/stream/t1?poll=12"])
+        self.assertEqual(got["kinds"], ["unit", "tas"])
+        self.assertEqual(got["calls"], ["/api/fn/Fn_A"] * 2)  # the first load, then one refetch for the menu event
 
     def test_first_divergence_is_the_first_entry_or_null(self):
         self.assertEqual(self.js('fn.firstDivergence({divergence: [{field:"a"},{field:"b"}]})'), {"field": "a"})
