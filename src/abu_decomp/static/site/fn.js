@@ -7,12 +7,12 @@ const STYLE = `
 .fn { display: grid; gap: 16px; }
 .fn h2, .fn h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .fn .head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
-.fn .head h2 { font: 600 18px var(--mono); }
+.fn .head h2 { font: 600 18px var(--mono); text-transform: none; letter-spacing: 0; }
 .fn .tag { font: 12px var(--mono); padding: 2px 8px; border-radius: 999px; background: var(--raised); color: var(--dim); }
 .fn .tag.same, .fn .tag.good { color: var(--b-ok); }
 .fn .tag.bad, .fn .tag.diverged, .fn .tag.differs { color: var(--b-diff); }
 .fn .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; overflow: auto; }
-.fn .code { font: 12.5px/1.5 var(--mono); white-space: pre; }
+.fn .code { font: 12.5px/1.5 var(--mono); white-space: pre; max-height: 320px; }
 .fn .code .row { display: flex; gap: 12px; }
 .fn .code .count { flex: none; width: 5em; text-align: right; color: var(--faint); }
 .fn .code .row.hit .count { color: var(--b-ok); }
