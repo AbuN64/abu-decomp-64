@@ -297,17 +297,29 @@ static void two_pads(void)
     close(go[0]); close(go[1]); close(ready[0]); close(ready[1]);
 }
 
+/* Reads the child's stderr into `got` until it holds `line`: the gate's own "held at poll P" is the signal that the run sits
+ * in the gate, so a datagram sent after it can never be drained before the gate is reached. */
+static int wait_line(int fd, char *got, size_t size, size_t *used, const char *line)
+{
+    while (!strstr(got, line)) {
+        if (*used + 1 >= size) return 0;
+        ssize_t n = read(fd, got + *used, size - 1 - *used);
+        if (n <= 0) return 0;
+        got[*used += (size_t)n] = 0;
+    }
+    return 1;
+}
+
 /* The poll gate: a run held at poll 2 by N64C_TAS_HOLD_AT is stepped, sought and let go through its socket; the
- * pipes pace the polls, so nothing here waits on a clock. */
+ * pipes pace the polls and the child's stderr says when it is held, so nothing here waits on a clock. */
 static void gate(void)
 {
     char sock[64];
     snprintf(sock, sizeof sock, "@n64c-test-tas-gate-%ld", (long)getpid());
-    const char *log = "n64c_test_tas.gate", *err = "n64c_test_tas.gate.err";
+    const char *log = "n64c_test_tas.gate";
     remove(log);
-    remove(err);
-    int go[2], ready[2];
-    CHECK(pipe(go) == 0 && pipe(ready) == 0);
+    int go[2], ready[2], errp[2];
+    CHECK(pipe(go) == 0 && pipe(ready) == 0 && pipe(errp) == 0);
     pid_t child = fork();
     if (child == 0) {
         unsetenv("N64C_TAS_PLAY");
@@ -316,7 +328,8 @@ static void gate(void)
         setenv("N64C_INPUT", sock, 1);
         setenv("N64C_TAS_RECORD", log, 1);
         setenv("N64C_TAS_HOLD_AT", "2", 1);
-        if (!freopen(err, "w", stderr)) _Exit(7);
+        if (dup2(errp[1], 2) < 0) _Exit(7);
+        close(errp[0]); close(errp[1]);
         n64c_cont_set_input(NULL, NULL);
         OSContPad pads[MAXCONTROLLERS];
         char c;
@@ -328,36 +341,39 @@ static void gate(void)
         }
         _Exit(0);
     }
-    char c;
-    /* polls 1 and 2, then the child sits in the gate before poll 3 */
-    for (int i = 0; i < 2; i++) CHECK(read(ready[0], &c, 1) == 1 && write(go[1], "g", 1) == 1);
-    send_pad(sock, "step 1"); /* poll 3 only, held again at 3 */
-    CHECK(read(ready[0], &c, 1) == 1 && write(go[1], "g", 1) == 1);
-    send_pad(sock, "step 2"); /* polls 4 and 5 */
-    for (int i = 0; i < 2; i++) CHECK(read(ready[0], &c, 1) == 1 && write(go[1], "g", 1) == 1);
-    send_pad(sock, "seek 7"); /* polls 6 and 7, unpaced */
-    for (int i = 0; i < 2; i++) CHECK(read(ready[0], &c, 1) == 1 && write(go[1], "g", 1) == 1);
-    send_pad(sock, "seek 3"); /* behind the run: refused, still held at 7 */
-    send_pad(sock, "run");    /* polls 8 and 9 */
-    for (int i = 0; i < 2; i++) CHECK(read(ready[0], &c, 1) == 1 && write(go[1], "g", 1) == 1);
+    close(errp[1]);
+    char got[1024] = {0}, c;
+    size_t used = 0;
+#define POLLS(n) for (int i = 0; i < (n); i++) CHECK(read(ready[0], &c, 1) == 1 && write(go[1], "g", 1) == 1)
+#define HELD(p) CHECK(wait_line(errp[0], got, sizeof got, &used, "held at poll " #p "\n"))
+    POLLS(2);                  /* polls 1 and 2, then the child sits in the gate before poll 3 */
+    HELD(2);
+    send_pad(sock, "step 1");  /* poll 3 only, held again at 3 */
+    POLLS(1);
+    HELD(3);
+    send_pad(sock, "step 2");  /* polls 4 and 5 */
+    POLLS(2);
+    HELD(5);
+    send_pad(sock, "seek 7");  /* polls 6 and 7, unpaced */
+    POLLS(2);
+    HELD(7);
+    send_pad(sock, "seek 3");  /* behind the run: refused, still held at 7 */
+    CHECK(wait_line(errp[0], got, sizeof got, &used, "bad gate datagram seek 3 at poll 7\n"));
+    send_pad(sock, "run");     /* polls 8 and 9 */
+    POLLS(2);
+#undef POLLS
+#undef HELD
     int status = 0;
     CHECK(waitpid(child, &status, 0) == child);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-    char got[1024] = {0};
-    FILE *f = fopen(err, "r");
-    CHECK(f != NULL);
-    if (f) { CHECK(fread(got, 1, sizeof got - 1, f) > 0); fclose(f); }
-    CHECK(strstr(got, "held at poll 2\n") && strstr(got, "held at poll 3\n") && strstr(got, "held at poll 5\n"));
-    CHECK(strstr(got, "held at poll 7\n") && strstr(got, "bad gate datagram seek 3 at poll 7\n"));
-    CHECK(strstr(got, "running from poll 7\n") && !strstr(got, "held at poll 8"));
-    f = fopen(log, "r");
+    CHECK(wait_line(errp[0], got, sizeof got, &used, "running from poll 7\n") && !strstr(got, "held at poll 8"));
+    FILE *f = fopen(log, "r");
     CHECK(f != NULL);
     int lines = 0;
     if (f) { while (fgets(got, sizeof got, f)) lines++; fclose(f); }
     CHECK(lines == 9); /* every poll through the gate is recorded once */
     remove(log);
-    remove(err);
-    close(go[0]); close(go[1]); close(ready[0]); close(ready[1]);
+    close(go[0]); close(go[1]); close(ready[0]); close(ready[1]); close(errp[0]);
 }
 
 void __sanitizer_report_error_summary(const char *summary);
