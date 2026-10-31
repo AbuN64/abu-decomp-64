@@ -381,6 +381,10 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     triage.add_argument(
         "--backfill", action="store_true", help="first add findings for each movie's newest recorded run"
     )
+    stream = actions.add_parser("stream", help="the lockstep stream of recorded runs (both sides' pictures per poll)")
+    stream_verbs = stream.add_subparsers(dest="verb", required=True, parser_class=_Parser)
+    pack = stream_verbs.add_parser("pack", help="turn runs' oracle shots into RUN/stream/{port,original}/POLL.jpg")
+    pack.add_argument("runs", nargs="*", help="run ids (default: every run that holds shots)")
     corpus = actions.add_parser("corpus", help="the regression corpus of movies, problem spots and the speedrun gate")
     verbs = corpus.add_subparsers(dest="verb", required=True, parser_class=_Parser)
     verbs.add_parser("list", help="corpus entries, problem spots, coverage features and the last gate")
@@ -613,6 +617,10 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         return tas_coverage.lists(report, 25), (5 if refused else 0), refused
     if args.action == "triage":
         return _run_triage(profile, args)
+    if args.action == "stream":
+        from abu_decomp import tas_stream
+
+        return {"packed": tas_stream.pack_all(tas.settings(profile), args.runs)}, 0, []
     if args.action == "corpus":
         return _run_corpus(profile, args)
     if args.action == "show":

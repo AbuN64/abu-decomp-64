@@ -155,12 +155,6 @@ class EndpointTest(unittest.TestCase):
         status, body = self.get("/api/feed")
         self.assertEqual((status, [e["subject"] for e in body["events"]]), (200, ["r1", "r2"]))
 
-    def test_unbuilt_regions_answer_501_with_their_card(self):
-        for path, card in (
-            ("/api/stream/r1", "RUNNER-STREAM"),
-        ):
-            self.assertEqual(self.get(path), (501, {"error": self.get(path)[1]["error"], "card": card}), path)
-
     def test_the_stream_says_hello_replays_what_it_holds_then_pushes_a_changed_event(self):
         with urllib.request.urlopen(self.base + "/api/feed/stream") as reply:
             self.assertEqual(reply.headers["Content-Type"], "text/event-stream")

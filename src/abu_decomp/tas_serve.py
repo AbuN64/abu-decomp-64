@@ -59,6 +59,7 @@ from abu_decomp import (
     evidence,
     inotify,
     site_core,
+    site_stream,
     tas,
     tas_board,
     tas_corpus,
@@ -1260,6 +1261,9 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.static(STATIC, run_id)
                 elif head == "coverage":
                     self.static(server.cfg["runs"] / tas_coverage.HTML, run_id or "index.html")
+                elif head == "stream" and run_id:
+                    status, payload, kind = site_stream.frame(server, run_id)
+                    self.reply(payload if isinstance(payload, bytes) else json.dumps(payload).encode(), kind, status)
                 elif head == "video" and run_id:
                     self.video(server.run_dir(run_id))
                 elif head == "frame" and run_id:
