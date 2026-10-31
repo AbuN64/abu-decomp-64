@@ -189,6 +189,7 @@ function addStyle() {
 #play-dialog .cat { display: flex; gap: 6px; align-items: center; padding: 6px 10px; border-radius: 8px; background: var(--raised); font: 13px var(--mono); }
 #play-dialog textarea, #play-dialog input[type=number] { width: 100%; background: var(--raised); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: 14px var(--sans); }
 #play-dialog .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+#play-flags .ev { display: grid; grid-template-columns: 72px 72px 1fr auto; gap: 12px; align-items: center; }
 #play-flags .cat { font: 12px var(--mono); color: var(--bad); }
 `));
 }
