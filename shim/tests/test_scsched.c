@@ -35,6 +35,16 @@ static int hooks;
 static void gfx_handler(OSTask *t, void *u) { (void)t; (void)u; L("g"); }
 static void aud_handler(OSTask *t, void *u) { (void)t; (void)u; L("a"); }
 static void hook(void) { hooks++; }
+/* Guest work: the clock when a retrace step begins, ends and starts a task. */
+static OSTime retrace_at, retraced_at, started_at;
+static int pre_retrace(void) { retrace_at = n64c_clock_now(); return 0; }
+static void retraced(void) { retraced_at = n64c_clock_now(); }
+static void started(OSSched *s, OSScTask *t, N64cScTaskEvent e)
+{
+    (void)s, (void)t;
+    if (e == N64C_SC_TASK_START)
+        started_at = n64c_clock_now();
+}
 static OSScTask task(u32 type, u32 flags, void *fb)
 {
     OSScTask t;
@@ -170,6 +180,19 @@ int main(void)
     n64c_frame();
     expect("released_task_not_replayed", "");
     check("no_duplicate_completion", drain_done() == 0);
+
+    /* The sample scheduler's entries, 64 ns (3 Count ticks) each: an idle retrace makes one pass over the lists
+     * (__scSchedule); one that takes a task makes a second pass and starts it (__scExec). */
+    n64c_clock_set_work(64ull << N64C_WORK_FRAC);
+    n64c_sc_set_pre_retrace_hook(pre_retrace);
+    n64c_sc_set_retrace_hook(retraced);
+    n64c_sc_set_task_hook(started);
+    n64c_frame();
+    check("idle_retrace_charges_one_pass", retraced_at - retrace_at == 3);
+    OSScTask g4 = task(M_GFXTASK, GFX_LAST, fba);
+    osSendMesg(&sc.commandQueue, (OSMesg){.ptr = &g4}, OS_MESG_NOBLOCK);
+    n64c_frame();
+    check("retrace_start_charges_two_passes_and_exec", started_at - retrace_at == 9);
     n64c_shutdown();
     return fails ? 1 : 0;
 }

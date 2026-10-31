@@ -97,6 +97,17 @@ static void drain(OSSched *sc)
             n64c_sc_append(sc, m.ptr);
 }
 
+/* ---- Guest work ----
+ * The port runs this scheduler in place of the sample scheduler the ROM links as its own code, so each step charges the
+ * entries of the sample's functions it stands in for (RUNTIME.md "Virtual guest time"): a pass over the lists is
+ * __scSchedule, entered once more after each pass that took a unit; a task started is __scExec; a unit reporting done
+ * is __scTaskComplete. */
+static void charge(unsigned entries)
+{
+    while (entries--)
+        n64c_clock_work();
+}
+
 static OSScTask *pop(OSScTask **head, OSScTask **tail)
 {
     OSScTask *t = *head;
@@ -123,6 +134,7 @@ static int graphics_ready(const OSScTask *t)
 static void schedule(OSSched *sc)
 {
     OSScTask *t;
+    charge(1);
     if (sc->curRSPTask)
         return;
     if (sc->audioListHead) {
@@ -134,6 +146,7 @@ static void schedule(OSSched *sc)
         t = pop(&sc->gfxListHead, &sc->gfxListTail);
     } else
         return;
+    charge(2);
     sc->curRSPTask = t;
     if (t->state & OS_SC_NEEDS_RDP)
         sc->curRDPTask = t;
@@ -167,6 +180,7 @@ static void unit_done(OSSched *sc, OSScTask **owner, u32 unit)
         return;
     *owner = NULL;
     t->state &= ~unit;
+    charge(1);
     if (task_hook)
         task_hook(sc, t, unit == OS_SC_NEEDS_RSP ? N64C_SC_RSP_DONE : N64C_SC_RDP_DONE);
     finish(sc, t);
