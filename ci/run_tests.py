@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 LIMIT = float(os.environ.get("ABU_TEST_TIMEOUT", "90"))
@@ -28,13 +29,26 @@ def expired(signum, frame):
 class TimedResult(unittest.TextTestResult):
     def startTest(self, test):
         super().startTest(test)
+        self.seat = stand_in_seat(test)
         faulthandler.dump_traceback_later(LIMIT * 1.5, exit=True)
         signal.setitimer(signal.ITIMER_REAL, LIMIT)
 
     def stopTest(self, test):
+        self.seat.stop()
         signal.setitimer(signal.ITIMER_REAL, 0)
         faulthandler.cancel_dump_traceback_later()
         super().stopTest(test)
+
+
+def stand_in_seat(test):
+    """What tests/conftest.py's `_stand_in_seat` does for pytest: a play with a stand-in port skips the shared-seat
+    provenance check, and test_tas_seat.py is the one module that runs it. Started here, stopped by the caller."""
+    from abu_decomp import tas_seat
+
+    real = type(test).__module__ == "test_tas_seat"
+    patch = mock.patch.object(tas_seat, "check", tas_seat.check if real else lambda cfg: None)
+    patch.start()
+    return patch
 
 
 def source_first():

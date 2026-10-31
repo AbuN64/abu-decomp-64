@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from abu_decomp import slots
+from abu_decomp import slots, tas_seat
 
 
 class Scratch(unittest.TestCase):
@@ -53,3 +53,19 @@ class SourceFirst(unittest.TestCase):
             with mock.patch.object(sys, "path", []):
                 runner["source_first"]()
             self.assertEqual(os.environ["PYTHONPATH"], src)
+
+
+class SeatStandIn(unittest.TestCase):
+    def test_the_seat_check_is_stood_in_for_every_module_but_its_own(self):
+        runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / "ci/run_tests.py"))
+        real = tas_seat.check
+        other = type("T", (), {"__module__": "test_tas"})()
+        own = type("T", (), {"__module__": "test_tas_seat"})()
+        patch = runner["stand_in_seat"](other)
+        self.assertIsNone(tas_seat.check({}))
+        patch.stop()
+        self.assertIs(tas_seat.check, real)
+        patch = runner["stand_in_seat"](own)
+        self.assertIs(tas_seat.check, real)
+        patch.stop()
+        self.assertIs(tas_seat.check, real)
