@@ -4,7 +4,8 @@ A Feedback record is `{id, at, run, poll, category, text, lane, movie, inputs[{p
 frames{port,original}}` (lanes/RUNNER-REDO/PLAN.md) in `feedback.json` beside `port.jpg` / `original.jpg`. Both frames
 are the newest picture at or before the flagged poll (the packed stream, else the oracle's shots, else the port's live
 view for the port side), and the inputs are the last INPUT_WINDOW polls of pad 0 from the run's `polls.raw`, so a
-record stays readable after the run's pictures are pruned. Filing publishes one `feedback.filed` event to the feed, which wakes the push stream.
+record stays readable after the run's pictures are pruned. Filing publishes one `feedback.filed` event to the feed,
+which wakes the push stream.
 """
 
 from __future__ import annotations
