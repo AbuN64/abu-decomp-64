@@ -292,6 +292,35 @@ class ServeTests(Base):
         self.assertEqual((channels, rate, align, bits), (2, 22050, 4, 16))
 
 
+class DeployedTests(unittest.TestCase):
+    def test_the_deployed_sha_is_the_suite_sha_of_the_venv_the_interpreter_runs_from(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            venv = Path(tmp) / "venv"
+            venv.mkdir()
+            (venv / "suite.txt").write_text(f"suite-sha: {'b' * 40}\nsuite-summary: 1 passed\n")
+            with mock.patch.object(tas_serve.sys, "prefix", str(venv)):
+                self.assertEqual(tas_serve.deployed_sha(), "b" * 40)
+
+    def test_a_venv_without_a_suite_sha_refuses_to_serve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(tas_serve.sys, "prefix", tmp):
+                with self.assertRaises(DecompError):
+                    tas_serve.deployed_sha()
+            (Path(tmp) / "suite.txt").write_text("suite-sha: nothex\n")
+            with mock.patch.object(tas_serve.sys, "prefix", tmp):
+                with self.assertRaises(DecompError):
+                    tas_serve.deployed_sha()
+
+    def test_ready_is_sent_to_the_notify_socket_and_only_then(self):
+        self.assertFalse(tas_serve.notify_ready({}))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "notify")
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as listener:
+                listener.bind(path)
+                self.assertTrue(tas_serve.notify_ready({"NOTIFY_SOCKET": path}))
+                self.assertEqual(listener.recv(64), b"READY=1")
+
+
 class HttpTests(Base):
     def setUp(self):
         super().setUp()
@@ -331,6 +360,12 @@ class HttpTests(Base):
         data = json.loads(body)
         self.assertEqual(status, 200)
         self.assertTrue({"capacity", "used", "queue", "holders", "landings"} <= set(data))
+
+    def test_the_page_carries_the_deployed_sha_of_its_server(self):
+        self.server.deployed = "a" * 40
+        _, _, body = self.get("/")
+        self.assertIn(b'<meta name="deployed-sha" content="' + b"a" * 40 + b'">', body)
+        self.assertNotIn(tas_serve.SHA_MARK.encode(), body)
 
     def test_page_state_frame_and_log(self):
         status, kind, body = self.get("/")

@@ -40,6 +40,7 @@ import signal
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -100,6 +101,8 @@ VIDEO_FPS = 30  # latest frame sampled at wall pace; no backlog or replay of mis
 VIDEO_HEADER = struct.Struct(">IQI")  # JPEG length, capture stamp (microseconds), input sequence
 AUDIO_LEAD_SECONDS = 0.25  # a listener joins this far behind the live end of the sound
 PAGE = Path(__file__).with_name("runner.html").read_text  # the page file
+SHA_MARK = "__DEPLOYED_SHA__"  # in the page file: replaced by the commit the toolkit was deployed at
+UNDEPLOYED = "undeployed"  # the mark of a server started from a source tree, not from a deployed toolkit
 STATIC = Path(__file__).with_name("static")  # the page's icon sprite and region modules (site/), at /static/NAME
 REACH_FLAG = 0x80000000  # set in a /video header's length field: the body is a reach record, not a JPEG
 WALL_TABLE = REACH_FLAG  # set in a /wall header's length field: the body is JSON {"id": run id} naming run index `seq`
@@ -199,9 +202,37 @@ def picture(data: bytes, kind: str = "PNG") -> tuple[bytes, int]:
         return out.getvalue(), seq
 
 
+def deployed_sha() -> str:
+    """The commit the toolkit this interpreter runs from was deployed at: the `suite-sha` line the deploy's suite gate
+    wrote to suite.txt in the venv (the link is followed, so a restart after the link flips reads the new toolkit)."""
+    suite = Path(sys.prefix).resolve() / "suite.txt"
+    try:
+        text = suite.read_text()
+    except OSError as error:
+        raise DecompError("tas.serve", f"cannot read the deployed sha from {suite}: {error}") from error
+    for line in text.splitlines():
+        key, _, value = line.partition(": ")
+        if key == "suite-sha" and re.fullmatch(r"[0-9a-f]{40}", value):
+            return value
+    raise DecompError("tas.serve", f"{suite} has no suite-sha line with a 40-hex commit")
+
+
+def notify_ready(environ: dict[str, str] | None = None) -> bool:
+    """Tells systemd (Type=notify) the page is listening, so `systemctl restart` returns only once it answers; False
+    when the process was not started by systemd with a notify socket."""
+    address = (os.environ if environ is None else environ).get("NOTIFY_SOCKET")
+    if not address:
+        return False
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+        sock.connect("\0" + address[1:] if address.startswith("@") else address)
+        sock.sendall(b"READY=1")
+    return True
+
+
 class Server:
-    def __init__(self, profile: Profile) -> None:
+    def __init__(self, profile: Profile, deployed: str = UNDEPLOYED) -> None:
         self.profile = profile
+        self.deployed = deployed
         self.pictures: OrderedDict[tuple[Path, str], tuple[int, int, bytes, int]] = OrderedDict()
         self.picture_lock = threading.Lock()
         self.cfg = tas.settings(profile)
@@ -1234,7 +1265,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             head, _, run_id = path[1:].partition("/")
             try:
                 if path == "/":
-                    self.reply(PAGE().encode(), "text/html; charset=utf-8")
+                    self.reply(PAGE().replace(SHA_MARK, server.deployed).encode(), "text/html; charset=utf-8")
                 elif path == "/api/feed/stream":
                     self.feed_stream()
                 elif (site := site_core.answer(server, "GET", path, query, b"")) is not None:
@@ -1638,7 +1669,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
 
 
 def serve(profile: Profile) -> dict[str, Any]:
-    server = Server(profile)
+    server = Server(profile, deployed_sha())
     host, _, port = server.listen.rpartition(":")
     http = ThreadingHTTPServer((host, int(port)), handler(server))
     http.daemon_threads = True
@@ -1646,7 +1677,8 @@ def serve(profile: Profile) -> dict[str, Any]:
     threading.Thread(target=server.archive, daemon=True).start()
     threading.Thread(target=server.gatekeeper, daemon=True).start()
     threading.Thread(target=server.phase.run_frames, daemon=True).start()
-    print(f"tas page: http://{server.listen}/", flush=True)
+    print(f"tas page: http://{server.listen}/ at {server.deployed}", flush=True)
+    notify_ready()
     try:
         http.serve_forever()
     except KeyboardInterrupt:

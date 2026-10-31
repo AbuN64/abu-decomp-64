@@ -1,0 +1,12 @@
+[Unit]
+Description=Runner site: abu_decomp tas serve from the live toolkit link
+
+[Service]
+Type=notify
+NotifyAccess=main
+Environment=PATH=%h/venv-decomp/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/venv-decomp/bin/python -m abu_decomp --profile %h/rig-state/tas/profile.json tas serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

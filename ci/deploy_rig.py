@@ -22,7 +22,11 @@ at the exact SHA in a Worktree (the job runs in <Root>/<board>.<card>/<repo> wit
      live link to BUILD and keeps the replaced venv as <toolkit>.previous;
   3. the readback job: the live link resolves to BUILD, and the installed commit of AbuDecomp64 and of every direct
      git pin of its pyproject at SHA equals the pinned one. Any mismatch refuses (the live link stays as switched:
-     fix forward, no rollback).
+     fix forward, no rollback);
+  4. the serve job, after the link flipped: the site unit ci/abu-decomp-tas.service of the Worktree (ExecStart in the
+     live toolkit link, Type=notify) is installed and enabled, then `systemctl --user restart` runs; it returns when the
+     restarted page listens, so the unit's own result is the signal and a failed start refuses. The page on :8099 is
+     read back: its `deployed-sha` meta tag must equal the deployed SHA, else the deploy refuses.
 The deploy's answer is the deployed SHA with each job's Exit and Log."""
 
 import argparse
@@ -46,6 +50,7 @@ REMOTES = {
 }
 PACKAGE = "abu_decomp"
 SHA = re.compile(r"[0-9a-f]{40}")
+SERVED = re.compile(r"^serve-sha: (\S*)$", re.MULTILINE)
 
 # git(args) runs git here and returns (exit code, output); job(request) is `mo-butlermaster Job Invoke` and returns its
 # answer; read(path) reads a job's Log, which lives on this machine.
@@ -131,6 +136,23 @@ for name, commit in sorted(pins.items()):
 if bad:
     sys.exit("readback: " + "; ".join(bad))
 PY
+"""
+
+# SERVE runs in the Worktree after the readback. Argument: SHA. It prints the sha the restarted page carries; the
+# deploy compares it.
+SERVE = r"""set -u
+unit=abu-decomp-tas.service
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+mkdir -p "$HOME/.config/systemd/user" || exit 9
+install -m 644 "ci/$unit" "$HOME/.config/systemd/user/$unit" || exit 9
+systemctl --user daemon-reload && systemctl --user enable "$unit" || exit 9
+if ! systemctl --user restart "$unit"; then
+  systemctl --user status --no-pager "$unit" | tail -n 5 >&2
+  echo "serve: restart of $unit failed" >&2
+  exit 1
+fi
+page=$(curl -fsS http://localhost:8099/) || { echo "serve: :8099 does not answer after the restart" >&2; exit 1; }
+echo "serve-sha: $(printf %s "$page" | sed -n 's/.*<meta name="deployed-sha" content="\([^"]*\)">.*/\1/p' | head -n 1)"
 """
 
 # The runner: puts the checkout's src first, proves the package comes from there, runs pytest over tests/ and reports.
@@ -333,6 +355,20 @@ def suite(sha: str, log: str, text: str) -> list[str]:
     ]
 
 
+def serve(sha: str, board: str, card: str, job: Job, read: Read) -> list[str]:
+    """Restarts the site unit after the link flipped and reads back that :8099 serves sha; raises Refused otherwise."""
+    done = job(request(board, card, sha, ["bash", "-c", SERVE, "serve", sha]))
+    text = read(done["Log"])
+    line = f"{sha[:12]}: serve job Exit {done['Exit']}, Log {done['Log']}"
+    if done["Exit"]:
+        raise Refused(f"serve exit {done['Exit']}: {last_line(text, 'no output')} ({done['Log']})")
+    served = SERVED.search(text)
+    page = served.group(1) if served else ""
+    if page != sha:
+        raise Refused(f"serve: :8099 serves {page or 'no deployed-sha'}, not {sha} ({done['Log']})")
+    return [line, f"{sha[:12]}: abu-decomp-tas.service restarted, :8099 serves {sha}"]
+
+
 def deploy(sha: str, board: str, card: str, toolkit: str, job: Job, git: Seam, read: Read) -> list[str]:
     """Deploys the newest landed main; returns the log lines to print. Raises Refused on the first failed step."""
     lines = []
@@ -357,7 +393,8 @@ def deploy(sha: str, board: str, card: str, toolkit: str, job: Job, git: Seam, r
     final = read(readback["Log"])
     if readback["Exit"]:
         raise Refused(f"readback exit {readback['Exit']}: {last_line(final, 'no output')} ({readback['Log']})")
-    return [*lines, f"{revision}: {toolkit} reads {build}; {last_line(final, '')}", f"deployed {sha}"]
+    lines.append(f"{revision}: {toolkit} reads {build}; {last_line(final, '')}")
+    return [*lines, *serve(sha, board, card, job, read), f"deployed {sha}"]
 
 
 def main(argv: list[str] | None = None, environ: dict[str, str] | None = None) -> int:

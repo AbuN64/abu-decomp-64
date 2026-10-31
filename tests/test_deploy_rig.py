@@ -40,14 +40,26 @@ def answer(exit_code=0, log="/runs/.tmp/job-rig-1.log"):
 
 
 class Rig:
-    """The seams: Job Invoke answers by call order (activation, readback), git knows the two mains, logs are text."""
+    """The seams: Job Invoke answers by call order (activation, readback, serve), git knows the two mains, logs are text."""
 
-    def __init__(self, gitea=True, github=True, head=None, activation=0, readback=0, suite=None, refuse_at=None):
+    def __init__(
+        self,
+        gitea=True,
+        github=True,
+        head=None,
+        activation=0,
+        readback=0,
+        serve=0,
+        suite=None,
+        served=None,
+        refuse_at=None,
+    ):
         self.head, self.on = head, {"gitea": gitea, "github": github}
-        self.exits = [activation, readback]
+        self.exits = [activation, readback, serve]
         self.logs = {
             "/runs/.tmp/job-rig-1.log": suite if suite is not None else suite_log(head or SHA),
             "/runs/.tmp/job-rig-2.log": f"readback-pin: abu-decomp-64 {head or SHA}\n",
+            "/runs/.tmp/job-rig-3.log": f"serve-sha: {served or head or SHA}\n",
         }
         self.refuse_at = refuse_at
         self.requests, self.git_calls, self.fetched = [], [], None
@@ -147,7 +159,7 @@ class DeployTests(unittest.TestCase):
     def test_the_activation_job_names_the_worktree_toolkit_and_revision_and_the_readback_job_has_no_activation(self):
         rig = Rig()
         rig.deploy()
-        activation, readback = rig.requests
+        activation, readback, restart = rig.requests
         for body in rig.requests:
             self.assertEqual(body["Host"], "rig")
             self.assertEqual(body["Subject"], {"Board": "board1", "Card": "card1"})
@@ -157,6 +169,16 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(activation["Argv"][-2:], [SHA, TOOLKIT])
         self.assertNotIn("Activation", readback)
         self.assertEqual(readback["Argv"][-3:], [SHA, TOOLKIT, BUILD])
+
+    def test_the_unit_restart_is_the_last_job_after_the_link_flip_and_readback_and_reads_the_sha_back(self):
+        rig = Rig()
+        lines = rig.deploy()
+        restart = rig.requests[2]
+        self.assertNotIn("Activation", restart)
+        self.assertEqual(restart["Argv"][-2:], ["serve", SHA])
+        self.assertIn("systemctl --user restart", restart["Argv"][2])
+        self.assertIn(f"{SHA[:12]}: abu-decomp-tas.service restarted, :8099 serves {SHA}", lines)
+        self.assertEqual(lines[-1], f"deployed {SHA}")
 
     def test_main_prints_the_deployed_sha_with_each_jobs_exit_and_log(self):
         code, out, err = run_main(Rig())
@@ -206,7 +228,7 @@ class DeployTests(unittest.TestCase):
         rig = Rig()
         code, out, _ = run_main(rig, ["--Subject.Board", "boardX", "--Subject.Card", "cardY"])
         self.assertEqual(code, 0)
-        self.assertEqual([r["Subject"] for r in rig.requests], [{"Board": "boardX", "Card": "cardY"}] * 2)
+        self.assertEqual([r["Subject"] for r in rig.requests], [{"Board": "boardX", "Card": "cardY"}] * 3)
         self.assertEqual(rig.requests[0]["Activation"]["Toolkit"], deploy_rig.TOOLKIT)
         self.assertIn(f"deployed {SHA}", out)
 
@@ -249,7 +271,7 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual(len(rig.requests), 1)
 
     def test_a_job_invoke_refusal_stops_the_deploy(self):
-        for refuse_at, jobs in ((1, 1), (2, 2)):
+        for refuse_at, jobs in ((1, 1), (2, 2), (3, 3)):
             rig = Rig(refuse_at=refuse_at)
             code, _, err = run_main(rig)
             self.assertEqual(code, 1)
@@ -285,6 +307,30 @@ class RefusalTests(unittest.TestCase):
             f"deploy refused: readback exit 1: readback: unbake is none, the pin is {'c' * 40} "
             "(/runs/.tmp/job-rig-2.log)",
         )
+
+    def test_a_readback_failure_runs_no_restart(self):
+        rig = Rig(readback=1)
+        self.assertEqual(run_main(rig)[0], 1)
+        self.assertEqual(len(rig.requests), 2)
+
+    def test_a_failed_restart_refuses_with_the_jobs_last_line(self):
+        rig = Rig(serve=1)
+        rig.logs["/runs/.tmp/job-rig-3.log"] = "serve: restart of abu-decomp-tas.service failed\n"
+        code, out, err = run_main(rig)
+        self.assertEqual(code, 1)
+        self.assertNotIn(f"deployed {SHA}", out)
+        self.assertIn("serve exit 1: serve: restart of abu-decomp-tas.service failed", err)
+
+    def test_a_page_serving_another_sha_or_none_refuses_and_never_reports_deployed(self):
+        other = "c" * 40
+        cases = ((f"serve-sha: {other}\n", f"serves {other}, not {SHA}"), ("serve-sha: \n", "serves no deployed-sha"))
+        for text, want in cases:
+            rig = Rig()
+            rig.logs["/runs/.tmp/job-rig-3.log"] = text
+            code, out, err = run_main(rig)
+            self.assertEqual(code, 1)
+            self.assertIn(want, err)
+            self.assertNotIn(f"deployed {SHA}", out)
 
 
 def wrapper(path, body):
@@ -477,3 +523,43 @@ class ReadbackScriptTests(ScriptCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServeScriptTests(ScriptCase):
+    """The SERVE script for real in a tiny worktree, with systemctl and curl stand-ins that log their calls."""
+
+    def run_serve(self, page, restart_exit=0):
+        home, bins, calls = self.root / "home", self.root / "bin", self.root / "calls"
+        (self.root / "work/ci").mkdir(parents=True)
+        (self.root / "work/ci/abu-decomp-tas.service").write_text("[Service]\n")
+        restart = f'[ "$2" = restart ] && exit {restart_exit}'
+        restart = f"[ \"$2\" = restart ] && exit {restart_exit}"
+        wrapper(bins / "systemctl", f'echo "systemctl $*" >> {calls}\n{restart}\nexit 0')
+        wrapper(bins / "curl", f"echo curl >> {calls}\nprintf '%s' '{page}'")
+        env = sh_env(HOME=str(home), PATH=f"{bins}:{os.environ['PATH']}")
+        done = self.bash(deploy_rig.SERVE, SHA, cwd=self.root / "work", env=env)
+        return done, calls.read_text().splitlines() if calls.exists() else []
+
+    def test_it_installs_the_unit_restarts_it_then_prints_the_served_sha(self):
+        done, calls = self.run_serve(f'<meta name="deployed-sha" content="{SHA}">')
+        self.assertEqual((done.returncode, done.stdout), (0, f"serve-sha: {SHA}\n"))
+        self.assertEqual(
+            calls,
+            [
+                "systemctl --user daemon-reload",
+                "systemctl --user enable abu-decomp-tas.service",
+                "systemctl --user restart abu-decomp-tas.service",
+                "curl",
+            ],
+        )
+        self.assertTrue((self.root / "home/.config/systemd/user/abu-decomp-tas.service").is_file())
+
+    def test_a_failed_restart_exits_1_before_any_readback(self):
+        done, calls = self.run_serve("", restart_exit=1)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("restart of abu-decomp-tas.service failed", done.stderr)
+        self.assertNotIn("curl", calls)
+
+    def test_a_page_without_the_meta_tag_prints_an_empty_sha(self):
+        done, _ = self.run_serve("<html>old page</html>")
+        self.assertEqual((done.returncode, done.stdout), (0, "serve-sha: \n"))
