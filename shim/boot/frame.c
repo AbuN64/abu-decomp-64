@@ -638,6 +638,7 @@ int n64c_boot_frame_live(void)
     const u32 run_speed=speed; /* the speed a release (live input handed back) returns to */
     const long long run_interval=view.interval_ns;
     u32 base=0; /* retraces before the pacing restarted (a run taken over by live input plays at 1x from there) */
+    unsigned gate_seen=n64c_tas_gate_epoch();
     for (u32 n=1;!frame.closed;n++) {
         if (speed!=1 && n64c_tas_live_taken()) {
             fprintf(stderr,"boot-frame: live input: real time from retrace %u\n",osViGetRetraceCount());
@@ -647,6 +648,9 @@ int n64c_boot_frame_live(void)
             fprintf(stderr,"boot-frame: live input released: speed %u from retrace %u\n",run_speed,osViGetRetraceCount());
             speed=live_speed=run_speed;base=n-1;clock_gettime(CLOCK_MONOTONIC,&start);
             view.interval_ns=run_interval;
+        }
+        if (n64c_tas_gate_epoch()!=gate_seen) { /* held or released: pace from here, not from the time spent held */
+            gate_seen=n64c_tas_gate_epoch();base=n-1;clock_gettime(CLOCK_MONOTONIC,&start);
         }
         if (n64c_tas_live_taken() && view.path) view.interval_ns=1000000000ll/60-2000000ll;
         if (unlock_request>=0) { /* between two frames: no picture group is open */
@@ -684,7 +688,7 @@ int n64c_boot_frame_live(void)
         if (n%600==0)
             fprintf(stderr,"boot-step: retrace=%u tasks=%u audio=%u commands=%llu\n",osViGetRetraceCount(),
                     frame.tasks,frame.audio_tasks,(unsigned long long)frame.commands);
-        wait_retrace(&start,n-base,speed);
+        wait_retrace(&start,n-base,n64c_tas_gate_seeking()?0:speed);
     }
     fps_report("closed",speed);
     fprintf(stderr,"boot-frame: window closed at retrace %u\n",osViGetRetraceCount());

@@ -432,6 +432,7 @@ class Server:
             "speed": int(record.get("speed") or 0),
             "realtime": realtime(run, record),
             "poll": tas.last_poll(run / tas.HASH) if running else int(record.get("polls_reached") or 0),
+            "held": tas.held_at(run) if running else None,  # the poll the gate holds it at, None while it runs
             "polls": int(record.get("polls") or 0),
             "outcome": None if running else record.get("outcome"),
             "subject": None if running else record.get("subject") or None,
@@ -709,6 +710,21 @@ class Server:
         self.send(run, f"{seq} {buttons:x} {x} {y}{f' {pad}' if pad else ''}".encode())
         return {"ok": True}
 
+    def gate(self, run_id: str, verb: str, count: int | None = None) -> dict[str, Any]:
+        """Hold, step, seek or let go a running replay on its own poll count (the gate, shim/n64c_tas.c). While the
+        gate may hold the run the supervisor applies no timeout (tas.GATED); `run` gives the timeout back."""
+        run = self.run_dir(run_id)
+        if not run or not tas.running(run):
+            raise DecompError("tas.gate", f"no running run {run_id}")
+        data = tas.gate_datagram(verb, count)
+        if verb == "run":
+            (run / tas.GATED).unlink(missing_ok=True)
+        else:
+            (run / tas.GATED).write_text(f"{verb}\n")
+        self.send(run, data)
+        self.live.touch()
+        return {"id": run_id, "gate": verb, "count": count}
+
     def send(self, run: Path, data: bytes) -> None:
         try:
             tas.send_input(run, data)
@@ -729,7 +745,10 @@ class Server:
         fps_unlock: bool = False,
         start: str | None = None,
         take: bool = False,
+        hold_at: int | None = None,
     ) -> dict[str, Any]:
+        if hold_at is not None and not movie:
+            raise DecompError("tas.play", "hold_at holds a replay of a movie")
         if source:
             return self.retry(source, take_at, port, label, fps_unlock)
         if start and take and not movie:
@@ -762,6 +781,7 @@ class Server:
                     "cpak": cpak,
                     "oracle": oracle,
                     "oracle_pictures": oracle,  # a person asked from the page: the picture comparison is the point
+                    "hold_at": hold_at,
                     "fps_unlock": fps_unlock,
                 }
                 tas.play(self.profile, movie, speed=speed, run_id=run_id, start=start, **options)
@@ -1639,6 +1659,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                             bool(body.get("fps_unlock", False)),
                             str(body.get("start") or "") or None,
                             bool(body.get("take", False)),
+                            int(body["hold_at"]) if body.get("hold_at") is not None else None,
                         )
                     )
                 elif self.path == "/api/stop":
@@ -1647,6 +1668,14 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.json(server.keep(str(body.get("id", "")), bool(body.get("pinned", True))))
                 elif self.path == "/api/take":
                     self.json(server.take(str(body.get("id", ""))))
+                elif self.path == "/api/input" and body.get("gate"):
+                    self.json(
+                        server.gate(
+                            str(body.get("id", "")),
+                            str(body["gate"]),
+                            int(body["count"]) if body.get("count") is not None else None,
+                        )
+                    )
                 elif self.path == "/api/input" and body.get("release"):
                     self.json(server.release(str(body.get("id", ""))))
                 elif self.path == "/api/input":

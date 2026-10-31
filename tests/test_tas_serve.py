@@ -603,6 +603,41 @@ class HttpTests(Base):
         self.assertEqual(sock.recv(64), b"take")
         self.assertEqual(self.server.human_running(), "r7")
 
+    def test_gate_datagrams_reach_the_run_and_lift_its_timeout(self):
+        run = self.make_run("g1", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid())
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(sock.close)
+        sock.bind("\0" + tas.input_address(run)[1:])
+        self.assertEqual(self.post("/api/input", {"id": "nope", "gate": "hold"})[0], 400)
+        self.assertEqual(self.post("/api/input", {"id": "g1", "gate": "rewind"})[0], 400)  # not a gate verb
+        self.assertEqual(self.post("/api/input", {"id": "g1", "gate": "seek"})[0], 400)  # seek needs a poll
+        self.assertEqual(self.post("/api/input", {"id": "g1", "gate": "step", "count": 0})[0], 400)
+        for body, datagram in (
+            ({"gate": "hold"}, b"hold"),
+            ({"gate": "step"}, b"step"),
+            ({"gate": "step", "count": 3}, b"step 3"),
+            ({"gate": "seek", "count": 40}, b"seek 40"),
+        ):
+            self.assertEqual(self.post("/api/input", {"id": "g1", **body})[0], 200)
+            self.assertEqual(sock.recv(64), datagram)
+            self.assertTrue((run / tas.GATED).exists())
+        self.assertEqual(self.post("/api/input", {"id": "g1", "gate": "run"})[0], 200)
+        self.assertEqual(sock.recv(64), b"run")
+        self.assertFalse((run / tas.GATED).exists())
+
+    def test_play_passes_hold_at_to_the_replay_and_refuses_it_without_a_movie(self):
+        seen = []
+
+        def fake_play(profile, movie, *, run_id=None, **kwargs):
+            seen.append((movie, kwargs.get("hold_at"), kwargs.get("oracle")))
+            return {}
+
+        self.assertEqual(self.post("/api/play", {"hold_at": 5})[0], 400)
+        with mock.patch.object(tas, "play", fake_play):
+            self.assertEqual(self.post("/api/play", {"movie": "boot-idle", "speed": 0, "hold_at": 25})[0], 200)
+            self.server.pool.shutdown(wait=True)
+        self.assertEqual(seen, [("boot-idle", 25, False)])
+
     def test_retry_from_a_poll_and_pin(self):
         source = self.make_run("src", movie="boot-idle", status="done", started=1.0, outcome="crash", polls_reached=3)
         (source / "polls.raw").write_text("8000 0 0\n0000 0 0\n1000 0 0\n")

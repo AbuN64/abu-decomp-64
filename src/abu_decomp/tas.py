@@ -738,7 +738,9 @@ def _wait(process: subprocess.Popen, timeout: float, run: Path | None = None) ->
         if pid:
             process.returncode = os.waitstatus_to_exitcode(status)
             return process.returncode, round(usage.ru_utime + usage.ru_stime, 1)
-        if run is not None and (run / TAKEN).exists():
+        if run is not None and (run / GATED).exists():
+            end = time.monotonic() + timeout  # held by the gate on a signal: neither the timeout nor a stall applies
+        elif run is not None and (run / TAKEN).exists():
             poll = last_poll(run / HASH)
             if poll != last:
                 last, moved = poll, time.monotonic()
@@ -753,6 +755,10 @@ def _wait(process: subprocess.Popen, timeout: float, run: Path | None = None) ->
 
 VIEW, HASH, AUDIO, RECORD = "view.bmp", "hash.txt", "audio.pcm", "run.json"
 TAKEN = "taken"  # present once live input drives the run
+GATED = "gated"  # present while the poll gate may hold the run (module docstring of shim/n64c_tas.c): no timeout applies
+GATE_VERBS = ("hold", "step", "seek", "run")  # the gate's datagrams; step and seek take a poll count
+_HELD = re.compile(r"n64c-tas: (held at|running from) poll (\d+)")
+ORACLE_HOLD = "oracle-hold.raw"  # the movie prefix the original replays for a run held at a poll
 HUMAN_LABEL = "owner"
 STALL_SECONDS = 20.0  # a run driven by live input is a hang after this long without a poll
 _builds: dict[tuple[str, int, int], str] = {}
@@ -1231,6 +1237,26 @@ def take_root(name: str) -> str:
     return _TAKE_SUFFIX.sub("", name) or name
 
 
+def gate_datagram(verb: str, count: int | None = None) -> bytes:
+    """The datagram of one gate verb: hold, run, `step N` (default 1) and `seek P` (shim/n64c_tas.c)."""
+    if verb not in GATE_VERBS:
+        raise DecompError("tas.gate", f"gate verb {verb!r} is not one of {', '.join(GATE_VERBS)}")
+    if verb == "seek" and (count is None or count < 0):
+        raise DecompError("tas.gate", "seek takes a poll number >= 0")
+    if verb == "step" and count is not None and count < 1:
+        raise DecompError("tas.gate", "step takes a poll count >= 1")
+    return (f"{verb} {count}" if count is not None and verb in ("step", "seek") else verb).encode()
+
+
+def held_at(run: Path) -> int | None:
+    """The poll the gate holds the run at now (polls taken), None while it runs: the port's newest gate line."""
+    try:
+        found = _HELD.findall((run / "output.txt").read_text(errors="replace"))
+    except OSError:
+        return None
+    return int(found[-1][1]) if found and found[-1][0] == "held at" else None
+
+
 def took_over_at(run: Path) -> int:
     """Polls the run's movie played before live input took over (the port says so in the run's output), 0 if never."""
     try:
@@ -1371,6 +1397,7 @@ def play(
     pak: str | None = None,
     oracle: bool = False,
     oracle_pictures: bool = False,
+    hold_at: int | None = None,
     cpak: str | None = None,
     source: str | None = None,
     take_at: int | None = None,
@@ -1458,6 +1485,8 @@ def play(
         raise DecompError("tas.retry", "a retry is driven by live input from its poll on: no oracle, no shots")
     if oracle and human:
         raise DecompError("tas.oracle", "the oracle replays a movie; a human run has none")
+    if hold_at is not None and (human or retry or hold_at < 0):
+        raise DecompError("tas.play", "hold_at is a poll number >= 0 of a replayed movie (not a human run or a retry)")
     if oracle and oracle_pictures and shots_every:
         raise DecompError(
             "tas.oracle", "--oracle-pictures pictures the port every tas.oracle.shot_every polls (shots/port)"
@@ -1540,6 +1569,9 @@ def play(
         where = f"start point {start}" if retry.get("fresh") else f"retry of {source}"
         (run / TAKEN).write_text(f"{where} from poll {take_at}\n")
         env.update(N64C_TAS_TAKE_AT=str(take_at))
+    if hold_at is not None:  # the port runs to that poll at turbo and holds there until the gate says otherwise
+        (run / GATED).write_text(f"hold at poll {hold_at}\n")
+        env.update(N64C_TAS_HOLD_AT=str(hold_at))
     inspect = inspect_env(run, shots_every, dump_ram_at, trace_draws)
     env.update(inspect)
     if sanitize:  # recoverable reports: one run lists many (tas_sanitize)
@@ -1577,7 +1609,7 @@ def play(
         record.update({"from": source, "at": take_at})
     with _run_record(run, record) as (children, reapers):
         state = None
-        if state_diff and not sanitize and not human and not retry:
+        if state_diff and not sanitize and not human and not retry and hold_at is None:
             try:
                 with _starting_play_process():
                     state = tas_statediff.begin(profile, cfg, run, pak, card, polls, pads, attach=bool(original))
@@ -1601,15 +1633,18 @@ def play(
                 **tas_oracle.picture_marks(original),  # render_lead per picture: a gated one is no basis for a diff
             }
             oracle_began = time.monotonic()
+            if hold_at is not None:  # the original replays the same prefix and stops: its last picture is poll hold_at
+                (run / ORACLE_HOLD).write_text(format_raw(polls[:hold_at]))
             with _starting_play_process():
                 oracle_process = tas_oracle.start(
                     original,
                     run,
-                    cfg["exit_after"],
+                    0 if hold_at is not None else cfg["exit_after"],
                     pak,
                     extra=state.oracle_env() if state and state.attached else None,  # one host: pictures and trace
                     card=oracle_card,
                     pads=pads,
+                    movie=run / ORACLE_HOLD if hold_at is not None else None,
                 )
                 children.append(oracle_process)
                 record["oracle"]["pid"] = oracle_process.pid

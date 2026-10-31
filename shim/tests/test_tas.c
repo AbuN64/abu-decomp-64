@@ -297,6 +297,69 @@ static void two_pads(void)
     close(go[0]); close(go[1]); close(ready[0]); close(ready[1]);
 }
 
+/* The poll gate: a run held at poll 2 by N64C_TAS_HOLD_AT is stepped, sought and let go through its socket; the
+ * pipes pace the polls, so nothing here waits on a clock. */
+static void gate(void)
+{
+    char sock[64];
+    snprintf(sock, sizeof sock, "@n64c-test-tas-gate-%ld", (long)getpid());
+    const char *log = "n64c_test_tas.gate", *err = "n64c_test_tas.gate.err";
+    remove(log);
+    remove(err);
+    int go[2], ready[2];
+    CHECK(pipe(go) == 0 && pipe(ready) == 0);
+    pid_t child = fork();
+    if (child == 0) {
+        unsetenv("N64C_TAS_PLAY");
+        unsetenv("N64C_TAS_EXIT_AFTER");
+        unsetenv("N64C_TAS_HASH");
+        setenv("N64C_INPUT", sock, 1);
+        setenv("N64C_TAS_RECORD", log, 1);
+        setenv("N64C_TAS_HOLD_AT", "2", 1);
+        if (!freopen(err, "w", stderr)) _Exit(7);
+        n64c_cont_set_input(NULL, NULL);
+        OSContPad pads[MAXCONTROLLERS];
+        char c;
+        for (int i = 0; i < 9; i++) {
+            osContStartReadData(NULL);
+            osContGetReadData(pads);
+            if (n64c_tas_poll_count() != i + 1) _Exit(4);
+            if (write(ready[1], "r", 1) != 1 || read(go[0], &c, 1) != 1) _Exit(5);
+        }
+        _Exit(0);
+    }
+    char c;
+    /* polls 1 and 2, then the child sits in the gate before poll 3 */
+    for (int i = 0; i < 2; i++) CHECK(read(ready[0], &c, 1) == 1 && write(go[1], "g", 1) == 1);
+    send_pad(sock, "step 1"); /* poll 3 only, held again at 3 */
+    CHECK(read(ready[0], &c, 1) == 1 && write(go[1], "g", 1) == 1);
+    send_pad(sock, "step 2"); /* polls 4 and 5 */
+    for (int i = 0; i < 2; i++) CHECK(read(ready[0], &c, 1) == 1 && write(go[1], "g", 1) == 1);
+    send_pad(sock, "seek 7"); /* polls 6 and 7, unpaced */
+    for (int i = 0; i < 2; i++) CHECK(read(ready[0], &c, 1) == 1 && write(go[1], "g", 1) == 1);
+    send_pad(sock, "seek 3"); /* behind the run: refused, still held at 7 */
+    send_pad(sock, "run");    /* polls 8 and 9 */
+    for (int i = 0; i < 2; i++) CHECK(read(ready[0], &c, 1) == 1 && write(go[1], "g", 1) == 1);
+    int status = 0;
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    char got[1024] = {0};
+    FILE *f = fopen(err, "r");
+    CHECK(f != NULL);
+    if (f) { CHECK(fread(got, 1, sizeof got - 1, f) > 0); fclose(f); }
+    CHECK(strstr(got, "held at poll 2\n") && strstr(got, "held at poll 3\n") && strstr(got, "held at poll 5\n"));
+    CHECK(strstr(got, "held at poll 7\n") && strstr(got, "bad gate datagram seek 3 at poll 7\n"));
+    CHECK(strstr(got, "running from poll 7\n") && !strstr(got, "held at poll 8"));
+    f = fopen(log, "r");
+    CHECK(f != NULL);
+    int lines = 0;
+    if (f) { while (fgets(got, sizeof got, f)) lines++; fclose(f); }
+    CHECK(lines == 9); /* every poll through the gate is recorded once */
+    remove(log);
+    remove(err);
+    close(go[0]); close(go[1]); close(ready[0]); close(ready[1]);
+}
+
 void __sanitizer_report_error_summary(const char *summary);
 int main(void)
 {
@@ -364,6 +427,7 @@ int main(void)
     remove(hashes);
     live_input();
     two_pads();
+    gate();
     if (!fails) puts("n64c_tas ok");
     return fails != 0;
 }

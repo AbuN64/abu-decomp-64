@@ -25,6 +25,10 @@ FILE *n64c_tas_draw_trace(void);
 unsigned long n64c_tas_live_seq(void);
 /* 1 once live input (N64C_INPUT) drives the pads: from the start without a movie, else after a "take" or at poll
  * N64C_TAS_TAKE_AT. */
+/* The poll gate (n64c_tas.c): the epoch moves whenever the gate closes or opens, so the frame loop restarts its pacing
+ * instead of catching up on the time spent held; while seeking the run is unpaced. */
+unsigned n64c_tas_gate_epoch(void);
+int n64c_tas_gate_seeking(void);
 int n64c_tas_live_taken(void);
 /* 1 after a "release" datagram handed a taken run back: neutral input, the run's own speed, recording goes on. */
 int n64c_tas_live_released(void);

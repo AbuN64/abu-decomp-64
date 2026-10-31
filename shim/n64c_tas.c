@@ -26,7 +26,13 @@
  * datagrams: the pad is the newest, plus any button held in an older one, so a press shorter than one poll still
  * reaches the game. Polls are recorded like any other (N64C_TAS_RECORD), so a run taken over mid-movie replays as
  * the movie's prefix plus the human's polls; n64c_tas_live_seq names the newest SEQ applied, which the live picture
- * carries so a viewer can time key -> frame. */
+ * carries so a viewer can time key -> frame.
+ * The poll gate (on the same socket, with or without a take) holds the run on its own poll count: the datagram "hold"
+ * stops the run before its next poll and waits on the socket (no timer) until one says otherwise; "step N" lets N more
+ * polls through and holds again, "seek P" runs unpaced to poll P (P >= the polls taken) and holds there, "run" leaves
+ * the hold at the run's own speed. N64C_TAS_HOLD_AT=P holds at poll P by itself (a seek from the start, which is how a
+ * rewind is made: a new run held at the earlier poll). Held at poll P means P polls were taken and the next is not.
+ * The log says "held at poll P" and "running from poll P". A run that never holds pays one compare per poll. */
 #include "n64c_tas.h"
 #include "n64c_os.h"
 #include "n64c_hook.h"
@@ -39,6 +45,8 @@
 #include <string.h>
 #include <stddef.h>
 #ifndef _WIN32
+#include <errno.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -67,6 +75,9 @@ static unsigned live_held[MAXCONTROLLERS];
 static int live_fresh[MAXCONTROLLERS];
 static atomic_int taken, released;
 static atomic_ulong live_seq;
+static long gate_until = -1;   /* hold once this many polls were taken; below 0 the gate is open */
+static int gate_seeking;       /* running unpaced to gate_until */
+static atomic_uint gate_epoch; /* moves when the gate closes or opens, so the frame loop restarts its pacing */
 
 #ifdef _WIN32
 /* Live input from another process is a Unix datagram socket (Linux and Android); the Windows build runs without it. */
@@ -75,6 +86,7 @@ static void live_open(const char *path)
     fprintf(stderr, "n64c-tas: no live input on Windows, N64C_INPUT %s ignored\n", path);
 }
 static void live_drain(void) {}
+static void gate_wait(void) {}
 #else
 /* "@name" is a Linux abstract socket (no file, no path length limit from the run folder); anything else a path.
  * A socket that cannot be bound leaves the run without live input (one warning), never stops it. */
@@ -104,6 +116,41 @@ static void live_open(const char *path)
     fprintf(stderr, "n64c-tas: live input on %s\n", path);
 }
 
+/* Blocks until the socket has a datagram (a signal, not a timer); the caller drains it. */
+static void gate_wait(void)
+{
+    struct pollfd wait = {.fd = live, .events = POLLIN};
+    while (poll(&wait, 1, -1) < 0 && errno == EINTR) {}
+}
+
+/* The gate's datagrams: "hold", "step N", "seek P", "run". 0 when `msg` is not one of them. */
+static int gate_datagram(const char *msg)
+{
+    long n;
+    if (!strcmp(msg, "hold")) {
+        gate_until = polls;
+    } else if (!strcmp(msg, "run")) {
+        gate_until = -1;
+        gate_seeking = 0;
+    } else if (!strncmp(msg, "step", 4)) {
+        if (sscanf(msg + 4, "%ld", &n) != 1) n = 1;
+        if (n < 1) goto bad;
+        gate_until = polls + n;
+        gate_seeking = 0;
+    } else if (!strncmp(msg, "seek ", 5)) {
+        if (sscanf(msg + 5, "%ld", &n) != 1 || n < polls) goto bad;
+        gate_until = n;
+        gate_seeking = n > polls;
+    } else {
+        return 0;
+    }
+    atomic_fetch_add(&gate_epoch, 1);
+    return 1;
+bad:
+    fprintf(stderr, "n64c-tas: bad gate datagram %s at poll %ld\n", msg, polls);
+    return 1;
+}
+
 /* Drains the socket: a take switches the source; the newest pad wins, older held buttons count for this poll only. */
 static void live_drain(void)
 {
@@ -112,6 +159,7 @@ static void live_drain(void)
         ssize_t n = recv(live, msg, sizeof msg - 1, 0);
         if (n < 0) break;
         msg[n] = 0;
+        if (gate_datagram(msg)) continue;
         if (!strncmp(msg, "take", 4)) {
             if (!atomic_exchange(&taken, 1)) fprintf(stderr, "n64c-tas: live input took over at poll %ld\n", polls + 1);
             atomic_store(&released, 0);
@@ -209,6 +257,17 @@ static void start(void)
     if (path && *path) {
         live_open(path);
         if (live >= 0 && !play) atomic_store(&taken, 1);
+    }
+    const char *hold = getenv("N64C_TAS_HOLD_AT");
+    if (hold && *hold) {
+        char *end;
+        long at = strtol(hold, &end, 10);
+        if (*end || at < 0 || live < 0) {
+            fprintf(stderr, "n64c-tas: N64C_TAS_HOLD_AT %s needs a poll number and N64C_INPUT, ignored\n", hold);
+        } else {
+            gate_until = at;
+            gate_seeking = at > 0;
+        }
     }
     const char *count = getenv("N64C_PADS");
     if (count && *count) {
@@ -334,12 +393,29 @@ int n64c_tas_pads(void)
     if (!started) start();
     return pads;
 }
+/* The gate is closed: wait on the socket until a datagram opens it. */
+static void gate_hold(void)
+{
+    gate_seeking = 0;
+    atomic_fetch_add(&gate_epoch, 1);
+    fprintf(stderr, "n64c-tas: held at poll %ld\n", polls);
+    fflush(stderr);
+    while (gate_until >= 0 && polls >= gate_until) {
+        gate_wait();
+        live_drain();
+    }
+    atomic_fetch_add(&gate_epoch, 1);
+    fprintf(stderr, "n64c-tas: running from poll %ld\n", polls);
+    fflush(stderr);
+}
+
 void n64c_tas_poll(OSContPad *pad)
 {
     if (!started) start();
     if (take_at >= 0 && polls >= take_at && !atomic_exchange(&taken, 1))
         fprintf(stderr, "n64c-tas: live input took over at poll %ld (N64C_TAS_TAKE_AT)\n", polls + 1);
     if (live >= 0) live_drain();
+    if (gate_until >= 0 && polls >= gate_until) gate_hold();
     if (play && !atomic_load(&taken) && !atomic_load(&released)) {
         if (!play_done && !next(pad)) {
             play_done = 1;
@@ -406,5 +482,7 @@ FILE *n64c_tas_draw_trace(void)
 long n64c_tas_take_shot(void) { return atomic_exchange(&shot_due, -1); }
 const char *n64c_tas_shot_dir(void) { return shot_dir; }
 unsigned long n64c_tas_live_seq(void) { return atomic_load(&live_seq); }
+unsigned n64c_tas_gate_epoch(void) { return atomic_load(&gate_epoch); }
+int n64c_tas_gate_seeking(void) { return gate_seeking; }
 int n64c_tas_live_taken(void) { return atomic_load(&taken); }
 int n64c_tas_live_released(void) { return atomic_load(&released); }

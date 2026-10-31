@@ -212,8 +212,9 @@ def start(
     extra: dict[str, str] | None = None,
     card: Path | None = None,
     pads: int = 1,
+    movie: Path | None = None,
 ) -> subprocess.Popen:
-    """The oracle replaying the run's movie.raw with the run's Expansion Pak setting (`N64R_PAK`) and Controller Pak
+    """The oracle replaying `movie` (default the run's movie.raw) with the run's Expansion Pak setting (`N64R_PAK`) and Controller Pak
     card (`N64R_CPAK`, its own copy of the card the port starts with; unset: an empty slot), in its own process
     group, output in oracle.txt. `extra` adds host variables (the coverage run sets N64R_GOLDEN_DIR)."""
     env = {
@@ -221,7 +222,7 @@ def start(
         "SDL_VIDEODRIVER": "offscreen",
         "SDL_AUDIODRIVER": "dummy",
         **oracle["env"],
-        **movie_env(run / "movie.raw", pak, pads, exit_after, None),
+        **movie_env(movie or run / "movie.raw", pak, pads, exit_after, None),
         "N64R_VIEW": str(run / VIEW),
         "N64R_AUDIO_OUT": str(run / AUDIO),
         "N64R_TAS_SHOT_EVERY": str(oracle["shot_every"]),  # the host's entry-count checkpoints (behaviour) follow it
