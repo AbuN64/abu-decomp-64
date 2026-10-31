@@ -40,7 +40,7 @@ def answer(exit_code=0, log="/runs/.tmp/job-rig-1.log"):
 
 
 class Rig:
-    """The seams: Job Invoke answers by call order (activation, readback, serve), git knows the two mains, logs are text."""
+    """The seams: Job Invoke answers by call order (activation, readback, serve), git knows both mains, logs are text."""
 
     def __init__(
         self,
@@ -159,7 +159,7 @@ class DeployTests(unittest.TestCase):
     def test_the_activation_job_names_the_worktree_toolkit_and_revision_and_the_readback_job_has_no_activation(self):
         rig = Rig()
         rig.deploy()
-        activation, readback, restart = rig.requests
+        activation, readback, _serve = rig.requests
         for body in rig.requests:
             self.assertEqual(body["Host"], "rig")
             self.assertEqual(body["Subject"], {"Board": "board1", "Card": "card1"})

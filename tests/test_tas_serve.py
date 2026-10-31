@@ -303,13 +303,11 @@ class DeployedTests(unittest.TestCase):
 
     def test_a_venv_without_a_suite_sha_refuses_to_serve(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(tas_serve.sys, "prefix", tmp):
-                with self.assertRaises(DecompError):
-                    tas_serve.deployed_sha()
+            with mock.patch.object(tas_serve.sys, "prefix", tmp), self.assertRaises(DecompError):
+                tas_serve.deployed_sha()
             (Path(tmp) / "suite.txt").write_text("suite-sha: nothex\n")
-            with mock.patch.object(tas_serve.sys, "prefix", tmp):
-                with self.assertRaises(DecompError):
-                    tas_serve.deployed_sha()
+            with mock.patch.object(tas_serve.sys, "prefix", tmp), self.assertRaises(DecompError):
+                tas_serve.deployed_sha()
 
     def test_ready_is_sent_to_the_notify_socket_and_only_then(self):
         self.assertFalse(tas_serve.notify_ready({}))
