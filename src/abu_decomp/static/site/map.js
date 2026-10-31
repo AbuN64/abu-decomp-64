@@ -61,7 +61,7 @@ export function mount(el, ctx) {
       .map-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
       .map-chip { height: 26px; padding: 0 10px; border-radius: 13px; background: var(--raised); color: var(--dim); font: 12px var(--mono); border: 1px solid var(--line); }
       .map-chip[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-      .map-canvas { display: block; width: 100%; border-radius: 6px; background: var(--surface); }
+      .map-canvas { display: block; width: 100%; border-radius: 6px; background: var(--raised); }
       .map-name { height: 20px; margin-top: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }`),
     h("h2", {}, "Map"), h("div", { class: "map-chips" }, ...chips), canvas, name);
 
@@ -73,7 +73,7 @@ export function mount(el, ctx) {
     canvas.height = height;
     const style = getComputedStyle(document.documentElement);
     const paint = key => style.getPropertyValue(state.map.colours[key]).trim();
-    const dark = style.getPropertyValue("--raised").trim();
+    const dark = style.getPropertyValue("--line").trim();
     const g = canvas.getContext("2d");
     g.clearRect(0, 0, width, height);
     rows.forEach(([, , st, flags], i) => {
