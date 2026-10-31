@@ -9,16 +9,19 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import policy  # noqa: E402
-import portdir  # noqa: E402
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 NS_PER_ENTRY = re.compile(r"[0-9]+(\.[0-9]+)?\Z")
 
 
-def native_functions():
-    """Definitions at the native adapter boundary, excluding original game aliases."""
+def native_functions(port_dir):
+    """Definitions at the native adapter boundary, excluding original game aliases: the shim's n64c_* units and the
+    port's sched_glue.c, read from the port facts directory."""
     here = pathlib.Path(__file__).resolve().parent
-    files = sorted(here.parent.glob("n64c_*.[ch]")) + [portdir.fact("sched_glue.c")]
+    glue = port_dir / "sched_glue.c"
+    if not glue.is_file():
+        raise ValueError(f"the port facts directory has no sched_glue.c: {glue}")
+    files = sorted(here.parent.glob("n64c_*.[ch]")) + [glue]
     return {name for path in files for name in policy.functions(path.read_text())}
 
 
@@ -46,14 +49,14 @@ def charged_names(bound, native_names, functions):
     return names
 
 
-def generate(manifest, source, ns_per_entry, output):
+def generate(manifest, source, ns_per_entry, output, port_dir):
     """Write charged_table.c: the declared work scale and the charged names. The scale is the project's one explicit
     value, spelled as a positive decimal; there is no default."""
     if not NS_PER_ENTRY.fullmatch(ns_per_entry) or not float(ns_per_entry) > 0:
         raise ValueError(f"the work scale must be a positive decimal number of ns per entry, got {ns_per_entry!r}")
     project = json.loads(manifest.read_text())
     functions, _ = symbol_table(source, project["version"])
-    native_names = native_functions()
+    native_names = native_functions(port_dir)
     native = {symbol: target for symbol, target in project["bindings"].items() if target in native_names}
     bound = set(native) | set(native.values())  # a binding to another original function is no native code
     names = charged_names(bound, native_names, functions)
@@ -75,8 +78,9 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=pathlib.Path, required=True)
     parser.add_argument("--ns-per-entry", required=True, help="guest ns one charged entry costs, a positive decimal")
     parser.add_argument("--output", type=pathlib.Path, required=True)
+    parser.add_argument("--port-dir", type=pathlib.Path, required=True, help="the port's facts directory (sched_glue.c)")
     args = parser.parse_args()
     try:
-        generate(args.manifest, args.source, args.ns_per_entry, args.output)
+        generate(args.manifest, args.source, args.ns_per_entry, args.output, args.port_dir)
     except (ValueError, OSError, KeyError) as error:
         sys.exit(f"charged: {error}")

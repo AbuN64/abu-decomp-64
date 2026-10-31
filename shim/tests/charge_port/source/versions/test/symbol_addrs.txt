@@ -1,0 +1,2 @@
+original_fn = 0x80000010; // type:func
+shim_glue = 0x80000020; // type:func

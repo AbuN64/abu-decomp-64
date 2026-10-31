@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -32,7 +33,7 @@ class ChargedTable(unittest.TestCase):
 
     def generate(self, scale="4702.010109321735"):
         with patch.object(module, "native_functions", return_value={"host_shim", "native_api"}):
-            module.generate(self.path / "input.json", self.path / "source", scale, self.path / "out")
+            module.generate(self.path / "input.json", self.path / "source", scale, self.path / "out", self.path / "facts")
         return (self.path / "out/charged_table.c").read_text()
 
     def test_charged_set_is_original_code_the_port_compiles(self):
@@ -57,6 +58,59 @@ class ChargedTable(unittest.TestCase):
         (self.path / "source/versions/test/symbol_addrs.txt").write_text("osLib = 0x802B0000; // type:func\n")
         with self.assertRaises(ValueError):
             self.generate()
+
+
+class PortDirArgument(unittest.TestCase):
+    """charged.py reads the port's sched_glue.c from the explicit --port-dir: no environment, no inference."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = pathlib.Path(self.tmp.name)
+        facts = self.path / "source/versions/test"
+        facts.mkdir(parents=True)
+        (facts / "symbol_addrs.txt").write_text(
+            "alpha = 0x80000010; // type:func\nglue_only = 0x80000020; // type:func\n")
+        (self.path / "manifest").mkdir()
+        (self.path / "manifest/input.json").write_text(json.dumps({"version": "test", "bindings": {}}))
+
+    def run_cli(self, *port_dir, env=None):
+        return subprocess.run(
+            [sys.executable, "-I", str(ROOT / "charged.py"), "--manifest", str(self.path / "manifest/input.json"),
+             "--source", str(self.path / "source"), "--ns-per-entry", "4702.01", "--output", str(self.path / "out"),
+             *port_dir], capture_output=True, text=True, env=env)
+
+    def test_the_given_dir_supplies_sched_glue(self):
+        facts = self.path / "facts"
+        facts.mkdir()
+        (facts / "sched_glue.c").write_text("int glue_only(void) { return 0; }\n")
+        result = self.run_cli("--port-dir", str(facts))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        table = (self.path / "out/charged_table.c").read_text()
+        self.assertIn('"alpha"', table)
+        self.assertNotIn('"glue_only"', table)  # defined natively by the port's glue: not charged
+
+    def test_a_missing_sched_glue_names_the_full_path(self):
+        facts = self.path / "facts"
+        facts.mkdir()
+        result = self.run_cli("--port-dir", str(facts))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(facts / "sched_glue.c"), result.stderr)
+        self.assertFalse((self.path / "out/charged_table.c").exists())
+
+    def test_the_port_dir_is_required_and_the_environment_does_not_stand_in(self):
+        facts = self.path / "facts"
+        facts.mkdir()
+        (facts / "sched_glue.c").write_text("int glue_only(void) { return 0; }\n")
+        result = self.run_cli(env={"N64C_PORT_DIR": str(facts), "PATH": ""})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--port-dir", result.stderr)
+
+    def test_the_manifest_directory_is_not_a_port_dir(self):
+        (self.path / "manifest/sched_glue.c").write_text("int glue_only(void) { return 0; }\n")
+        result = self.run_cli("--port-dir", str(self.path / "facts"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(self.path / "facts/sched_glue.c"), result.stderr)
 
 
 if __name__ == "__main__":

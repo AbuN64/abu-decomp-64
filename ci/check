@@ -47,7 +47,7 @@ if echo 'int main(void){return 0;}' | cc -m32 -x c - -o "$scratch/m32probe" 2>/d
   cmake -S shim -B "$scratch/shim" -G Ninja -DBUILD_TESTING=ON >/dev/null
   cmake --build "$scratch/shim" -j4
   ctest --test-dir "$scratch/shim" --output-on-failure -j4
-  for t in digests fl0 prepare_failclosed prepare trace lockstep replay image tile_parity hangcore gates sweep; do
+  for t in charged digests fl0 prepare_failclosed prepare trace lockstep replay image tile_parity hangcore gates sweep; do
     case $t in
       prepare|trace|lockstep|replay|image) set -- --compiler cc --m32 --work "$scratch/boot-$t" ;;
       fl0|prepare_failclosed) set -- --work "$scratch/boot-$t" ;;

@@ -2,7 +2,9 @@
 # The original-function entry charge, part of every build of a port (CONTRACTS.md "Work scale"). Include after
 # n64compat.cmake.
 #   n64c_charge_entries(<target> NS_PER_ENTRY <decimal> MANIFEST <effective manifest.json> SOURCE <original source dir>
-#                       ORIGINAL_SOURCES <files>)
+#                       PORT_DIR <port facts dir> ORIGINAL_SOURCES <files>)
+# PORT_DIR is the port's facts directory (the one holding sched_glue.c), passed to the generator as --port-dir; it is
+# neither inferred from the manifest's location nor read from the environment. A call without it stops the configure.
 # NS_PER_ENTRY is the project's one declaration of the work scale (guest ns one charged entry costs): compiled into the
 # executable, so nothing at run time can change it. There is no default; a call without it stops the configure.
 # The original units get the compiler's entry call, whose hook is n64c_charge.c in n64compat; the generated table names
@@ -25,10 +27,10 @@ set(N64C_CHARGE_COMPILE_FLAGS -finstrument-functions -fno-omit-frame-pointer CAC
     "The exact compile flags of an original unit (list)")
 set(N64C_CHARGE_HOOK_LIBRARY n64compat CACHE INTERNAL "The library holding the entry hook an original unit calls")
 function(n64c_charge_entries target)
-    cmake_parse_arguments(PARSE_ARGV 1 arg "" "NS_PER_ENTRY;MANIFEST;SOURCE" "ORIGINAL_SOURCES")
-    foreach(required NS_PER_ENTRY MANIFEST SOURCE ORIGINAL_SOURCES)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "NS_PER_ENTRY;MANIFEST;SOURCE;PORT_DIR" "ORIGINAL_SOURCES")
+    foreach(required NS_PER_ENTRY MANIFEST SOURCE PORT_DIR ORIGINAL_SOURCES)
         if(NOT arg_${required})
-            message(FATAL_ERROR "n64c_charge_entries: ${required} is required (the work scale has no default)")
+            message(FATAL_ERROR "n64c_charge_entries: ${required} is required (no default)")
         endif()
     endforeach()
     if(NOT arg_NS_PER_ENTRY MATCHES "^[0-9]+(\\.[0-9]+)?$" OR arg_NS_PER_ENTRY MATCHES "^0+(\\.0*)?$")
@@ -40,7 +42,8 @@ function(n64c_charge_entries target)
     add_custom_command(OUTPUT "${generated}/charged_table.c"
         COMMAND "${Python3_EXECUTABLE}" -I "${script}" --manifest "${arg_MANIFEST}" --source "${arg_SOURCE}"
             --ns-per-entry "${arg_NS_PER_ENTRY}" --output "${generated}"
-        DEPENDS "${arg_MANIFEST}" "${script}" VERBATIM)
+            --port-dir "${arg_PORT_DIR}"
+        DEPENDS "${arg_MANIFEST}" "${arg_PORT_DIR}/sched_glue.c" "${script}" VERBATIM)
     target_sources(${target} PRIVATE "${generated}/charged_table.c")
     set_source_files_properties(${arg_ORIGINAL_SOURCES} PROPERTIES
         COMPILE_OPTIONS "${N64C_CHARGE_COMPILE_FLAGS}")

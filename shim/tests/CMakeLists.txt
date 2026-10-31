@@ -37,6 +37,12 @@ add_test(NAME n64c_charge_custom_audit
 add_test(NAME n64c_charge_plain_audit
     COMMAND "${CMAKE_COMMAND}" -DOBJECT=${plain_unit} -P "${N64C_SHIM_DIR}/cmake/n64c_charge_audit.cmake")
 set_tests_properties(n64c_charge_plain_audit PROPERTIES WILL_FAIL TRUE)
+# n64c_charge_entries through a real configure and build of charge_port/: the effective manifest lives outside the port
+# facts directory, which the call names with PORT_DIR. Without PORT_DIR the configure stops; a PORT_DIR with no
+# sched_glue.c stops the generator at build time naming the path (charge_port_run.cmake).
+add_test(NAME n64c_charge_port
+    COMMAND "${CMAKE_COMMAND}" -DN64C_SHIM_DIR=${N64C_SHIM_DIR} -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/charge_port
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/charge_port -P "${CMAKE_CURRENT_SOURCE_DIR}/charge_port_run.cmake")
 if(N64C_M32)
     add_executable(n64c_test_guest_imports test_guest_imports.c)
     target_link_libraries(n64c_test_guest_imports PRIVATE n64compat)
