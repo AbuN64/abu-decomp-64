@@ -423,6 +423,10 @@ int n64c_host_tlb_unmap(void *vaddr,size_t bytes)
  * the new process before its loader has run, and resumes it; the new process finds the placeholders and takes them over. */
 static void adopt_zones(void)
 {
+    if (!placeholders_available()) { /* the ops table needs the entry points to replace a placeholder */
+        fprintf(stderr,"n64c: placeholders (Windows 10 1803 and later) are missing; the guest address ranges are not held\n");
+        return;
+    }
     const N64cSpaceOps ops=space_ops(GetCurrentProcess());
     const unsigned missing=n64c_space_adopt(&space,&ops);
     if (missing) fprintf(stderr,"n64c: %u guest address chunks were not reserved at start; osMapTLB may fail\n",missing);
