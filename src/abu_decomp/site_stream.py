@@ -1,4 +1,7 @@
-"""Site region `stream`: the lockstep stream of one recorded run (polls, inputs, frames per side). Stub until card RUNNER-STREAM builds it (lanes/RUNNER-REDO/SPLIT.tsv)."""
+"""Site region `stream`: the lockstep stream of one recorded run (polls, inputs, frames per side).
+
+Stub until card RUNNER-STREAM builds it (lanes/RUNNER-REDO/SPLIT.tsv).
+"""
 
 from __future__ import annotations
 

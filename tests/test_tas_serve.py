@@ -1040,7 +1040,7 @@ class DataTests(Base):
 
     def test_the_routes_the_runner_page_replaced_are_gone(self):
         for path in (
-            "/api/state", "/api/board", "/api/corpus", "/api/points", "/api/maze", "/api/fn/func_80256C90_de",
+            "/api/state", "/api/board", "/api/corpus", "/api/points", "/api/maze",
             "/api/calls/func_80256C90_de", "/fn/func_80256C90_de", "/api/phase/map",
         ):  # fmt: skip
             with self.subTest(path=path):

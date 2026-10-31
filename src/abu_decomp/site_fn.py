@@ -1,4 +1,7 @@
-"""Site region `fn`: the function screen (code, runs by kind, behaviour cases, TAS previews). Stub until card RUNNER-FN builds it (lanes/RUNNER-REDO/SPLIT.tsv)."""
+"""Site region `fn`: the function screen (code, runs by kind, behaviour cases, TAS previews).
+
+Stub until card RUNNER-FN builds it (lanes/RUNNER-REDO/SPLIT.tsv).
+"""
 
 from __future__ import annotations
 

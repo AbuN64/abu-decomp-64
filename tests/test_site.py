@@ -50,7 +50,9 @@ class RecordTest(unittest.TestCase):
             site_core.run_record({**DONE, "kind": "bake"})
 
     def test_each_run_state_renders_its_template(self):
-        render = lambda row: [site_core.render(e) for e in site_core.run_events(site_core.run_record(row))]  # noqa: E731
+        def render(row: dict) -> list[str]:
+            return [site_core.render(e) for e in site_core.run_events(site_core.run_record(row))]
+
         self.assertEqual(render(RUNNING), ["LANE-A is playing boot-idle (poll 1,200 of 3,000)"])
         self.assertEqual(render({**RUNNING, "target": "Fn_A"}), ["LANE-A is playing toward Fn_A (poll 1,200 of 3,000)"])
         self.assertEqual(render({**RUNNING, "kind": "unit", "target": "Fn_A", "equal": 41, "cases": 50}),
@@ -67,7 +69,8 @@ class RecordTest(unittest.TestCase):
 
     def test_a_run_keeps_one_event_id_from_start_to_end(self):
         start = site_core.run_events(site_core.run_record(RUNNING))[0]
-        end = site_core.run_events(site_core.run_record({**RUNNING, "status": "done", "outcome": "ok", "ended": 20.0}))[0]
+        ended = {**RUNNING, "status": "done", "outcome": "ok", "ended": 20.0}
+        end = site_core.run_events(site_core.run_record(ended))[0]
         self.assertNotEqual(start["kind"], end["kind"])
         self.assertEqual(site_core.run_events(site_core.run_record({**RUNNING, "poll": 1300}))[0]["id"], start["id"])
 

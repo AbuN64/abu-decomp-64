@@ -1,4 +1,7 @@
-"""Site region `map`: the function map (rows with progress state and filter flags). Stub until card RUNNER-MAP builds it (lanes/RUNNER-REDO/SPLIT.tsv)."""
+"""Site region `map`: the function map (rows with progress state and filter flags).
+
+Stub until card RUNNER-MAP builds it (lanes/RUNNER-REDO/SPLIT.tsv).
+"""
 
 from __future__ import annotations
 

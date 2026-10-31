@@ -1,4 +1,7 @@
-"""Site region `feedback`: human feedback records (file at a poll, list, show). Stub until card RUNNER-PLAY builds it (lanes/RUNNER-REDO/SPLIT.tsv)."""
+"""Site region `feedback`: human feedback records (file at a poll, list, show).
+
+Stub until card RUNNER-PLAY builds it (lanes/RUNNER-REDO/SPLIT.tsv).
+"""
 
 from __future__ import annotations
 
