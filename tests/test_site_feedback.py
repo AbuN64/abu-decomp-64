@@ -244,6 +244,11 @@ class RegionFilesTest(unittest.TestCase):
         for name in ("mario", "zelda", "ocarina", "banjo", "smash", "kart"):
             self.assertNotIn(name, text.lower())
 
+    def test_the_region_appends_the_dialog_element_not_its_wrapper(self):
+        text = (Path(__file__).resolve().parents[1] / "src" / "abu_decomp" / "static" / "site" / "play.js").read_text()
+        self.assertIn("list, dialog.el)", text)
+        self.assertIn('el.dataset.ready = "play"', text)
+
     def test_the_dialog_categories_are_the_contracts(self):
         self.assertEqual(
             site_core.contract()["feedback_categories"], ["crashed", "ui", "glitch", "audio", "input", "other"]

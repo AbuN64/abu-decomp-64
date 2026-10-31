@@ -70,7 +70,7 @@ export function mount(el, ctx) {
   const canvas = node("canvas", { id: "play-stage", width: "640", height: "480" });
   const list = node("ul", { class: "feed", id: "play-flags" });
   const dialog = flagDialog(ctx, S, () => live());
-  el.replaceChildren(node("h2", {}, "Play"), node("div", { class: "playbar" }, start, flag, stop, tag), canvas, node("h2", {}, "Flags"), list, dialog);
+  el.replaceChildren(node("h2", {}, "Play"), node("div", { class: "playbar" }, start, flag, stop, tag), canvas, node("h2", {}, "Flags"), list, dialog.el);
   addStyle();
 
   const refresh = () => {
