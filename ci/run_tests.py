@@ -10,7 +10,9 @@ import signal
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
+SRC = Path(__file__).resolve().parents[1] / "src"
 LIMIT = float(os.environ.get("ABU_TEST_TIMEOUT", "90"))
 
 
@@ -35,6 +37,13 @@ class TimedResult(unittest.TextTestResult):
         super().stopTest(test)
 
 
+def source_first():
+    """The tests import the checkout's src, never an installed abu_decomp (the rig's venv copy): src leads sys.path here
+    and PYTHONPATH for the tests' child pythons, as pytest's `pythonpath = ["src"]` does."""
+    sys.path.insert(0, str(SRC))
+    os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(SRC), os.environ.get("PYTHONPATH")]))
+
+
 def hermetic_git():
     """Tests build their own repos: a host's `init.templatedir` (the rig's carries commit-msg and pre-push hooks and no
     info/) must not shape them, so every git the tests run starts from an empty template."""
@@ -57,6 +66,7 @@ def hermetic_slots():
 
 def main(start="tests", *names):
     """Every test under `start`, or only the named test modules (`test_tas_coverage`) when given."""
+    source_first()
     hermetic_git()
     hermetic_slots()
     signal.signal(signal.SIGALRM, expired)

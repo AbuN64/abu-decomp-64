@@ -3,6 +3,7 @@
 import os
 import runpy
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,3 +38,18 @@ class Scratch(unittest.TestCase):
                 self.assertRaises(slots.DiskFloorError),
             ):
                 slots.check_disk()
+
+
+class SourceFirst(unittest.TestCase):
+    def test_the_checkout_src_leads_the_import_path_and_the_child_environment(self):
+        runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / "ci/run_tests.py"))
+        src = str(Path(__file__).resolve().parents[1] / "src")
+        with mock.patch.object(sys, "path", ["/installed"]), mock.patch.dict(os.environ, {"PYTHONPATH": "/extra"}):
+            runner["source_first"]()
+            self.assertEqual(sys.path, [src, "/installed"])
+            self.assertEqual(os.environ["PYTHONPATH"], f"{src}{os.pathsep}/extra")
+        with mock.patch.dict(os.environ):
+            os.environ.pop("PYTHONPATH", None)
+            with mock.patch.object(sys, "path", []):
+                runner["source_first"]()
+            self.assertEqual(os.environ["PYTHONPATH"], src)
